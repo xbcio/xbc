@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+go.work
+go.work.sum
+
+# 本地配置（含凭据，绝不入库）
+application-local.yml
+*.local.yml
+.env
