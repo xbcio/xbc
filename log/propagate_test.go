@@ -3,6 +3,7 @@ package log
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/oklog/ulid/v2"
@@ -91,4 +92,30 @@ func TestInjectIsNoopWithoutTrace(t *testing.T) {
 	h := http.Header{}
 	Inject(context.Background(), propagation.HeaderCarrier(h))
 	assert.Empty(t, h, "没有链路就什么都不写，别造出无效的 traceparent")
+}
+
+// propagation.MapCarrier does not canonicalize keys the way http.Header
+// does. A carrier that stores the request-id header in all lowercase (e.g.
+// gRPC's metadata.MD convention) must still be recognized -- otherwise
+// Extract silently falls back to deriving a different request_id from
+// trace_id, breaking cross-service log correlation with no warning.
+func TestExtractFindsLowercaseRequestIDOnNonCanonicalizingCarrier(t *testing.T) {
+	upstreamRequestID := "01M0RX90K2CGPJ7V41N2SN057D"
+	c := propagation.MapCarrier{
+		"traceparent":                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		strings.ToLower(RequestIDHeader): upstreamRequestID,
+	}
+
+	tr := TraceFrom(Extract(context.Background(), c, "svc"))
+	assert.Equal(t, upstreamRequestID, tr.RequestID,
+		"carrier 不做大小写归一化时，全小写的 x-request-id 也必须命中")
+}
+
+func TestExtractWithNilContext(t *testing.T) {
+	//lint:ignore SA1012 explicitly verifying that a nil ctx does not panic
+	var ctx context.Context //nolint:staticcheck
+	assert.NotPanics(t, func() {
+		ctx = Extract(ctx, propagation.HeaderCarrier(http.Header{}), "svc") //nolint:staticcheck
+	})
+	assert.True(t, TraceFrom(ctx).Valid())
 }
