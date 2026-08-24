@@ -9,18 +9,41 @@ import (
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
-// nowFunc 是全包共用的时间钩子，只在测试里替换。
+// nowFunc is the package-wide time hook, only ever replaced in tests.
+//
+// It's a package-level variable, so setNow's replacement is not atomic:
+// tests that use it must not call t.Parallel(). There is currently no
+// t.Parallel() anywhere in log/, so this is safe today — but it's an
+// implicit precondition. If a future test (including Task 8's reuse of
+// setNow) introduces parallelism, it becomes a data race.
 var nowFunc = time.Now
 
-// dailyRotator 给 lumberjack 补上按日滚动。
+// dailyRotator adds day-based rotation on top of lumberjack.
 //
-// lumberjack 本身只按文件大小滚，但它的 Rotate() 是导出的 —— 所以这里
-// 只做一件事：写之前检查是否跨天，跨了就触发一次 Rotate()。
-// 清理、压缩、backup 数量全部由 lumberjack 按原有配置处理。
+// lumberjack itself only rotates by file size, but its Rotate() is
+// exported — so this type does exactly one thing: check for a day change
+// before every write, and trigger one Rotate() if the day changed.
+// Cleanup, compression, and backup count are all handled by lumberjack
+// per its existing configuration.
 //
-// 已知行为：跨天滚出的归档文件名带的是触发时刻的时间戳
-// （app-2026-08-25T00-00-03.000.log），而内容是前一天的。
-// 这是 lumberjack 的既定命名规则，max_age 也按这个时间戳算。
+// Known behavior:
+//   - The archive file name produced by a day rotation carries the
+//     timestamp of the moment the rotation was triggered
+//     (app-2026-08-25T00-00-03.000.log), while its content belongs to
+//     the previous day. This is lumberjack's own naming convention, and
+//     max_age is computed against that timestamp too.
+//   - There is an attribution-fuzziness window right at the day
+//     boundary: when Write detects the day change and calls Rotate(), it
+//     does not hold a lock that also covers the actual disk write
+//     (lumberjack.Write has its own internal lock, outside d.mu). So the
+//     physical location a log line lands in can disagree with its
+//     logical day — a line that logically belongs to "today" may end up
+//     in "tomorrow's" file. This does not lose data and never writes
+//     into an already-archived file; it is purely an ordering/attribution
+//     issue, and it is not specific to this implementation — any
+//     day-rotation scheme that doesn't hold a lock across the entire
+//     write has this same fuzzy window. See the comment in Write for
+//     detail.
 type dailyRotator struct {
 	lj *lumberjack.Logger
 
@@ -29,11 +52,56 @@ type dailyRotator struct {
 }
 
 func newDailyRotator(lj *lumberjack.Logger) *dailyRotator {
-	// [SEC-INFO] 日志目录必须是 0750。lumberjack 自己建目录时硬编码 0755
-	// （实测 -rwxr-xr-x），违反安全规范，所以抢先建好：os.MkdirAll 对已存在
-	// 的目录直接返回 nil、不改权限，之后 lumberjack 那次调用就成了 no-op。
-	// 这里忽略错误 —— 真建不出来，lumberjack 首次写盘会报出真正的原因。
+	// [SEC-INFO] The log directory must be 0750. lumberjack hardcodes
+	// 0755 when it creates the directory itself (verified: -rwxr-xr-x),
+	// which violates the security requirement, so we create it ourselves
+	// first: os.MkdirAll returns nil without changing permissions when
+	// the directory already exists, so lumberjack's own MkdirAll call
+	// later becomes a no-op. Errors here are ignored — if the directory
+	// truly can't be created, lumberjack's first write will surface the
+	// real reason.
+	//
+	// Known remaining gap (intentionally not fixed): MkdirAll only
+	// actually creates the directory when it doesn't exist yet, so the
+	// 0750 guarantee only applies to first creation — if dir already
+	// exists with a looser mode (e.g. 0755, pre-created by an ops script,
+	// a previous version, or a shared path), we do NOT os.Chmod it to
+	// tighten it. Not tightening is a deliberate decision: dir is
+	// filepath.Dir(lj.Filename), which depends on the user-configured
+	// log.file.path and can well be a system-shared directory like
+	// /var/log — the framework forcibly chmod'ing that to 0750 would
+	// lock out other services on the same host running as a different
+	// user (syslog, filebeat, promtail, and the like), causing a much
+	// larger blast radius than the exposure it prevents, and one that's
+	// very hard to diagnose. The residual risk is limited to file names,
+	// sizes, and mtimes inside the directory being visible to other
+	// local users — content itself is unaffected, see the tightening of
+	// lj.Filename itself below. This is a deployment precondition: ops
+	// must ensure the log directory itself is created with 0750 or
+	// stricter (Task 10 will add a note to the README).
 	_ = os.MkdirAll(filepath.Dir(lj.Filename), 0o750)
+
+	// [SEC-INFO] lumberjack's openNew() creates a brand-new file with
+	// 0600, but if lj.Filename already exists it copies the old file's
+	// mode instead (lumberjack.go:219, `mode = info.Mode()`) rather than
+	// tightening it to 0600; and on the next rotation, the gzip archive
+	// step inherits that same looser mode too (lumberjack.go:486 also
+	// uses the old file's fi.Mode()). This is the real content-exposure
+	// gap: if app.log was previously created at 0644 by an ops script or
+	// an older version, without tightening it here it stays 0644 forever
+	// and any other local user can read the log content directly.
+	// lj.Filename is a file that unambiguously belongs to this framework
+	// (unlike the shared directory case above), so chmod'ing it doesn't
+	// carry that collateral-damage risk — hence we tighten it ourselves
+	// before handing off to lumberjack. When the file doesn't exist yet,
+	// we do nothing — lumberjack will create it at 0600 on its own.
+	// Errors are ignored in keeping with the existing style: if the
+	// chmod silently fails, lumberjack's first write will surface the
+	// real underlying cause.
+	if fi, err := os.Stat(lj.Filename); err == nil && fi.Mode().Perm() != 0o600 {
+		_ = os.Chmod(lj.Filename, 0o600)
+	}
+
 	return &dailyRotator{lj: lj, day: nowFunc().Format(time.DateOnly)}
 }
 
@@ -41,23 +109,46 @@ func (d *dailyRotator) Write(p []byte) (int, error) {
 	d.mu.Lock()
 	if today := nowFunc().Format(time.DateOnly); today != d.day {
 		d.day = today
-		// 空文件不滚：Rotate() 对 0 字节的当前文件照样产出一个 0 字节归档
-		// （实测），进程在新的一天首启时就会滚出这种垃圾，长期累积。
+		// Skip rotation on an empty file: Rotate() still produces a
+		// 0-byte archive for a 0-byte current file (verified), so a
+		// process's first write of a new day would otherwise leave this
+		// kind of junk archive behind, accumulating over time.
 		if fi, err := os.Stat(d.lj.Filename); err != nil || fi.Size() > 0 {
-			// 滚动失败不能阻塞写入：日志滚不动是运维问题，日志丢了是事故。
+			// A failed rotation must not block writes: a log that fails
+			// to rotate is an ops problem, a log that gets dropped is an
+			// incident.
 			_ = d.lj.Rotate()
 		}
 	}
 	d.mu.Unlock()
 
-	// lumberjack.Write 自带锁，放在 d.mu 之外，别把锁粒度放大到整个写盘。
+	// lumberjack.Write has its own internal lock, and this call is
+	// deliberately placed outside d.mu — we don't want to widen d.mu to
+	// cover the entire disk write.
+	//
+	// The cost of that choice (measured under a review's 200-goroutine
+	// stress test with deterministic interleaving, not a hypothetical):
+	// writer C can finish its "same day, no rotation needed" check under
+	// d.mu, then get descheduled before it actually calls lj.Write();
+	// meanwhile writer A detects the day change, calls Rotate(), and
+	// releases d.mu. Only then does C's lj.Write() actually run — and it
+	// lands in the file created by A's Rotate(), i.e. the new day's file,
+	// mixed in with the new day's content. No data is lost and nothing
+	// is ever written into an already-archived file — this is purely an
+	// ordering/attribution issue right at the day boundary: a line whose
+	// logical timestamp is "today" can end up physically stored in
+	// "tomorrow's" file. This is not a defect unique to this
+	// implementation; any day-rotation scheme that doesn't hold a single
+	// lock across the entire write has this same fuzzy window.
 	return d.lj.Write(p)
 }
 
-// Sync 满足 zapcore.WriteSyncer。lumberjack 直写 fd 不缓冲，无事可做。
+// Sync satisfies zapcore.WriteSyncer. lumberjack writes directly to the
+// fd without buffering, so there's nothing to do here.
 //
-// 注意 lumberjack.Logger **没有** Sync 方法（方法集只有 Close/Rotate/Write），
-// 别去转发一个不存在的方法。
+// Note that lumberjack.Logger does NOT have a Sync method (its method
+// set is only Close/Rotate/Write) — don't try to forward a method that
+// doesn't exist.
 func (d *dailyRotator) Sync() error { return nil }
 
 func (d *dailyRotator) Close() error { return d.lj.Close() }

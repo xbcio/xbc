@@ -12,7 +12,8 @@ import (
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
-// setNow 替换全包的时间钩子，返回还原函数。Task 8 的 Span 测试也用它。
+// setNow replaces the package-wide time hook and returns a restore function.
+// Task 8's Span tests reuse it too.
 func setNow(f func() time.Time) (restore func()) {
 	old := nowFunc
 	nowFunc = f
@@ -31,7 +32,7 @@ func TestDailyRotatorTriggersOnDayChange(t *testing.T) {
 	_, err := d.Write([]byte("day1\n"))
 	require.NoError(t, err)
 
-	fake = fake.Add(2 * time.Minute) // 跨天
+	fake = fake.Add(2 * time.Minute) // crosses the day boundary
 	_, err = d.Write([]byte("day2\n"))
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
@@ -56,7 +57,7 @@ func TestDailyRotatorDoesNotRotateWithinSameDay(t *testing.T) {
 
 	_, err := d.Write([]byte("a\n"))
 	require.NoError(t, err)
-	fake = fake.Add(13 * time.Hour) // 同一天内跨了大半天
+	fake = fake.Add(13 * time.Hour) // moves most of the day forward, still same day
 	_, err = d.Write([]byte("b\n"))
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
@@ -87,7 +88,7 @@ func TestDailyRotatorConcurrentWritesRotateOnce(t *testing.T) {
 	require.NoError(t, err)
 
 	mu.Lock()
-	fake = fake.Add(time.Second) // 全部 goroutine 同时看到跨天
+	fake = fake.Add(time.Second) // every goroutine observes the day change at once
 	mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -115,13 +116,13 @@ func TestDailyRotatorSyncIsNoop(t *testing.T) {
 func TestDailyRotatorSkipsRotateOnEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
-	require.NoError(t, os.WriteFile(path, nil, 0o600)) // 0 字节的当前文件
+	require.NoError(t, os.WriteFile(path, nil, 0o600)) // current file is 0 bytes
 
 	fake := time.Date(2026, 8, 24, 23, 59, 0, 0, time.Local)
 	defer setNow(func() time.Time { return fake })()
 
 	d := newDailyRotator(&lumberjack.Logger{Filename: path, MaxBackups: 3, LocalTime: true})
-	fake = fake.Add(2 * time.Minute) // 跨天
+	fake = fake.Add(2 * time.Minute) // crosses the day boundary
 	_, err := d.Write([]byte("day2\n"))
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
@@ -138,6 +139,63 @@ func TestDailyRotatorCreatesDirWith0750(t *testing.T) {
 
 	fi, err := os.Stat(dir)
 	require.NoError(t, err)
-	// [SEC-INFO] lumberjack 自己建目录是 0755，必须由我们抢先建成 0750
+	// [SEC-INFO] lumberjack creates the directory itself at 0755, so we
+	// must create it ourselves first at 0750.
 	assert.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "日志目录权限")
+}
+
+// TestDailyRotatorDoesNotChmodPreexistingDir pins down a deliberate
+// decision, not a defect: if the directory already exists with a looser
+// mode, we do not tighten it. See the comment on newDailyRotator in
+// rotate.go for why — dir may be a system-shared directory like
+// /var/log, and the framework forcibly chmod'ing it would affect other
+// processes, with a blast radius much larger than the exposure it
+// prevents. This only asserts "we don't touch the directory"; content
+// safety is backstopped by the file itself being 0600.
+func TestDailyRotatorDoesNotChmodPreexistingDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "preexisting")
+	require.NoError(t, os.Mkdir(dir, 0o755))
+
+	d := newDailyRotator(&lumberjack.Logger{Filename: filepath.Join(dir, "app.log")})
+	defer d.Close()
+
+	fi, err := os.Stat(dir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), fi.Mode().Perm(), "预先存在的目录权限不该被我们改动")
+}
+
+// TestDailyRotatorTightensPreexistingFileTo0600 covers the real gap
+// called out by review: lumberjack's openNew() copies the mode of an
+// already-existing file (lumberjack.go:219). If app.log was previously
+// created at 0644 by an ops script or an older version, lumberjack won't
+// tighten it, and the next rotation will propagate 0644 to the gzip
+// archive too (lumberjack.go:486). We must tighten a preexisting file to
+// 0600 before lumberjack gets to it.
+func TestDailyRotatorTightensPreexistingFileTo0600(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	require.NoError(t, os.WriteFile(path, []byte("旧内容\n"), 0o644))
+
+	d := newDailyRotator(&lumberjack.Logger{Filename: path})
+	defer d.Close()
+
+	fi, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm(), "预存在的日志文件权限必须被收紧到 0600")
+}
+
+// TestDailyRotatorDoesNotCreateFileWhenAbsent confirms the tightening
+// logic only applies to a file that already exists: when the file
+// doesn't exist, newDailyRotator neither errors nor eagerly creates it
+// (creation is still left to lumberjack's first Write, which creates it
+// at 0600).
+func TestDailyRotatorDoesNotCreateFileWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+
+	d := newDailyRotator(&lumberjack.Logger{Filename: path})
+	defer d.Close()
+
+	_, err := os.Stat(path)
+	assert.True(t, os.IsNotExist(err), "文件不存在时不该被抢先创建")
 }
