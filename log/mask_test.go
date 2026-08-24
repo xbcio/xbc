@@ -697,8 +697,9 @@ func TestMaskDoesNotCopyUnrelatedReflectedValue(t *testing.T) {
 // 它不会告诉你 map[int]X 到底能不能序列化。以下测试一律走真实 JSON encoder。
 // ---------------------------------------------------------------------------
 
-// maskedJSONLogger 组装一条写进内存 buffer 的真实日志管线。
-func maskedJSONLogger() (*zap.Logger, *bytes.Buffer) {
+// maskedJSONLoggerWith 组装一条写进内存 buffer 的真实日志管线，
+// masker 在内置黑名单之外追加 extra。
+func maskedJSONLoggerWith(extra []string) (*zap.Logger, *bytes.Buffer) {
 	buf := &bytes.Buffer{}
 	enc := zapcore.NewJSONEncoder(zapcore.EncoderConfig{
 		MessageKey:  "msg",
@@ -706,18 +707,24 @@ func maskedJSONLogger() (*zap.Logger, *bytes.Buffer) {
 		EncodeLevel: zapcore.LowercaseLevelEncoder,
 	})
 	core := zapcore.NewCore(enc, zapcore.AddSync(buf), zapcore.DebugLevel)
-	return zap.New(newMaskCore(core, newMasker(nil))), buf
+	return zap.New(newMaskCore(core, newMasker(extra))), buf
 }
 
-// logJSON 打一条日志并把落盘字节同时以原文和解析结果交回。
-func logJSON(t *testing.T, fs ...zapcore.Field) (string, map[string]any) {
+// logJSONWith 打一条日志并把落盘字节同时以原文和解析结果交回。
+func logJSONWith(t *testing.T, extra []string, fs ...zapcore.Field) (string, map[string]any) {
 	t.Helper()
-	l, buf := maskedJSONLogger()
+	l, buf := maskedJSONLoggerWith(extra)
 	l.Info("m", fs...)
 	raw := buf.String()
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal([]byte(raw), &parsed), "落盘字节应是合法 JSON：%s", raw)
 	return raw, parsed
+}
+
+// logJSON 是 logJSONWith 的常用形态：只用内置黑名单。
+func logJSON(t *testing.T, fs ...zapcore.Field) (string, map[string]any) {
+	t.Helper()
+	return logJSONWith(t, nil, fs...)
 }
 
 // subMap 取出嵌套的一层对象，失败时把落盘原文打出来。
@@ -1118,4 +1125,116 @@ func TestMaskFloatMapKeyNameMatchesJSON(t *testing.T) {
 	for _, v := range []float32{1e-7, 1e-6, 1e20, 1e21} {
 		assertFloatKeyName(t, v)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 14-15：保留字符落在敏感中心词**之前**，以及 unicode 判定的回归钉子
+//
+// 与上一组（Fix 11-12）是同族、方向对调：上一组的垃圾落在敏感词**之后**，
+// 截断名 / v2 名各自够得着；这一组的垃圾落在敏感词**之前**，四个老候选全部落空，
+// 靠"替换名"候选（保留字符换成 `_`）才挡得住。
+//
+// 判据始终是"tag 文本里出现敏感中心词就挡"：tag 写坏不会让值变得不敏感，
+// 形如 Password string `json:"db\"password"` 的字段里躺着的就是明文口令。
+//
+// 每条都走完整的 zap.New(core).Info() 路径断言落盘字节，不直调 hitFieldName。
+// ---------------------------------------------------------------------------
+
+// sMaskPreQuote：Go 名 Foo 不敏感，截断名与 v2 名都是 db —— 老候选全落空。
+type sMaskPreQuote struct {
+	Foo string `json:"db\"password"`
+}
+
+type sMaskPreBackslash struct {
+	Foo string `json:"db\\password"`
+}
+
+type sMaskPreBacktick struct {
+	Foo string "json:\"db`password\""
+}
+
+type sMaskPreSecret struct {
+	Foo string `json:"svc\\secret"`
+}
+
+// sMaskPreUnderscore：替换后是 _x_private_key，词 x / private / key，
+// 后缀词组 privatekey 命中 —— 验证替换名照样走后缀词组规则，不是整串比对。
+type sMaskPreUnderscore struct {
+	Foo string `json:"_x\"private_key"`
+}
+
+// sMaskPreTokenizer：替换名 tokenizer_x 的后缀词组是 x / tokenizerx，
+// 都不该命中 —— 第五候选不能把 tokenizer 这类词拖下水。
+type sMaskPreTokenizer struct {
+	Foo string `json:"tokenizer\"x"`
+}
+
+// sMaskCJKTag：候选 1 与截断名（密码-extra）都不命中，只有 v2 名 密码 命中。
+// unicode.IsLetter 换成纯 ASCII 判断的话 v2 名会变成空串，这条立刻漏。
+// 内置黑名单全是英文，所以必须给 masker 追加 密码，否则改成 ASCII 也照样绿。
+type sMaskCJKTag struct {
+	Foo string `json:"密码-extra\"y"`
+}
+
+// 35：保留字符落在敏感中心词之前 —— 落盘曾是 {"db":"hunter2"}，整条明文。
+func TestMaskChecksReplacedNameWhenReservedCharPrecedesKeyword(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskPreQuote{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`db"password`], "落盘：%s", raw)
+}
+
+// 36：反斜杠与反引号是同一族形态。
+func TestMaskChecksReplacedNameForOtherReservedChars(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskPreBackslash{Foo: "hunter2"}))
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`db\password`], "落盘：%s", raw)
+
+	raw, m = logJSON(t, zap.Any("v", sMaskPreBacktick{Foo: "hunter2"}))
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["db`password"], "落盘：%s", raw)
+}
+
+// 37：中心词换成 secret，前缀换成 svc —— 不是只对 password 一个词生效。
+func TestMaskChecksReplacedNameForSecretKeyword(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskPreSecret{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`svc\secret`], "落盘：%s", raw)
+}
+
+// 38：替换后仍走后缀词组规则 —— _x"private_key → _x_private_key，
+// 词 x / private / key，后缀词组 privatekey 命中（单独的 key 不在黑名单里）。
+func TestMaskReplacedNameStillUsesSuffixWordGroups(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskPreUnderscore{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`_x"private_key`], "落盘：%s", raw)
+}
+
+// 39：防误伤回归，现有 #33 的加强版 —— 第五候选 count-extra_y 的后缀词组是
+// y / extray / countextray，一个都不该命中。落盘成员名由 encoding/json 自己决定
+// （v2 是 count、v1 是 Count），所以只断言值与占位符。
+func TestMaskReplacedNameCandidateDoesNotOverreach(t *testing.T) {
+	raw, _ := logJSON(t, zap.Any("v", sMaskCutCount{Count: 42}))
+
+	assert.NotContains(t, raw, maskPlaceholder, "计数字段不是凭据，落盘：%s", raw)
+	assert.Contains(t, raw, "42", "落盘：%s", raw)
+}
+
+// 40：tokenizer 与 token 只是前缀相同，中心词不是凭据 —— 第五候选不能误伤。
+func TestMaskReplacedNameDoesNotOverreachOnPrefixLookalike(t *testing.T) {
+	raw, _ := logJSON(t, zap.Any("v", sMaskPreTokenizer{Foo: "visible"}))
+
+	assert.NotContains(t, raw, maskPlaceholder, "落盘：%s", raw)
+	assert.Contains(t, raw, "visible", "落盘：%s", raw)
+}
+
+// 41：CJK tag 走 v2 候选。maskIsLetterOrDigit 必须用 unicode.IsLetter，
+// 换成纯 ASCII 范围判断的话 v2 名退化成空串，这条口令就明文落盘。
+func TestMaskChecksV2NameForCJKTag(t *testing.T) {
+	raw, m := logJSONWith(t, []string{"密码"}, zap.Any("v", sMaskCJKTag{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["密码-extra\"y"], "落盘：%s", raw)
 }

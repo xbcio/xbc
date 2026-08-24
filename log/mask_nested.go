@@ -597,29 +597,73 @@ func maskNamedField(sf reflect.StructField) bool {
 
 // hitFieldName 查黑名单时用**多个候选名**，任一命中即脱敏。
 //
-// 起因：tag 名非法时（`json:"pass\"word"` 这种）encoding/json 不会原样采用它，
-// 我们却拿着 tag 原名去查黑名单，必然不命中 —— 而字段值是货真价实的口令。
-// 与其预测它用哪个名字输出，不如把它可能用的名字全挡住：
+// # 判据
+//
+// 判据 B：**tag 文本里出现敏感中心词就挡**。
+//
+// 不是判据 A（"落盘成员名命中黑名单才脱敏"）。两者的区别在 `json:"db.password\"x"`
+// 上最清楚：它的真实落盘成员名是 db（v2）或 Foo（v1），两个都完全不敏感 ——
+// 按判据 A 不该脱敏，我们照样脱敏。下面的截断名候选不对应任何一个真实落盘名，
+// 只有判据 B 能解释它为什么存在。
+//
+// 判据 B 之所以是对的：tag 写坏时值不会因此变得不敏感。形如
+// Password string `json:"db\"password"` 的字段里躺着的就是明文口令，
+// 落盘成员名叫 db 还是 Foo 不改变这一点。定级与取舍一律随判据走，不随触发概率走。
+//
+// # 五个候选
+//
+// 前两个覆盖 tag 合法与解析失败这两种正常情况：
 //
 //  1. tag 的名字部分（也是我们输出用的成员名）
 //  2. Go 字段名 —— v1 校验失败时用它，v2 在 tag 首字符非法时也用它
-//  3. 截断名：tag 名截到第一个保留字符（反斜杠、单引号、双引号、反引号）之前
-//  4. v2 名：从 tag 开头取的最长合法标识符前缀
 //
-// 3 与 4 的关系不是包含而是并集，两个方向的漏网都实测过：
+// 后三个覆盖 tag 被保留字符（反斜杠、单引号、双引号、反引号）写坏的情况：
 //
-//	json:"access_token-extra\y" → 截断名 access_token-extra 不命中，v2 名
+//  3. 替换名：把候选 1 里的 \ ' " ` 全部换成 `_` 再查
+//  4. 截断名：tag 名截到第一个保留字符之前
+//  5. v2 名：从 tag 开头取的最长合法标识符前缀
+//
+// 非法 tag 的文本形态是发散的，但**垃圾相对敏感中心词的位置**只有三种，
+// 后三个候选正是按这三种位置划分的：
+//
+//	前  db"password          替换名（保留字符换成 _，中心词重新露在词尾）
+//	中  pass"word            替换名；x-api"key 这类也靠它
+//	后  db.password"x        截断名
+//	后  access_token-extra\y v2 名
+//
+// **候选集到此封闭**：位置只有前中后三种，没有第四种。再有新形态，应当落进
+// 上面某一格，而不是再加第六个候选。
+//
+// 三者的关系是并集，谁都不能省 —— 三个方向的漏网都实测过：
+//
+//	json:"access_token-extra\y" → 替换名 access_token-extra_y 与截断名
+//	                              access_token-extra 都不命中，v2 名
 //	                              access_token 命中（v2 落盘的就是这个成员名）
-//	json:"db.password\"x"       → v2 名 db 不命中，截断名 db.password 命中
+//	json:"db.password\"x"       → 替换名 db.password_x 与 v2 名 db 都不命中，
+//	                              截断名 db.password 命中
+//	json:"db\"password"         → 截断名与 v2 名都是 db，不命中；
+//	                              只有替换名 db_password 命中
+//
+// 前两条正是"把保留字符并进 splitMaskKey 的分隔符集合、一处改动覆盖两个方向"
+// 这个思路的反例：保留字符变成分隔符之后，垃圾尾巴（x / y）成了一个独立的词，
+// 而后缀词组规则的中心词在尾部，够不着它前面的敏感词。
 //
 // 误伤面是可控的：Token string `json:"count"` 会因 Go 名命中而脱敏（值大概率
 // 真是 token，脱敏是对的），而 TokenCount int `json:"n"` 的后缀词组是
-// count / tokencount，几个候选都不命中。
+// count / tokencount，五个候选都不命中；`json:"count-extra\y"` 的替换名
+// count-extra_y、`json:"tokenizer\"x"` 的替换名 tokenizer_x 同样都不命中。
 func (m *masker) hitFieldName(sf reflect.StructField, name string) bool {
 	if m.hit(name) {
 		return true
 	}
 	if name != sf.Name && m.hit(sf.Name) {
+		return true
+	}
+	// 只在候选 1 真的含保留字符时才走替换名，避免为绝大多数正常字段做无谓的
+	// 字符串分配。maskTagReserved 的首字符是逗号，逗号不参与替换 ——
+	// 候选 1 已经在逗号处切过了。
+	if strings.ContainsAny(name, maskTagReserved[1:]) &&
+		m.hit(maskTagReplacer.Replace(name)) {
 		return true
 	}
 	trunc, v2 := maskTagAltNames(sf.Tag.Get("json"))
@@ -632,6 +676,13 @@ func (m *masker) hitFieldName(sf reflect.StructField, name string) bool {
 // maskTagReserved 是 encoding/json v2 在 tag 名字部分保留的字符集，
 // 逐字节抄自 $GOROOT/src/encoding/json/v2/fields.go 的 parseFieldOptions。
 const maskTagReserved = ",\\'\"`"
+
+// maskTagReplacer 把 tag 里的保留字符换成分隔符，供替换名候选使用。
+// 包级复用，别每次调用都构造一个。
+//
+// 目标字符必须是 splitMaskKey 认的分隔符（`_`）而不是空串：删掉保留字符会
+// 把 db"password 粘成 dbpassword 这**一个**词，后缀词组够不着 password。
+var maskTagReplacer = strings.NewReplacer("\\", "_", "'", "_", "\"", "_", "`", "_")
 
 // maskTagAltNames 返回 tag 名字部分之外的两个查名候选。tag 名合法（没有被保留
 // 字符截断）时两者都是空串 —— 那种情况下 v1 与 v2 用的都是候选 1。
@@ -660,6 +711,10 @@ func maskTagAltNames(tag string) (trunc, v2 string) {
 }
 
 // maskIsLetterOrDigit 与 encoding/json/v2 的 isLetterOrDigit 同义。
+//
+// 必须用 unicode 判定，不能换成 ASCII 范围硬判 —— CJK 标识符是合法的
+// （`json:"密码\"x"` 实测落盘成员就是 密码），换成 ASCII 会让 v2 名退化成空串。
+// TestMaskChecksV2NameForCJKTag 钉住这一点。
 func maskIsLetterOrDigit(r rune) bool {
 	return r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r)
 }
@@ -1062,9 +1117,13 @@ func maskMapKeyName(k reflect.Value) (string, bool) {
 	return "", false
 }
 
-// maskFormatFloat 复刻 encoding/json 写 JSON 数值的格式
-// （internal/jsonwire.AppendFloat，即 ECMAScript 的 Number::toString）：
-// |x| 落在 [1e-6, 1e21) 用 'f'，否则用 'e'，再把 e-09 收敛成 e-9。
+// maskFormatFloat 复刻 encoding/json 写 JSON 数值的实际格式，也就是
+// internal/jsonwire.AppendFloat：|x| 落在 [1e-6, 1e21) 用 'f'，否则用 'e'，
+// 再把 e-09 收敛成 e-9。
+//
+// 对齐目标是 **encoding/json 的实际行为**，不是 ECMAScript 的规范文本 ——
+// AppendFloat 大体照着 Number::toString 写，但至少在 -0 上与规范有偏差：
+// 规范要求写 0，json 与本函数都写 -0。我们跟 json 走，不跟规范走。
 //
 // 直接用 strconv 的 'g' 会在 1e20 这一带写出 1e+20 而 json 写的是
 // 100000000000000000000 —— 成员名对不上，日志检索规则就会失效。
