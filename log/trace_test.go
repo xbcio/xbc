@@ -83,6 +83,48 @@ func TestTraceFromMissingReturnsZeroValue(t *testing.T) {
 	assert.False(t, TraceFrom(nil).Valid())        //nolint:staticcheck
 }
 
+// TraceFrom must interoperate with a ctx that only carries an OTel
+// SpanContext -- set purely through the OTel SDK's own API, never touching
+// this package's WithTrace.
+func TestTraceFromFallsBackToOTelSpanContext(t *testing.T) {
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{0x01},
+		SpanID:     trace.SpanID{0x02},
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+
+	tr := TraceFrom(ctx)
+	assert.True(t, tr.Valid())
+	assert.Equal(t, sc.TraceID(), tr.TraceID())
+	assert.Equal(t, tr.TraceID(), trace.TraceID(ulid.MustParse(tr.RequestID)), "request_id 是 trace_id 的 ULID 编码")
+}
+
+// The most important regression guard: when ctx carries both an outer OTel
+// SpanContext (e.g. from otelhttp instrumentation that was never wired up
+// via UseTracer) and an inner local Trace (from this package's own Span),
+// TraceFrom must return the local one -- otherwise the inner span would be
+// silently swallowed by the outer one, making logging coarser instead of
+// finer at exactly the point the caller asked for more detail.
+func TestTraceFromPrefersLocalOverOTel(t *testing.T) {
+	outer := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{0xaa},
+		SpanID:     trace.SpanID{0xbb},
+		TraceFlags: trace.FlagsSampled,
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), outer)
+
+	inner := NewTrace("db.query")
+	ctx = WithTrace(ctx, inner)
+
+	got := TraceFrom(ctx)
+	assert.Equal(t, inner.TraceID(), got.TraceID(), "必须是本地 trace，不是外层 OTel span 的")
+	assert.Equal(t, inner.SpanID(), got.SpanID())
+	assert.Equal(t, inner.RequestID, got.RequestID)
+	assert.Equal(t, "db.query", got.SpanName)
+	assert.NotEqual(t, outer.TraceID(), got.TraceID())
+}
+
 func TestNewSpanIDIsUnique(t *testing.T) {
 	a, b := newSpanID(), newSpanID()
 	assert.True(t, a.IsValid())

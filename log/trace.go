@@ -77,13 +77,51 @@ func WithTrace(ctx context.Context, t Trace) context.Context {
 	return context.WithValue(ctx, traceKey{}, t)
 }
 
-// TraceFrom retrieves the trace from ctx. Returns the zero-value Trace (Valid() == false) if not found, without panicking.
+// TraceFrom retrieves the trace from ctx. Returns the zero-value Trace
+// (Valid() == false) if not found, without panicking.
+//
+// Lookup order: this package's own local Trace (set via Span/Extract/
+// WithTrace) first, then OTel's trace.SpanContextFromContext as a fallback.
+//
+// This is deliberately the reverse of the "OTel first, local fallback"
+// order one might expect from an interop feature. Local-first avoids a real
+// regression: if the caller has some OTel instrumentation active (e.g.
+// otelhttp) that put an outer HTTP span into ctx via
+// trace.ContextWithSpanContext, but never wired UseTracer up, and then calls
+// log.Span(ctx, "db.query") to open an inner span, the inner span is stored
+// under this package's own key. If OTel were checked first, TraceFrom would
+// return the outer HTTP span and swallow the inner db.query span entirely --
+// logging would get coarser, not finer, exactly where the caller asked for
+// more detail.
+//
+// Local-first does not give up anything in the case OTel interop is meant to
+// cover: once UseTracer is wired up, Span() delegates to the real tracer and
+// the resulting span lands under OTel's own key -- this package's local key
+// is never written in that path, so "prefer local" degrades automatically
+// into "read OTel" for exactly that scenario. Local-first is therefore never
+// worse than, and sometimes better than, checking OTel first.
 func TraceFrom(ctx context.Context) Trace {
 	if ctx == nil {
 		return Trace{}
 	}
-	t, _ := ctx.Value(traceKey{}).(Trace)
-	return t
+	if t, ok := ctx.Value(traceKey{}).(Trace); ok {
+		return t
+	}
+
+	// No local Trace -- fall back to whatever SpanContext an OTel SDK (or
+	// OTel-based instrumentation like otelhttp) has already placed into ctx.
+	// SpanContext carries neither a name nor a parent span id, so SpanName
+	// and ParentSpanID are left at their zero values rather than invented.
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		return Trace{
+			SpanContext: sc,
+			// Same derivation as propagate.go's requestIDFrom fallback path:
+			// trace_id and ULID are both 128 bits, two encodings of the same
+			// value, so this is lossless.
+			RequestID: ulid.ULID(sc.TraceID()).String(),
+		}
+	}
+	return Trace{}
 }
 
 // ── Span ─────────────────────────────────────────────────
