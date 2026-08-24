@@ -33,13 +33,13 @@
 |---|---|---|
 | `go.mod` / `go.sum` | module 声明与依赖锁 | 1 |
 | `log/logger.go` | `Logger` 门面接口、`Level`、`ZapProvider`、`CallerSkipper`、`Nop()` | 1 |
-| `log/trace.go` | `Trace` 数据模型、`Fork`、ctx 存取；后半段的 `Span` / `SpanOption` | 2, 7 |
+| `log/trace.go` | `Trace` 数据模型、`Fork`、ctx 存取；后半段的 `Span` / `SpanOption` | 2, 8 |
 | `log/config.go` | `Config` 全族、默认值、后缀推导 format、枚举校验 | 3 |
 | `log/mask.go` | `masker` + `maskCore`：Core 层强制脱敏 | 4 |
 | `log/console.go` | `consoleEncoder`：对齐、着色、TTY 探测、KV 渲染 | 5 |
-| `log/zap.go` | 默认 binding：`Init` / `SetLogger` / `L` / `Ctx` / `Sync` / `Zap` / KV→Field | 6 |
-| `log/sugar.go` | `TInfo` 等 8 个包级语法糖 | 8 |
-| `log/rotate.go` | `dailyRotator`：给 lumberjack 补日期滚动 | 9 |
+| `log/rotate.go` | `dailyRotator`：给 lumberjack 补日期滚动 | 6 |
+| `log/zap.go` | 默认 binding：`Init` / `SetLogger` / `L` / `Ctx` / `Sync` / `Zap` / KV→Field | 7 |
+| `log/sugar.go` | `TInfo` 等 8 个包级语法糖 | 9 |
 | `log/propagate.go` | `Extract` / `Inject`：W3C traceparent 跨服务传播 | 10 |
 | `log/README.md` | 用法、配置表、换后端、从 gfa 迁移的陷阱 | 10 |
 
@@ -882,7 +882,7 @@ git commit -m "feat(log): 配置结构与文件后缀推导格式"
 
 **`[SEC-INFO]` 为什么做在 Core 层而不是 Encoder 层：** spec §8.8 说"做在 encoder 层"，实现上落到 `zapcore.Core` —— 安全语义完全相同（调用点之外的统一拦截，调用方无法绕过），但可靠性高一个量级。zap 的字段有两条路径：`logger.With(kv)` 走 `Core.With([]Field)`，`logger.Info(msg, kv)` 走 `Core.Write(entry, []Field)`。包一层 Core 覆盖这两个方法就全拦住了，一共 5 个方法；包 Encoder 则要覆盖 `zapcore.ObjectEncoder` 的 20 多个 `Add*` 方法，**漏一个就是一条明文密码进日志**。
 
-**装配位置（Task 6 会用到）：** maskCore 包在 `zapcore.NewTee(...)` **之外**，一次拦截覆盖全部 sink；因为它是 `*zap.Logger` 的组成部分，`log.Zap()` 逃生舱口拿到的 logger 同样被覆盖。
+**装配位置（Task 7 会用到）：** maskCore 包在 `zapcore.NewTee(...)` **之外**，一次拦截覆盖全部 sink；因为它是 `*zap.Logger` 的组成部分，`log.Zap()` 逃生舱口拿到的 logger 同样被覆盖。
 
 - [ ] **Step 1: 写失败测试**
 
