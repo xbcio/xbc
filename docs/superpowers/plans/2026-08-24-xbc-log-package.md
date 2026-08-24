@@ -4,7 +4,7 @@
 
 **Goal:** 交付 `github.com/xbcio/xbc/log` —— 一个零框架依赖、可脱离 xbc 单独使用的结构化日志包：SLF4J 式门面接口 + zap 默认 binding + console/json 双渲染 + 强制脱敏 + OTel 兼容的链路模型。
 
-**Architecture:** 门面（`Logger` 接口，KV 变参）与 binding（zap 实现）分离，业务调用点不 import zap；可选能力接口（`ZapProvider` / `CallerSkipper`）让第三方 binding 按需实现，不实现也能工作。KV 是数据，console 与 json 是同一份数据的两种渲染，每个 sink 各自决定格式。脱敏包在 `zapcore.Core` 层，位于 Tee 之外，一次拦截覆盖全部 sink 与 `log.Zap()` 逃生舱口。链路模型内嵌 `trace.SpanContext`，与 OTel SDK 天然互操作。
+**Architecture:** 门面（`Logger` 接口，KV 变参）与 binding（zap 实现）分离，业务调用点不 import zap；可选能力接口（`ZapProvider` / `CallerSkipper`）让第三方 binding 按需实现，不实现也能工作。KV 是数据，console 与 json 是同一份数据的两种渲染，每个 sink 各自决定格式。脱敏包在 `zapcore.Core` 层，**每个叶子 sink 各包一层，位于 Tee 之内**（包在 Tee 之外会让 `Check` 挂上自己、绕掉 Tee 的 per-sink 级别过滤；采样器才包在 Tee 之外），覆盖全部 sink 与 `log.Zap()` 逃生舱口。链路模型内嵌 `trace.SpanContext`，与 OTel SDK 天然互操作。
 
 **Tech Stack:** Go 1.25+ / zap v1.28.0 / lumberjack.v2 v2.2.1 / OpenTelemetry API v1.45.0 / oklog/ulid v2.1.2 / mattn/go-isatty v0.0.24 / testify v1.12.1
 
@@ -22,7 +22,9 @@
 - **零框架依赖（硬约束）**：`log/` 下任何文件**一行都不能 import `github.com/xbcio/xbc` 根包或任何 `xbc/internal/*`**。依赖方向永远是内核 → log，绝不反向。Task 10 有一条自动化测试守这条线。
 - **内置脱敏黑名单不可关闭**：`log.mask_fields` 只能**追加**，不能移除内置项。任何允许移除的 API 都是安全缺陷。
 - **测试包名**：全部用 `package log`（内部测试），因为要断言未导出的 `masker`、`consoleEncoder`、`nowFunc` 等。
-- **注释与文档语言**：注释、README、错误信息一律中文；标识符、tag、配置 key 保持英文。
+- **注释与文档语言**：**代码注释一律英文**（用户 2026-08-24 指令，覆盖原「注释中文」规则）；
+  README、错误信息、测试断言 message、测试数据字符串一律中文；标识符、tag、配置 key 保持英文。
+  判断边界：**引号里的中文不动**，注释（`//` 与 `/* */` 之后）才转英文。
 - **提交粒度**：每个 task 的每个 "Commit" 步骤都真的提交一次，不攒批。
 
 ---
@@ -120,8 +122,8 @@ func TestLevelString(t *testing.T) {
 	assert.Equal(t, "ERROR", ErrorLevel.String())
 }
 
-// Level 的数值必须与 zapcore 对齐，binding 里才能直接类型转换。
-// 这是个隐含契约，用测试把它钉住。
+// Level's numeric values must align with zapcore's so bindings can convert
+// between them directly. This is an implicit contract; pin it down with a test.
 func TestLevelNumericallyMatchesZapcore(t *testing.T) {
 	assert.EqualValues(t, zapcore.DebugLevel, DebugLevel)
 	assert.EqualValues(t, zapcore.InfoLevel, InfoLevel)
@@ -155,11 +157,12 @@ Expected: 编译失败，`undefined: Level` / `undefined: Nop`。
 创建 `log/logger.go`：
 
 ```go
-// Package log 是 xbc 的日志门面。
+// Package log is xbc's logging facade.
 //
-// 它遵循 SLF4J 的思路：业务代码与插件只依赖本包的 Logger 接口，
-// 具体后端由 Init 装配（默认 zap）或 SetLogger 替换。
-// 本包零框架依赖，可脱离 xbc 单独使用。
+// It follows the SLF4J approach: business code and plugins depend only on
+// this package's Logger interface. The concrete backend is assembled by
+// Init (zap by default) or swapped via SetLogger. This package has zero
+// framework dependencies and can be used standalone, outside of xbc.
 package log
 
 import (
@@ -169,8 +172,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// Level 是日志级别。
-// 数值刻意与 zapcore.Level 对齐（Debug=-1），binding 里可直接类型转换。
+// Level is the log level.
+// The numeric values are deliberately aligned with zapcore.Level (Debug=-1),
+// so bindings can convert between them directly.
 type Level int8
 
 const (
@@ -195,8 +199,8 @@ func (l Level) String() string {
 	}
 }
 
-// ParseLevel 解析级别名。未知级别返回错误而不是静默降级，
-// 免得配置写错时线上悄悄丢日志。
+// ParseLevel parses a level name. Unknown levels return an error instead of
+// silently downgrading, so a typo in config doesn't quietly drop logs in production.
 func ParseLevel(s string) (Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
@@ -212,32 +216,36 @@ func ParseLevel(s string) (Level, error) {
 	}
 }
 
-// Logger 是门面接口。变参是 KV 序列：key1, val1, key2, val2, ...
-// key 必须是 string；不是 string 或落单的参数会被归到 "!BADKEY" 字段，
-// 不会 panic 也不会静默吞掉。
+// Logger is the facade interface. The variadic args are a KV sequence: key1, val1, key2, val2, ...
+// A key must be a string; a non-string key or a dangling trailing argument is
+// filed under "!BADKEY" -- it never panics and is never silently dropped.
 type Logger interface {
 	Debug(msg string, kv ...any)
 	Info(msg string, kv ...any)
 	Warn(msg string, kv ...any)
 	Error(msg string, kv ...any)
 
-	// With 派生带固定字段的子 Logger。
+	// With derives a child Logger with fixed fields attached.
 	With(kv ...any) Logger
 
-	// Enabled 报告该级别是否会真的输出，用来短路昂贵的字段构造。
+	// Enabled reports whether this level would actually be emitted, so callers can
+	// short-circuit expensive field construction.
 	Enabled(lv Level) bool
 }
 
-// ZapProvider 是可选能力接口。后端若基于 zap 就实现它，
-// 调用方可通过 log.Zap(ctx) 拿到强类型入口做 zap 特有的操作。
-// 换成非 zap 后端时不实现即可，log.Zap 会返回 ok=false。
+// ZapProvider is an optional capability interface. A backend built on zap should
+// implement it so callers can use log.Zap(ctx) to get a strongly-typed entry point
+// for zap-specific operations. When switching to a non-zap backend, simply don't
+// implement it -- log.Zap will return ok=false.
 type ZapProvider interface {
 	Zap() *zap.Logger
 }
 
-// CallerSkipper 是可选能力接口。包级语法糖（TInfo 等）比门面方法
-// 多一层调用栈，靠它把 caller 指回业务代码而不是 log 包内部。
-// 第三方 binding 不实现也能工作，代价是 caller 指向 sugar.go。
+// CallerSkipper is an optional capability interface. The package-level sugar
+// functions (TInfo etc.) add one extra stack frame compared to the facade
+// methods; this interface lets them point the caller back at the business code
+// instead of into the log package internals. Third-party bindings work fine
+// without implementing it, at the cost of the caller pointing into sugar.go.
 type CallerSkipper interface {
 	WithCallerSkip(n int) Logger
 }
@@ -251,8 +259,9 @@ func (nopLogger) Error(string, ...any) {}
 func (nopLogger) With(...any) Logger   { return nopLogger{} }
 func (nopLogger) Enabled(Level) bool   { return false }
 
-// Nop 返回丢弃一切输出的 Logger。
-// 用于测试，以及 Init 之前 L() 的兜底 —— 未初始化时打日志不该 panic。
+// Nop returns a Logger that discards everything.
+// Used in tests, and as the fallback for L() before Init -- logging before
+// initialization must not panic.
 func Nop() Logger { return nopLogger{} }
 ```
 
@@ -319,7 +328,7 @@ func TestNewTraceIsValidAndSampled(t *testing.T) {
 	assert.False(t, tr.ParentSpanID.IsValid(), "根 span 没有 parent")
 }
 
-// RequestID 与 TraceID 必须是同一个值的两种编码，Extract 的反推依赖这条。
+// RequestID and TraceID must be the same value in two encodings; Extract's derivation relies on this.
 func TestRequestIDAndTraceIDAreSameValue(t *testing.T) {
 	tr := NewTrace("root")
 
@@ -375,7 +384,7 @@ func TestTraceContextRoundTrip(t *testing.T) {
 func TestTraceFromMissingReturnsZeroValue(t *testing.T) {
 	assert.False(t, TraceFrom(context.Background()).Valid())
 
-	//lint:ignore SA1012 显式验证 nil ctx 不 panic
+	//lint:ignore SA1012 explicitly verifying that a nil ctx does not panic
 	assert.NotPanics(t, func() { TraceFrom(nil) }) //nolint:staticcheck
 	assert.False(t, TraceFrom(nil).Valid()) //nolint:staticcheck
 }
@@ -409,30 +418,32 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Trace 是一次调用的链路上下文。
+// Trace is the link/trace context of one call.
 //
-// 内嵌 OTel 的 trace.SpanContext，所以能直接喂给 OTel SDK，
-// 也能被 W3C traceparent 头解析出来的值填充 —— 不需要任何转换层。
+// It embeds OTel's trace.SpanContext, so it can be fed straight into the OTel
+// SDK, and can equally be populated from a value parsed out of a W3C
+// traceparent header -- no conversion layer needed.
 //
-// TraceID 与 RequestID 是同一个 128 bit 值的两种编码：
-// 前者是 W3C 要求的 32 位 hex，后者是 ULID 的 26 位 Crockford Base32。
-// ULID 前 6 字节是毫秒时间戳，所以 request_id 天然按时间有序、肉眼可比大小。
+// TraceID and RequestID are two encodings of the same 128-bit value:
+// the former is the 32-hex-digit form required by W3C, the latter is ULID's
+// 26-character Crockford Base32 form. ULID's first 6 bytes are a millisecond
+// timestamp, so request_id is naturally time-ordered and easy to compare by eye.
 type Trace struct {
 	trace.SpanContext
 
-	// ParentSpanID 是上游 span。根 span 为零值。
+	// ParentSpanID is the upstream span. Zero value for a root span.
 	ParentSpanID trace.SpanID
 
-	// SpanName 是当前 span 的名字，如 "GET /orders/:id"、"db.query"。
+	// SpanName is the current span's name, e.g. "GET /orders/:id", "db.query".
 	SpanName string
 
-	// RequestID 是 TraceID 的 ULID 编码，贯穿整条链路不变。
+	// RequestID is TraceID's ULID encoding, unchanged throughout the whole chain.
 	RequestID string
 }
 
 type traceKey struct{}
 
-// NewTrace 开一条新链路。
+// NewTrace starts a new trace.
 func NewTrace(name string) Trace {
 	id := ulid.Make()
 	return Trace{
@@ -446,19 +457,20 @@ func NewTrace(name string) Trace {
 	}
 }
 
-// newSpanID 生成 8 字节 span_id。
-// 取 ULID 的 [8:16] —— ULID 布局是 6 字节时间戳 + 10 字节随机熵，
-// 这一段整个落在随机区内，够用且省掉直接依赖 crypto/rand。
+// newSpanID generates an 8-byte span_id.
+// Takes ULID's [8:16] -- ULID's layout is a 6-byte timestamp plus 10 bytes of
+// random entropy, and this slice falls entirely within the random region,
+// which is good enough and saves us a direct dependency on crypto/rand.
 func newSpanID() trace.SpanID {
 	u := ulid.Make()
 	return trace.SpanID(u[8:])
 }
 
-// Valid 报告这条链路是否有效。零值 Trace 返回 false。
+// Valid reports whether this trace is valid. A zero-value Trace returns false.
 func (t Trace) Valid() bool { return t.TraceID().IsValid() }
 
-// Fork 派生子 span：trace_id 与 request_id 不变，span_id 换新，
-// parent 指向当前 span。值语义，不改调用者。
+// Fork derives a child span: trace_id and request_id stay the same, span_id
+// is regenerated, and parent points at the current span. Value semantics -- does not mutate the caller.
 func (t Trace) Fork(name string) Trace {
 	child := t
 	child.ParentSpanID = t.SpanID()
@@ -467,7 +479,7 @@ func (t Trace) Fork(name string) Trace {
 	return child
 }
 
-// WithTrace 把链路存进 ctx。
+// WithTrace stores the trace into ctx.
 func WithTrace(ctx context.Context, t Trace) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -475,7 +487,7 @@ func WithTrace(ctx context.Context, t Trace) context.Context {
 	return context.WithValue(ctx, traceKey{}, t)
 }
 
-// TraceFrom 从 ctx 取链路。取不到返回零值 Trace（Valid() == false），不 panic。
+// TraceFrom reads the trace from ctx. Returns a zero-value Trace (Valid() == false) if absent, never panics.
 func TraceFrom(ctx context.Context) Trace {
 	if ctx == nil {
 		return Trace{}
@@ -561,7 +573,8 @@ func TestNormalizeIsIdempotent(t *testing.T) {
 	assert.Equal(t, first, c, "Normalize 必须幂等")
 }
 
-// 文件后缀即格式声明。用 .jsonl 而不是 .json —— 后者会让 `jq .` 对多行文件报错。
+// The file extension is the format declaration. Use .jsonl instead of .json --
+// the latter makes `jq .` error out on a multi-line file.
 func TestFileFormatInferredFromExtension(t *testing.T) {
 	cases := map[string]string{
 		"logs/app.log":        FormatConsole,
@@ -592,7 +605,7 @@ func TestExplicitFormatOverridesInference(t *testing.T) {
 	assert.Equal(t, FormatConsole, c.File.Format, "显式配置压过后缀推导")
 }
 
-// error_path 有独立后缀，格式独立推导。
+// error_path has its own extension, and its format is derived independently.
 func TestErrorPathFormatInferredIndependently(t *testing.T) {
 	c := DefaultConfig()
 	c.File.Enabled = true
@@ -661,29 +674,29 @@ import (
 	"strings"
 )
 
-// 渲染格式。
+// Rendering formats.
 const (
-	FormatConsole = "console" // 对齐 + 着色，给人看
-	FormatJSON    = "json"    // 每行一个 JSON 对象，给机器检索
+	FormatConsole = "console" // aligned + colored, for humans
+	FormatJSON    = "json"    // one JSON object per line, for machine indexing
 )
 
-// console 着色模式。
+// console coloring modes.
 const (
 	ColorAuto   = "auto"
 	ColorAlways = "always"
 	ColorNever  = "never"
 )
 
-// 文件滚动策略。
+// File rotation strategies.
 const (
-	RotateDaily = "daily" // 跨天滚一次（本框架实现，lumberjack 本身只按大小滚）
-	RotateSize  = "size"  // 只按 max_size 滚
+	RotateDaily = "daily" // rotate once per calendar day (implemented by this package; lumberjack itself only rotates by size)
+	RotateSize  = "size"  // rotate only by max_size
 )
 
-// Config 是日志配置。
+// Config is the logging configuration.
 //
-// 格式是 sink 级而非全局的 —— "终端 console + 文件 json" 是最常见的组合，
-// 全局单一 format 表达不了。
+// Format is per-sink rather than global -- "console to the terminal, json to
+// a file" is the most common combination, and a single global format can't express it.
 type Config struct {
 	Level      string `yaml:"level"      json:"level"`
 	Caller     bool   `yaml:"caller"     json:"caller"`
@@ -694,7 +707,7 @@ type Config struct {
 
 	Sampling SamplingConfig `yaml:"sampling" json:"sampling"`
 
-	// MaskFields 追加到内置脱敏黑名单。只能加，不能减 —— 内置项不可移除。
+	// MaskFields is appended to the built-in mask blacklist. Additive only -- built-in entries cannot be removed.
 	MaskFields []string `yaml:"mask_fields" json:"mask_fields"`
 }
 
@@ -708,19 +721,19 @@ type FileConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
 	Path    string `yaml:"path"    json:"path"`
 
-	// Format 留空则按 Path 后缀推导：.jsonl/.json/.ndjson → json，其余 → console。
+	// Format left empty is inferred from Path's extension: .jsonl/.json/.ndjson → json, everything else → console.
 	Format string `yaml:"format" json:"format"`
 
 	Rotate     string `yaml:"rotate"      json:"rotate"`
 	MaxSize    int    `yaml:"max_size"    json:"max_size"`    // MB
-	MaxAge     int    `yaml:"max_age"     json:"max_age"`     // 天
-	MaxBackups int    `yaml:"max_backups" json:"max_backups"` // 个
+	MaxAge     int    `yaml:"max_age"     json:"max_age"`     // days
+	MaxBackups int    `yaml:"max_backups" json:"max_backups"` // count
 	Compress   bool   `yaml:"compress"    json:"compress"`
 
-	// ErrorPath 非空时额外开一个只收 error 及以上的 sink。
+	// ErrorPath, when non-empty, opens an extra sink that only receives error level and above.
 	ErrorPath string `yaml:"error_path" json:"error_path"`
 
-	// errorFormat 由 Normalize 按 ErrorPath 后缀推导，不对外暴露。
+	// errorFormat is derived by Normalize from ErrorPath's extension; not exposed externally.
 	errorFormat string
 }
 
@@ -729,8 +742,8 @@ type SamplingConfig struct {
 	Thereafter int `yaml:"thereafter" json:"thereafter"`
 }
 
-// DefaultConfig 是本包的默认值真相源。
-// 内核的配置插件把 YAML 反序列化进这个结构后调 Normalize 即可。
+// DefaultConfig is this package's source of truth for defaults.
+// The kernel's config plugin should deserialize YAML into this struct and then call Normalize.
 func DefaultConfig() Config {
 	return Config{
 		Level:      "info",
@@ -754,7 +767,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// Normalize 填默认值、推导格式、校验枚举。幂等。
+// Normalize fills in defaults, infers formats, and validates enums. Idempotent.
 func (c *Config) Normalize() error {
 	if c.Level == "" {
 		c.Level = "info"
@@ -836,8 +849,9 @@ func checkFormat(field, v string) error {
 	}
 }
 
-// formatFromPath 按文件后缀推导渲染格式。
-// 文件后缀即格式声明：写 .jsonl 就是要机器读，写 .log 就是要人读。
+// formatFromPath infers the rendering format from the file extension.
+// The file extension is the format declaration: writing .jsonl means it's meant
+// for machines to read, writing .log means it's meant for humans to read.
 func formatFromPath(p string) string {
 	switch strings.ToLower(filepath.Ext(p)) {
 	case ".jsonl", ".json", ".ndjson":
@@ -916,7 +930,7 @@ func TestMaskAppliesToWriteFields(t *testing.T) {
 	assert.Equal(t, "alice", m["user"], "非敏感字段不受影响")
 }
 
-// 这条是 Core 层方案的价值证明：With 派生的字段同样被拦。
+// This test proves the value of the Core-layer approach: fields derived via With are also caught.
 func TestMaskAppliesToWithFields(t *testing.T) {
 	l, logs := maskedLogger(nil)
 	l.With(zap.String("access_token", "abc.def.ghi")).Info("call upstream")
@@ -925,8 +939,8 @@ func TestMaskAppliesToWithFields(t *testing.T) {
 	assert.Equal(t, maskPlaceholder, logs.All()[0].ContextMap()["access_token"])
 }
 
-// 回归测试：包装 zapcore.Core 时若忘了覆盖 Check，
-// CheckedEntry 会挂上内层 Core，Write 直接绕过脱敏。
+// Regression test: if you forget to override Check when wrapping a zapcore.Core,
+// the CheckedEntry gets the inner Core attached, and Write bypasses masking entirely.
 func TestMaskCoreCheckRoutesThroughWrapper(t *testing.T) {
 	l, logs := maskedLogger(nil)
 	ce := l.Check(zapcore.InfoLevel, "manual check")
@@ -955,7 +969,7 @@ func TestMaskMatchesExactlyNotByPrefix(t *testing.T) {
 }
 
 func TestBuiltinBlacklistCannotBeRemoved(t *testing.T) {
-	// 试图把内置项"配置掉"是没有 API 的；这里验证追加不影响内置。
+	// There is no API to "configure away" a built-in entry; this verifies that appending doesn't affect the built-ins.
 	m := newMasker([]string{"salary", "  ", ""})
 	assert.True(t, m.hit("salary"), "配置项生效")
 	assert.True(t, m.hit("password"), "内置黑名单始终生效")
@@ -966,7 +980,7 @@ func TestBuiltinBlacklistCannotBeRemoved(t *testing.T) {
 
 func TestMaskCoversOrgMandatedBlacklist(t *testing.T) {
 	m := newMasker(nil)
-	// 组织安全规范列的绝对黑名单，一个都不能少
+	// The absolute blacklist mandated by the org's security policy -- not one of these can be missing
 	for _, k := range []string{
 		"password", "token", "ulp-token", "access_token", "refresh_token",
 		"AK", "SK", "private_key", "db_url", "bank_card", "id_card", "phone",
@@ -1012,32 +1026,34 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// maskPlaceholder 是敏感字段被替换后的值。
+// maskPlaceholder is the value a sensitive field is replaced with.
 const maskPlaceholder = "***"
 
-// builtinMaskFields 是内置脱敏黑名单，始终生效、不可通过配置移除。
-// 依据组织安全规范的"日志绝对黑名单"，外加常见变体。
+// builtinMaskFields is the built-in masking blacklist, always in effect and not
+// removable via configuration. Based on the org's security policy's "log absolute
+// blacklist", plus common variants.
 //
-// 调用点有几千个，指望每个都记得脱敏是不现实的；拦截点只有这一个。
+// There are thousands of call sites; expecting every one of them to remember to
+// mask is unrealistic. This is the only interception point.
 var builtinMaskFields = []string{
-	// 口令
+	// credentials
 	"password", "passwd", "pwd", "old_password", "new_password",
-	// 令牌
+	// tokens
 	"token", "ulp-token", "access_token", "refresh_token", "id_token",
 	"authorization", "cookie", "set-cookie", "session_id", "jwt",
-	// 密钥
+	// secrets
 	"secret", "client_secret", "private_key", "api_key",
 	"ak", "sk", "access_key", "access_key_id", "secret_key", "secret_access_key",
-	// 连接串
+	// connection strings
 	"db_url", "dsn", "database_url", "conn_str",
-	// 个人信息
+	// personal information
 	"id_card", "bank_card", "credit_card", "card_no", "cvv", "phone", "mobile",
 }
 
-// masker 判定字段名是否需要脱敏。
+// masker determines whether a field name needs masking.
 type masker struct{ keys map[string]struct{} }
 
-// newMasker 用内置黑名单加 extra 构造。extra 只能追加，无法移除内置项。
+// newMasker builds from the built-in blacklist plus extra. extra can only add entries, never remove built-in ones.
 func newMasker(extra []string) *masker {
 	m := &masker{keys: make(map[string]struct{}, len(builtinMaskFields)+len(extra))}
 	for _, k := range builtinMaskFields {
@@ -1051,18 +1067,19 @@ func newMasker(extra []string) *masker {
 	return m
 }
 
-// normalizeMaskKey 归一化字段名：转小写、去掉分隔符。
-// 这样 accessToken / access_token / access-token / ACCESS_TOKEN 命中同一条规则。
+// normalizeMaskKey normalizes a field name: lowercases it and strips separators.
+// This way accessToken / access_token / access-token / ACCESS_TOKEN all hit the same rule.
 //
-// 归一化后做精确匹配而非前缀匹配 —— phone 命中，phone_masked 不命中，
-// 免得已经脱敏过的字段被二次替换成 ***。
+// Matching after normalization is exact, not prefix-based -- phone hits,
+// phone_masked doesn't, so a field that's already been masked doesn't get
+// masked a second time.
 func normalizeMaskKey(k string) string {
 	var b strings.Builder
 	b.Grow(len(k))
 	for _, r := range k {
 		switch r {
 		case '_', '-', '.', ' ':
-			// 分隔符全部丢弃
+			// separators are all discarded
 		default:
 			if r >= 'A' && r <= 'Z' {
 				r += 'a' - 'A'
@@ -1078,8 +1095,8 @@ func (m *masker) hit(key string) bool {
 	return ok
 }
 
-// apply 返回脱敏后的字段切片。没有命中时原样返回入参，不做任何分配。
-// 有命中时复制一份再改，绝不写坏调用方的切片。
+// apply returns the masked field slice. When nothing hits, returns the input as-is with no allocation.
+// When something hits, makes a copy before modifying it -- never writes over the caller's slice.
 func (m *masker) apply(fs []zapcore.Field) []zapcore.Field {
 	var out []zapcore.Field
 	for i := range fs {
@@ -1102,25 +1119,41 @@ func (m *masker) apply(fs []zapcore.Field) []zapcore.Field {
 	return out
 }
 
-// maskCore 在 Core 层拦截敏感字段。
+// maskCore intercepts sensitive fields at the Core layer.
 //
-// 装配时包在 Tee 之外，一次拦截覆盖全部 sink；
-// 因为它是 *zap.Logger 的组成部分，log.Zap() 逃生舱口同样被覆盖。
+// Assembly: each leaf sink gets its own maskCore, INSIDE zapcore.NewTee(...);
+// the sampler wraps OUTSIDE the Tee. Never reverse this -- see Task 7 and the
+// shipped doc comment in log/mask.go for the full argument.
+//
+// Since maskCore is part of *zap.Logger, the log.Zap() escape hatch is covered too.
+//
+// The inner core MUST live in an unexported field, NOT be embedded as
+// zapcore.Core: embedding produces the exported implicit field name Core, and
+// reflect's CanInterface() returns true for it, so anyone holding this core can
+// pull out the unmasked inner core and write through it directly.
 type maskCore struct {
-	zapcore.Core
-	m *masker
+	inner zapcore.Core
+	m     *masker
 }
 
 func newMaskCore(c zapcore.Core, m *masker) zapcore.Core {
-	return &maskCore{Core: c, m: m}
+	return &maskCore{inner: c, m: m}
 }
+
+// Enabled and Sync must be implemented explicitly: with no embedding there is
+// nothing to inherit, and that is the point -- when zapcore.Core gains a new
+// method later, embedding would silently inherit the inner implementation (a
+// new bypass path), whereas an explicit implementation makes it a compile error.
+func (c *maskCore) Enabled(l zapcore.Level) bool { return c.inner.Enabled(l) }
+
+func (c *maskCore) Sync() error { return c.inner.Sync() }
 
 func (c *maskCore) With(fs []zapcore.Field) zapcore.Core {
-	return &maskCore{Core: c.Core.With(c.m.apply(fs)), m: c.m}
+	return &maskCore{inner: c.inner.With(c.m.apply(fs)), m: c.m}
 }
 
-// Check 必须覆盖。基类的 Check 会把内层 Core 挂进 CheckedEntry，
-// 之后的 Write 直接打到内层，整个脱敏被绕过。
+// Check must be overridden. The base Check attaches the inner Core to the
+// CheckedEntry, and the subsequent Write hits the inner Core directly, bypassing masking entirely.
 func (c *maskCore) Check(ent zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.CheckedEntry {
 	if c.Enabled(ent.Level) {
 		return ce.AddCore(ent, c)
@@ -1129,7 +1162,7 @@ func (c *maskCore) Check(ent zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.C
 }
 
 func (c *maskCore) Write(ent zapcore.Entry, fs []zapcore.Field) error {
-	return c.Core.Write(ent, c.m.apply(fs))
+	return c.inner.Write(ent, c.m.apply(fs))
 }
 ```
 
@@ -1316,7 +1349,7 @@ func TestConsoleQuotesValuesWithSpaces(t *testing.T) {
 	assert.Contains(t, out, `empty=""`)
 }
 
-// 中文不能被转义成 \uXXXX —— 这正是不能用 strconv.Quote 的原因。
+// Chinese characters must not be escaped to \uXXXX -- this is exactly why strconv.Quote can't be used.
 func TestConsoleKeepsCJKLiteral(t *testing.T) {
 	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{
 		zap.String("reason", "余额 不足"),
@@ -1359,8 +1392,8 @@ func TestConsoleLevelColors(t *testing.T) {
 	}
 }
 
-// 每个级别的 level 段都必须恰好占 widthLevel 宽 —— DPANIC 是 6 个字符，
-// 是全部级别里最长的，widthLevel 小于它就会让这一行整体右移。
+// The level column for every level must occupy exactly widthLevel columns -- DPANIC is 6
+// characters, the longest of all levels; widthLevel less than that would shift the rest of that row right.
 func TestConsoleLevelColumnWidthIsUniform(t *testing.T) {
 	levels := []zapcore.Level{
 		zapcore.DebugLevel, zapcore.InfoLevel, zapcore.WarnLevel,
@@ -1370,7 +1403,7 @@ func TestConsoleLevelColumnWidthIsUniform(t *testing.T) {
 		ent := sampleEntry()
 		ent.Level = lv
 		out := encodeOne(t, false, ent, nil, nil)
-		// 时间段固定 12 宽 + 1 空格，其后 widthLevel 宽即 level 段
+		// The time segment is fixed at 12 + 1 space wide; what follows for widthLevel columns is the level segment
 		seg := out[13 : 13+widthLevel]
 		assert.Equal(t, lv.CapitalString(), strings.TrimRight(seg, " "), "级别 %s 的文本", lv)
 		assert.Equal(t, widthLevel, len(seg), "级别 %s 的列宽", lv)
@@ -1378,7 +1411,7 @@ func TestConsoleLevelColumnWidthIsUniform(t *testing.T) {
 	}
 }
 
-// 着色码宽度为 0：上色与不上色，去掉 ANSI 后必须逐字节相同。
+// Coloring codes have zero width: colored and uncolored output must be byte-for-byte identical after stripping ANSI.
 func TestConsoleColorDoesNotBreakAlignment(t *testing.T) {
 	ent := sampleEntry()
 	fs := []zapcore.Field{zap.Int("n", 1)}
@@ -1387,8 +1420,8 @@ func TestConsoleColorDoesNotBreakAlignment(t *testing.T) {
 	assert.Equal(t, plain, colored)
 }
 
-// zap.Namespace 之后的字段被 MapObjectEncoder 收进嵌套 map，顶层只剩空间名。
-// console 必须把它展平成点号全路径，而不是打印 Go 的 map[k:v] 字面量。
+// Fields after zap.Namespace get collected by MapObjectEncoder into a nested map, leaving only the namespace name at the top level.
+// console must flatten it into a dotted full path instead of printing Go's map[k:v] literal.
 func TestConsoleFlattensNamespace(t *testing.T) {
 	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{
 		zap.String("svc", "order"),
@@ -1402,8 +1435,8 @@ func TestConsoleFlattensNamespace(t *testing.T) {
 	assert.NotContains(t, out, "map[", "不能落 Go 的 map 字面量")
 }
 
-// 展平后 consoleHiddenFields 用全路径判定：顶层 trace_id 照旧剔除，
-// 命名空间里的同名字段是调用方显式放进去的，保留。
+// After flattening, consoleHiddenFields judges by full path: the top-level trace_id is
+// still dropped as before; a same-named field inside a namespace was placed there explicitly by the caller, so it's kept.
 func TestConsoleHiddenFieldsUseFullPath(t *testing.T) {
 	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{
 		zap.String("trace_id", "0192abcd0192abcd"),
@@ -1414,7 +1447,7 @@ func TestConsoleHiddenFieldsUseFullPath(t *testing.T) {
 	assert.Contains(t, out, "upstream.trace_id=ffffffffffffffff")
 }
 
-// 自引用 map 不能让展平递归停不下来。
+// A self-referencing map must not make the flattening recursion get stuck.
 func TestConsoleNestedDepthIsBounded(t *testing.T) {
 	m := map[string]any{"k": "v"}
 	m["self"] = m
@@ -1428,8 +1461,8 @@ func TestConsoleNestedDepthIsBounded(t *testing.T) {
 	}
 }
 
-// ByteString / Binary 在 MapObjectEncoder 里都是 []byte，
-// 不特判就会落盘 [104 105] 而不是 hi。
+// ByteString / Binary are both []byte in MapObjectEncoder;
+// without special-casing this it would print [104 105] instead of hi.
 func TestConsoleRendersByteStringAsText(t *testing.T) {
 	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{
 		zap.ByteString("body", []byte("hi")),
@@ -1438,7 +1471,7 @@ func TestConsoleRendersByteStringAsText(t *testing.T) {
 	assert.NotContains(t, out, "[104 105]")
 }
 
-// caller 路径含中文时不能切出 U+FFFD，也不能因为按字节计数而错位。
+// A caller path containing Chinese characters must not get sliced into a U+FFFD, and must not be misaligned by counting bytes.
 func TestConsoleCallerHandlesMultibyte(t *testing.T) {
 	ent := sampleEntry()
 	ent.Caller = zapcore.EntryCaller{
@@ -1496,7 +1529,7 @@ func TestConsoleStacktraceAppended(t *testing.T) {
 }
 
 func TestWantColor(t *testing.T) {
-	var buf bytes.Buffer // 不是 *os.File，不可能是 TTY
+	var buf bytes.Buffer // not a *os.File, cannot possibly be a TTY
 
 	assert.True(t, wantColor(ColorAlways, &buf), "always 无条件开")
 	assert.False(t, wantColor(ColorNever, &buf), "never 无条件关")
@@ -1542,30 +1575,32 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// ANSI 颜色码。宽度为 0，不影响对齐。
+// ANSI color codes. Zero width, does not affect alignment.
 const (
 	ansiReset  = "\x1b[0m"
-	ansiDim    = "\x1b[90m" // 亮黑 = 暗灰
+	ansiDim    = "\x1b[90m" // bright black = dim gray
 	ansiRed    = "\x1b[31m"
 	ansiGreen  = "\x1b[32m"
 	ansiYellow = "\x1b[33m"
 	ansiCyan   = "\x1b[36m"
 )
 
-// 各段固定宽度。
+// Fixed width of each segment.
 //
-// widthLevel 取 6 而不是 5：zapcore 的级别文本里最长的是 DPANIC（6 个字符，
-// 已实测 `zapcore.DPanicLevel.CapitalString()` == "DPANIC"）。取 5 会让
-// padRight 在 len(s) >= w 时原样返回，DPanic 那一行的后续四段整体右移一格。
+// widthLevel is 6, not 5: the longest level text in zapcore is DPANIC (6 characters,
+// measured `zapcore.DPanicLevel.CapitalString()` == "DPANIC"). Using 5 would make
+// padRight return the string unchanged when len(s) >= w, shifting the remaining four
+// segments of the DPanic row right by one column.
 const (
 	widthLevel  = 6
 	widthTrace  = 8
 	widthCaller = 24
 )
 
-// console 下不进 KV 区的字段：trace_id 已占固定列，
-// 另两个是 128/64 bit 的 ID，挤在人读的行里没有价值。
-// json sink 不做这个剔除 —— 那是给机器检索的。
+// Fields that don't go into the KV area under console: trace_id already occupies a
+// fixed column, and the other two are 128/64-bit IDs with no value crammed into a
+// row meant for humans to read.
+// json sink does not do this stripping -- that's for machine indexing.
 var consoleHiddenFields = map[string]struct{}{
 	"trace_id":   {},
 	"span_id":    {},
@@ -1574,10 +1609,10 @@ var consoleHiddenFields = map[string]struct{}{
 
 var consolePool = buffer.NewPool()
 
-// consoleEncoder 渲染人读的一行。
+// consoleEncoder renders one line for human reading.
 //
-// 嵌入 *zapcore.MapObjectEncoder 白拿 ObjectEncoder 的全部 Add* 方法，
-// 自己只需补 Clone 与 EncodeEntry 即满足 zapcore.Encoder。
+// Embeds *zapcore.MapObjectEncoder to get ObjectEncoder's Add* methods for free;
+// it only needs to supply Clone and EncodeEntry to satisfy zapcore.Encoder.
 type consoleEncoder struct {
 	*zapcore.MapObjectEncoder
 	color bool
@@ -1596,7 +1631,8 @@ func (e *consoleEncoder) Clone() zapcore.Encoder {
 }
 
 func (e *consoleEncoder) EncodeEntry(ent zapcore.Entry, fs []zapcore.Field) (*buffer.Buffer, error) {
-	// 本次调用的字段单独收一份，好跟 With 的上下文字段分组输出。
+	// This call's own fields get collected separately, so they can be grouped
+	// and output apart from the With context fields.
 	call := zapcore.NewMapObjectEncoder()
 	for _, f := range fs {
 		f.AddTo(call)
@@ -1604,27 +1640,27 @@ func (e *consoleEncoder) EncodeEntry(ent zapcore.Entry, fs []zapcore.Field) (*bu
 
 	b := consolePool.Get()
 
-	// ① 时间：12 宽固定，不打日期 —— 日期在文件名里
+	// ① time: fixed 12 wide, no date printed -- the date is in the file name
 	e.paint(b, ansiDim, ent.Time.Format("15:04:05.000"))
 	b.AppendByte(' ')
 
-	// ② level：5 宽左对齐，按级着色
+	// ② level: 5 wide, left-aligned, colored by level
 	e.paint(b, levelColor(ent.Level), padRight(ent.Level.CapitalString(), widthLevel))
 	b.AppendByte(' ')
 
-	// ③ trace：8 宽固定，取 trace_id 前 8 位
+	// ③ trace: 8 wide fixed, first 8 characters of trace_id
 	e.paint(b, ansiDim, padRight(shortTrace(e.Fields, call.Fields), widthTrace))
 	b.AppendByte(' ')
 
-	// ④ caller：24 宽右对齐，超长从左侧截断
+	// ④ caller: 24 wide, right-aligned, truncated from the left when too long
 	e.paint(b, ansiDim, padCallerLeft(callerText(ent.Caller), widthCaller))
 	b.AppendByte(' ')
 
-	// ⑤ msg，后跟两个空格再接 KV
+	// ⑤ msg, followed by two spaces then the KVs
 	b.AppendString(ent.Message)
 	b.AppendString("  ")
 
-	// ⑥ KV：先 With 的上下文字段，再本次调用的字段，各自按 key 字母序
+	// ⑥ KV: the With context fields first, then this call's fields, each sorted alphabetically by key
 	first := true
 	e.writeFields(b, e.Fields, &first)
 	e.writeFields(b, call.Fields, &first)
@@ -1641,21 +1677,26 @@ func (e *consoleEncoder) writeFields(b *buffer.Buffer, m map[string]any, first *
 	e.writeFieldsPrefixed(b, m, "", first, 0)
 }
 
-// maxConsoleDepth 是嵌套展平的层数上限。自引用的 map 会让递归停不下来，
-// 而人读的一行也不需要八层以上的结构。触顶后退回 stringify 一次性打完。
+// maxConsoleDepth is the depth limit for flattening nesting. A self-referencing map
+// would make the recursion never stop, and a human-readable line doesn't need more
+// than eight levels of structure anyway. Once the limit is hit, fall back to stringify to finish it off in one shot.
 const maxConsoleDepth = 8
 
-// writeFieldsPrefixed 递归展平嵌套 map，用点号把层级连成全路径 key。
+// writeFieldsPrefixed recursively flattens nested maps, joining levels into a
+// full dotted-path key.
 //
-// 为什么需要展平：zap.Namespace("db") 之后的字段不会平铺在顶层 ——
-// MapObjectEncoder.OpenNamespace 把它们收进一个嵌套 map，顶层只剩 "db"
-// 这一个 key。已实测：Namespace("ns") 之后 AddTo 的三个字段全部落进 ns 的
-// 子 map，顶层 len == 1。直接 stringify 会输出 Go 的 map[k:v] 字面量，既难读，
-// consoleHiddenFields 的剔除在子层也完全失效。
+// Why flattening is needed: fields after zap.Namespace("db") don't get laid out
+// flat at the top level -- MapObjectEncoder.OpenNamespace collects them into a
+// nested map, leaving only "db" as a single key at the top level. Measured: after
+// Namespace("ns"), all three fields AddTo'd afterward land in ns's sub-map, and
+// the top level's len == 1. Calling stringify directly would print Go's map[k:v]
+// literal, which is both hard to read and makes consoleHiddenFields's stripping
+// completely ineffective at the sub-level.
 //
-// 展平成 db.host=… db.port=… 后两个问题一起解决：形状与 json sink 的嵌套语义
-// 一一对应（json 里是 {"db":{"host":…}}），剔除判定也拿得到全路径。
-// 调用方直接传进来的 map[string]any 同样被展平 —— 与 namespace 形状一致。
+// Flattening it into db.host=... db.port=... solves both problems at once: the
+// shape corresponds one-to-one with json sink's nested semantics (in json it's
+// {"db":{"host":...}}), and the stripping check gets the full path to work with.
+// A map[string]any passed in directly by the caller gets flattened the same way -- consistent with namespace's shape.
 func (e *consoleEncoder) writeFieldsPrefixed(b *buffer.Buffer, m map[string]any, prefix string, first *bool, depth int) {
 	if len(m) == 0 {
 		return
@@ -1675,7 +1716,7 @@ func (e *consoleEncoder) writeFieldsPrefixed(b *buffer.Buffer, m map[string]any,
 			continue
 		}
 
-		// 嵌套 map 继续展平；空的子 map 整个跳过，不留一个孤零零的 key=。
+		// Keep flattening nested maps; skip an empty sub-map entirely, don't leave a lone "key=" behind.
 		if sub, ok := m[k].(map[string]any); ok && depth < maxConsoleDepth {
 			e.writeFieldsPrefixed(b, sub, full, first, depth+1)
 			continue
@@ -1700,8 +1741,8 @@ func (e *consoleEncoder) writeFieldsPrefixed(b *buffer.Buffer, m map[string]any,
 	}
 }
 
-// paint 上色写入。color 关时只写文本。
-// 先补齐再上色 —— ANSI 序列宽度为 0，不会破坏对齐。
+// paint writes with color when enabled; when color is off, it only writes the text.
+// Pad first, then color -- ANSI sequences have zero width and won't break alignment.
 func (e *consoleEncoder) paint(b *buffer.Buffer, c, s string) {
 	if e.color {
 		b.AppendString(c)
@@ -1727,7 +1768,7 @@ func levelColor(lv zapcore.Level) string {
 
 func isErrorKey(k string) bool { return k == "err" || k == "error" }
 
-// shortTrace 取 trace_id 前 8 位。没有 trace 时返回空串（由 padRight 补成空格列）。
+// shortTrace takes the first 8 characters of trace_id. Returns an empty string when there's no trace (padRight pads it into a blank column).
 func shortTrace(ms ...map[string]any) string {
 	for _, m := range ms {
 		if v, ok := m["trace_id"].(string); ok && v != "" {
@@ -1747,15 +1788,18 @@ func callerText(c zapcore.EntryCaller) string {
 	return c.TrimmedPath()
 }
 
-// padRight / padCallerLeft 按 rune 计数，不按字节。
+// padRight / padCallerLeft count by rune, not by byte.
 //
-// 前后三列（level、trace、caller）里 level 与 trace 永远是 ASCII，但 caller
-// 取自 Go 源文件路径，用户的目录名可以是中文。已实测按字节算的后果：
-// padRight("中文", 5) 因为 len == 6 >= 5 而原样返回，实际只占 2 列宽，整行错位。
+// Of the three leading columns (level, trace, caller), level and trace are always
+// ASCII, but caller comes from a Go source file path, and a user's directory name
+// can be Chinese. Measured consequence of counting by byte:
+// padRight("中文", 5) returns unchanged because len == 6 >= 5, but it actually only
+// occupies 2 display columns, misaligning the whole row.
 //
-// 只做 rune 对齐，不做东亚字符的双宽度（CJK 一个 rune 占两个终端列）——
-// 那需要 runewidth 之类的计划外依赖，而这三列本就是 ASCII 主导。
-// 结论：含 CJK 的 caller 路径宽度仍会偏，但不会再产生非法 UTF-8。
+// Only does rune alignment, not East Asian double-width handling (a CJK rune takes
+// two terminal columns) -- that would need an out-of-plan dependency like runewidth,
+// and these three columns are ASCII-dominated anyway.
+// Conclusion: a caller path containing CJK will still have skewed width, but will never produce invalid UTF-8.
 func padRight(s string, w int) string {
 	n := utf8.RuneCountInString(s)
 	if n >= w {
@@ -1764,11 +1808,12 @@ func padRight(s string, w int) string {
 	return s + strings.Repeat(" ", w-n)
 }
 
-// padCallerLeft 右对齐到 w 宽。超长时从左侧截断加 "…"，
-// 保住行号那一侧 —— 定位代码靠的是文件名和行号，不是最上层的目录。
+// padCallerLeft right-aligns to w wide. When too long, truncates from the left and adds "…",
+// preserving the line-number side -- locating code relies on the file name and line number, not the top-most directory.
 //
-// 截断按 rune 边界切。按字节切（s[len(s)-(w-1):]）会在多字节字符中间下刀，
-// 落盘一个 U+FFFD 替换字符，而且截出来的宽度也不是 w。
+// Truncation cuts on rune boundaries. Cutting by byte (s[len(s)-(w-1):]) would land
+// mid-way through a multi-byte character, producing a U+FFFD replacement character
+// on disk, and the resulting width wouldn't even be w.
 func padCallerLeft(s string, w int) string {
 	rs := []rune(s)
 	if len(rs) > w {
@@ -1777,14 +1822,14 @@ func padCallerLeft(s string, w int) string {
 	return strings.Repeat(" ", w-len(rs)) + s
 }
 
-// stringify 把字段值转成字符串。
-// 不用 strconv.Quote —— 它会把中文转成 \uXXXX，中文日志会变乱码。
+// stringify turns a field value into a string.
+// Doesn't use strconv.Quote -- it would turn Chinese into \uXXXX, garbling Chinese log messages.
 func stringify(v any) string {
 	switch x := v.(type) {
 	case string:
 		return x
-	// zap.ByteString / zap.Binary / zap.Any([]byte) 在 MapObjectEncoder 里
-	// 都存成 []byte。已实测不特判的后果：落盘 [104 105] 而不是 hi。
+	// zap.ByteString / zap.Binary / zap.Any([]byte) are all []byte in
+	// MapObjectEncoder. Measured consequence of not special-casing this: prints [104 105] instead of hi.
 	case []byte:
 		return string(x)
 	case error:
@@ -1798,8 +1843,8 @@ func stringify(v any) string {
 	}
 }
 
-// writeConsoleValue 写值。含空格、引号、等号或换行时加引号并转义，
-// 保证一条日志始终只占一行、能被 grep 到完整字段。
+// writeConsoleValue writes a value. Quotes and escapes it when it contains a space,
+// quote, equals sign, or newline, guaranteeing one log entry always occupies exactly one line and can be grepped for the whole field.
 func writeConsoleValue(b *buffer.Buffer, s string) {
 	if s == "" {
 		b.AppendString(`""`)
@@ -1829,8 +1874,8 @@ func writeConsoleValue(b *buffer.Buffer, s string) {
 	b.AppendByte('"')
 }
 
-// wantColor 判定是否着色。
-// auto 的判定顺序：NO_COLOR 未设置 → TERM 不是 dumb → 输出是 TTY。
+// wantColor decides whether to colorize.
+// The auto decision order: NO_COLOR not set → TERM isn't dumb → output is a TTY.
 func wantColor(mode string, w io.Writer) bool {
 	switch mode {
 	case ColorAlways:
@@ -1865,20 +1910,21 @@ Expected: 全部 PASS。特别确认 `TestConsoleColorDoesNotBreakAlignment` 与
 自动化测试断言不了"看着舒服"。追加到 `log/console_test.go`：
 
 ```go
-// TestConsoleDemo 把各级别各写一行到 stdout 供肉眼验收对齐与配色。
-// 长期留在仓库里，改动 encoder 后随手跑一次：
+// TestConsoleDemo writes one line per level to stdout, for eyeballing alignment and coloring.
+// Left in the repo long-term; run it on a whim after changing the encoder:
 //   go test ./log/ -run TestConsoleDemo -v
 //
-// 肉眼验收断言不了，但"每行都真的产出了"断言得了 —— 光看不断言的用例在
-// encoder 悄悄返回空串时会绿着通过，起不到守护作用。
+// Visual acceptance can't be asserted, but "every line was actually produced" can --
+// a look-only, no-assertion test case would pass green even while the encoder
+// silently returns an empty string, failing to act as a guard.
 func TestConsoleDemo(t *testing.T) {
 	if testing.Short() {
 		t.Skip("演示用例，-short 下跳过")
 	}
-	// 同时写 stdout（给人看）与 buf（给断言看）
+	// Write to both stdout (for humans) and buf (for assertions) at the same time
 	var buf bytes.Buffer
 	sink := zapcore.NewMultiWriteSyncer(zapcore.Lock(os.Stdout), zapcore.AddSync(&buf))
-	enc := newConsoleEncoder(true) // 强制着色，非 TTY 下也能看到效果
+	enc := newConsoleEncoder(true) // force coloring, so the effect is visible even outside a TTY
 	core := zapcore.NewCore(enc, sink, zapcore.DebugLevel)
 	l := zap.New(core, zap.AddCaller()).
 		With(zap.String("trace_id", "01926f7e1a2b3c4d5e6f708192a3b4c5"))
@@ -1956,7 +2002,7 @@ import (
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
-// setNow 替换全包的时间钩子，返回还原函数。Task 8 的 Span 测试也用它。
+// setNow replaces the package-wide time hook, returning a restore function. Task 8's Span tests use it too.
 func setNow(f func() time.Time) (restore func()) {
 	old := nowFunc
 	nowFunc = f
@@ -1975,7 +2021,7 @@ func TestDailyRotatorTriggersOnDayChange(t *testing.T) {
 	_, err := d.Write([]byte("day1\n"))
 	require.NoError(t, err)
 
-	fake = fake.Add(2 * time.Minute) // 跨天
+	fake = fake.Add(2 * time.Minute) // crosses midnight
 	_, err = d.Write([]byte("day2\n"))
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
@@ -2000,7 +2046,7 @@ func TestDailyRotatorDoesNotRotateWithinSameDay(t *testing.T) {
 
 	_, err := d.Write([]byte("a\n"))
 	require.NoError(t, err)
-	fake = fake.Add(13 * time.Hour) // 同一天内跨了大半天
+	fake = fake.Add(13 * time.Hour) // still within the same day, spanning most of it
 	_, err = d.Write([]byte("b\n"))
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
@@ -2031,7 +2077,7 @@ func TestDailyRotatorConcurrentWritesRotateOnce(t *testing.T) {
 	require.NoError(t, err)
 
 	mu.Lock()
-	fake = fake.Add(time.Second) // 全部 goroutine 同时看到跨天
+	fake = fake.Add(time.Second) // every goroutine sees the day change at the same time
 	mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -2065,13 +2111,13 @@ func TestDailyRotatorSyncIsNoop(t *testing.T) {
 func TestDailyRotatorSkipsRotateOnEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
-	require.NoError(t, os.WriteFile(path, nil, 0o600)) // 0 字节的当前文件
+	require.NoError(t, os.WriteFile(path, nil, 0o600)) // a 0-byte current file
 
 	fake := time.Date(2026, 8, 24, 23, 59, 0, 0, time.Local)
 	defer setNow(func() time.Time { return fake })()
 
 	d := newDailyRotator(&lumberjack.Logger{Filename: path, MaxBackups: 3, LocalTime: true})
-	fake = fake.Add(2 * time.Minute) // 跨天
+	fake = fake.Add(2 * time.Minute) // crosses midnight
 	_, err := d.Write([]byte("day2\n"))
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
@@ -2088,7 +2134,7 @@ func TestDailyRotatorCreatesDirWith0750(t *testing.T) {
 
 	fi, err := os.Stat(dir)
 	require.NoError(t, err)
-	// [SEC-INFO] lumberjack 自己建目录是 0755，必须由我们抢先建成 0750
+	// [SEC-INFO] lumberjack creates the directory itself as 0755; we must preempt it and create it as 0750
 	assert.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "日志目录权限")
 }
 ```
@@ -2119,18 +2165,20 @@ import (
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
-// nowFunc 是全包共用的时间钩子，只在测试里替换。
+// nowFunc is the package-wide time hook; it is only replaced in tests.
 var nowFunc = time.Now
 
-// dailyRotator 给 lumberjack 补上按日滚动。
+// dailyRotator adds daily rotation on top of lumberjack.
 //
-// lumberjack 本身只按文件大小滚，但它的 Rotate() 是导出的 —— 所以这里
-// 只做一件事：写之前检查是否跨天，跨了就触发一次 Rotate()。
-// 清理、压缩、backup 数量全部由 lumberjack 按原有配置处理。
+// lumberjack itself only rotates by file size, but its Rotate() is exported --
+// so all we do here is one thing: check before each write whether the day has
+// changed, and if so, trigger one Rotate(). Cleanup, compression, and backup
+// count are all handled by lumberjack according to its existing config.
 //
-// 已知行为：跨天滚出的归档文件名带的是触发时刻的时间戳
-// （app-2026-08-25T00-00-03.000.log），而内容是前一天的。
-// 这是 lumberjack 的既定命名规则，max_age 也按这个时间戳算。
+// Known behavior: the timestamp in an archive file rotated at day-crossing is
+// the trigger moment's timestamp (app-2026-08-25T00-00-03.000.log), while the
+// content is the previous day's. This is lumberjack's established naming
+// convention and is not changed; max_age is also computed against this timestamp.
 type dailyRotator struct {
 	lj *lumberjack.Logger
 
@@ -2139,10 +2187,12 @@ type dailyRotator struct {
 }
 
 func newDailyRotator(lj *lumberjack.Logger) *dailyRotator {
-	// [SEC-INFO] 日志目录必须是 0750。lumberjack 自己建目录时硬编码 0755
-	// （实测 -rwxr-xr-x），违反安全规范，所以抢先建好：os.MkdirAll 对已存在
-	// 的目录直接返回 nil、不改权限，之后 lumberjack 那次调用就成了 no-op。
-	// 这里忽略错误 —— 真建不出来，lumberjack 首次写盘会报出真正的原因。
+	// [SEC-INFO] The log directory must be 0750. lumberjack hardcodes 0755 when it
+	// creates the directory itself (measured: -rwxr-xr-x), which violates our security
+	// policy, so we create it first: os.MkdirAll returns nil for an existing directory
+	// without touching its permissions, which makes lumberjack's later call a no-op.
+	// The error is ignored here -- if the directory truly cannot be created, lumberjack
+	// will surface the real reason on its first write.
 	_ = os.MkdirAll(filepath.Dir(lj.Filename), 0o750)
 	return &dailyRotator{lj: lj, day: nowFunc().Format(time.DateOnly)}
 }
@@ -2151,23 +2201,27 @@ func (d *dailyRotator) Write(p []byte) (int, error) {
 	d.mu.Lock()
 	if today := nowFunc().Format(time.DateOnly); today != d.day {
 		d.day = today
-		// 空文件不滚：Rotate() 对 0 字节的当前文件照样产出一个 0 字节归档
-		// （实测），进程在新的一天首启时就会滚出这种垃圾，长期累积。
+		// Skip rotation for an empty file: Rotate() on a 0-byte current file still
+		// produces a 0-byte archive (measured), and a process's first start on a new
+		// day would otherwise rotate out this kind of junk, accumulating over time.
 		if fi, err := os.Stat(d.lj.Filename); err != nil || fi.Size() > 0 {
-			// 滚动失败不能阻塞写入：日志滚不动是运维问题，日志丢了是事故。
+			// A failed rotation must not block the write: a log that fails to rotate
+			// is an ops problem, but a lost log entry is an incident.
 			_ = d.lj.Rotate()
 		}
 	}
 	d.mu.Unlock()
 
-	// lumberjack.Write 自带锁，放在 d.mu 之外，别把锁粒度放大到整个写盘。
+	// lumberjack.Write has its own lock, placed outside d.mu -- don't widen the
+	// lock's scope to cover the entire disk write.
 	return d.lj.Write(p)
 }
 
-// Sync 满足 zapcore.WriteSyncer。lumberjack 直写 fd 不缓冲，无事可做。
+// Sync satisfies zapcore.WriteSyncer. lumberjack writes directly to the fd
+// without buffering, so there is nothing to do.
 //
-// 注意 lumberjack.Logger **没有** Sync 方法（方法集只有 Close/Rotate/Write），
-// 别去转发一个不存在的方法。
+// Note that lumberjack.Logger has **no** Sync method (its method set only has
+// Close/Rotate/Write) -- don't forward to a method that doesn't exist.
 func (d *dailyRotator) Sync() error { return nil }
 
 func (d *dailyRotator) Close() error { return d.lj.Close() }
@@ -2253,7 +2307,8 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-// installObserver 把全局后端换成内存 observer，测试结束自动还原。
+// installObserver swaps the global backend for an in-memory observer and
+// restores it automatically when the test ends.
 func installObserver(t *testing.T, opts ...zap.Option) *observer.ObservedLogs {
 	t.Helper()
 	core, logs := observer.New(zapcore.DebugLevel)
@@ -2279,9 +2334,9 @@ func TestToFieldsOddCountProducesBadKey(t *testing.T) {
 	assert.Equal(t, badKeyName, fs[1].Key, "落单的参数进 !BADKEY，不能静默吞掉")
 }
 
-// 从 gfa 的 Sprintln 语义迁移过来的调用会命中这条。
+// A call migrated from gfa's Sprintln semantics will hit this case.
 func TestToFieldsNonStringKeyProducesBadKey(t *testing.T) {
-	fs := toFields([]any{1001, 99.5}) // TInfo(ctx, "支付", id, amt) 的 kv 部分
+	fs := toFields([]any{1001, 99.5}) // the kv portion of TInfo(ctx, "支付", id, amt)
 	require.Len(t, fs, 2)
 	assert.Equal(t, badKeyName, fs[0].Key)
 	assert.Equal(t, badKeyName, fs[1].Key)
@@ -2306,7 +2361,8 @@ func TestFacadeCallerPointsToCallSite(t *testing.T) {
 	assert.Contains(t, e.Caller.File, "zap_test.go")
 }
 
-// Zap() 必须返回未加门面 skip 的实例，否则逃生舱口的 caller 少跳一层。
+// Zap() must return the instance without the facade's caller skip, otherwise
+// the escape hatch's caller would be off by one frame.
 func TestZapEscapeHatchReturnsRawLogger(t *testing.T) {
 	logs := installObserver(t, zap.AddCaller())
 
@@ -2384,7 +2440,7 @@ func TestWithEmptyKVReturnsSameLogger(t *testing.T) {
 	assert.Same(t, Logger(l), l.With(), "空 With 不该白白克隆一个 logger")
 }
 
-// ── Init 装配 ────────────────────────────────────────────
+// ── Init assembly ────────────────────────────────────────
 
 func TestInitWithNoSinkYieldsNop(t *testing.T) {
 	cfg := DefaultConfig()
@@ -2408,7 +2464,7 @@ func TestInitFileSinkWritesJSONLWithMasking(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Console.Enabled = false
 	cfg.File.Enabled = true
-	cfg.File.Path = filepath.Join(dir, "app.jsonl") // 后缀推导出 json
+	cfg.File.Path = filepath.Join(dir, "app.jsonl") // extension implies json
 	require.NoError(t, Init(cfg))
 	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
 
@@ -2452,17 +2508,21 @@ func TestInitErrorPathOnlyReceivesErrors(t *testing.T) {
 	assert.NotContains(t, string(errOnly), "普通信息", "error sink 只收 error 及以上")
 	assert.Contains(t, string(errOnly), "出事了")
 
-	// 每个叶子 sink 都各包了一层 maskCore，漏包任何一个都会在这里暴露。
+	// Every leaf sink is wrapped in its own maskCore layer -- missing any one of
+	// them would be exposed right here.
 	assert.NotContains(t, string(all), "hunter2", "app sink 必须脱敏")
 	assert.NotContains(t, string(errOnly), "hunter2", "error sink 必须同样脱敏")
 	assert.Contains(t, string(errOnly), maskPlaceholder)
 }
 
-// 回归测试：采样器必须包在 maskCore 之外（即 Tee 之外）。
+// Regression test: the sampler must be wrapped outside maskCore (i.e., outside
+// the Tee).
 //
-// 若顺序颠倒成 newMaskCore(sampler)，maskCore.Check 会把自己挂进 CheckedEntry，
-// sampler.Check（zapcore/sampler.go:214-229 —— 采样的唯一发生地）便再也不会执行，
-// log.sampling 静默失效：5 条重复日志全部落盘而不是 1 条。
+// If the order were reversed to newMaskCore(sampler), maskCore.Check would
+// hang itself onto the CheckedEntry, and sampler.Check
+// (zapcore/sampler.go:214-229 -- the only place sampling actually happens)
+// would never run again, silently disabling log.sampling: all 5 duplicate log
+// lines would be written to disk instead of just 1.
 func TestSamplingWrapsOutsideMaskCore(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultConfig()
@@ -2470,7 +2530,7 @@ func TestSamplingWrapsOutsideMaskCore(t *testing.T) {
 	cfg.File.Enabled = true
 	cfg.File.Path = filepath.Join(dir, "app.jsonl")
 	cfg.Sampling.Initial = 1
-	cfg.Sampling.Thereafter = 0 // 窗口内首条之后全丢
+	cfg.Sampling.Thereafter = 0 // drop everything after the first in the window
 	require.NoError(t, Init(cfg))
 	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
 
@@ -2500,14 +2560,14 @@ func TestInitCreatesMissingLogDir(t *testing.T) {
 }
 
 func TestSyncOnStdoutIsNotAnError(t *testing.T) {
-	cfg := DefaultConfig() // console 开着，指向 stdout
+	cfg := DefaultConfig() // console is on, points to stdout
 	require.NoError(t, Init(cfg))
 	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
 
 	assert.NoError(t, Sync(), "对终端/管道 fsync 会返回 EINVAL，那不是错误")
 }
 
-// ── SetLogger 的安全警示 ─────────────────────────────────
+// ── SetLogger's safety warning ────────────────────────────
 
 type fakeBackend struct{ Logger }
 
@@ -2585,33 +2645,38 @@ import (
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
-// badKeyName 收容不合法的 KV 参数。跟 log/slog 的约定保持一致。
+// badKeyName holds invalid KV arguments. Kept consistent with log/slog's
+// convention.
 const badKeyName = "!BADKEY"
 
 type loggerKey struct{}
 
 var (
-	// 用 atomic.Pointer 而不是 atomic.Value —— 后者要求每次 Store 的
-	// 动态类型一致，SetLogger 换后端时会直接 panic。
+	// atomic.Pointer instead of atomic.Value -- the latter requires the dynamic
+	// type to be identical on every Store, and SetLogger swapping backends
+	// would panic outright.
 	global atomic.Pointer[Logger]
 
-	// closerSlot 存当前 sink 的关闭函数，Init 换配置或 Close 退出时调用。
+	// closerSlot holds the close function for the current sink; Init calls it
+	// when the config is swapped, and Close calls it on shutdown.
 	closerSlot atomic.Pointer[[]func() error]
 )
 
-// ── 门面实现 ────────────────────────────────────────────
+// ── Facade implementation ─────────────────────────────────
 
-// zapLogger 是默认 binding。
+// zapLogger is the default binding.
 //
-// 持有两个 zap 实例是为了 caller 指对：
-//   - raw：未加门面 skip，Zap() 逃生舱口返回它，调用方直接调 raw.Info 时 caller 正确
-//   - z：raw + AddCallerSkip(1)，门面方法走它，跳过 zapLogger.Info 这一层
+// It holds two zap instances so the caller frame points to the right place:
+//   - raw: without the facade's caller skip; Zap()'s escape hatch returns it,
+//     so the caller is correct when a caller invokes raw.Info directly
+//   - z: raw + AddCallerSkip(1); facade methods go through it, skipping the
+//     zapLogger.Info frame itself
 type zapLogger struct {
 	raw *zap.Logger
 	z   *zap.Logger
 
 	once sync.Once
-	next *zapLogger // 懒构造的 skip+1 版本，给 T 系列语法糖用
+	next *zapLogger // lazily built skip+1 version, used by the T-series sugar
 }
 
 func newZapLogger(raw *zap.Logger) *zapLogger {
@@ -2634,15 +2699,17 @@ func (l *zapLogger) Enabled(lv Level) bool {
 	return l.raw.Core().Enabled(zapcore.Level(lv))
 }
 
-// Zap 实现 ZapProvider。返回未加门面 skip 的实例。
+// Zap implements ZapProvider. Returns the instance without the facade's
+// caller skip.
 func (l *zapLogger) Zap() *zap.Logger { return l.raw }
 
-// WithCallerSkip 实现 CallerSkipper。
+// WithCallerSkip implements CallerSkipper.
 func (l *zapLogger) WithCallerSkip(n int) Logger {
 	if n != 1 {
 		return newZapLogger(l.raw.WithOptions(zap.AddCallerSkip(n)))
 	}
-	// skip+1 是 T 系列的热路径，缓存下来免得每次调用都克隆 logger
+	// skip+1 is the T-series' hot path; cache it so we don't clone the logger
+	// on every call.
 	l.once.Do(func() {
 		l.next = &zapLogger{
 			raw: l.raw.WithOptions(zap.AddCallerSkip(1)),
@@ -2652,23 +2719,25 @@ func (l *zapLogger) WithCallerSkip(n int) Logger {
 	return l.next
 }
 
-// toFields 把 KV 序列转成 zap.Field。
+// toFields converts a KV sequence into zap.Field values.
 //
-// key 不是 string 或参数落单时产出 !BADKEY 字段，不 panic 也不静默吞。
-// 从 gfa 的 Sprintln 语义迁移过来的调用（TInfo(ctx, "支付", id, amt)，
-// 其中 id 是 int）会在这里变成两个 !BADKEY，一眼看得出来。
+// Produces a !BADKEY field when the key isn't a string or an argument is
+// left dangling, without panicking or silently swallowing it.
+// A call migrated from gfa's Sprintln semantics (TInfo(ctx, "支付", id, amt),
+// where id is an int) turns into two !BADKEY fields here, immediately
+// visible.
 func toFields(kv []any) []zap.Field {
 	if len(kv) == 0 {
 		return nil
 	}
 	fs := make([]zap.Field, 0, (len(kv)+1)/2)
 	for i := 0; i < len(kv); {
-		if i == len(kv)-1 { // 落单的最后一个
+		if i == len(kv)-1 { // the last, dangling item
 			fs = append(fs, zap.Any(badKeyName, kv[i]))
 			break
 		}
 		k, ok := kv[i].(string)
-		if !ok { // key 位置不是 string：单独记一条，下一项重新当 key 试
+		if !ok { // the key position isn't a string: record it separately, retry the next item as a key
 			fs = append(fs, zap.Any(badKeyName, kv[i]))
 			i++
 			continue
@@ -2679,9 +2748,10 @@ func toFields(kv []any) []zap.Field {
 	return fs
 }
 
-// ── 全局 binding ────────────────────────────────────────
+// ── Global binding ─────────────────────────────────────────
 
-// L 返回全局 Logger。Init 之前返回 Nop，打日志不 panic。
+// L returns the global Logger. Before Init, returns Nop, so logging never
+// panics.
 func L() Logger {
 	if p := global.Load(); p != nil {
 		return *p
@@ -2689,10 +2759,13 @@ func L() Logger {
 	return Nop()
 }
 
-// SetLogger 替换全局后端，对应 SLF4J 的 binding 切换。
+// SetLogger replaces the global backend, corresponding to an SLF4J binding
+// swap.
 //
-// 安全提示：换掉默认后端等于换掉内置的敏感字段脱敏 —— 那是实现在
-// 本包 maskCore 里的，第三方实现不会自动带上。这里显式警示一次。
+// Security note: replacing the default backend also replaces the built-in
+// sensitive-field masking -- that's implemented in this package's maskCore,
+// and a third-party implementation won't automatically carry it over. This
+// warns explicitly once.
 func SetLogger(l Logger) {
 	if l == nil {
 		l = Nop()
@@ -2701,7 +2774,7 @@ func SetLogger(l Logger) {
 
 	switch l.(type) {
 	case *zapLogger, nopLogger:
-		// 默认 binding，或显式禁用日志，都不需要警示
+		// The default binding, or explicitly disabling logging, needs no warning
 	default:
 		fmt.Fprintln(os.Stderr,
 			"xbc/log: 已替换默认日志后端，内置敏感字段脱敏随之失效 —— "+
@@ -2709,7 +2782,7 @@ func SetLogger(l Logger) {
 	}
 }
 
-// NewContext 把 Logger 绑进 ctx。
+// NewContext binds a Logger into ctx.
 func NewContext(ctx context.Context, l Logger) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -2717,12 +2790,14 @@ func NewContext(ctx context.Context, l Logger) context.Context {
 	return context.WithValue(ctx, loggerKey{}, l)
 }
 
-// Ctx 取 ctx 上的 Logger。
+// Ctx retrieves the Logger stored on ctx.
 //
-// 快路径：入口中间件用 NewContext 存好带链路字段的 logger，这里直接取，零分配。
-// 慢路径：只有 Trace 没有 Logger 时现场派生 —— 每次调用都要分配，
-// 所以框架的入口中间件应该总是走 NewContext。
-// 两者都没有就返回全局 Logger，不 panic。
+// Fast path: entry middleware uses NewContext to store a logger already
+// carrying trace fields; this retrieves it directly with zero allocations.
+// Slow path: when only a Trace is present with no Logger, one is derived on
+// the spot -- every call allocates, so the framework's entry middleware
+// should always go through NewContext.
+// If neither is present, falls back to the global Logger without panicking.
 func Ctx(ctx context.Context) Logger {
 	if ctx == nil {
 		return L()
@@ -2736,7 +2811,7 @@ func Ctx(ctx context.Context) Logger {
 	return L()
 }
 
-// traceKV 把链路展开成 KV 序列。零值字段不产出。
+// traceKV unrolls a trace into a KV sequence. Zero-value fields are omitted.
 func traceKV(t Trace) []any {
 	kv := make([]any, 0, 8)
 	if t.TraceID().IsValid() {
@@ -2754,9 +2829,11 @@ func traceKV(t Trace) []any {
 	return kv
 }
 
-// Zap 返回底层 *zap.Logger，用来做 zap 特有的操作。后端不是 zap 时 ok 为 false。
+// Zap returns the underlying *zap.Logger for zap-specific operations. ok is
+// false when the backend isn't zap.
 //
-// 逃生舱口同样受脱敏保护 —— maskCore 是这个 logger 的组成部分，绕不过去。
+// The escape hatch is protected by masking too -- maskCore is part of this
+// logger's composition and cannot be bypassed.
 func Zap(ctx context.Context) (*zap.Logger, bool) {
 	if zp, ok := Ctx(ctx).(ZapProvider); ok {
 		return zp.Zap(), true
@@ -2764,10 +2841,10 @@ func Zap(ctx context.Context) (*zap.Logger, bool) {
 	return nil, false
 }
 
-// ── 装配 ────────────────────────────────────────────────
+// ── Assembly ───────────────────────────────────────────────
 
-// Init 按配置装配默认的 zap 后端并设为全局。
-// 重复调用会先关掉上一次打开的文件 sink。
+// Init assembles the default zap backend from the config and sets it as
+// global. Calling it repeatedly closes the previously opened file sink first.
 func Init(cfg Config) error {
 	if err := cfg.Normalize(); err != nil {
 		return err
@@ -2782,7 +2859,8 @@ func Init(cfg Config) error {
 		cls   []func() error
 	)
 
-	// 三个 sink 共用同一个 masker，各自包一层 maskCore（原因见下面的 NewTee）。
+	// The three sinks share the same masker, each wrapped in its own maskCore
+	// layer (see the NewTee call below for why).
 	m := newMasker(cfg.MaskFields)
 
 	if cfg.Console.Enabled {
@@ -2815,23 +2893,27 @@ func Init(cfg Config) error {
 		}
 	}
 
-	if len(cores) == 0 { // 全关等价于 Nop，测试环境常用
+	if len(cores) == 0 { // everything off is equivalent to Nop, common in test environments
 		closeAll(swapClosers(nil))
 		SetLogger(Nop())
 		return nil
 	}
 
-	// 脱敏已经逐个 sink 包好了，这里只做扇出。
+	// Masking has already been wrapped per sink; this only fans out.
 	//
-	// 绝不能反过来把 maskCore 包在 Tee 之外：maskCore.Check 会把自己挂进
-	// CheckedEntry，于是 multiCore.Check（zapcore/tee.go:74-79 —— per-sink 级别
-	// 过滤的唯一发生地）根本不会执行，随后 multiCore.Write 无条件写进每个子 core，
-	// error_path 就变成 app.log 的完整副本。
+	// Never reverse this by wrapping maskCore outside the Tee: maskCore.Check
+	// would hang itself onto the CheckedEntry, so multiCore.Check
+	// (zapcore/tee.go:74-79 -- the only place per-sink filtering happens)
+	// would never run, and multiCore.Write would then unconditionally write
+	// into every child core, turning error_path into a complete copy of
+	// app.log.
 	core := zapcore.NewTee(cores...)
 
-	// 采样必须在最外层，包在 maskCore 之外 —— sampler.Check
-	// （zapcore/sampler.go:214-229）是采样的唯一发生地，被 maskCore.Check 短路的话
-	// log.sampling 会静默失效。顺带的好处：被丢弃的日志连脱敏开销都省掉。
+	// Sampling must be at the outermost layer, wrapped outside maskCore --
+	// sampler.Check (zapcore/sampler.go:214-229) is the only place sampling
+	// happens; if it were short-circuited by maskCore.Check, log.sampling
+	// would silently stop working. Side benefit: dropped logs also skip the
+	// masking overhead.
 	if cfg.Sampling.Initial > 0 {
 		core = zapcore.NewSamplerWithOptions(core, time.Second,
 			cfg.Sampling.Initial, cfg.Sampling.Thereafter)
@@ -2845,7 +2927,7 @@ func Init(cfg Config) error {
 		opts = append(opts, zap.AddStacktrace(zapcore.Level(st)))
 	}
 
-	closeAll(swapClosers(cls)) // 先关上一轮的 sink，再挂上新的
+	closeAll(swapClosers(cls)) // close the previous round's sinks first, then hook up the new ones
 	SetLogger(newZapLogger(zap.New(core, opts...)))
 	return nil
 }
@@ -2873,7 +2955,8 @@ func jsonEncoderConfig() zapcore.EncoderConfig {
 
 func buildFileWriter(cfg FileConfig, path string) (zapcore.WriteSyncer, func() error, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		// 0o750 而不是 0o755：日志目录不该对其他用户可读
+		// 0o750 instead of 0o755: the log directory shouldn't be readable by
+		// other users
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, nil, fmt.Errorf("log: 创建日志目录 %s 失败: %w", dir, err)
 		}
@@ -2909,7 +2992,8 @@ func closeAll(fns []func() error) {
 	}
 }
 
-// Sync 刷盘。进程退出前调用，通常配 defer。
+// Sync flushes to disk. Call it before the process exits, typically via
+// defer.
 func Sync() error {
 	zp, ok := L().(ZapProvider)
 	if !ok {
@@ -2921,16 +3005,19 @@ func Sync() error {
 	return nil
 }
 
-// Close 刷盘并关闭全部文件 sink。框架在优雅关闭的最后一步调用。
+// Close flushes to disk and closes all file sinks. The framework calls this
+// as the last step of a graceful shutdown.
 func Close() error {
 	err := Sync()
 	closeAll(swapClosers(nil))
 	return err
 }
 
-// isBenignSyncError 识别对 stdout/stderr 调 Sync 的正常失败。
-// 终端和管道不是可 fsync 的对象，内核回 EINVAL/ENOTTY —— 这不是错误，
-// 只是 zap 的一个著名毛刺，不该让 defer log.Sync() 在每次退出时报错。
+// isBenignSyncError recognizes the normal failure of calling Sync on
+// stdout/stderr. Terminals and pipes aren't fsync-able objects, so the kernel
+// returns EINVAL/ENOTTY -- this isn't a real error, just a well-known zap
+// wart, and shouldn't make a deferred log.Sync() report an error on every
+// exit.
 func isBenignSyncError(err error) bool {
 	if err == nil {
 		return true
@@ -3085,31 +3172,34 @@ Expected: 编译失败，`undefined: Span`。
 追加到 `log/trace.go` 末尾（import 需补 `"time"`）：
 
 ```go
-// ── Span ────────────────────────────────────────────────
+// ── Span ─────────────────────────────────────────────────
 
 type spanOptions struct {
 	spanID trace.SpanID
 }
 
-// SpanOption 调整 span 的创建行为。
+// SpanOption adjusts how a span is created.
 type SpanOption func(*spanOptions)
 
-// SpanID 指定 span_id，用于跟外部系统对齐。零值忽略。
+// SpanID sets the span_id, used to align with an external system. A zero
+// value is ignored.
 func SpanID(id trace.SpanID) SpanOption {
 	return func(o *spanOptions) { o.spanID = id }
 }
 
-// Span 开一个子 span，返回带链路的 ctx 和结束回调。
+// Span opens a child span, returning a ctx carrying the trace and a done
+// callback.
 //
 //	ctx, done := log.Span(ctx, "db.query")
 //	defer done()
 //
-// ctx 里已经绑好带链路字段的 Logger，后续 log.TInfo(ctx, ...) 零分配取用。
+// The ctx already has a Logger bound to it with trace fields attached, so
+// subsequent log.TInfo(ctx, ...) calls retrieve it with zero allocations.
 func Span(ctx context.Context, name string) (context.Context, func()) {
 	return SpanWith(ctx, name)
 }
 
-// SpanWith 是 Span 的带选项版本。
+// SpanWith is the option-taking version of Span.
 func SpanWith(ctx context.Context, name string, opts ...SpanOption) (context.Context, func()) {
 	var o spanOptions
 	for _, fn := range opts {
@@ -3132,7 +3222,8 @@ func SpanWith(ctx context.Context, name string, opts ...SpanOption) (context.Con
 	start := nowFunc()
 	return ctx, func() {
 		done := l
-		// 回调比正常调用多一层闭包，抬一层让 caller 指向 defer done() 所在的函数
+		// The callback adds one extra closure frame vs. a normal call; skip one
+		// more so the caller points to the function containing defer done()
 		if cs, ok := done.(CallerSkipper); ok {
 			done = cs.WithCallerSkip(1)
 		}
@@ -3192,8 +3283,10 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-// T 系列比门面方法多一层栈，caller 必须仍指向业务代码。
-// gfa 用单一 AddCallerSkip(2) 时，走门面方法这条路就会指错 —— 这里两条都测。
+// The T-series adds one more stack frame than the facade methods; the caller
+// must still point to the calling business code.
+// gfa's single AddCallerSkip(2) would point to the wrong frame when going
+// through the facade methods -- both paths are tested here.
 func TestTSeriesCallerPointsToCallSite(t *testing.T) {
 	logs := installObserver(t, zap.AddCaller())
 
@@ -3283,9 +3376,10 @@ type stringerFunc func() string
 
 func (f stringerFunc) String() string { return f() }
 
-// f 版本必须先查级别再格式化，否则关掉的日志照样付格式化开销。
+// The f version must check the level before formatting, otherwise a disabled
+// log level still pays the formatting cost.
 func TestTInfofSkipsFormattingWhenLevelDisabled(t *testing.T) {
-	core, _ := observer.New(zapcore.ErrorLevel) // info 不启用
+	core, _ := observer.New(zapcore.ErrorLevel) // info not enabled
 	SetLogger(newZapLogger(zap.New(core)))
 	t.Cleanup(func() { SetLogger(Nop()) })
 
@@ -3308,7 +3402,7 @@ func TestTSeriesNilContextDoesNotPanic(t *testing.T) {
 }
 
 func TestTSeriesWorksWithBackendLackingCallerSkipper(t *testing.T) {
-	SetLogger(Nop()) // nopLogger 不实现 CallerSkipper
+	SetLogger(Nop()) // nopLogger doesn't implement CallerSkipper
 	t.Cleanup(func() { SetLogger(Nop()) })
 
 	assert.NotPanics(t, func() {
@@ -3338,10 +3432,12 @@ import (
 	"fmt"
 )
 
-// tLogger 取 ctx 上的 Logger 并把 caller 抬一层 —— T 系列比门面方法
-// 多一层调用栈，不抬的话 caller 会指到 sugar.go 里来。
+// tLogger retrieves the Logger on ctx and adds one more caller skip -- the
+// T-series has one more call frame than the facade methods, and without the
+// skip the caller would point into sugar.go.
 //
-// 后端不实现 CallerSkipper 时原样返回：日志照打，只是 caller 不准。
+// If the backend doesn't implement CallerSkipper, it's returned as-is: logs
+// still go out, just with an inaccurate caller.
 func tLogger(ctx context.Context) Logger {
 	l := Ctx(ctx)
 	if cs, ok := l.(CallerSkipper); ok {
@@ -3350,7 +3446,8 @@ func tLogger(ctx context.Context) Logger {
 	return l
 }
 
-// T 系列是 Ctx(ctx).Xxx(...) 的语法糖，两条路径完全等价。
+// The T-series is sugar for Ctx(ctx).Xxx(...); the two paths are entirely
+// equivalent.
 //
 //	log.TInfo(ctx, "下单", "order_id", 1001)
 //	log.Ctx(ctx).Info("下单", "order_id", 1001)
@@ -3360,10 +3457,12 @@ func TInfo(ctx context.Context, msg string, kv ...any)  { tLogger(ctx).Info(msg,
 func TWarn(ctx context.Context, msg string, kv ...any)  { tLogger(ctx).Warn(msg, kv...) }
 func TError(ctx context.Context, msg string, kv ...any) { tLogger(ctx).Error(msg, kv...) }
 
-// f 系列走 printf 语义，用于确实不需要结构化的场合（启动横幅、调试串）。
-// 能拆成 KV 的都别用 —— 拼进 msg 的字段检索不到。
+// The f-series uses printf semantics, for cases that genuinely don't need
+// structure (startup banners, debug strings). Anything that can be broken
+// into KV pairs shouldn't use it -- fields folded into msg can't be searched.
 //
-// 先查级别再格式化：关掉的日志不该付格式化开销。
+// Checks the level before formatting: a disabled log level shouldn't pay the
+// formatting cost.
 
 func TDebugf(ctx context.Context, format string, args ...any) {
 	if l := tLogger(ctx); l.Enabled(DebugLevel) {
@@ -3482,10 +3581,11 @@ func TestExtractIgnoresMalformedTraceparent(t *testing.T) {
 	assert.False(t, tr.ParentSpanID.IsValid())
 }
 
-// 上游只给 traceparent 不给 X-Request-Id 时，从 trace_id 反推。
+// When upstream only supplies traceparent and not X-Request-Id, derive it
+// from trace_id.
 func TestExtractDerivesRequestIDFromTraceID(t *testing.T) {
 	h := http.Header{}
-	// W3C 规范文档里的标准样例
+	// The standard sample from the W3C spec document
 	h.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 
 	tr := TraceFrom(Extract(context.Background(), propagation.HeaderCarrier(h), "svc"))
@@ -3549,21 +3649,25 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// RequestIDHeader 是本框架扩展的请求 ID 头。
-// W3C 只规定了 traceparent，request_id 是给人用的那一半。
+// RequestIDHeader is this framework's extension header for the request ID.
+// W3C only specifies traceparent; request_id is the human-friendly half.
 const RequestIDHeader = "X-Request-Id"
 
-// 只用 W3C TraceContext。B3、Jaeger 等格式如有需要由使用方自行接。
+// Only W3C TraceContext is used. Formats like B3 or Jaeger can be wired up
+// by the caller if needed.
 var propagator = propagation.TraceContext{}
 
-// Extract 从入站载体解出上游链路，开一个本进程的新 span，
-// 并把带链路字段的 Logger 一并绑进 ctx。
+// Extract decodes the upstream trace from the inbound carrier, opens a new
+// span for this process, and binds a Logger carrying the trace fields into
+// ctx.
 //
-// 上游没给合法 traceparent 时开一条新链路 —— 头畸形不该让请求失败。
+// If upstream doesn't provide a valid traceparent, a new trace is started --
+// a malformed header shouldn't fail the request.
 //
-// carrier 用 propagation.TextMapCarrier 而不是 http.Header：
-// log 包不该知道 HTTP。HTTP 层套 propagation.HeaderCarrier，
-// gRPC 用 metadata 的适配，同一套接口。
+// carrier uses propagation.TextMapCarrier instead of http.Header: the log
+// package shouldn't know about HTTP. The HTTP layer wraps it with
+// propagation.HeaderCarrier, and gRPC uses a metadata adapter -- both go
+// through the same interface.
 func Extract(ctx context.Context, carrier propagation.TextMapCarrier, spanName string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -3584,8 +3688,10 @@ func Extract(ctx context.Context, carrier propagation.TextMapCarrier, spanName s
 	return NewContext(WithTrace(ctx, t), L().With(traceKV(t)...))
 }
 
-// requestIDFrom 优先用上游传来的 X-Request-Id；没有就从 trace_id 反推。
-// trace_id 与 ULID 都是 128 bit，是同一个值的两种编码，反推无损。
+// requestIDFrom prefers the upstream-supplied X-Request-Id; falling back to
+// deriving it from trace_id when absent.
+// trace_id and ULID are both 128 bits, two encodings of the same value, so
+// the derivation is lossless.
 func requestIDFrom(carrier propagation.TextMapCarrier, tid trace.TraceID) string {
 	if v := carrier.Get(RequestIDHeader); v != "" {
 		return v
@@ -3593,8 +3699,10 @@ func requestIDFrom(carrier propagation.TextMapCarrier, tid trace.TraceID) string
 	return ulid.ULID(tid).String()
 }
 
-// Inject 把当前链路写进出站载体：W3C traceparent 加 X-Request-Id。
-// ctx 上没有链路时什么都不做 —— 别造出无效的 traceparent。
+// Inject writes the current trace into the outbound carrier: W3C traceparent
+// plus X-Request-Id.
+// Does nothing when ctx has no trace -- don't manufacture an invalid
+// traceparent.
 func Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
 	t := TraceFrom(ctx)
 	if !t.Valid() {
@@ -3648,10 +3756,11 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-// 硬约束的自动化门禁：log 包一行都不能依赖框架内部。
+// Hard-constraint automated gate: the log package must not depend on the
+// framework internals, not even by one line.
 func TestLogPackageHasNoFrameworkDependency(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过依赖方向检查")
+		t.Skip("go command unavailable, skipping dependency direction check")
 	}
 	out, err := exec.Command("go", "list", "-deps", "github.com/xbcio/xbc/log").Output()
 	require.NoError(t, err)
@@ -3666,18 +3775,18 @@ func TestLogPackageHasNoFrameworkDependency(t *testing.T) {
 	}
 }
 
-// 两个服务之间靠 header 串起同一条链路。
+// Two services are strung into the same trace via headers.
 func TestEndToEndTwoServiceTracePropagation(t *testing.T) {
 	logs := installObserver(t)
 
-	// 服务 A：无上游 → 新链路 → 打一条 → 注入出站头
+	// Service A: no upstream -> new trace -> log one line -> inject outbound header
 	ctxA := Extract(context.Background(), propagation.HeaderCarrier(http.Header{}), "POST /orders")
 	TInfo(ctxA, "创建订单", "order_id", 1001)
 
 	outbound := http.Header{}
 	Inject(ctxA, propagation.HeaderCarrier(outbound))
 
-	// 服务 B：从入站头恢复链路 → 打一条
+	// Service B: restore the trace from the inbound header -> log one line
 	ctxB := Extract(context.Background(), propagation.HeaderCarrier(outbound), "POST /payments")
 	TInfo(ctxB, "发起支付", "amount", 99.5)
 
@@ -3691,14 +3800,15 @@ func TestEndToEndTwoServiceTracePropagation(t *testing.T) {
 	assert.Equal(t, "POST /payments", b["span_name"])
 }
 
-// 同一份 KV，两个 sink 两种渲染，脱敏都生效。
+// The same set of KV pairs, two sinks, two renderings -- masking must take
+// effect in both.
 func TestEndToEndMaskingCoversBothRenderings(t *testing.T) {
 	dir := t.TempDir()
 	cfg := DefaultConfig()
 	cfg.Console.Enabled = false
 	cfg.File.Enabled = true
-	cfg.File.Path = filepath.Join(dir, "app.log")        // 后缀推导 → console
-	cfg.File.ErrorPath = filepath.Join(dir, "err.jsonl") // 后缀推导 → json
+	cfg.File.Path = filepath.Join(dir, "app.log")        // extension implies -> console
+	cfg.File.ErrorPath = filepath.Join(dir, "err.jsonl") // extension implies -> json
 	cfg.MaskFields = []string{"salary"}
 	require.NoError(t, Init(cfg))
 	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
@@ -3723,7 +3833,8 @@ func TestEndToEndMaskingCoversBothRenderings(t *testing.T) {
 	assert.Equal(t, "alice", m["name"])
 }
 
-// 逃生舱口绕不过脱敏 —— maskCore 是 logger 的组成部分。
+// The escape hatch cannot bypass masking -- maskCore is part of the logger's
+// composition.
 func TestEndToEndEscapeHatchIsAlsoMasked(t *testing.T) {
 	core, logs := observer.New(zapcore.DebugLevel)
 	SetLogger(newZapLogger(zap.New(newMaskCore(core, newMasker(nil)))))
@@ -3739,7 +3850,7 @@ func TestEndToEndEscapeHatchIsAlsoMasked(t *testing.T) {
 	assert.Equal(t, "bob", m["user"])
 }
 
-// 一次请求从入口到嵌套 span 的完整形态。
+// The complete shape of one request, from entry to a nested span.
 func TestEndToEndRequestLifecycle(t *testing.T) {
 	logs := installObserver(t)
 
@@ -3756,7 +3867,7 @@ func TestEndToEndRequestLifecycle(t *testing.T) {
 	TInfo(ctx, "请求完成", "status", 200)
 
 	entries := logs.All()
-	require.Len(t, entries, 4) // 进入、查询、span 结束、完成
+	require.Len(t, entries, 4) // entry, query, span end, completion
 
 	const wantTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
 	for i, e := range entries {
@@ -3770,7 +3881,8 @@ func TestEndToEndRequestLifecycle(t *testing.T) {
 	assert.Equal(t, "span 结束", entries[2].Message)
 }
 
-// 重复 Init 不能泄漏上一轮的文件句柄，也不能把日志继续写进旧文件。
+// Re-Init must not leak the previous round's file handles, nor keep writing
+// logs into the old file.
 func TestReInitClosesPreviousSinks(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "first.jsonl")
@@ -3837,7 +3949,7 @@ func main() {
 	cfg := log.DefaultConfig()
 	cfg.Level = "debug"
 	cfg.File.Enabled = true
-	cfg.File.Path = "logs/app.jsonl" // 后缀决定格式：.jsonl → json
+	cfg.File.Path = "logs/app.jsonl" // extension determines the format: .jsonl -> json
 	if err := log.Init(cfg); err != nil {
 		panic(err)
 	}
@@ -3851,8 +3963,8 @@ func main() {
 ## 退出前刷盘
 
 ```go
-defer log.Close()   // 刷盘 + 关掉文件句柄，进程退出时用这个
-log.Sync()          // 只刷盘不关闭，长驻进程里想立刻落盘时用
+defer log.Close()   // flush + close file handles, use this on process exit
+log.Sync()          // flush only, don't close; use when a long-lived process wants to flush immediately
 ```
 
 `Close()` 内部先 `Sync()` 再关文件，两者都对「往终端/管道 fsync 返回 EINVAL」这个 zap 的著名毛刺做了吞掉处理 —— 不会让 `defer` 在每次正常退出时报一个假错。
@@ -3860,8 +3972,8 @@ log.Sync()          // 只刷盘不关闭，长驻进程里想立刻落盘时用
 ## 两条等价路径
 
 ```go
-log.TInfo(ctx, "下单", "order_id", 1001)     // 语法糖
-log.Ctx(ctx).Info("下单", "order_id", 1001)  // 门面
+log.TInfo(ctx, "下单", "order_id", 1001)     // sugar
+log.Ctx(ctx).Info("下单", "order_id", 1001)  // facade
 ```
 
 产出完全相同，caller 都指向你的调用行。链式派生时用门面：
@@ -3875,23 +3987,23 @@ l.Warn("网关超时", "retry", 1)
 `printf` 语义走 `f` 版本，但**能拆成 KV 的都别用** —— 拼进 msg 的字段检索不到：
 
 ```go
-log.TInfof(ctx, "启动耗时 %.2fs", 1.35)   // 可以：一次性的启动横幅
-log.TInfof(ctx, "订单 %d 金额 %.2f", id, amt)  // 别这么写，order_id 检索不到
-log.TInfo(ctx, "下单", "order_id", id, "amount", amt)  // 这样写
+log.TInfof(ctx, "启动耗时 %.2fs", 1.35)   // fine: a one-off startup banner
+log.TInfof(ctx, "订单 %d 金额 %.2f", id, amt)  // don't do this, order_id can't be searched for
+log.TInfo(ctx, "下单", "order_id", id, "amount", amt)  // do it this way
 ```
 
 ## 链路追踪
 
 ```go
-// 入口：从上游头解链路，没有就新开一条
+// Entry: decode the trace from the upstream header, start a new one if absent
 ctx := log.Extract(r.Context(), propagation.HeaderCarrier(r.Header), "GET /orders/:id")
 
-// 子 span
+// Child span
 dbCtx, done := log.Span(ctx, "db.query")
-defer done()   // 自动打一条带 elapsed_ms 的 debug 日志
+defer done()   // automatically logs one debug line with elapsed_ms
 log.TInfo(dbCtx, "查询订单", "order_id", 1001)
 
-// 出站：把链路带给下游
+// Outbound: pass the trace along to the downstream service
 log.Inject(ctx, propagation.HeaderCarrier(req.Header))
 ```
 
@@ -3909,8 +4021,8 @@ otelCtx := trace.ContextWithSpanContext(ctx, tr.SpanContext)
 ```yaml
 log:
   level: info           # debug | info | warn | error
-  caller: true          # 是否记录调用点
-  stacktrace: error     # 从哪一级起附堆栈
+  caller: true          # whether to record the call site
+  stacktrace: error     # from which level a stacktrace is attached
 
   console:
     enabled: true
@@ -3919,19 +4031,19 @@ log:
 
   file:
     enabled: false
-    path: logs/app.log  # 后缀决定格式：.log → console，.jsonl/.json/.ndjson → json
-    format: ""          # 留空 = 按后缀推导；填了就覆盖推导
+    path: logs/app.log  # extension determines the format: .log -> console, .jsonl/.json/.ndjson -> json
+    format: ""          # empty = infer from extension; set to override the inference
     rotate: daily       # daily | size
-    max_size: 100       # MB，size 策略的阈值，daily 策略下也生效
-    max_age: 30         # 天
-    max_backups: 30     # 个
+    max_size: 100       # MB, threshold for the size strategy, also applies under daily
+    max_age: 30         # days
+    max_backups: 30     # count
     compress: true
-    error_path: ""      # 非空则额外开一个只收 error 的 sink，格式按自己的后缀推导
+    error_path: ""      # non-empty opens an extra sink that only receives error and above, format inferred from its own extension
 
   sampling:
-    initial: 100        # 每秒前 N 条全记
-    thereafter: 100     # 之后每 N 条记 1 条；设 0 关闭采样
-  mask_fields: []       # 追加脱敏字段
+    initial: 100        # log every one of the first N per second
+    thereafter: 100     # then log 1 out of every N; set to 0 to disable sampling
+  mask_fields: []       # additional fields to mask
 ```
 
 格式是 sink 级而不是全局的 —— "终端 console + 文件 json" 是最常见的组合，全局单一 format 表达不了。
@@ -3958,7 +4070,7 @@ log:
 ## 换后端
 
 ```go
-log.SetLogger(myLogger)   // 实现 log.Logger 接口即可
+log.SetLogger(myLogger)   // just implement the log.Logger interface
 ```
 
 **换后端等于换掉内置脱敏** —— 那是实现在本包里的，第三方实现不会自动带上。`SetLogger` 会往 stderr 打一条警示。
@@ -3985,7 +4097,7 @@ log.TInfo(ctx, "支付成功", orderID, amount)
 
 ```go
 log.TInfo(ctx, "支付成功", "order_id", orderID, "amount", amount)  // KV
-log.TInfof(ctx, "支付成功 %s %.2f", orderID, amount)               // 或者显式走 printf
+log.TInfof(ctx, "支付成功 %s %.2f", orderID, amount)               // or go through printf explicitly
 ```
 
 `grep -rn 'T\(Info\|Warn\|Error\|Debug\)(' ` 过一遍，确认每个调用的第三个参数往后都是 `"key", value` 交替。
