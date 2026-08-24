@@ -12,6 +12,7 @@ func TestParseLevel(t *testing.T) {
 	cases := map[string]Level{
 		"debug": DebugLevel, "DEBUG": DebugLevel, " Debug ": DebugLevel,
 		"info": InfoLevel, "INFO": InfoLevel,
+		"":     InfoLevel, // 空字符串是"未指定"不是"未知"，落到 info；见 ParseLevel 文档注释
 		"warn": WarnLevel, "warning": WarnLevel, "WARN": WarnLevel,
 		"error": ErrorLevel, "ERROR": ErrorLevel,
 	}
@@ -30,6 +31,10 @@ func TestLevelString(t *testing.T) {
 	assert.Equal(t, "INFO", InfoLevel.String())
 	assert.Equal(t, "WARN", WarnLevel.String())
 	assert.Equal(t, "ERROR", ErrorLevel.String())
+
+	// 未知级别落到 default 分支的兜底格式，不 panic 也不返回空字符串。
+	assert.Equal(t, "LEVEL(99)", Level(99).String(), "越界正值应兜底")
+	assert.Equal(t, "LEVEL(-5)", Level(-5).String(), "越界负值同样应兜底")
 }
 
 // Level 的数值必须与 zapcore 对齐，binding 里才能直接类型转换。
