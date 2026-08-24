@@ -2,6 +2,7 @@ package log
 
 import (
 	"context"
+	"strings"
 
 	"github.com/oklog/ulid/v2"
 	"go.opentelemetry.io/otel/propagation"
@@ -51,8 +52,26 @@ func Extract(ctx context.Context, carrier propagation.TextMapCarrier, spanName s
 // deriving it from trace_id when absent.
 // trace_id and ULID are both 128 bits, two encodings of the same value, so
 // the derivation is lossless.
+//
+// Only two spellings are probed: RequestIDHeader as-is, then its all-lowercase
+// form. propagation.HeaderCarrier (backed by http.Header) canonicalizes keys
+// through textproto.CanonicalMIMEHeaderKey on Get, so the as-is lookup alone
+// already covers it. But propagation.MapCarrier (backed by a plain
+// map[string]string) and gRPC's metadata.MD do not canonicalize -- and
+// metadata.MD's own convention is to lowercase every key -- so a second,
+// lowercase-only probe is needed to catch those without silently falling
+// back to a derived (and therefore different) request_id.
+//
+// Deliberately not a full case-insensitive scan over carrier.Keys(): that
+// would cost O(n) per request on the hot path, and several carrier adapters
+// document their Keys() as unreliable/best-effort. Two fixed probes cover
+// every carrier this package actually needs to support; do not "upgrade"
+// this to strings.EqualFold over all keys.
 func requestIDFrom(carrier propagation.TextMapCarrier, tid trace.TraceID) string {
 	if v := carrier.Get(RequestIDHeader); v != "" {
+		return v
+	}
+	if v := carrier.Get(strings.ToLower(RequestIDHeader)); v != "" {
 		return v
 	}
 	return ulid.ULID(tid).String()
