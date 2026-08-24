@@ -109,6 +109,20 @@ func SpanID(id trace.SpanID) SpanOption {
 //
 // The ctx already has a Logger bound to it with trace fields attached, so
 // subsequent log.TInfo(ctx, ...) calls retrieve it with zero allocations.
+//
+// Pre-Init behavior: Span uses L() to obtain the logger. Before Init or
+// SetLogger has been called, L() returns Nop(), so the "span 结束" log
+// emitted by done() is silently discarded. This is by design — L()'s
+// Nop-before-init contract (Task 7) makes all logging a no-op until the
+// application explicitly initializes the backend.
+//
+// done() should be called exactly once (via defer). Calling it more than
+// once does not panic or corrupt state, but emits a duplicate "span 结束"
+// log line with a different elapsed_ms — observable noise, not a
+// correctness issue. Adding sync.Once to prevent this is deliberately
+// avoided: Span is a hot path, and allocating a sync.Once per span for a
+// misuse guard that only produces one extra log line is not worth the cost.
+// The idiomatic usage "defer done()" inherently calls it exactly once.
 func Span(ctx context.Context, name string) (context.Context, func()) {
 	return SpanWith(ctx, name)
 }
