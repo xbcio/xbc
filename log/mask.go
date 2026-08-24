@@ -181,6 +181,54 @@ func (m *masker) hitSlow(key string) bool {
 	return false
 }
 
+// hitWindow 判定字段名的任意**连续词窗口**是否命中黑名单，而不只是后缀词组。
+//
+// 只有 hitFieldName 的替换名候选走它。替换名只在 json tag 被保留字符写坏时才
+// 构造，而那条路径上垃圾可以同时夹在敏感中心词的两侧（`json:"db\password\x"`
+// 归一化成 db / password / x 三个词），后缀词组永远够不着夹在中间的 password。
+// 正常字段名一律走 hit 的后缀规则，窗口匹配的宽松度不会外溢到它们身上。
+func (m *masker) hitWindow(key string) bool {
+	if key == "" {
+		return false
+	}
+	var buf [maskKeyBufSize]byte
+	var starts [maskKeyMaxWords]int
+	n, wc, ok := splitMaskKey(key, buf[:], starts[:])
+	if !ok {
+		return m.hitWindowSlow(key)
+	}
+	return m.matchWindow(buf[:], starts[:wc], n)
+}
+
+// hitWindowSlow 是名字超长或词数过多时的退化路径，规则与 hitWindow 完全一致。
+func (m *masker) hitWindowSlow(key string) bool {
+	buf := make([]byte, len(key))
+	starts := make([]int, len(key))
+	n, wc, ok := splitMaskKey(key, buf, starts)
+	if !ok {
+		// 按最坏情况分配过了，不可能再溢出
+		return false
+	}
+	return m.matchWindow(buf, starts[:wc], n)
+}
+
+// matchWindow 枚举全部连续词窗口 [i, j)。词数上限 12 时最坏 78 次查表，
+// 且只发生在写坏的 tag 上，不在热路径。
+func (m *masker) matchWindow(buf []byte, starts []int, n int) bool {
+	for i := range starts {
+		for j := i + 1; j <= len(starts); j++ {
+			end := n
+			if j < len(starts) {
+				end = starts[j]
+			}
+			if _, found := m.keys[string(buf[starts[i]:end])]; found {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // 字段过滤
 // ---------------------------------------------------------------------------

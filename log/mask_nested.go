@@ -51,8 +51,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"go.uber.org/zap/zapcore"
 )
@@ -595,7 +593,7 @@ func maskNamedField(sf reflect.StructField) bool {
 	return t.Kind() == reflect.Struct
 }
 
-// hitFieldName 查黑名单时用**多个候选名**，任一命中即脱敏。
+// hitFieldName 查黑名单时用**三个候选名**，任一命中即脱敏。
 //
 // # 判据
 //
@@ -603,55 +601,58 @@ func maskNamedField(sf reflect.StructField) bool {
 //
 // 不是判据 A（"落盘成员名命中黑名单才脱敏"）。两者的区别在 `json:"db.password\"x"`
 // 上最清楚：它的真实落盘成员名是 db（v2）或 Foo（v1），两个都完全不敏感 ——
-// 按判据 A 不该脱敏，我们照样脱敏。下面的截断名候选不对应任何一个真实落盘名，
+// 按判据 A 不该脱敏，我们照样脱敏。下面的替换名候选不对应任何一个真实落盘名，
 // 只有判据 B 能解释它为什么存在。
 //
 // 判据 B 之所以是对的：tag 写坏时值不会因此变得不敏感。形如
 // Password string `json:"db\"password"` 的字段里躺着的就是明文口令，
 // 落盘成员名叫 db 还是 Foo 不改变这一点。定级与取舍一律随判据走，不随触发概率走。
 //
-// # 五个候选
+// # 三个候选
 //
-// 前两个覆盖 tag 合法与解析失败这两种正常情况：
+// 前两个覆盖 tag 合法与解析失败这两种正常情况，走 hit 的**后缀词组**规则：
 //
 //  1. tag 的名字部分（也是我们输出用的成员名）
 //  2. Go 字段名 —— v1 校验失败时用它，v2 在 tag 首字符非法时也用它
 //
-// 后三个覆盖 tag 被保留字符（反斜杠、单引号、双引号、反引号）写坏的情况：
+// 第三个覆盖 tag 被保留字符（反斜杠、单引号、双引号、反引号）写坏的情况：
 //
-//  3. 替换名：把候选 1 里的 \ ' " ` 全部换成 `_` 再查
-//  4. 截断名：tag 名截到第一个保留字符之前
-//  5. v2 名：从 tag 开头取的最长合法标识符前缀
+//  3. 替换名：把**整条 tag**里的 \ ' " ` 和逗号全换成 `_`，走 hitWindow 的
+//     **词窗口**规则
 //
-// 非法 tag 的文本形态是发散的，但**垃圾相对敏感中心词的位置**只有三种，
-// 后三个候选正是按这三种位置划分的：
+// # 为什么第三候选用词窗口，而不是再按位置堆候选
 //
-//	前  db"password          替换名（保留字符换成 _，中心词重新露在词尾）
-//	中  pass"word            替换名；x-api"key 这类也靠它
-//	后  db.password"x        截断名
-//	后  access_token-extra\y v2 名
+// 非法 tag 的文本形态是发散的，早先的版本按"垃圾相对敏感中心词的位置"逐个补
+// 候选（前 → 替换名、后 → 截断名、后 → v2 名），并据此声明位置只有前中后三种、
+// 候选集封闭。**那个封闭性声明是错的**：垃圾可以同时出现在两侧，
+// `json:"db\password\x"` 归一化成 db / password / x，敏感词夹在中间，
+// 三个方向的候选一个都够不着，明文口令直接落盘。
 //
-// **候选集到此封闭**：位置只有前中后三种，没有第四种。再有新形态，应当落进
-// 上面某一格，而不是再加第六个候选。
+// 词窗口对位置不敏感：把整条 tag 的保留字符换成分隔符之后，敏感中心词无论落在
+// 哪一段，都会成为一个**完整的连续词窗口**。四种位置一次覆盖完，且不需要再
+// 枚举第五种。
 //
-// 三者的关系是并集，谁都不能省 —— 三个方向的漏网都实测过：
+//	前    db"password           → db / password
+//	中    pass"word             → pass / word
+//	后    db.password"x         → db / password / x
+//	两侧  svc\secret_key\extra  → svc / secret / key / extra
 //
-//	json:"access_token-extra\y" → 替换名 access_token-extra_y 与截断名
-//	                              access_token-extra 都不命中，v2 名
-//	                              access_token 命中（v2 落盘的就是这个成员名）
-//	json:"db.password\"x"       → 替换名 db.password_x 与 v2 名 db 都不命中，
-//	                              截断名 db.password 命中
-//	json:"db\"password"         → 截断名与 v2 名都是 db，不命中；
-//	                              只有替换名 db_password 命中
+// 词窗口还**包含**了被它取代的截断名与 v2 名两个候选，所以删掉它们不丢覆盖：
+// 两者都是 tag 的前缀，且都终止于一个保留字符或 `-` `.` —— 替换之后那里必然是
+// 词边界，因此它们的每一个后缀词组都是替换名的某个词窗口。这不是推断：把
+// hitWindow 退化成后缀匹配，原先钉住这两个候选的 5 条测试会连同新增的夹击测试
+// 一起 FAIL。
 //
-// 前两条正是"把保留字符并进 splitMaskKey 的分隔符集合、一处改动覆盖两个方向"
-// 这个思路的反例：保留字符变成分隔符之后，垃圾尾巴（x / y）成了一个独立的词，
-// 而后缀词组规则的中心词在尾部，够不着它前面的敏感词。
+// # 误伤面
 //
-// 误伤面是可控的：Token string `json:"count"` 会因 Go 名命中而脱敏（值大概率
-// 真是 token，脱敏是对的），而 TokenCount int `json:"n"` 的后缀词组是
-// count / tokencount，五个候选都不命中；`json:"count-extra\y"` 的替换名
-// count-extra_y、`json:"tokenizer\"x"` 的替换名 tokenizer_x 同样都不命中。
+// 窗口匹配比后缀匹配宽松，但**只作用于含保留字符的 tag**，正常字段名一律走
+// 候选 1、2 的后缀规则，宽松度不外溢。所以既有裁决不受影响：
+// TokenCount int `json:"n"` 的后缀词组是 count / tokencount，不命中；
+// `json:"count-extra\y"` 的替换名 count-extra_y、`json:"tokenizer\"x"` 的
+// tokenizer_x，全部词窗口都不命中。
+//
+// 代价是病态 tag 上的判定更保守：`json:"phone\"masked"` 会因窗口 phone 而脱敏，
+// 尽管 phone_masked 本身有"不命中"的既定裁决。写坏的 tag 上宁可多脱一个。
 func (m *masker) hitFieldName(sf reflect.StructField, name string) bool {
 	if m.hit(name) {
 		return true
@@ -659,18 +660,13 @@ func (m *masker) hitFieldName(sf reflect.StructField, name string) bool {
 	if name != sf.Name && m.hit(sf.Name) {
 		return true
 	}
-	// 只在候选 1 真的含保留字符时才走替换名，避免为绝大多数正常字段做无谓的
-	// 字符串分配。maskTagReserved 的首字符是逗号，逗号不参与替换 ——
-	// 候选 1 已经在逗号处切过了。
-	if strings.ContainsAny(name, maskTagReserved[1:]) &&
-		m.hit(maskTagReplacer.Replace(name)) {
-		return true
-	}
-	trunc, v2 := maskTagAltNames(sf.Tag.Get("json"))
-	if trunc != name && m.hit(trunc) {
-		return true
-	}
-	return v2 != trunc && v2 != name && m.hit(v2)
+	// 只在 tag 真的含保留字符时才构造替换名，避免为绝大多数正常字段做无谓的
+	// 字符串分配。maskTagReserved 的首字符是逗号：逗号不参与触发（`,omitempty`
+	// 是完全正常的写法），但一旦别的保留字符触发了这条路径，逗号也一起换成
+	// 分隔符，好让 `json:"db,omitempty\"password"` 这种也切得开。
+	tag := sf.Tag.Get("json")
+	return strings.ContainsAny(tag, maskTagReserved[1:]) &&
+		m.hitWindow(maskTagReplacer.Replace(tag))
 }
 
 // maskTagReserved 是 encoding/json v2 在 tag 名字部分保留的字符集，
@@ -681,43 +677,8 @@ const maskTagReserved = ",\\'\"`"
 // 包级复用，别每次调用都构造一个。
 //
 // 目标字符必须是 splitMaskKey 认的分隔符（`_`）而不是空串：删掉保留字符会
-// 把 db"password 粘成 dbpassword 这**一个**词，后缀词组够不着 password。
-var maskTagReplacer = strings.NewReplacer("\\", "_", "'", "_", "\"", "_", "`", "_")
-
-// maskTagAltNames 返回 tag 名字部分之外的两个查名候选。tag 名合法（没有被保留
-// 字符截断）时两者都是空串 —— 那种情况下 v1 与 v2 用的都是候选 1。
-//
-// v2 的规则（parseFieldOptions 435-462 → consumeTagOption 576-640）：名字先截到
-// 第一个保留字符；若截断处不是逗号，则丢弃这个名字，从 tag 开头重新解析一个
-// Go 标识符 —— 首 rune 是 '_' 或 unicode.IsLetter 时取最长的 isLetterOrDigit
-// 前缀，否则报错、成员名退回 Go 字段名（已由候选 2 覆盖）。
-//
-// isLetterOrDigit 不含 '-' 和 '.'，所以 v2 名可能比截断名短得多；而 unicode
-// 的字母判定含 CJK（`json:"密码\"x"` 实测落盘成员就是 密码），不能拿 ASCII
-// 范围硬判。
-func maskTagAltNames(tag string) (trunc, v2 string) {
-	if tag == "" || strings.HasPrefix(tag, ",") {
-		return "", ""
-	}
-	n := strings.IndexAny(tag, maskTagReserved)
-	if n < 0 || tag[n] == ',' {
-		return "", "" // 名字完整，或止于逗号 —— v1/v2 都原样采用
-	}
-	trunc = tag[:n]
-	if r, _ := utf8.DecodeRuneInString(tag); r == '_' || unicode.IsLetter(r) {
-		v2 = tag[:len(tag)-len(strings.TrimLeftFunc(tag, maskIsLetterOrDigit))]
-	}
-	return trunc, v2
-}
-
-// maskIsLetterOrDigit 与 encoding/json/v2 的 isLetterOrDigit 同义。
-//
-// 必须用 unicode 判定，不能换成 ASCII 范围硬判 —— CJK 标识符是合法的
-// （`json:"密码\"x"` 实测落盘成员就是 密码），换成 ASCII 会让 v2 名退化成空串。
-// TestMaskChecksV2NameForCJKTag 钉住这一点。
-func maskIsLetterOrDigit(r rune) bool {
-	return r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r)
-}
+// 把 db"password 粘成 dbpassword 这**一个**词，词窗口够不着 password。
+var maskTagReplacer = strings.NewReplacer("\\", "_", "'", "_", "\"", "_", "`", "_", ",", "_")
 
 // maskUnexported 处理拿不到 Interface() 的字段值，也就是未导出的匿名 struct
 // 嵌入（带 json 名字 tag 因而不平铺的那种）。
