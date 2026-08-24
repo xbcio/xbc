@@ -1208,6 +1208,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1336,7 +1337,7 @@ func TestConsoleColoring(t *testing.T) {
 	out := encodeOne(t, true, sampleEntry(), nil, []zapcore.Field{
 		zap.Error(errors.New("boom")),
 	})
-	assert.Contains(t, out, ansiGreen+"INFO "+ansiReset, "INFO 用绿色")
+	assert.Contains(t, out, ansiGreen+"INFO  "+ansiReset, "INFO 用绿色")
 	assert.Contains(t, out, ansiRed, "err 字段的值用红色")
 	assert.Contains(t, out, ansiCyan, "key 用青色")
 	assert.Contains(t, out, ansiDim, "时间/trace/caller 用暗灰")
@@ -1344,16 +1345,36 @@ func TestConsoleColoring(t *testing.T) {
 
 func TestConsoleLevelColors(t *testing.T) {
 	cases := map[zapcore.Level]string{
-		zapcore.DebugLevel: ansiCyan,
-		zapcore.InfoLevel:  ansiGreen,
-		zapcore.WarnLevel:  ansiYellow,
-		zapcore.ErrorLevel: ansiRed,
+		zapcore.DebugLevel:  ansiCyan,
+		zapcore.InfoLevel:   ansiGreen,
+		zapcore.WarnLevel:   ansiYellow,
+		zapcore.ErrorLevel:  ansiRed,
+		zapcore.DPanicLevel: ansiRed,
 	}
 	for lv, want := range cases {
 		ent := sampleEntry()
 		ent.Level = lv
 		out := encodeOne(t, true, ent, nil, nil)
-		assert.Contains(t, out, want+padRight(lv.CapitalString(), 5)+ansiReset, "级别 %s", lv)
+		assert.Contains(t, out, want+padRight(lv.CapitalString(), widthLevel)+ansiReset, "级别 %s", lv)
+	}
+}
+
+// 每个级别的 level 段都必须恰好占 widthLevel 宽 —— DPANIC 是 6 个字符，
+// 是全部级别里最长的，widthLevel 小于它就会让这一行整体右移。
+func TestConsoleLevelColumnWidthIsUniform(t *testing.T) {
+	levels := []zapcore.Level{
+		zapcore.DebugLevel, zapcore.InfoLevel, zapcore.WarnLevel,
+		zapcore.ErrorLevel, zapcore.DPanicLevel, zapcore.PanicLevel, zapcore.FatalLevel,
+	}
+	for _, lv := range levels {
+		ent := sampleEntry()
+		ent.Level = lv
+		out := encodeOne(t, false, ent, nil, nil)
+		// 时间段固定 12 宽 + 1 空格，其后 widthLevel 宽即 level 段
+		seg := out[13 : 13+widthLevel]
+		assert.Equal(t, lv.CapitalString(), strings.TrimRight(seg, " "), "级别 %s 的文本", lv)
+		assert.Equal(t, widthLevel, len(seg), "级别 %s 的列宽", lv)
+		assert.Equal(t, byte(' '), out[13+widthLevel], "级别 %s 后必须紧跟分隔空格", lv)
 	}
 }
 
@@ -1364,6 +1385,70 @@ func TestConsoleColorDoesNotBreakAlignment(t *testing.T) {
 	plain := encodeOne(t, false, ent, nil, fs)
 	colored := stripANSI(encodeOne(t, true, ent, nil, fs))
 	assert.Equal(t, plain, colored)
+}
+
+// zap.Namespace 之后的字段被 MapObjectEncoder 收进嵌套 map，顶层只剩空间名。
+// console 必须把它展平成点号全路径，而不是打印 Go 的 map[k:v] 字面量。
+func TestConsoleFlattensNamespace(t *testing.T) {
+	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{
+		zap.String("svc", "order"),
+		zap.Namespace("db"),
+		zap.String("host", "10.0.0.1"),
+		zap.Int("port", 5432),
+	})
+	assert.Contains(t, out, "db.host=10.0.0.1")
+	assert.Contains(t, out, "db.port=5432")
+	assert.Contains(t, out, "svc=order")
+	assert.NotContains(t, out, "map[", "不能落 Go 的 map 字面量")
+}
+
+// 展平后 consoleHiddenFields 用全路径判定：顶层 trace_id 照旧剔除，
+// 命名空间里的同名字段是调用方显式放进去的，保留。
+func TestConsoleHiddenFieldsUseFullPath(t *testing.T) {
+	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{
+		zap.String("trace_id", "0192abcd0192abcd"),
+		zap.Namespace("upstream"),
+		zap.String("trace_id", "ffffffffffffffff"),
+	})
+	assert.NotContains(t, out, "trace_id=0192abcd0192abcd", "顶层 trace_id 已占固定列，不进 KV 区")
+	assert.Contains(t, out, "upstream.trace_id=ffffffffffffffff")
+}
+
+// 自引用 map 不能让展平递归停不下来。
+func TestConsoleNestedDepthIsBounded(t *testing.T) {
+	m := map[string]any{"k": "v"}
+	m["self"] = m
+	done := make(chan string, 1)
+	go func() { done <- encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{zap.Any("m", m)}) }()
+	select {
+	case out := <-done:
+		assert.Contains(t, out, "m.k=v")
+	case <-time.After(5 * time.Second):
+		t.Fatal("展平递归没有停下来")
+	}
+}
+
+// ByteString / Binary 在 MapObjectEncoder 里都是 []byte，
+// 不特判就会落盘 [104 105] 而不是 hi。
+func TestConsoleRendersByteStringAsText(t *testing.T) {
+	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{
+		zap.ByteString("body", []byte("hi")),
+	})
+	assert.Contains(t, out, "body=hi")
+	assert.NotContains(t, out, "[104 105]")
+}
+
+// caller 路径含中文时不能切出 U+FFFD，也不能因为按字节计数而错位。
+func TestConsoleCallerHandlesMultibyte(t *testing.T) {
+	ent := sampleEntry()
+	ent.Caller = zapcore.EntryCaller{
+		Defined: true,
+		File:    "/src/中文目录名很长很长很长/service/order.go",
+		Line:    42,
+	}
+	out := encodeOne(t, false, ent, nil, nil)
+	assert.True(t, utf8.ValidString(out), "输出必须是合法 UTF-8")
+	assert.NotContains(t, out, "�", "不能切出替换字符")
 }
 
 func stripANSI(s string) string {
@@ -1450,6 +1535,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mattn/go-isatty"
 	"go.uber.org/zap/buffer"
@@ -1467,8 +1553,12 @@ const (
 )
 
 // 各段固定宽度。
+//
+// widthLevel 取 6 而不是 5：zapcore 的级别文本里最长的是 DPANIC（6 个字符，
+// 已实测 `zapcore.DPanicLevel.CapitalString()` == "DPANIC"）。取 5 会让
+// padRight 在 len(s) >= w 时原样返回，DPanic 那一行的后续四段整体右移一格。
 const (
-	widthLevel  = 5
+	widthLevel  = 6
 	widthTrace  = 8
 	widthCaller = 24
 )
@@ -1548,25 +1638,55 @@ func (e *consoleEncoder) EncodeEntry(ent zapcore.Entry, fs []zapcore.Field) (*bu
 }
 
 func (e *consoleEncoder) writeFields(b *buffer.Buffer, m map[string]any, first *bool) {
+	e.writeFieldsPrefixed(b, m, "", first, 0)
+}
+
+// maxConsoleDepth 是嵌套展平的层数上限。自引用的 map 会让递归停不下来，
+// 而人读的一行也不需要八层以上的结构。触顶后退回 stringify 一次性打完。
+const maxConsoleDepth = 8
+
+// writeFieldsPrefixed 递归展平嵌套 map，用点号把层级连成全路径 key。
+//
+// 为什么需要展平：zap.Namespace("db") 之后的字段不会平铺在顶层 ——
+// MapObjectEncoder.OpenNamespace 把它们收进一个嵌套 map，顶层只剩 "db"
+// 这一个 key。已实测：Namespace("ns") 之后 AddTo 的三个字段全部落进 ns 的
+// 子 map，顶层 len == 1。直接 stringify 会输出 Go 的 map[k:v] 字面量，既难读，
+// consoleHiddenFields 的剔除在子层也完全失效。
+//
+// 展平成 db.host=… db.port=… 后两个问题一起解决：形状与 json sink 的嵌套语义
+// 一一对应（json 里是 {"db":{"host":…}}），剔除判定也拿得到全路径。
+// 调用方直接传进来的 map[string]any 同样被展平 —— 与 namespace 形状一致。
+func (e *consoleEncoder) writeFieldsPrefixed(b *buffer.Buffer, m map[string]any, prefix string, first *bool, depth int) {
 	if len(m) == 0 {
 		return
 	}
 	keys := make([]string, 0, len(m))
 	for k := range m {
-		if _, hidden := consoleHiddenFields[k]; hidden {
-			continue
-		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
 	for _, k := range keys {
+		full := k
+		if prefix != "" {
+			full = prefix + "." + k
+		}
+		if _, hidden := consoleHiddenFields[full]; hidden {
+			continue
+		}
+
+		// 嵌套 map 继续展平；空的子 map 整个跳过，不留一个孤零零的 key=。
+		if sub, ok := m[k].(map[string]any); ok && depth < maxConsoleDepth {
+			e.writeFieldsPrefixed(b, sub, full, first, depth+1)
+			continue
+		}
+
 		if !*first {
 			b.AppendByte(' ')
 		}
 		*first = false
 
-		e.paint(b, ansiCyan, k)
+		e.paint(b, ansiCyan, full)
 		b.AppendByte('=')
 
 		s := stringify(m[k])
@@ -1627,20 +1747,34 @@ func callerText(c zapcore.EntryCaller) string {
 	return c.TrimmedPath()
 }
 
+// padRight / padCallerLeft 按 rune 计数，不按字节。
+//
+// 前后三列（level、trace、caller）里 level 与 trace 永远是 ASCII，但 caller
+// 取自 Go 源文件路径，用户的目录名可以是中文。已实测按字节算的后果：
+// padRight("中文", 5) 因为 len == 6 >= 5 而原样返回，实际只占 2 列宽，整行错位。
+//
+// 只做 rune 对齐，不做东亚字符的双宽度（CJK 一个 rune 占两个终端列）——
+// 那需要 runewidth 之类的计划外依赖，而这三列本就是 ASCII 主导。
+// 结论：含 CJK 的 caller 路径宽度仍会偏，但不会再产生非法 UTF-8。
 func padRight(s string, w int) string {
-	if len(s) >= w {
+	n := utf8.RuneCountInString(s)
+	if n >= w {
 		return s
 	}
-	return s + strings.Repeat(" ", w-len(s))
+	return s + strings.Repeat(" ", w-n)
 }
 
 // padCallerLeft 右对齐到 w 宽。超长时从左侧截断加 "…"，
 // 保住行号那一侧 —— 定位代码靠的是文件名和行号，不是最上层的目录。
+//
+// 截断按 rune 边界切。按字节切（s[len(s)-(w-1):]）会在多字节字符中间下刀，
+// 落盘一个 U+FFFD 替换字符，而且截出来的宽度也不是 w。
 func padCallerLeft(s string, w int) string {
-	if len(s) > w {
-		return "…" + s[len(s)-(w-1):]
+	rs := []rune(s)
+	if len(rs) > w {
+		return "…" + string(rs[len(rs)-(w-1):])
 	}
-	return strings.Repeat(" ", w-len(s)) + s
+	return strings.Repeat(" ", w-len(rs)) + s
 }
 
 // stringify 把字段值转成字符串。
@@ -1649,6 +1783,10 @@ func stringify(v any) string {
 	switch x := v.(type) {
 	case string:
 		return x
+	// zap.ByteString / zap.Binary / zap.Any([]byte) 在 MapObjectEncoder 里
+	// 都存成 []byte。已实测不特判的后果：落盘 [104 105] 而不是 hi。
+	case []byte:
+		return string(x)
 	case error:
 		return x.Error()
 	case fmt.Stringer:
@@ -1727,15 +1865,21 @@ Expected: 全部 PASS。特别确认 `TestConsoleColorDoesNotBreakAlignment` 与
 自动化测试断言不了"看着舒服"。追加到 `log/console_test.go`：
 
 ```go
-// TestConsoleDemo 不做断言，只把各级别各写一行到 stdout 供肉眼验收。
+// TestConsoleDemo 把各级别各写一行到 stdout 供肉眼验收对齐与配色。
 // 长期留在仓库里，改动 encoder 后随手跑一次：
 //   go test ./log/ -run TestConsoleDemo -v
+//
+// 肉眼验收断言不了，但"每行都真的产出了"断言得了 —— 光看不断言的用例在
+// encoder 悄悄返回空串时会绿着通过，起不到守护作用。
 func TestConsoleDemo(t *testing.T) {
 	if testing.Short() {
 		t.Skip("演示用例，-short 下跳过")
 	}
+	// 同时写 stdout（给人看）与 buf（给断言看）
+	var buf bytes.Buffer
+	sink := zapcore.NewMultiWriteSyncer(zapcore.Lock(os.Stdout), zapcore.AddSync(&buf))
 	enc := newConsoleEncoder(true) // 强制着色，非 TTY 下也能看到效果
-	core := zapcore.NewCore(enc, zapcore.Lock(os.Stdout), zapcore.DebugLevel)
+	core := zapcore.NewCore(enc, sink, zapcore.DebugLevel)
 	l := zap.New(core, zap.AddCaller()).
 		With(zap.String("trace_id", "01926f7e1a2b3c4d5e6f708192a3b4c5"))
 
@@ -1744,10 +1888,19 @@ func TestConsoleDemo(t *testing.T) {
 	l.Warn("重试", zap.Int("attempt", 2), zap.Duration("backoff", 300*time.Millisecond))
 	l.Error("支付失败", zap.Error(errors.New("connection refused")))
 	l.Info("值里有空格", zap.String("reason", "余额 不足"))
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	require.Len(t, lines, 5, "五次调用要产出恰好五行")
+	for i, ln := range lines {
+		assert.NotEmpty(t, strings.TrimSpace(stripANSI(ln)), "第 %d 行不能是空的", i+1)
+	}
+	assert.Contains(t, buf.String(), "余额 不足", "中文原样保留")
+	assert.Contains(t, buf.String(), `reason="余额 不足"`, "含空格的值要被引号包住")
+	assert.NotContains(t, buf.String(), "trace_id=", "trace_id 已占固定列，不该再进 KV 区")
 }
 ```
 
-需要在 `console_test.go` 的 import 里补上 `"os"` 与 `"time"`（`errors`、`zap`、`zapcore`、`testing` 已在）。
+需要在 `console_test.go` 的 import 里补上 `"os"`（`bytes`、`errors`、`strings`、`time`、`unicode/utf8`、`require`、`zap`、`zapcore`、`testing` 已在）。
 
 ```bash
 go test ./log/ -run TestConsoleDemo -v
