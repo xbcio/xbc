@@ -29,19 +29,28 @@ const (
 // 已实测 `zapcore.DPanicLevel.CapitalString()` == "DPANIC"）。取 5 会让
 // padRight 在 len(s) >= w 时原样返回，DPanic 那一行的后续四段整体右移一格。
 //
-// widthCaller 取 19 而不是 spec §8.7 表格写的 24：callerText 用的是
-// zapcore.EntryCaller.TrimmedPath()，它固定只保留最后两段路径
-// （父目录名/文件名:行号），跟原始路径有多深无关——已实测
-// "/a/very/deeply/.../long/handler.go" 这种深层路径，TrimmedPath 出来
-// 也只是 "long/handler.go:1234"，20 个字符。取 24 会让这一条也落在
-// "不需要截断"的范围内，可是它恰恰是用来验证"超长截断"这条规则的测试
-// 用例——于是 spec 表格里的 24 和真实的 TrimmedPath 长度分布互相矛盾。
-// 19 是唯一同时满足两边的宽度：≤19 的 "order/service.go:42"（19 个字符）
-// 不截断，>19 的 "long/handler.go:1234"（20 个字符）截断。
+// widthCaller 取 24，依据是 spec §8.7 表格。
+//
+// callerText 用的是 zapcore.EntryCaller.TrimmedPath()，它固定只保留最后两段
+// 路径（父目录名/文件名:行号），跟原始路径有多深无关——已实测
+// "/a/very/deeply/.../long/handler.go" 这种深层路径，TrimmedPath 出来也只是
+// "long/handler.go:1234"，20 个字符。也就是说列宽该按"父目录名 + 文件名 +
+// 行号"这三者本身的长度分布来定，不能按路径深度来定：路径再深，落到
+// TrimmedPath 上也只有两段。
+//
+// 24 能容下 spec §8.7 示例行 "payment/client.go:33"（20 个字符）这类典型值
+// 不截断，同时也不会大到离谱——"verylongpackagename/handlerimplementation.go:33"
+// 这种长包名仍然会被截断，截断规则本身没有被削弱。
+//
+// 踩过的坑，写给下一个改这里的人：验证"超长截断"这条规则时，测试用例不能靠
+// 加深路径层数来凑长度——TrimmedPath 只看最后两段，深层路径产生的字符串
+// 反而可能更短（因为父目录名可能很短，如 "long"）。要让 TrimmedPath 变长，
+// 必须让文件名或父目录名本身变长，例如
+// "/src/verylongpackagename/handlerimplementation.go" → 47 个字符。
 const (
 	widthLevel  = 6
 	widthTrace  = 8
-	widthCaller = 19
+	widthCaller = 24
 )
 
 // console 下不进 KV 区的字段：trace_id 已占固定列，
@@ -62,18 +71,86 @@ var consolePool = buffer.NewPool()
 type consoleEncoder struct {
 	*zapcore.MapObjectEncoder
 	color bool
+	// ns 是当前打开的命名空间路径，例如 With(Namespace("a")).With(Namespace("b"))
+	// 之后是 []string{"a", "b"}。
+	//
+	// MapObjectEncoder 用未导出的 cur 字段追踪"下一个字段该写进哪一层"，
+	// Clone 出的新 MapObjectEncoder 拿不到这个私有字段，于是 clone 出来的
+	// cur 永远落在根层。zapcore.ioCore.With 的实现是"Clone 一份 encoder，
+	// 再把这次的字段 AddTo 进去"；zap.Namespace("db") 与后续字段分在两次
+	// With 里时，第二次 Clone 出来的 encoder 若不知道自己该待在 db 里，
+	// 字段就会从 db.host 掉成顶层的 host。这里自己记一份 ns，Clone 时
+	// 逐层重放 OpenNamespace 把 cur 追回同一层。
+	ns []string
 }
 
 func newConsoleEncoder(color bool) zapcore.Encoder {
 	return &consoleEncoder{MapObjectEncoder: zapcore.NewMapObjectEncoder(), color: color}
 }
 
+// OpenNamespace 在打开命名空间的同时把路径记进 e.ns，供 Clone 重放。
+func (e *consoleEncoder) OpenNamespace(k string) {
+	e.MapObjectEncoder.OpenNamespace(k)
+	e.ns = append(e.ns, k)
+}
+
 func (e *consoleEncoder) Clone() zapcore.Encoder {
 	c := &consoleEncoder{MapObjectEncoder: zapcore.NewMapObjectEncoder(), color: e.color}
-	for k, v := range e.Fields {
+
+	// 深拷贝顶层与所有嵌套子 map，不能再像之前那样浅拷（for k, v := range
+	// e.Fields { c.Fields[k] = v }）—— 浅拷会让 clone 与父 encoder 在某个
+	// 命名空间层共享同一个 map[string]any，一方 AddString 进去会串到另一方
+	// （TestConsoleCloneNamespaceIsolation 钉住这条）。
+	//
+	// 注意这里是"把内容灌进 c.Fields 这个已有的 map"，不是把 c.Fields
+	// 重新指向一个新 map：NewMapObjectEncoder() 构造时已经让内部私有的
+	// cur 指向了这个具体的 map 对象，如果我们把 c.Fields 换成另一个对象，
+	// cur 还留在旧的空 map 上，后面 AddString 就会写丢——这个坑只有在
+	// 保持"c.Fields 与 cur 是同一个对象"时才不会踩到。
+	for k, v := range deepCopyFields(e.Fields) {
 		c.Fields[k] = v
 	}
+
+	// 逐层重放命名空间路径，让 c 的 cur 落到与 e 相同的层级。
+	//
+	// 不能"先把整棵树拷好，再挨个调 OpenNamespace"：
+	// zapcore.MapObjectEncoder.OpenNamespace 的实现是无条件用一个新的空 map
+	// 覆盖 cur[k] 再把 cur 指过去（见 go.uber.org/zap/zapcore/memory_encoder.go），
+	// 如果内容已经在这一步之前就拷好了，OpenNamespace 会把刚拷进去的内容
+	// 整个冲掉。所以必须逐层来：
+	//   1. 记下这一层深拷贝出来的旧内容（saved）；
+	//   2. 调 c.OpenNamespace(k)，它会把 curMap[k] 换成一个新的空 map，
+	//      cur 也指向这个新 map —— 因为 curMap 和 OpenNamespace 内部的 cur
+	//      在被替换前是同一个 map 对象，所以调用后可以直接从 curMap[k]
+	//      读出这个新 map，不需要访问私有字段；
+	//   3. 把 saved 的内容搬进这个新 map；
+	//   4. curMap 前进到这个新 map，处理下一层。
+	curMap := c.Fields
+	for _, k := range e.ns {
+		saved, _ := curMap[k].(map[string]any)
+		c.OpenNamespace(k)
+		next, _ := curMap[k].(map[string]any)
+		for kk, vv := range saved {
+			next[kk] = vv
+		}
+		curMap = next
+	}
 	return c
+}
+
+// deepCopyFields 递归深拷贝 m：顶层与所有嵌套的 map[string]any 子层都会得到
+// 独立的新 map，叶子值原样搬（string/数值/[]byte 等本身按值语义或不可变，
+// 不需要再深拷）。用于 Clone —— 见上面的注释。
+func deepCopyFields(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if sub, ok := v.(map[string]any); ok {
+			out[k] = deepCopyFields(sub)
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func (e *consoleEncoder) EncodeEntry(ent zapcore.Entry, fs []zapcore.Field) (*buffer.Buffer, error) {
