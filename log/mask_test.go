@@ -992,8 +992,8 @@ type sMaskCutQuote struct {
 	Foo string `json:"password\"x"`
 }
 
-// sMaskCutDash：第一候选 access_token-extra\y 的后缀词组是 extra / tokenextra /
-// accesstokenextra，一个都不命中；而 v2 落盘的成员名就是 access_token。
+// sMaskCutDash：候选 1 的后缀词组是 extra / tokenextra / accesstokenextra，
+// 一个都不命中；替换名 access_token-extra_y 的词窗口 accesstoken 命中。
 type sMaskCutDash struct {
 	Foo string `json:"access_token-extra\\y"`
 }
@@ -1006,8 +1006,8 @@ type sMaskCutBacktick struct {
 	Foo string "json:\"secret`x\""
 }
 
-// sMaskCutDot：反过来的方向 —— v2 名 db 不命中，截断名 db.password 命中。
-// 与 sMaskCutDash 一起证明任何单一候选都不够，必须取并集。
+// sMaskCutDot：垃圾落在敏感词之后。候选 1 的后缀词组 x / passwordx /
+// dbpasswordx 都不命中，靠替换名 db_password_x 的词窗口 password。
 type sMaskCutDot struct {
 	Foo string `json:"db.password\"x"`
 }
@@ -1024,8 +1024,8 @@ type sMaskCutQuoted struct {
 	Token string `json:"'password'"`
 }
 
-// sMaskCutCount：防误伤回归 —— 三个候选 count-extra\y / Count / count-extra
-// 与 v2 名 count 全都不该命中。
+// sMaskCutCount：防误伤回归 —— 候选 1、Go 名 Count 与替换名 count-extra_y
+// 的全部词窗口都不该命中。
 type sMaskCutCount struct {
 	Count int `json:"count-extra\\y"`
 }
@@ -1038,7 +1038,7 @@ func TestMaskChecksV2TruncatedTagName(t *testing.T) {
 	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`password"x`], "落盘：%s", raw)
 }
 
-// 28：第一候选与 Go 名都不命中，只有 v2 名命中。
+// 28：候选 1 与 Go 名都不命中，靠替换名的词窗口。
 func TestMaskChecksV2NameWhenTagPrefixMisses(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskCutDash{Foo: "hunter2"}))
 
@@ -1057,7 +1057,7 @@ func TestMaskChecksV2NameForOtherReservedChars(t *testing.T) {
 	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["secret`x"], "落盘：%s", raw)
 }
 
-// 30：v2 名比截断名更短、更不敏感的方向 —— 验并集，不是"用 v2 名替换候选 1"。
+// 30：与 28 方向相反（垃圾在敏感词之后），同样靠替换名的词窗口。
 func TestMaskChecksTruncatedTagNameWhenV2NameMisses(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskCutDot{Foo: "hunter2"}))
 
@@ -1128,11 +1128,11 @@ func TestMaskFloatMapKeyNameMatchesJSON(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Fix 14-15：保留字符落在敏感中心词**之前**，以及 unicode 判定的回归钉子
+// 保留字符落在敏感中心词**之前**
 //
-// 与上一组（Fix 11-12）是同族、方向对调：上一组的垃圾落在敏感词**之后**，
-// 截断名 / v2 名各自够得着；这一组的垃圾落在敏感词**之前**，四个老候选全部落空，
-// 靠"替换名"候选（保留字符换成 `_`）才挡得住。
+// 与上一组是同族、方向对调：上一组的垃圾落在敏感词之后，这一组落在之前。
+// 两组连同"两侧夹击"那一组，共同说明按位置枚举候选是走不通的 ——
+// 挡住它们的是同一条规则：替换名的词窗口匹配。
 //
 // 判据始终是"tag 文本里出现敏感中心词就挡"：tag 写坏不会让值变得不敏感，
 // 形如 Password string `json:"db\"password"` 的字段里躺着的就是明文口令。
@@ -1140,7 +1140,8 @@ func TestMaskFloatMapKeyNameMatchesJSON(t *testing.T) {
 // 每条都走完整的 zap.New(core).Info() 路径断言落盘字节，不直调 hitFieldName。
 // ---------------------------------------------------------------------------
 
-// sMaskPreQuote：Go 名 Foo 不敏感，截断名与 v2 名都是 db —— 老候选全落空。
+// sMaskPreQuote：Go 名 Foo 不敏感，候选 1 的 db"password 是一个词（引号不是
+// 分隔符）—— 靠替换名 db_password 的词窗口。
 type sMaskPreQuote struct {
 	Foo string `json:"db\"password"`
 }
@@ -1169,8 +1170,8 @@ type sMaskPreTokenizer struct {
 	Foo string `json:"tokenizer\"x"`
 }
 
-// sMaskCJKTag：候选 1 与截断名（密码-extra）都不命中，只有 v2 名 密码 命中。
-// unicode.IsLetter 换成纯 ASCII 判断的话 v2 名会变成空串，这条立刻漏。
+// sMaskCJKTag：候选 1 的后缀词组不命中，靠替换名 密码-extra_y 的词窗口 密码。
+// splitMaskKey 逐字节切词、不解释非 ASCII 字节，CJK 中心词照样自成一个词。
 // 内置黑名单全是英文，所以必须给 masker 追加 密码，否则改成 ASCII 也照样绿。
 type sMaskCJKTag struct {
 	Foo string `json:"密码-extra\"y"`
@@ -1230,11 +1231,90 @@ func TestMaskReplacedNameDoesNotOverreachOnPrefixLookalike(t *testing.T) {
 	assert.Contains(t, raw, "visible", "落盘：%s", raw)
 }
 
-// 41：CJK tag 走 v2 候选。maskIsLetterOrDigit 必须用 unicode.IsLetter，
-// 换成纯 ASCII 范围判断的话 v2 名退化成空串，这条口令就明文落盘。
+// 41：CJK tag。内置黑名单全是英文，必须用 newMasker 追加"密码"，
+// 否则这条测试无论实现怎么改都是绿的，钉不住任何东西。
 func TestMaskChecksV2NameForCJKTag(t *testing.T) {
 	raw, m := logJSONWith(t, []string{"密码"}, zap.Any("v", sMaskCJKTag{Foo: "hunter2"}))
 
 	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
 	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["密码-extra\"y"], "落盘：%s", raw)
+}
+
+// ---------------------------------------------------------------------------
+// 两侧夹击：垃圾同时落在敏感中心词的前面和后面
+//
+// 这是候选按"位置"枚举（前 / 中 / 后）漏掉的第四种形态，也是把替换名的后缀
+// 词组匹配换成词窗口匹配的原因。词窗口对位置不敏感，四种形态一次覆盖完。
+// ---------------------------------------------------------------------------
+
+// sMaskSandwichPassword：替换名 db_password_x 的三个词是 db / password / x，
+// 后缀词组 x / passwordx / dbpasswordx 一个都不命中；截断名与 v2 名都是 db。
+// 只有词窗口取得到夹在中间的 password。
+type sMaskSandwichPassword struct {
+	Foo string `json:"db\\password\\x"`
+}
+
+// sMaskSandwichCompound：中心词本身是复合词，窗口必须能取到相邻两词的拼接。
+type sMaskSandwichCompound struct {
+	Foo string `json:"svc\\secret_key\\extra"`
+}
+
+// sMaskSandwichMixed：三种保留字符混用，且中心词是 access_token。
+type sMaskSandwichMixed struct {
+	Foo string `json:"user'access_token\"extra"`
+}
+
+// sMaskAfterComma：保留字符落在 ,omitempty 之后。第一候选在逗号处就切掉了
+// 后面的一切，替换名走的是整条 tag 才够得着。
+type sMaskAfterComma struct {
+	Foo string `json:"db,omitempty\"password"`
+}
+
+// sMaskSandwichBenign：防误伤 —— 良性中心词被同样的垃圾夹住，不该脱敏。
+type sMaskSandwichBenign struct {
+	Count int `json:"svc\\count-extra\\y"`
+}
+
+func TestMaskChecksWindowForSandwichedTag(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskSandwichPassword{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["db\\password\\x"], "落盘：%s", raw)
+}
+
+func TestMaskChecksWindowForSandwichedCompoundWord(t *testing.T) {
+	raw, _ := logJSON(t, zap.Any("v", sMaskSandwichCompound{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+}
+
+func TestMaskChecksWindowForMixedReservedChars(t *testing.T) {
+	raw, _ := logJSON(t, zap.Any("v", sMaskSandwichMixed{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+}
+
+func TestMaskChecksWholeTagAfterComma(t *testing.T) {
+	raw, _ := logJSON(t, zap.Any("v", sMaskAfterComma{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+}
+
+func TestMaskWindowDoesNotOverreachBenignSandwich(t *testing.T) {
+	// v2 的成员名在第一个保留字符处截断，落盘成员是 svc；值原样保留才是对的。
+	raw, m := logJSON(t, zap.Any("v", sMaskSandwichBenign{Count: 7}))
+
+	assert.Equal(t, float64(7), subMap(t, raw, m, "v")["svc"], "落盘：%s", raw)
+}
+
+// sMaskReservedThenComma：保留字符在前、逗号在后。逗号不是 splitMaskKey 的
+// 分隔符，若不一并换成 `_`，password,omitempty 会粘成一个词，窗口取不到。
+type sMaskReservedThenComma struct {
+	Foo string `json:"x\"password,omitempty"`
+}
+
+func TestMaskChecksWindowAcrossCommaOption(t *testing.T) {
+	raw, _ := logJSON(t, zap.Any("v", sMaskReservedThenComma{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
 }
