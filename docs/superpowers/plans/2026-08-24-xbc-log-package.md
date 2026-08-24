@@ -4179,6 +4179,7 @@ git commit -m "test(log): 集成验收与依赖方向门禁；docs: log 包 READ
 | `Ctx(ctx)` 的慢路径每次分配 | 只有 Trace 没有 Logger 时现场派生。框架入口中间件应总走 `NewContext`，把这条路径压到零 |
 | console 字段按字母序而非写入顺序 | `MapObjectEncoder` 本就无序。字母序换来输出确定性和扫读一致性 |
 | 换后端后内置脱敏失效 | `SetLogger` 会警示，但无法强制。这是门面模式的固有代价 |
+| `log.UseTracer` 未实现 | spec §8.5 的互操作模式对照表列了两种模式：默认模式（本包自管 Trace，可读取 OTel 的 SpanContext 但不回写）和 `UseTracer` 模式（`Span()` 委托给真 OTel tracer，span 同时进日志和 Jaeger/Tempo，`done()` 需调 `span.End()`）。当前只落地了默认模式。`UseTracer` 涉及 tracer 生命周期管理、`done()` 语义变化、额外的 SDK 依赖，是一个完整特性而不是一处修补，半吊子实现比不实现更糟，故推迟到后续 plan。`TraceFrom` 已能读到外部 OTel SDK 设置的 SpanContext（本地 Trace 优先、OTel 回退），但 `log.Span()` 目前只写本包自己的 key，不会把 span 送进 OTel SDK——互操作是单向的 |
 
 ---
 

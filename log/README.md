@@ -88,6 +88,23 @@ tr := log.TraceFrom(ctx)
 otelCtx := trace.ContextWithSpanContext(ctx, tr.SpanContext)
 ```
 
+**这条互操作目前是单向的，只读不写：**
+
+- **读**：`log.TraceFrom(ctx)` 在 ctx 上没有本包自己的 Trace 时，会去读 OTel SDK（或
+  otelhttp 之类的 OTel 埋点）通过 `trace.ContextWithSpanContext` 放进 ctx 的
+  `SpanContext`——所以只要接了 OTel SDK 的代码，日志里就能带上对应的 `trace_id`。
+  当 ctx 上同时存在本包自己的 Trace（例如经过 `log.Span`/`log.Extract`）时，本地
+  Trace 优先于 OTel 的 SpanContext——避免外层挂着的 OTel span（比如 otelhttp 打的
+  那层 HTTP span）把内层 `log.Span(ctx, "db.query")` 吞掉。
+- **不写**：`log.Span()` 只把 span 写进本包自己的 context key，**不会**调用 OTel SDK
+  把 span 送进去，所以这些 span **不会出现在 Jaeger / Tempo 里**，也不会调用
+  `span.End()`。
+
+spec 里描述的另一种模式 `log.UseTracer(tracer)`——让 `log.Span()` 委托给真正的
+OTel tracer，span 同时进日志和 Jaeger/Tempo——**尚未实现**，推迟到后续 plan（涉及
+tracer 生命周期管理、`done()` 需要调 `span.End()`、引入 SDK 依赖，是一个完整特性，
+不是一处修补）。现在只有默认模式：能读 OTel 设置的 trace_id，仅此而已。
+
 ## 配置
 
 ```yaml
