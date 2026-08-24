@@ -1,6 +1,9 @@
 package log
 
 import (
+	"bytes"
+	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -374,7 +377,11 @@ type stringerOnlyCreds struct {
 
 func (c stringerOnlyCreds) String() string { return "redacted" }
 
-func TestMaskDoesNotTrustStringer(t *testing.T) {
+func TestMaskTraversesStringerFieldsInsideStruct(t *testing.T) {
+	// 只覆盖"被包在外层 struct 里"的 Stringer 字段。直传给 zap.Any 的
+	// Stringer / error 走 zap 的 StringerType / ErrorType 分支，落盘的是
+	// String() / Error() 的结果，压根进不了反射遍历 —— 那归包注释的第 4 条边界，
+	// 是有意豁免的，不要在这里加断言去"修"它。
 	type wrapper struct {
 		Creds stringerOnlyCreds `json:"creds"`
 	}
@@ -680,4 +687,282 @@ func TestMaskDoesNotCopyUnrelatedReflectedValue(t *testing.T) {
 	out := m.apply(in)
 	require.Len(t, out, 1)
 	assert.Same(t, &in[0], &out[0], "反射遍历一路无命中时必须原样交回，不拷贝")
+}
+
+// ---------------------------------------------------------------------------
+// Fix 6-10：落盘字节级断言
+//
+// 反射脱敏的最终效果由 encoding/json 决定，observer 的 ContextMap 只是中间表示 ——
+// 它不会告诉你 map[int]X 到底能不能序列化。以下测试一律走真实 JSON encoder。
+// ---------------------------------------------------------------------------
+
+// maskedJSONLogger 组装一条写进内存 buffer 的真实日志管线。
+func maskedJSONLogger() (*zap.Logger, *bytes.Buffer) {
+	buf := &bytes.Buffer{}
+	enc := zapcore.NewJSONEncoder(zapcore.EncoderConfig{
+		MessageKey:  "msg",
+		LevelKey:    "lvl",
+		EncodeLevel: zapcore.LowercaseLevelEncoder,
+	})
+	core := zapcore.NewCore(enc, zapcore.AddSync(buf), zapcore.DebugLevel)
+	return zap.New(newMaskCore(core, newMasker(nil))), buf
+}
+
+// logJSON 打一条日志并把落盘字节同时以原文和解析结果交回。
+func logJSON(t *testing.T, fs ...zapcore.Field) (string, map[string]any) {
+	t.Helper()
+	l, buf := maskedJSONLogger()
+	l.Info("m", fs...)
+	raw := buf.String()
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw), &parsed), "落盘字节应是合法 JSON：%s", raw)
+	return raw, parsed
+}
+
+// subMap 取出嵌套的一层对象，失败时把落盘原文打出来。
+func subMap(t *testing.T, raw string, m map[string]any, key string) map[string]any {
+	t.Helper()
+	sub, ok := m[key].(map[string]any)
+	require.True(t, ok, "%q 应是对象，实际 %T；落盘：%s", key, m[key], raw)
+	return sub
+}
+
+type mapCreds struct {
+	User     string `json:"user"`
+	Password string `json:"password"`
+}
+
+// 14：非 string key 的 map 直传。map[int64]Order 是最常见的按 ID 索引写法，
+// encoding/json 把 key 十进制字符串化后照常序列化 value —— 不递归就是明文落盘。
+func TestMaskRecursesIntoNonStringKeyMap(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", map[int]mapCreds{1: {User: "alice", Password: "hunter2"}}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘字节里不能出现明文口令")
+	entry := subMap(t, raw, subMap(t, raw, m, "v"), "1")
+	assert.Equal(t, maskPlaceholder, entry["password"])
+	assert.Equal(t, "alice", entry["user"], "非敏感字段不受影响")
+}
+
+type byIDReq struct {
+	ByID map[int64]mapCreds `json:"by_id"`
+	Name string             `json:"name"`
+}
+
+// 15：非 string key 的 map 作为 struct 字段，嵌套位置同样要脱敏。
+func TestMaskRecursesIntoNestedNonStringKeyMap(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", byIDReq{
+		ByID: map[int64]mapCreds{7: {User: "alice", Password: "hunter2"}},
+		Name: "n",
+	}))
+
+	assert.NotContains(t, raw, "hunter2")
+	entry := subMap(t, raw, subMap(t, raw, subMap(t, raw, m, "v"), "by_id"), "7")
+	assert.Equal(t, maskPlaceholder, entry["password"])
+	assert.Equal(t, "n", subMap(t, raw, m, "v")["name"])
+}
+
+type byIDWithHitReq struct {
+	ByID  map[int64]mapCreds `json:"by_id"`
+	Token string             `json:"token"`
+}
+
+// 16：同层一个 key 命中、一个是非 string key 的 map。
+// 这是最难看的形态 —— 一条日志里一半脱敏一半明文，看上去像"防线生效了"。
+func TestMaskDoesNotLeaveHalfMaskedRecord(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", byIDWithHitReq{
+		ByID:  map[int64]mapCreds{7: {User: "alice", Password: "hunter2"}},
+		Token: "abc.def",
+	}))
+
+	assert.NotContains(t, raw, "hunter2")
+	assert.NotContains(t, raw, "abc.def")
+	v := subMap(t, raw, m, "v")
+	assert.Equal(t, maskPlaceholder, v["token"])
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, subMap(t, raw, v, "by_id"), "7")["password"])
+}
+
+// maskHeaderKey 是 key 类型自带 MarshalText 的形态：底层是 int，
+// 但 encoding/json 用 MarshalText 的结果当成员名，于是成员名是有意义的英文词。
+type maskHeaderKey int
+
+func (maskHeaderKey) MarshalText() ([]byte, error) { return []byte("authorization"), nil }
+
+// 17：字符串化后的 key 要统一查一次黑名单。
+func TestMaskChecksStringifiedMapKey(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", map[maskHeaderKey]string{7: "Bearer topsecret"}))
+
+	assert.NotContains(t, raw, "topsecret")
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["authorization"])
+}
+
+// 18：float key 与 bool key。
+//
+// 实测（Go 1.27，encoding/json 由 json/v2 实现）：float key 是**支持**的，
+// 序列化成 {"1.5":…}；bool key 报 unsupported value，zap 记成 vError，
+// 不落盘明文。两种都不能 panic。
+func TestMaskHandlesFloatAndBoolMapKeys(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", map[float64]mapCreds{1.5: {User: "alice", Password: "hunter2"}}))
+	assert.NotContains(t, raw, "hunter2", "float key 的 map 是能序列化的，必须递归")
+	assert.Equal(t, maskPlaceholder,
+		subMap(t, raw, subMap(t, raw, m, "v"), "1.5")["password"])
+
+	raw, m = logJSON(t, zap.Any("v", map[bool]mapCreds{true: {User: "alice", Password: "hunter2"}}))
+	assert.NotContains(t, raw, "hunter2", "bool key 编不出成员名，json 报错而非落盘")
+	assert.Contains(t, m, "vError", "zap 把编码失败记成 <key>Error，落盘：%s", raw)
+	assert.NotContains(t, m, "v")
+}
+
+// sMaskHidden 是未导出的嵌入类型。带 json 名字 tag 时它不平铺，而是作为普通
+// 命名字段嵌套输出 —— encoding/json 的 typeFields 对匿名字段的跳过条件是
+// "未导出**且**类型非 struct"，所以它照样被收录。
+type sMaskHidden struct {
+	Password string `json:"password"`
+	Region   string `json:"region"`
+}
+
+type sMaskTagged struct {
+	sMaskHidden `json:"base"`
+	User        string `json:"user"`
+}
+
+type sMaskTaggedPtr struct {
+	*sMaskHidden `json:"base"`
+	User         string `json:"user"`
+}
+
+// 19：未导出匿名嵌入 + json 名字 tag，值嵌入。
+func TestMaskTraversesUnexportedTaggedEmbed(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskTagged{
+		sMaskHidden: sMaskHidden{Password: "hunter2", Region: "cn-north"},
+		User:        "alice",
+	}))
+
+	assert.NotContains(t, raw, "hunter2")
+	v := subMap(t, raw, m, "v")
+	base := subMap(t, raw, v, "base")
+	assert.Equal(t, maskPlaceholder, base["password"])
+	assert.Equal(t, "cn-north", base["region"], "同层的非敏感字段不能丢")
+	assert.Equal(t, "alice", v["user"])
+}
+
+// 20：同上，指针嵌入。
+func TestMaskTraversesUnexportedTaggedEmbedPointer(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskTaggedPtr{
+		sMaskHidden: &sMaskHidden{Password: "hunter2", Region: "cn-north"},
+		User:        "alice",
+	}))
+
+	assert.NotContains(t, raw, "hunter2")
+	base := subMap(t, raw, subMap(t, raw, m, "v"), "base")
+	assert.Equal(t, maskPlaceholder, base["password"])
+	assert.Equal(t, "cn-north", base["region"])
+}
+
+type sMaskPlainBase struct {
+	Region string `json:"region"`
+}
+
+type sMaskTaggedClean struct {
+	sMaskPlainBase `json:"base"`
+	Token          string `json:"token"`
+}
+
+// 21：未导出匿名嵌入自身无命中，但同层兄弟字段命中。
+//
+// 这是 Interface() 那个坑的回归测试：兄弟命中会触发"把本层命名字段原样搬进 map"，
+// 而未导出匿名嵌入字段的 reflect.Value 拿不到 Interface()（只有它自己拿不到，
+// 它的导出子字段是可以取值的），照搬就 panic。
+func TestMaskDoesNotPanicOnUnexportedEmbedWithSiblingHit(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskTaggedClean{
+		sMaskPlainBase: sMaskPlainBase{Region: "cn-north"},
+		Token:          "abc.def",
+	}))
+
+	assert.NotContains(t, raw, "abc.def")
+	v := subMap(t, raw, m, "v")
+	assert.Equal(t, maskPlaceholder, v["token"])
+	assert.Equal(t, "cn-north", subMap(t, raw, v, "base")["region"], "无命中的嵌入体不能丢")
+}
+
+// sMaskBadTag 的 json tag 名字非法（含引号）。encoding/json 不会原样采用它，
+// 拿这个名字查黑名单必然不命中 —— 而字段值是货真价实的口令。
+type sMaskBadTag struct {
+	Password string `json:"pass\"word"`
+	User     string `json:"user"`
+}
+
+// 22：非法 tag 名 —— 双名查生效。
+func TestMaskChecksGoFieldNameWhenTagNameIsInvalid(t *testing.T) {
+	raw, _ := logJSON(t, zap.Any("v", sMaskBadTag{Password: "hunter2", User: "alice"}))
+	assert.NotContains(t, raw, "hunter2", "tag 名查不中时要退回 Go 字段名，落盘：%s", raw)
+}
+
+type sMaskRenamed struct {
+	Token string `json:"count"`
+}
+
+// 23：tag 名无害、Go 字段名是凭据 —— 任一命中即脱敏。
+func TestMaskChecksBothTagAndGoFieldName(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskRenamed{Token: "abc.def"}))
+	assert.NotContains(t, raw, "abc.def")
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["count"])
+}
+
+type sMaskTokenCount struct {
+	TokenCount int `json:"n"`
+}
+
+// 24：防误伤回归 —— 双名查不能把 TokenCount 这类计数字段也拖下水。
+func TestMaskDoubleNameLookupDoesNotOverreach(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskTokenCount{TokenCount: 42}))
+	assert.EqualValues(t, 42, subMap(t, raw, m, "v")["n"], "计数字段不是凭据，落盘：%s", raw)
+}
+
+type sMaskConfirm struct {
+	PasswordConfirm string `json:"passwordConfirm"`
+	Password2       string `json:"password2"`
+	PasswordRepeat  string `json:"password_repeat"`
+}
+
+// 25：确认口令类字段的值就是明文口令本身，不是关于口令的元数据。
+func TestMaskCoversPasswordConfirmVariants(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskConfirm{
+		PasswordConfirm: "hunter2",
+		Password2:       "hunter2",
+		PasswordRepeat:  "hunter2",
+	}))
+
+	assert.NotContains(t, raw, "hunter2")
+	v := subMap(t, raw, m, "v")
+	for _, k := range []string{"passwordConfirm", "password2", "password_repeat"} {
+		assert.Equal(t, maskPlaceholder, v[k], "%q 的值就是明文口令", k)
+	}
+}
+
+// 26：既有裁决的回归 —— 这四个不该命中，补黑名单不能把它们捎带上。
+func TestMaskStillDoesNotOverreachAfterBlacklistGrowth(t *testing.T) {
+	m := newMasker(nil)
+	for _, k := range []string{"password_hash", "token_count", "phone_masked", "mobile_type"} {
+		assert.False(t, m.hit(k), "既有裁决：不该命中 %q", k)
+	}
+}
+
+// map[any]V 是合法的：实测 {1:…} 落盘成 {"1":…}，key 的动态类型决定成员名。
+// 这条路径（maskMapKeyName 的 interface 拆箱）是本轮新增的，得有测试盯着。
+func TestMaskRecursesIntoInterfaceKeyMap(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", map[any]mapCreds{1: {User: "alice", Password: "hunter2"}}))
+
+	assert.NotContains(t, raw, "hunter2")
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, subMap(t, raw, m, "v"), "1")["password"])
+}
+
+// NaN / ±Inf 编不出 JSON 数值，json 报 unsupported value 而不落盘 ——
+// 不能 panic，也不能自作主张把一条编不出来的记录改成能编出来的形状。
+func TestMaskLeavesUnencodableFloatKeyMapAlone(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", map[float64]mapCreds{
+		math.NaN(): {User: "alice", Password: "hunter2"},
+	}))
+
+	assert.NotContains(t, raw, "hunter2")
+	assert.Contains(t, m, "vError", "落盘：%s", raw)
 }
