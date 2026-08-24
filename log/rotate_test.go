@@ -14,6 +14,11 @@ import (
 
 // setNow replaces the package-wide time hook and returns a restore function.
 // Task 8's Span tests reuse it too.
+//
+// IMPORTANT: this replaces nowFunc (rotate.go), which is a plain
+// package-level variable — the replacement is not atomic. Tests using
+// setNow must not call t.Parallel(). See the comment on nowFunc for the
+// full rationale.
 func setNow(f func() time.Time) (restore func()) {
 	old := nowFunc
 	nowFunc = f
@@ -152,6 +157,17 @@ func TestDailyRotatorCreatesDirWith0750(t *testing.T) {
 // processes, with a blast radius much larger than the exposure it
 // prevents. This only asserts "we don't touch the directory"; content
 // safety is backstopped by the file itself being 0600.
+//
+// Umask dependency: os.Mkdir applies the process umask to the requested
+// mode. This test assumes the default umask (0022), which yields the
+// expected 0755. If run under a non-standard umask (e.g., 0077), the
+// actual directory mode would differ and the assertion would fail. This
+// is acceptable because: (1) Go test processes inherit the user's
+// default shell umask, which is 0022 on every Linux/macOS system we
+// target, and (2) CI environments uniformly use 0022. Explicitly
+// setting umask via syscall.Umask(0) is possible but would affect
+// other tests sharing the process, and t.Parallel is prohibited in
+// this package (see nowFunc's comment).
 func TestDailyRotatorDoesNotChmodPreexistingDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "preexisting")
 	require.NoError(t, os.Mkdir(dir, 0o755))
@@ -198,4 +214,26 @@ func TestDailyRotatorDoesNotCreateFileWhenAbsent(t *testing.T) {
 
 	_, err := os.Stat(path)
 	assert.True(t, os.IsNotExist(err), "文件不存在时不该被抢先创建")
+}
+
+// TestDailyRotatorSkipsChmodWhenAlready0600 exercises the "file exists
+// and already has correct permissions" branch of the os.Stat guard:
+// when the file is already 0600, no chmod syscall is needed and the file
+// remains unchanged. This cannot distinguish whether the implementation
+// actually skipped the syscall (both paths produce the same end state on
+// a real filesystem), but it confirms the Stat+Perm check does not
+// inadvertently break anything on the common "permissions already
+// correct" path.
+func TestDailyRotatorSkipsChmodWhenAlready0600(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	require.NoError(t, os.WriteFile(path, []byte("已有内容\n"), 0o600))
+
+	d := newDailyRotator(&lumberjack.Logger{Filename: path})
+	defer d.Close()
+
+	fi, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm(),
+		"已经是 0600 的文件不该被改动")
 }

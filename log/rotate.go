@@ -95,9 +95,24 @@ func newDailyRotator(lj *lumberjack.Logger) *dailyRotator {
 	// carry that collateral-damage risk — hence we tighten it ourselves
 	// before handing off to lumberjack. When the file doesn't exist yet,
 	// we do nothing — lumberjack will create it at 0600 on its own.
-	// Errors are ignored in keeping with the existing style: if the
-	// chmod silently fails, lumberjack's first write will surface the
-	// real underlying cause.
+	//
+	// The os.Stat guard (err == nil && Perm() != 0o600) serves two
+	// purposes: (1) skip the chmod when the file doesn't exist (nothing
+	// to tighten; lumberjack will create it correctly), and (2) skip the
+	// syscall when the file is already at 0600 (pure efficiency — the
+	// behavioral outcome is identical to an unconditional os.Chmod, but
+	// we avoid one syscall on the common "file already correct" path).
+	// Tests cannot distinguish these two implementations on a real
+	// filesystem because MkdirAll+Chmod failures would be swallowed, and
+	// the end state is the same either way.
+	//
+	// Errors are ignored: a failed chmod means the file retains its
+	// original (looser) permissions. This is a degraded-security state,
+	// not a fatal error — continuing to write logs at a looser permission
+	// is preferable to refusing to log entirely. The exposure is limited
+	// to other local users being able to read log content until the file
+	// is next rotated (at which point lumberjack creates the new file at
+	// 0600).
 	if fi, err := os.Stat(lj.Filename); err == nil && fi.Mode().Perm() != 0o600 {
 		_ = os.Chmod(lj.Filename, 0o600)
 	}
