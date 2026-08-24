@@ -54,7 +54,7 @@ const (
 // path can actually produce a shorter string (because the parent dir name
 // might be short, e.g. "long"). To make TrimmedPath longer, the file name or
 // parent dir name itself must be made longer, e.g.
-// "/src/verylongpackagename/handlerimplementation.go" -> 47 characters.
+// "/src/verylongpackagename/handlerimplementation.go:1234" -> 49 characters.
 const (
 	widthLevel  = 6
 	widthTrace  = 8
@@ -113,22 +113,22 @@ func (e *consoleEncoder) OpenNamespace(k string) {
 func (e *consoleEncoder) Clone() zapcore.Encoder {
 	c := &consoleEncoder{MapObjectEncoder: zapcore.NewMapObjectEncoder(), color: e.color}
 
-	// Deep-copy the top level and every nested sub-map -- it can no longer
-	// be a shallow copy like before (for k, v := range e.Fields {
-	// c.Fields[k] = v }). A shallow copy would make the clone and the
-	// parent encoder share the same map[string]any at some namespace
-	// layer, so an AddString on one side would leak into the other
-	// (TestConsoleCloneNamespaceIsolation pins this down).
+	// Deep-copy the fields into c.Fields -- the existing c.Fields map must be
+	// the target (not a replacement), because NewMapObjectEncoder()'s private
+	// cur already points at it; swapping c.Fields for a different object would
+	// leave cur dangling at the old, empty map.
 	//
-	// Note that this "pours the content into the existing c.Fields map",
-	// it does not point c.Fields at a brand-new map: when
-	// NewMapObjectEncoder() constructs c, its internal private cur already
-	// points at this specific map object. If we swapped c.Fields for a
-	// different object, cur would still be left pointing at the old, empty
-	// map, and a later AddString would silently write into nowhere -- this
-	// pitfall is only avoided by keeping "c.Fields and cur are the same
-	// object".
-	for k, v := range deepCopyFields(e.Fields) {
+	// Leaf values (string/numeric/[]byte etc.) have value semantics and are
+	// safe to assign directly. Nested map[string]any sub-layers (produced by
+	// OpenNamespace or zap.Any with a map value) must be recursively copied;
+	// a shallow copy would make clone and parent share the same map object,
+	// leaking writes between them (TestConsoleCloneDeepCopiesNestedMap pins
+	// this down).
+	for k, v := range e.Fields {
+		if sub, ok := v.(map[string]any); ok {
+			c.Fields[k] = deepCopyFields(sub)
+			continue
+		}
 		c.Fields[k] = v
 	}
 
