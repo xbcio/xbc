@@ -20,7 +20,7 @@ func TestNewTraceIsValidAndSampled(t *testing.T) {
 	assert.False(t, tr.ParentSpanID.IsValid(), "根 span 没有 parent")
 }
 
-// RequestID 与 TraceID 必须是同一个值的两种编码，Extract 的反推依赖这条。
+// RequestID and TraceID must be two encodings of the same value; Extract's reverse derivation depends on this.
 func TestRequestIDAndTraceIDAreSameValue(t *testing.T) {
 	tr := NewTrace("root")
 
@@ -76,7 +76,7 @@ func TestTraceContextRoundTrip(t *testing.T) {
 func TestTraceFromMissingReturnsZeroValue(t *testing.T) {
 	assert.False(t, TraceFrom(context.Background()).Valid())
 
-	//lint:ignore SA1012 显式验证 nil ctx 不 panic
+	//lint:ignore SA1012 explicitly verifying that a nil ctx does not panic
 	assert.NotPanics(t, func() { TraceFrom(nil) }) //nolint:staticcheck
 	assert.False(t, TraceFrom(nil).Valid())        //nolint:staticcheck
 }

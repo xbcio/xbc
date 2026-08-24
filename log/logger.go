@@ -1,8 +1,9 @@
-// Package log 是 xbc 的日志门面。
+// Package log is xbc's logging facade.
 //
-// 它遵循 SLF4J 的思路：业务代码与插件只依赖本包的 Logger 接口，
-// 具体后端由 Init 装配（默认 zap）或 SetLogger 替换。
-// 本包零框架依赖，可脱离 xbc 单独使用。
+// It follows the SLF4J approach: business code and plugins depend only on
+// this package's Logger interface, and the concrete backend is wired up by
+// Init (zap by default) or replaced via SetLogger.
+// This package has zero framework dependencies and can be used standalone, outside xbc.
 package log
 
 import (
@@ -12,8 +13,8 @@ import (
 	"go.uber.org/zap"
 )
 
-// Level 是日志级别。
-// 数值刻意与 zapcore.Level 对齐（Debug=-1），binding 里可直接类型转换。
+// Level is the log level.
+// The numeric values are deliberately aligned with zapcore.Level (Debug=-1), so bindings can type-convert directly.
 type Level int8
 
 const (
@@ -38,15 +39,17 @@ func (l Level) String() string {
 	}
 }
 
-// ParseLevel 解析级别名。空字符串视为"未指定"，返回 InfoLevel；
-// 除此之外任何无法识别的名字（如拼错的 "verbose"）都返回错误，
-// 绝不静默降级——免得配置写错时线上悄悄丢日志却查不出原因。
+// ParseLevel parses a level name. An empty string is treated as "unspecified"
+// and returns InfoLevel; any other unrecognized name (e.g. a misspelled
+// "verbose") returns an error and is never silently downgraded -- otherwise a
+// misconfigured level could silently drop logs in production with no way to trace it.
 func ParseLevel(s string) (Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
 		return DebugLevel, nil
-	case "info", "": // 零值可用惯例：与 zapcore.Level.UnmarshalText 对空字符串的处理一致，
-		// 让 YAML/环境变量里留空的 Level 字段直接落到 info，而不是报错。
+	case "info", "": // Zero-value-usable convention: matches how zapcore.Level.UnmarshalText
+		// treats an empty string, so a Level field left blank in YAML/env vars
+		// falls through to info instead of erroring.
 		return InfoLevel, nil
 	case "warn", "warning":
 		return WarnLevel, nil
@@ -57,32 +60,34 @@ func ParseLevel(s string) (Level, error) {
 	}
 }
 
-// Logger 是门面接口。变参是 KV 序列：key1, val1, key2, val2, ...
-// key 必须是 string；不是 string 或落单的参数会被归到 "!BADKEY" 字段，
-// 不会 panic 也不会静默吞掉。
+// Logger is the facade interface. Variadic args are a KV sequence: key1, val1, key2, val2, ...
+// A key must be a string; a non-string key or an unpaired trailing argument
+// is filed under the "!BADKEY" field -- it never panics and is never silently dropped.
 type Logger interface {
 	Debug(msg string, kv ...any)
 	Info(msg string, kv ...any)
 	Warn(msg string, kv ...any)
 	Error(msg string, kv ...any)
 
-	// With 派生带固定字段的子 Logger。
+	// With derives a child Logger with fixed fields attached.
 	With(kv ...any) Logger
 
-	// Enabled 报告该级别是否会真的输出，用来短路昂贵的字段构造。
+	// Enabled reports whether this level will actually produce output, used to short-circuit expensive field construction.
 	Enabled(lv Level) bool
 }
 
-// ZapProvider 是可选能力接口。后端若基于 zap 就实现它，
-// 调用方可通过 log.Zap(ctx) 拿到强类型入口做 zap 特有的操作。
-// 换成非 zap 后端时不实现即可，log.Zap 会返回 ok=false。
+// ZapProvider is an optional capability interface. A backend built on zap
+// should implement it, letting callers reach a strongly-typed entry point
+// via log.Zap(ctx) for zap-specific operations.
+// When switching to a non-zap backend, simply don't implement it; log.Zap will return ok=false.
 type ZapProvider interface {
 	Zap() *zap.Logger
 }
 
-// CallerSkipper 是可选能力接口。包级语法糖（TInfo 等）比门面方法
-// 多一层调用栈，靠它把 caller 指回业务代码而不是 log 包内部。
-// 第三方 binding 不实现也能工作，代价是 caller 指向 sugar.go。
+// CallerSkipper is an optional capability interface. Package-level syntax
+// sugar (TInfo, etc.) adds one more stack frame than the facade methods, and
+// this interface is what lets caller point back at the business code instead of into the log package itself.
+// Third-party bindings can work without implementing it, at the cost of caller pointing at sugar.go.
 type CallerSkipper interface {
 	WithCallerSkip(n int) Logger
 }
@@ -96,6 +101,6 @@ func (nopLogger) Error(string, ...any) {}
 func (nopLogger) With(...any) Logger   { return nopLogger{} }
 func (nopLogger) Enabled(Level) bool   { return false }
 
-// Nop 返回丢弃一切输出的 Logger。
-// 用于测试，以及 Init 之前 L() 的兜底 —— 未初始化时打日志不该 panic。
+// Nop returns a Logger that discards everything.
+// Used for tests, and as the fallback for L() before Init -- logging before initialization must not panic.
 func Nop() Logger { return nopLogger{} }

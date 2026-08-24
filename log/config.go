@@ -6,29 +6,30 @@ import (
 	"strings"
 )
 
-// 渲染格式。
+// Render formats.
 const (
-	FormatConsole = "console" // 对齐 + 着色，给人看
-	FormatJSON    = "json"    // 每行一个 JSON 对象，给机器检索
+	FormatConsole = "console" // aligned + colored, for humans
+	FormatJSON    = "json"    // one JSON object per line, for machine retrieval
 )
 
-// console 着色模式。
+// Console color modes.
 const (
 	ColorAuto   = "auto"
 	ColorAlways = "always"
 	ColorNever  = "never"
 )
 
-// 文件滚动策略。
+// File rotation policies.
 const (
-	RotateDaily = "daily" // 跨天滚一次（本框架实现，lumberjack 本身只按大小滚）
-	RotateSize  = "size"  // 只按 max_size 滚
+	RotateDaily = "daily" // rotate once per day (implemented by this framework; lumberjack itself only rotates by size)
+	RotateSize  = "size"  // rotate only by max_size
 )
 
-// Config 是日志配置。
+// Config is the log configuration.
 //
-// 格式是 sink 级而非全局的 —— "终端 console + 文件 json" 是最常见的组合，
-// 全局单一 format 表达不了。
+// Format is per-sink rather than global -- "console for terminal + json for
+// file" is the most common combination, and a single global format cannot
+// express that.
 type Config struct {
 	Level      string `yaml:"level"      json:"level"`
 	Caller     bool   `yaml:"caller"     json:"caller"`
@@ -39,7 +40,7 @@ type Config struct {
 
 	Sampling SamplingConfig `yaml:"sampling" json:"sampling"`
 
-	// MaskFields 追加到内置脱敏黑名单。只能加，不能减 —— 内置项不可移除。
+	// MaskFields is appended to the built-in mask blacklist. Additive only -- built-in entries cannot be removed.
 	MaskFields []string `yaml:"mask_fields" json:"mask_fields"`
 }
 
@@ -53,19 +54,20 @@ type FileConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
 	Path    string `yaml:"path"    json:"path"`
 
-	// Format 留空则按 Path 后缀推导：.jsonl/.json/.ndjson → json，其余 → console。
+	// Format is inferred from the Path suffix when left empty:
+	// .jsonl/.json/.ndjson -> json, everything else -> console.
 	Format string `yaml:"format" json:"format"`
 
 	Rotate     string `yaml:"rotate"      json:"rotate"`
 	MaxSize    int    `yaml:"max_size"    json:"max_size"`    // MB
-	MaxAge     int    `yaml:"max_age"     json:"max_age"`     // 天
-	MaxBackups int    `yaml:"max_backups" json:"max_backups"` // 个
+	MaxAge     int    `yaml:"max_age"     json:"max_age"`     // days
+	MaxBackups int    `yaml:"max_backups" json:"max_backups"` // count
 	Compress   bool   `yaml:"compress"    json:"compress"`
 
-	// ErrorPath 非空时额外开一个只收 error 及以上的 sink。
+	// ErrorPath, when non-empty, opens an additional sink that only receives error level and above.
 	ErrorPath string `yaml:"error_path" json:"error_path"`
 
-	// errorFormat 由 Normalize 按 ErrorPath 后缀推导，不对外暴露。
+	// errorFormat is inferred by Normalize from the ErrorPath suffix and is not exposed externally.
 	errorFormat string
 }
 
@@ -74,8 +76,8 @@ type SamplingConfig struct {
 	Thereafter int `yaml:"thereafter" json:"thereafter"`
 }
 
-// DefaultConfig 是本包的默认值真相源。
-// 内核的配置插件把 YAML 反序列化进这个结构后调 Normalize 即可。
+// DefaultConfig is the source of truth for this package's default values.
+// The kernel's config plugin can deserialize YAML into this struct and then call Normalize.
 func DefaultConfig() Config {
 	return Config{
 		Level:      "info",
@@ -99,7 +101,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// Normalize 填默认值、推导格式、校验枚举。幂等。
+// Normalize fills in defaults, infers formats, and validates enums. Idempotent.
 func (c *Config) Normalize() error {
 	if c.Level == "" {
 		c.Level = "info"
@@ -181,8 +183,8 @@ func checkFormat(field, v string) error {
 	}
 }
 
-// formatFromPath 按文件后缀推导渲染格式。
-// 文件后缀即格式声明：写 .jsonl 就是要机器读，写 .log 就是要人读。
+// formatFromPath infers the render format from the file suffix.
+// The file suffix is itself a format declaration: writing .jsonl means it's meant for machines to read, writing .log means it's meant for humans to read.
 func formatFromPath(p string) string {
 	switch strings.ToLower(filepath.Ext(p)) {
 	case ".jsonl", ".json", ".ndjson":

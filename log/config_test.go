@@ -33,7 +33,8 @@ func TestNormalizeIsIdempotent(t *testing.T) {
 	assert.Equal(t, first, c, "Normalize 必须幂等")
 }
 
-// 文件后缀即格式声明。用 .jsonl 而不是 .json —— 后者会让 `jq .` 对多行文件报错。
+// The file suffix itself is the format declaration. Use .jsonl instead of .json --
+// the latter makes `jq .` error out on a multi-line file.
 func TestFileFormatInferredFromExtension(t *testing.T) {
 	cases := map[string]string{
 		"logs/app.log":       FormatConsole,
@@ -64,7 +65,7 @@ func TestExplicitFormatOverridesInference(t *testing.T) {
 	assert.Equal(t, FormatConsole, c.File.Format, "显式配置压过后缀推导")
 }
 
-// error_path 有独立后缀，格式独立推导。
+// error_path has its own suffix and its format is inferred independently.
 func TestErrorPathFormatInferredIndependently(t *testing.T) {
 	c := DefaultConfig()
 	c.File.Enabled = true
