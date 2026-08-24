@@ -20,9 +20,9 @@ func TestTSeriesCallerPointsToCallSite(t *testing.T) {
 	logs := installObserver(t, zap.AddCaller())
 
 	_, _, line, _ := runtime.Caller(0)
-	TInfo(context.Background(), "via T")                 // line + 1
-	L().Info("via facade")                               // line + 2
-	TInfof(context.Background(), "via %s", "Tf")         // line + 3
+	TInfo(context.Background(), "via T")         // line + 1
+	L().Info("via facade")                       // line + 2
+	TInfof(context.Background(), "via %s", "Tf") // line + 3
 
 	require.Len(t, logs.All(), 3)
 	assert.Equal(t, line+1, logs.All()[0].Caller.Line, "TInfo 的 caller")
