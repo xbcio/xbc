@@ -54,7 +54,9 @@ const (
 // path can actually produce a shorter string (because the parent dir name
 // might be short, e.g. "long"). To make TrimmedPath longer, the file name or
 // parent dir name itself must be made longer, e.g.
-// "/src/verylongpackagename/handlerimplementation.go:1234" -> 49 characters.
+// "verylongpackagename/handlerimplementation.go:1234" -> 49 characters
+// (this is TrimmedPath's output, which drops everything above the parent
+// dir -- do not prepend "/src/" here, that would make it 54).
 const (
 	widthLevel  = 6
 	widthTrace  = 8
