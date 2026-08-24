@@ -9,7 +9,7 @@
 >
 > 一次批判性自审修掉了两个会让实现卡住的设计漏洞——产物的静态可知性（§5.7）与路由元数据的可见时机（§7.1）——并调整了三处默认值：显式注册默认启用（§6.4）、后台任务死亡策略（§5.2）、迁移默认关闭（§4.2）。
 >
-> 随后补全了两块此前缺席的设计：**插件复用**（§5.6 注册表接口匹配，让 B 依赖 A 时不必 import A 的第三方依赖）与**日志体系**（§8 SLF4J 式门面 + zap binding + OTel 链路，§9 零依赖子包）。
+> 随后补全了两块此前缺席的设计：**插件复用**（§5.6 注册表接口匹配，让 B 依赖 A 时不必 import A 的第三方依赖）与**日志体系**（§8 SLF4J 式门面 + zap binding + OTel 链路，§9 零依赖子包）。日志的变参定为 **KV 结构化**，由 console/json 两种 encoder 分别渲染（§8.7），并提供 `TInfo(ctx, ...)` 语法糖压掉两段式调用。
 
 ---
 
@@ -61,6 +61,8 @@
 | 20 | span 划分 | **业务显式开 span 并命名**，不是每请求一个随机值 | span_name 让日志能看出调用层次；未显式开时用路由模板兜底 |
 | 21 | 零依赖子包 | `log` / `errs` / `resp` 独立成包，根包用**类型别名**重导出 | 让 domain 层能用错误码而不拖进 gin；使用方一个 import 的体验不变 |
 | 22 | 注册表匹配 | 目标类型为**接口**时按可赋值性扫描 | 让「接口定义在消费方」这条 Go 惯例在插件系统里成立，B 不必 import A 的第三方依赖 |
+| 23 | 日志变参语义 | **KV 结构化**，`TInfof` 提供 printf 版 | 拼进 msg 的字段检索不到；KV 是数据，console/json 只是两种渲染 |
+| 24 | 日志格式归属 | **每个 sink 自带 format**，文件按后缀推导（`.log`/`.jsonl`） | 「终端 console + 文件 json」是最常见组合，全局单一 format 表达不了 |
 
 ---
 
@@ -674,9 +676,12 @@ server:                      # 框架保留
   shutdown_timeout: 30s
   auto_migrate: false        # 默认关闭，见 4.2
 
-log:                         # 框架保留
+log:                         # 框架保留，完整形态见 8.6
   level: info
-  format: json               # json | console
+  console: {enabled: true}   # 终端人读，带色对齐
+  file:                      # 文件后缀决定格式：.log → console，.jsonl → json
+    enabled: true
+    path: logs/app.log.jsonl
 
 plugins:                     # 插件命名空间
   gorm:
@@ -1123,6 +1128,41 @@ SLF4J 在 Java 里必须分成 `slf4j-api` + `slf4j-logback` 两个 jar，是因
 
 `Ctx(ctx)` 取的是**已绑好字段的 logger**（存在 context 里），不是每次现构造——O(1)，无反射。
 
+#### T 系列：`.Ctx(ctx)` 的语法糖
+
+`log.Ctx(ctx).Info(...)` 每天要写几百遍，两段式调用是纯粹的噪音。包级 T 函数把它压成一段：
+
+```go
+func TDebug(ctx context.Context, msg string, kv ...any)
+func TInfo (ctx context.Context, msg string, kv ...any)
+func TWarn (ctx context.Context, msg string, kv ...any)
+func TError(ctx context.Context, msg string, kv ...any)
+
+func TDebugf(ctx context.Context, format string, args ...any)
+func TInfof (ctx context.Context, format string, args ...any)
+func TWarnf (ctx context.Context, format string, args ...any)
+func TErrorf(ctx context.Context, format string, args ...any)
+```
+
+**两条路径完全等价**，T 版就是转发：
+
+```go
+log.TInfo(ctx, "订单创建", "order_id", id)      // 等价于
+log.Ctx(ctx).Info("订单创建", "order_id", id)
+```
+
+链式版留着不是为了兼容——`With` 派生、`Enabled` 预判这些场景仍然需要它：
+
+```go
+l := log.Ctx(ctx).With("order_id", id)   // 派生一次，后面反复用
+l.Info("校验通过")
+l.Info("库存锁定")
+```
+
+T 前缀转发到门面，所以 **`SetLogger` 换后端后 T 系列照常生效**——它不是绕过门面的后门。
+
+> **实现约束：两个 CallerSkip 实例。** 包级 T 函数比门面方法多一层栈帧，共用一个 logger 会让 `caller` 指到 log 包内部。binding 里必须持有两个实例——门面方法用 `AddCallerSkip(1)`，包级函数用 `AddCallerSkip(2)`。这个坑不写进实现清单，第一次看到 `caller: log/zap.go:88` 时会查很久。
+
 ### 8.4 业务代码的样子
 
 只传 ctx，链路字段自动带上：
@@ -1132,17 +1172,27 @@ func (s *OrderService) Create(ctx context.Context, req Req) error {
     ctx, end := log.Span(ctx, "OrderService.Create")
     defer end()
 
-    log.Ctx(ctx).Info("校验通过", "order_id", id)
+    log.TInfo(ctx, "校验通过", "order_id", id, "amount", amt)
     return s.dao.Insert(ctx, o)   // 传 ctx 下去，dao 里可再开子 span
 }
 ```
 
-```json
+**一次调用，两种渲染。** 同一条日志进 json encoder 和 console encoder，出来的是同一份数据的两个视图：
+
+```jsonc
+// json —— 机读，进 ELK/Loki
 {"level":"info","ts":"2026-08-24T10:23:45.123+08:00","caller":"order/service.go:42",
  "msg":"校验通过","trace_id":"01926f7e8c83a4d5b6c7d8e9fa0b1c2d",
  "span_id":"b2c3d4e5f6a7b8c9","span_name":"OrderService.Create",
- "request_id":"01J8XQZ7K3M4N5P6Q7R8S9T0V1","order_id":"1001"}
+ "request_id":"01J8XQZ7K3M4N5P6Q7R8S9T0V1","order_id":"1001","amount":99}
 ```
+
+```
+# console —— 人读，一行，对齐着色（见 8.7）
+10:23:45.123 INFO  01926f7e order/service.go:42       校验通过  order_id=1001 amount=99
+```
+
+`order_id` 在两边都是**可检索的独立字段**——json 里能 `order_id:1001` 精确过滤，console 里能 `grep order_id=1001`。这是把它写成 KV 而不是拼进 msg 的全部理由。
 
 `end()` 自动打一条耗时日志，嵌套 span 自动串父子：
 
@@ -1179,47 +1229,133 @@ func TraceFrom(ctx context.Context) Trace {
 
 一行配置从「日志链路」升级到「完整 tracing」，`log.Span(ctx, name)` 的调用点一个都不用动。这是不自己造 ID 类型换来的直接收益——自己造的话，这里得写一层双向转换，且永远有对不齐的风险。
 
-### 8.6 配置
+### 8.6 配置：sink 各自决定格式
+
+原来的「全局 `format` + `output` 列表」表达不了「终端要 console、文件要 json」这个最常见的诉求。改成**每个 sink 自带格式**：
 
 ```yaml
 log:
   level: info
-  format: json              # json | console
   caller: true
   stacktrace: error         # 该级别以上附堆栈
-  output: [stdout, file]
+
+  console:
+    enabled: true
+    format: console         # console | json，默认 console
+    color: auto             # auto | always | never
+
   file:
-    path: logs/app.log
+    enabled: true
+    path: logs/app.log      # 后缀决定格式：.log → console，.jsonl → json
+    format: ""              # 留空 = 按后缀推导；显式填写则覆盖推导
     rotate: daily           # daily | size
     max_size: 100           # MB，rotate=size 时生效
     max_age: 30             # 保留天数
     max_backups: 30
     compress: true
-    error_path: logs/error.log   # error 级别单独落盘
+    error_path: logs/error.log   # error 级别单独落盘，格式同样按后缀推导
+
   sampling:                 # 高 QPS 防刷爆
     initial: 100
     thereafter: 100
   mask_fields: []           # 追加脱敏字段，内置黑名单始终生效
 ```
 
-`rotate: daily` 需在 lumberjack 外包一层——它只按大小滚，按日期得自己换 writer（文件名模板 + 零点触发）。实现不复杂，但要写清这是**我们的实现**而非 lumberjack 能力，免得后来者去它文档里找。
+#### 文件后缀即格式声明
 
-### 8.7 脱敏做在 encoder 层
+| 后缀 | 格式 | 意图 |
+|---|---|---|
+| `.log` | console | 人直接 `tail -f` 看的 |
+| `.jsonl` | json | 采集器读的（JSON Lines，每行一个对象） |
+| 其他 | console | 兜底 |
+
+用 `.jsonl` 而非 `.json`，因为文件整体不是一个合法 JSON 值——`.json` 会让 `jq .` 直接报错，而 `.jsonl` 是这种「每行一个 JSON」布局的既有约定，`jq -c` 和主流采集器都认。
+
+推导只是默认值，`format` 字段显式写了就以它为准——**约定优先，配置兜底**，跟框架其他地方的取向一致。
+
+典型的三种组合：
+
+```yaml
+# 开发：只要终端，带色
+console: {enabled: true}
+file:    {enabled: false}
+
+# 生产：终端给 k8s logs 看，文件给采集器
+console: {enabled: true, format: json, color: never}
+file:    {enabled: true, path: logs/app.log.jsonl}
+
+# 传统部署：终端人看，文件也人看
+console: {enabled: true}
+file:    {enabled: true, path: logs/app.log}
+```
+
+多 sink 用 `zapcore.NewTee` 组装，**同一条日志被各自的 encoder 渲染一遍**——KV 数据只构造一次，呈现分两路。
+
+#### `rotate: daily` 是我们的实现
+
+lumberjack 只按大小滚，按日期得自己换 writer（文件名模板 + 零点触发）。实现不复杂，但要写清这是**我们的实现**而非 lumberjack 能力，免得后来者去它文档里找。
+
+滚动后的文件名保留原后缀，格式推导才不会漂移：`app.log.jsonl` → `app-2026-08-24.log.jsonl`。
+
+### 8.7 console 渲染：对齐与着色
+
+console encoder 的目标是**一条日志一行，扫一眼能定位**。参考 logback 的 pattern layout，固定宽度的字段对齐，变长的自然流动：
+
+```
+10:23:45.123 INFO  01926f7e order/service.go:42       校验通过  order_id=1001 amount=99
+10:23:45.156 WARN  01926f7e order/service.go:58       库存不足  sku=A100 remain=0
+10:23:45.201 ERROR 01926f7e payment/client.go:33      支付失败  err="connection refused"
+10:23:45.203 INFO  01926f7e xbc/assemble.go:112       span done  span_name=OrderService.Create duration_ms=42
+```
+
+| 段 | 宽度 | 规则 |
+|---|---|---|
+| 时间 | 12，固定 | `15:04:05.000`。日期不打——console 是给当下看的，文件名已带日期 |
+| level | 5，左对齐 | `INFO ` / `WARN ` / `ERROR` / `DEBUG`，按级着色 |
+| trace | 8，固定 | trace_id 前 8 位。32 位全打会挤掉正文，前 8 位在单机排查里足够区分 |
+| caller | 24，右对齐 | 超长从**左侧**截断加 `…`，保住文件名和行号——`…service/order/dao.go:88` |
+| msg | 变长 | 后跟两个空格再接 KV |
+| KV | 变长 | `key=value` 空格分隔，value 含空格时加引号 |
+
+**为什么不强行对齐 msg。** msg 长度差异太大，补齐到最长的那条会浪费半屏横向空间。zerolog 的 console writer、charmbracelet/log 都是这个取法。
+
+#### 着色
+
+| 元素 | 色 |
+|---|---|
+| DEBUG / INFO / WARN / ERROR | 青 / 绿 / 黄 / 红 |
+| 时间、trace、caller | 暗灰——它们是坐标，不是内容 |
+| key | 青 |
+| value | 默认色 |
+| `err` 字段的 value | 红——出错时眼睛直接落上去 |
+
+`color: auto` 的判定顺序，任一不满足就关掉：
+
+1. `NO_COLOR` 环境变量未设置（[no-color.org](https://no-color.org) 的事实标准）
+2. 输出目标是 TTY（重定向到文件或管道时不该混入 ANSI 转义码）
+3. `TERM != dumb`
+
+第 2 条最要紧：`./myapp > app.log` 之后文件里全是 `\033[32m` 是个很常见的翻车现场。
+
+### 8.8 脱敏做在 encoder 层
 
 > **[SEC-INFO] 字段脱敏不能靠调用方自觉。** 包一层 `zapcore.Encoder` 拦截字段名，命中黑名单直接替换为 `***`：
 
 ```go
-log.Ctx(ctx).Info("登录", "password", pwd)
-// → {"msg":"登录","password":"***"}
+log.TInfo(ctx, "登录", "password", pwd)
+// json:    {"msg":"登录","password":"***"}
+// console: 10:23:45.123 INFO  01926f7e auth/login.go:31  登录  password=***
 ```
 
 内置黑名单（始终生效，不可关闭）：`password`、`token`、`ulp-token`、`access_token`、`refresh_token`、`secret`、`private_key`、`AK`、`SK`、`db_url`、`id_card`、`bank_card`、`phone`。`log.mask_fields` 只能**追加**不能移除。
+
+**脱敏在 encoder 链的最外层**，所以对 console 和 json 两个 sink 同时生效——不会出现「json 里脱了、console 里没脱」这种半拉子状态。
 
 放在 encoder 层而非调用点的理由：调用点有几千个，encoder 只有一个。**走 `log.Zap()` 逃生舱口的日志同样被拦截**——脱敏在 encoder，绕过 Sugar 层绕不过它。
 
 这也划出了 `SetLogger` 的边界：换掉后端就意味着**脱敏也换成了对方的实现**。文档必须明说这一点，否则「我换了个 logger，密码就进日志了」会成为一个没人预料到的事故。
 
-### 8.8 框架侧接入
+### 8.9 框架侧接入
 
 | 时机 | 动作 |
 |---|---|
@@ -1232,7 +1368,7 @@ log.Ctx(ctx).Info("登录", "password", pwd)
 
 原设计的 `requestid` 中间件扩展为 `trace` 中间件——职责从「生成一个 ID」变成「建立链路上下文」，位置仍在 `PhaseObserve`，仍不可拔除。
 
-### 8.9 其他仓库怎么用
+### 8.10 其他仓库怎么用
 
 零框架依赖意味着它可以脱离 xbc 单独用：
 
@@ -1240,13 +1376,21 @@ log.Ctx(ctx).Info("登录", "password", pwd)
 import "github.com/xbcio/xbc/log"
 
 func main() {
-    log.Init(log.Config{Level: "info", Format: "json"})
+    log.Init(log.Config{
+        Level:   "info",
+        Console: log.ConsoleConfig{Enabled: true},
+        File:    log.FileConfig{Enabled: true, Path: "logs/app.log.jsonl"},
+    })
     defer log.Sync()
+
     log.L().Info("独立使用，不需要 xbc 框架")
+    log.TInfo(ctx, "带链路", "order_id", id)   // ctx 里有 trace 就自动带上
 }
 ```
 
-已有日志体系的仓库，用门面接管即可——`log.SetLogger` 之后，所有走 `log.Ctx()` / `log.L()` 的代码（包括 xbc 插件）都落到你的实现上：
+链路能力也是自带的——`log.Span` / `TraceFrom` 不依赖框架，任何 Go 服务都能用它串起 trace_id 与 span。
+
+已有日志体系的仓库，用门面接管即可——`log.SetLogger` 之后，所有走 `log.Ctx()` / `log.L()` / T 系列的代码（包括 xbc 插件）都落到你的实现上：
 
 ```go
 log.SetLogger(myLogger{})   // 实现 log.Logger 的四个日志方法 + With + Enabled
@@ -1322,11 +1466,13 @@ xbc/
 │
 ├── log/                      零框架依赖，可脱离 xbc 单独用
 │   ├── logger.go             Logger 门面接口 + Level + ZapProvider
+│   ├── sugar.go              T 系列包级语法糖（TInfo / TInfof / ...）
 │   ├── zap.go                默认 binding：zap 装配、SetLogger、L / Ctx
+│   ├── console.go            console encoder：对齐、着色、TTY 探测
 │   ├── trace.go              Trace（内嵌 OTel SpanContext）/ Span / Fork
 │   ├── mask.go               脱敏 encoder：内置黑名单 + mask_fields
 │   ├── rotate.go             daily 滚动（lumberjack 只按大小滚，日期得自己来）
-│   └── config.go             Config + 默认值
+│   └── config.go             Config + 默认值 + 后缀推导 format
 │
 ├── errs/                     零依赖：Error + 预置错误码
 ├── resp/                     零依赖：Response / Paged
@@ -1419,6 +1565,11 @@ func TestShutdownReverseOrder(t *testing.T) {
 
 - 脱敏：内置黑名单命中 → `***`；`mask_fields` 追加生效；**尝试移除内置项无效**
 - 脱敏对 `log.Zap()` 逃生舱口同样生效（证明拦截在 encoder 而非 Sugar 层）
+- 脱敏对 console 与 json 两个 sink 同时生效
+- **格式推导：`.log` → console / `.jsonl` → json / 显式 `format` 覆盖推导 / 滚动后后缀不漂移**
+- **console 渲染：固定段宽度正确、caller 超长从左截断、KV value 含空格时加引号**
+- **着色：`NO_COLOR` 置位则关 / 非 TTY 则关 / `color: always` 强开**
+- **T 系列与链式等价：同参数产出同字段；caller 指向业务代码而非 log 包**
 - 链路：入站 `traceparent` 被解析并沿用 / 无入站头时新建 / `Fork` 后 trace_id 不变而 span_id 变
 - `Ctx()` 在无链路上下文时回落到 `L()`，不 panic
 - `SetLogger` 后框架与插件的日志全部落到替换实现上
@@ -1443,7 +1594,8 @@ func TestGormPluginConformance(t *testing.T) {
 ## 13. 实施顺序
 
 ```
-0. log 子包     Logger 门面 + zap binding + 脱敏 encoder + Trace/Span + daily 滚动
+0. log 子包     Logger 门面 + T 系列糖 + zap binding + console/json encoder
+                + 脱敏 + Trace/Span + daily 滚动
       ↑ 排在最前：内核自己就要用它，且它零框架依赖，可独立测完再往上盖
 1. 内核骨架     Plugin 接口族 / Base / Context / Register / Name 自动推导
 2. 配置         koanf 加载 + profile + ENV + default/validate 绑定 + 多实例展开
@@ -1478,7 +1630,9 @@ func TestGormPluginConformance(t *testing.T) {
 | 产物需显式声明 | 比「直接 Provide」多一行 tag | 换来阶段 4 可建图、可 `doctor`、可在启动期抓出 nil 产物——这是必要成本，不是可选糖 |
 | 元数据请求时查 | 每请求一次 map 查找 | 冻结后无锁，O(1)，代价可忽略；换来时序上的绝对正确 |
 | 迁移默认关闭 | 「改了 model 表没变」会成为新的常见困惑 | 启动日志主动打印「迁移未执行」与修法；dev profile 一行开启 |
-| 日志门面用 KV 变参 | 编译期不校验键值配对，`Info("m", "k")` 落地成一条 dangling key | binding 侧检测奇数参并降级为 `!BADKEY` 字段（同 slog）；`go vet` 风格的 lint 规则可后补 |
+| 日志门面用 KV 变参 | 编译期不校验键值配对，`TInfo(ctx,"m","k")` 落地成 dangling key | binding 侧检测奇数参并降级为 `!BADKEY` 字段（同 slog）；`go vet` 风格的 lint 规则可后补 |
+| KV 与 gfa 的 `Infoln` 语义不同 | 从 gfa 迁移的 `TInfo(ctx,"支付",id,amt)` **编译通过但把 id 当 key**，偶数参时连 `!BADKEY` 都不触发 | 迁移指南单列一节：拼接语义一律改走 `TInfof`；examples 里只出现 KV 写法 |
+| 同一条日志渲染两遍 | 双 sink 时 encoder 跑两次 | KV 数据只构造一次，重复的只是序列化；高 QPS 下靠 `sampling` 兜底 |
 | `SetLogger` 换后端 | **脱敏一并换成对方的实现**，内置黑名单失效 | 文档在 `SetLogger` 处显式警示；`doctor` 检测到非默认后端时打印一行提示 |
 | 不做热重载 | 改配置须重启 | 插件接口保持简单；如确有需要，待接口稳定后再评估 |
 | 内建三中间件不可拔 | 违背「一切皆插件」的纯粹性 | 它们是请求契约本身，可拔会让 `traceId` 与日志契约同时失效 |
