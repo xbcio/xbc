@@ -51,6 +51,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"go.uber.org/zap/zapcore"
 )
@@ -593,22 +595,73 @@ func maskNamedField(sf reflect.StructField) bool {
 	return t.Kind() == reflect.Struct
 }
 
-// hitFieldName 用 json tag 名与 Go 字段名双查黑名单，任一命中即脱敏。
+// hitFieldName 查黑名单时用**多个候选名**，任一命中即脱敏。
 //
 // 起因：tag 名非法时（`json:"pass\"word"` 这种）encoding/json 不会原样采用它，
-// 我们却拿着这个名字去查黑名单，必然不命中 —— 而字段值是货真价实的口令。
-// 复刻 json 的 tag 校验规则是个陷阱：v1 校验失败退回 Go 字段名，v2 把名字截断到
-// 第一个非法字符（实测 pass"word → pass），两个版本的选择都不一样。与其预测它
-// 用哪个名字输出，不如两个名字都挡住。
+// 我们却拿着 tag 原名去查黑名单，必然不命中 —— 而字段值是货真价实的口令。
+// 与其预测它用哪个名字输出，不如把它可能用的名字全挡住：
+//
+//  1. tag 的名字部分（也是我们输出用的成员名）
+//  2. Go 字段名 —— v1 校验失败时用它，v2 在 tag 首字符非法时也用它
+//  3. 截断名：tag 名截到第一个保留字符（反斜杠、单引号、双引号、反引号）之前
+//  4. v2 名：从 tag 开头取的最长合法标识符前缀
+//
+// 3 与 4 的关系不是包含而是并集，两个方向的漏网都实测过：
+//
+//	json:"access_token-extra\y" → 截断名 access_token-extra 不命中，v2 名
+//	                              access_token 命中（v2 落盘的就是这个成员名）
+//	json:"db.password\"x"       → v2 名 db 不命中，截断名 db.password 命中
 //
 // 误伤面是可控的：Token string `json:"count"` 会因 Go 名命中而脱敏（值大概率
 // 真是 token，脱敏是对的），而 TokenCount int `json:"n"` 的后缀词组是
-// count / tokencount，两边都不命中。
+// count / tokencount，几个候选都不命中。
 func (m *masker) hitFieldName(sf reflect.StructField, name string) bool {
 	if m.hit(name) {
 		return true
 	}
-	return name != sf.Name && m.hit(sf.Name)
+	if name != sf.Name && m.hit(sf.Name) {
+		return true
+	}
+	trunc, v2 := maskTagAltNames(sf.Tag.Get("json"))
+	if trunc != name && m.hit(trunc) {
+		return true
+	}
+	return v2 != trunc && v2 != name && m.hit(v2)
+}
+
+// maskTagReserved 是 encoding/json v2 在 tag 名字部分保留的字符集，
+// 逐字节抄自 $GOROOT/src/encoding/json/v2/fields.go 的 parseFieldOptions。
+const maskTagReserved = ",\\'\"`"
+
+// maskTagAltNames 返回 tag 名字部分之外的两个查名候选。tag 名合法（没有被保留
+// 字符截断）时两者都是空串 —— 那种情况下 v1 与 v2 用的都是候选 1。
+//
+// v2 的规则（parseFieldOptions 435-462 → consumeTagOption 576-640）：名字先截到
+// 第一个保留字符；若截断处不是逗号，则丢弃这个名字，从 tag 开头重新解析一个
+// Go 标识符 —— 首 rune 是 '_' 或 unicode.IsLetter 时取最长的 isLetterOrDigit
+// 前缀，否则报错、成员名退回 Go 字段名（已由候选 2 覆盖）。
+//
+// isLetterOrDigit 不含 '-' 和 '.'，所以 v2 名可能比截断名短得多；而 unicode
+// 的字母判定含 CJK（`json:"密码\"x"` 实测落盘成员就是 密码），不能拿 ASCII
+// 范围硬判。
+func maskTagAltNames(tag string) (trunc, v2 string) {
+	if tag == "" || strings.HasPrefix(tag, ",") {
+		return "", ""
+	}
+	n := strings.IndexAny(tag, maskTagReserved)
+	if n < 0 || tag[n] == ',' {
+		return "", "" // 名字完整，或止于逗号 —— v1/v2 都原样采用
+	}
+	trunc = tag[:n]
+	if r, _ := utf8.DecodeRuneInString(tag); r == '_' || unicode.IsLetter(r) {
+		v2 = tag[:len(tag)-len(strings.TrimLeftFunc(tag, maskIsLetterOrDigit))]
+	}
+	return trunc, v2
+}
+
+// maskIsLetterOrDigit 与 encoding/json/v2 的 isLetterOrDigit 同义。
+func maskIsLetterOrDigit(r rune) bool {
+	return r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r)
 }
 
 // maskUnexported 处理拿不到 Interface() 的字段值，也就是未导出的匿名 struct
@@ -864,8 +917,14 @@ func (m *masker) maskStringKeyMap(rv reflect.Value, depth int, seen *map[uintptr
 // 序列化还是 {"1":{…}}。零拷贝原则照旧 —— 只在第一次命中时才整份快照。
 //
 // 任何一个 key 字符串化失败就整块原样交回：encoding/json 对 map 是全有全无的，
-// 一个 key 编不出成员名，整个字段就编码失败记成 <key>Error。我们跟着它走，
-// 不自作主张把一条本来编不出来的记录改成能编出来的形状。
+// 一个 key 编不出成员名，整个字段就编码失败记成 <key>Error。这里跟着它走，
+// 是因为我们判断不了那个 key，而不是因为形状必须一致。
+//
+// 形状本来就不保证一致：map[any]X{1.5: …} 的 key 我们编得出来（"1.5"），
+// encoding/json 却报 unsupported value（interface 装箱的 float 走不通它的
+// map key 路径），于是命中脱敏时我们输出 {"1.5":{"password":"***"}}，而未脱敏
+// 的同一份数据落盘是 vError。本函数保证的是不泄露明文，不保证与未脱敏时的
+// json.Marshal 结果同形。
 func (m *masker) maskOtherKeyMap(rv reflect.Value, depth int, seen *map[uintptr]struct{}) (any, bool) {
 	var out map[string]any
 	snapshot := func() (map[string]any, bool) {

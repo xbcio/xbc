@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -965,4 +966,156 @@ func TestMaskLeavesUnencodableFloatKeyMapAlone(t *testing.T) {
 
 	assert.NotContains(t, raw, "hunter2")
 	assert.Contains(t, m, "vError", "落盘：%s", raw)
+}
+
+// ---------------------------------------------------------------------------
+// Fix 11-12：tag 名候选取并集，float 成员名的 ECMAScript 边界
+//
+// 以下 tag 的名字部分都被保留字符（\ ' " ` 之一）截断。encoding/json v2 不会
+// 原样采用这种名字：它从 tag 开头重新取一段合法标识符（parseFieldOptions →
+// consumeTagOption），v1 则整个退回 Go 字段名。落盘成员叫什么不重要，重要的是
+// 值是货真价实的口令 —— 只有把几个候选取并集才挡得住。
+//
+// 每条都走完整的 zap.New(core).Info() 路径断言落盘字节，不直调 hitFieldName：
+// 判定函数对了而防线没挂上去，测试必须能看出来。
+// ---------------------------------------------------------------------------
+
+// sMaskCutQuote：tag 名被引号截断，v2 落盘成员是 password，值是明文口令。
+type sMaskCutQuote struct {
+	Foo string `json:"password\"x"`
+}
+
+// sMaskCutDash：第一候选 access_token-extra\y 的后缀词组是 extra / tokenextra /
+// accesstokenextra，一个都不命中；而 v2 落盘的成员名就是 access_token。
+type sMaskCutDash struct {
+	Foo string `json:"access_token-extra\\y"`
+}
+
+type sMaskCutBackslash struct {
+	Foo string `json:"token\\x"`
+}
+
+type sMaskCutBacktick struct {
+	Foo string "json:\"secret`x\""
+}
+
+// sMaskCutDot：反过来的方向 —— v2 名 db 不命中，截断名 db.password 命中。
+// 与 sMaskCutDash 一起证明任何单一候选都不够，必须取并集。
+type sMaskCutDot struct {
+	Foo string `json:"db.password\"x"`
+}
+
+// sMaskCutDigit：tag 首字符是数字，v2 的 consumeTagOption 报错，成员名退回
+// Go 字段名 —— 候选 2 兜底。
+type sMaskCutDigit struct {
+	Password string `json:"2fa\"x"`
+}
+
+// sMaskCutQuoted：单引号名在 struct tag 里不被允许（allowQuoted=false），
+// 同样退回 Go 字段名。
+type sMaskCutQuoted struct {
+	Token string `json:"'password'"`
+}
+
+// sMaskCutCount：防误伤回归 —— 三个候选 count-extra\y / Count / count-extra
+// 与 v2 名 count 全都不该命中。
+type sMaskCutCount struct {
+	Count int `json:"count-extra\\y"`
+}
+
+// 27：tag 名被引号截断 —— v2 落盘的成员就叫 password。
+func TestMaskChecksV2TruncatedTagName(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskCutQuote{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`password"x`], "落盘：%s", raw)
+}
+
+// 28：第一候选与 Go 名都不命中，只有 v2 名命中。
+func TestMaskChecksV2NameWhenTagPrefixMisses(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskCutDash{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`access_token-extra\y`], "落盘：%s", raw)
+}
+
+// 29：反斜杠与反引号同样是保留字符。
+func TestMaskChecksV2NameForOtherReservedChars(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskCutBackslash{Foo: "hunter2"}))
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`token\x`], "落盘：%s", raw)
+
+	raw, m = logJSON(t, zap.Any("v", sMaskCutBacktick{Foo: "hunter2"}))
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["secret`x"], "落盘：%s", raw)
+}
+
+// 30：v2 名比截断名更短、更不敏感的方向 —— 验并集，不是"用 v2 名替换候选 1"。
+func TestMaskChecksTruncatedTagNameWhenV2NameMisses(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskCutDot{Foo: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`db.password"x`], "落盘：%s", raw)
+}
+
+// 31：数字起始的 tag，v2 退回 Go 字段名 —— 候选 2 兜底。
+func TestMaskFallsBackToGoNameForDigitLeadingTag(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskCutDigit{Password: "hunter2"}))
+
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`2fa"x`], "落盘：%s", raw)
+}
+
+// 32：单引号 tag 同样退回 Go 字段名。
+func TestMaskFallsBackToGoNameForQuotedTag(t *testing.T) {
+	raw, m := logJSON(t, zap.Any("v", sMaskCutQuoted{Token: "abc.def"}))
+
+	assert.NotContains(t, raw, "abc.def", "落盘：%s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["'password'"], "落盘：%s", raw)
+}
+
+// 33：防误伤回归 —— 多加候选不能把计数字段拖下水。
+// 一个候选都不命中时字段原样交给 encoding/json，落盘的成员名由它自己决定
+// （v2 是 count、v1 是 Count），所以这里只断言值和占位符，不断言成员名。
+func TestMaskExtraNameCandidatesDoNotOverreach(t *testing.T) {
+	raw, _ := logJSON(t, zap.Any("v", sMaskCutCount{Count: 42}))
+
+	assert.NotContains(t, raw, maskPlaceholder, "计数字段不是凭据，落盘：%s", raw)
+	assert.Contains(t, raw, "42", "落盘：%s", raw)
+}
+
+// assertFloatKeyName 断言 float map key 落盘的成员名与 encoding/json 逐字节相同。
+// 期望值直接从 json.Marshal 的原始字节里截出来（形状固定是 {"<名>":1}），
+// 不走一遍 Unmarshal —— 解码会把转义还原，那就不是逐字节比对了。
+func assertFloatKeyName[T float32 | float64](t *testing.T, v T) {
+	t.Helper()
+	b, err := json.Marshal(map[T]int{v: 1})
+	require.NoError(t, err)
+	s := string(b)
+	require.True(t, strings.HasPrefix(s, `{"`) && strings.HasSuffix(s, `":1}`), "意外的形状：%s", s)
+	want := s[2 : len(s)-4]
+
+	raw, m := logJSON(t, zap.Any("v", map[T]mapCreds{v: {User: "alice", Password: "hunter2"}}))
+	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.Contains(t, raw, `"`+want+`":{`, "成员名要与 encoding/json 逐字节相同（%v），落盘：%s", v, raw)
+	assert.Equal(t, maskPlaceholder,
+		subMap(t, raw, subMap(t, raw, m, "v"), want)["password"], "落盘：%s", raw)
+}
+
+// 34：float 成员名的 ECMAScript 边界。
+//
+// maskFormatFloat 复刻的是 encoding/json 写数值的规则（ECMAScript 的
+// Number::toString）：|x| 落在 [1e-6, 1e21) 用 'f'，否则用 'e' 并把 e-09 收成 e-9。
+// 直接用 strconv 的 'g' 在 1e20 这一带会写出 1e+20，而 json 写的是
+// 100000000000000000000 —— 成员名对不上，针对该成员的检索规则就失效。
+// 既有的 1.5 / NaN 两条测试都不碰这两个转折点，这条补上。
+func TestMaskFloatMapKeyNameMatchesJSON(t *testing.T) {
+	for _, v := range []float64{
+		1e-7, 1e-6, 1e20, 1e21, math.Copysign(0, -1), 5e-324, 1.5, 1e-9, -1e-7,
+	} {
+		assertFloatKeyName(t, v)
+	}
+	for _, v := range []float32{1e-7, 1e-6, 1e20, 1e21} {
+		assertFloatKeyName(t, v)
+	}
 }
