@@ -1,13 +1,15 @@
 # xbc — 插件化 Go Web 框架设计
 
-- **日期**：2026-08-23（2026-08-24 设计审阅修订）
+- **日期**：2026-08-23（2026-08-24 设计审阅修订 + 日志体系补全）
 - **仓库**：`git@github.com:xbcio/xbc.git`
 - **Module**：`github.com/xbcio/xbc`
 - **状态**：设计定稿，待实现
 
-> **修订说明（2026-08-24）**：一次批判性自审修掉了两个会让实现卡住的设计漏洞——
-> 产物的静态可知性（§5.7）与路由元数据的可见时机（§7.1）——
-> 并调整了三处默认值：显式注册默认启用（§6.4）、后台任务死亡策略（§5.2）、迁移默认关闭（§4.2）。
+> **修订说明（2026-08-24）**
+>
+> 一次批判性自审修掉了两个会让实现卡住的设计漏洞——产物的静态可知性（§5.7）与路由元数据的可见时机（§7.1）——并调整了三处默认值：显式注册默认启用（§6.4）、后台任务死亡策略（§5.2）、迁移默认关闭（§4.2）。
+>
+> 随后补全了两块此前缺席的设计：**插件复用**（§5.6 注册表接口匹配，让 B 依赖 A 时不必 import A 的第三方依赖）与**日志体系**（§8 SLF4J 式门面 + zap binding + OTel 链路，§9 零依赖子包）。
 
 ---
 
@@ -48,12 +50,17 @@
 | 9 | 排序机制 | **声明式**：`Phase` 粗锚点 + `After`/`Before` 细调，无魔数 | `OrderRateLimit + 50` 是魔数，第三方之间会撞，且表达不出真实意图 |
 | 10 | 依赖表达 | 硬依赖（`Types` / `Plugins`）与软顺序（`After` / `Before`）**分离** | 二者语义不同：硬依赖缺失应中止启动，软顺序缺失应静默忽略 |
 | 11 | 插件名引用 | 硬依赖用**类型引用**（编译期安全），软依赖用字符串 | 判据：能用类型引用的是硬依赖；必须用字符串的是软依赖 |
-| 12 | 内核边界 | `recovery` / `requestid` / `accesslog` **内建，非插件** | 它们是框架契约本身，关掉会让统一响应的 `traceId` 和日志契约同时失效 |
+| 12 | 内核边界 | `recovery` / `trace` / `accesslog` **内建，非插件** | 它们是框架契约本身，关掉会让统一响应的 `traceId` 和日志契约同时失效 |
 | 13 | 配置命名空间 | 插件配置**保留 `plugins.` 前缀** | 与「配置节不存在则不启用」构成闭环，使「有配置但无插件」可被诊断 |
 | 14 | 启用规则 | **显式 `Register` 默认启用**；blank import 需配置节 | 显式注册本身就是意图声明，业务插件不该被迫写空配置节 |
 | 15 | 路由元数据可见时机 | **请求时查表**，不在中间件装载时查 | gin 要求 `Use` 早于路由注册，装载时路由表必然为空 |
 | 16 | HTTP 错误表达 | **语义化状态码** + body 携带业务码 | 网关熔断、Prometheus 告警、CDN 策略可直接用状态码，无需解包 |
 | 17 | 自动迁移 | **默认关闭**，`--migrate` / `migrate` 子命令显式触发 | 应用启动时自动改表结构是危险默认值 |
+| 18 | 日志底座 | **SLF4J 式门面**：`log.Logger` 接口 + zap 默认 binding | 调用点零 zap 依赖、后端可换、测试可捕获；zap 生态撑得起日期滚动/多 sink/分级落盘，slog 的 handler 得自己补一遍 |
+| 19 | 链路标识 | `request_id` 与 `trace_id` 是**同一个 128 位值的两种编码** | ULID 与 W3C trace_id 都是 128 bit，人读与机读兼得，无需二选一 |
+| 20 | span 划分 | **业务显式开 span 并命名**，不是每请求一个随机值 | span_name 让日志能看出调用层次；未显式开时用路由模板兜底 |
+| 21 | 零依赖子包 | `log` / `errs` / `resp` 独立成包，根包用**类型别名**重导出 | 让 domain 层能用错误码而不拖进 gin；使用方一个 import 的体验不变 |
+| 22 | 注册表匹配 | 目标类型为**接口**时按可赋值性扫描 | 让「接口定义在消费方」这条 Go 惯例在插件系统里成立，B 不必 import A 的第三方依赖 |
 
 ---
 
@@ -65,26 +72,31 @@
 │                                                          │
 │  装配引擎          HTTP 骨架         请求契约              │
 │  ├ 配置加载/绑定    ├ gin 封装        ├ recovery           │
-│  ├ 拓扑排序         ├ Router 元数据   ├ requestid          │
+│  ├ 拓扑排序         ├ Router 元数据   ├ trace（链路）      │
 │  ├ 依赖解析/注入    ├ 优雅关闭        ├ accesslog          │
 │  └ 生命周期管理     └ healthz         └ 统一响应/错误       │
 │                                                          │
-│  内核依赖：gin + koanf + validator + slog                 │
+│  内核依赖：gin + koanf + validator                        │
 └──────────────────────────────────────────────────────────┘
-                            ▲
-                            │ 实现可选接口接入
-                            │
-┌──────────────────────────────────────────────────────────┐
-│  插件层                                                   │
-│  gorm  redis  cors  ratelimit  jwt  cron  ...业务模块     │
-└──────────────────────────────────────────────────────────┘
+         │ 依赖                              ▲
+         ▼                                   │ 实现可选接口接入
+┌───────────────────────────┐   ┌──────────────────────────┐
+│  零依赖子包（可独立使用）    │   │  插件层                   │
+│  log/   门面 + zap 绑定     │   │  gorm  redis  cors        │
+│  errs/  Error + 错误码     │   │  ratelimit  jwt  cron     │
+│  resp/  Response / Paged  │   │  ...业务模块              │
+└───────────────────────────┘   └──────────────────────────┘
+         ▲
+         │ 其他仓库可直接 import，不拖进 gin
 ```
 
 **内核不认识任何具体插件**；插件也不互相 import（硬依赖除外，那是刻意为之的显性化）。二者通过三个协作面交互：
 
-1. **类型注册表** —— 插件提供/消费类型实例（`*gorm.DB`）
+1. **类型注册表** —— 插件提供/消费类型实例（`*gorm.DB`），目标为接口时按可赋值性匹配
 2. **路由元数据** —— 插件标注/查询路由属性（`.Public()` / `.Perm()`）
 3. **依赖声明** —— 插件声明关系，框架推导顺序
+
+左下角的三个子包是**框架的下游而非上游**：它们零框架依赖，既服务于内核，也能被任何其他仓库单独 import。详见 §9。
 
 ---
 
@@ -199,7 +211,7 @@ xbc: 装配完成，6 个插件实例
 
 xbc: 中间件链（7）
   1. xbc.recovery      [recover]
-  2. xbc.requestid     [observe]
+  2. xbc.trace         [observe]
   3. xbc.accesslog     [observe]
   4. cors              [security]
   5. ratelimit         [security]  after=cors
@@ -390,7 +402,7 @@ func (p *Plugin) Name() string { return "jwt-v2" }   // 想覆盖就自己写，
 ```go
 type Context struct { /* app / registry / config / logger */ }
 
-func (c *Context) Log() *slog.Logger            // 自动带 plugin=gorm instance=readonly
+func (c *Context) Log() log.Logger               // 门面接口，自动带 plugin=gorm instance=readonly
 func (c *Context) Config() *Config
 func (c *Context) Instance() string             // "default" / "readonly"
 func (c *Context) Go(fn func(context.Context))          // 托管 goroutine
@@ -399,10 +411,12 @@ func (c *Context) Route(gc *gin.Context) *RouteInfo     // 请求时查当前路
 func (c *Context) Routes() []RouteInfo                  // 全量路由表（阶段 7 之后才非空）
 
 type Base struct{ ctx *Context }
-func (b *Base) Ctx() *Context     { return b.ctx }
-func (b *Base) Log() *slog.Logger { return b.ctx.Log() }
-func (b *Base) Name() string      // 从包路径自动推导
+func (b *Base) Ctx() *Context    { return b.ctx }
+func (b *Base) Log() log.Logger  { return b.ctx.Log() }
+func (b *Base) Name() string     // 从包路径自动推导
 ```
+
+`Log()` 返回**接口**而非具体类型（§8.3）——插件因此不依赖 zap，宿主换后端时插件不用重编写。
 
 `Base` 的职责是**便利访问器 + `Name()` 自动推导 + tag 锚点**，不是空实现载体。不嵌 `Base` 照样是合法插件——`Init(ctx)` 参数里什么都有。
 
@@ -417,6 +431,61 @@ func MustGetNamed[T any](ctx *Context, name string) T
 ```
 
 `gorm[default]` 与 `gorm[readonly]` 是同一份插件代码的两个实例，登记时框架自动用**自己的实例名**做键——插件代码完全不需要感知自己是第几个实例。
+
+#### 目标为接口时按可赋值性匹配
+
+插件复用（B 依赖 A，如「限流插件要用 redis」）有个绕不开的问题：若 B 写 `RDB *redis.Client`，B 就**硬 import 了 go-redis**——A 的第三方依赖传染给了 B 的每一个使用者。
+
+Go 的解法是「接口定义在消费方」，但这要求注册表能按接口取值。所以：**取值目标为接口类型时，注册表扫描已登记的具体类型，返回可赋值的那个。**
+
+```go
+// plugins/ratelimit —— 不 import go-redis
+type Counter interface {
+    Incr(ctx context.Context, key string) (int64, error)
+    Expire(ctx context.Context, key string, d time.Duration) error
+}
+
+type Plugin struct {
+    xbc.Base
+    C Counter `xbc:"inject"`     // 注册表扫描：谁能赋给 Counter？
+}
+```
+
+匹配规则与报错：
+
+| 命中数 | 行为 |
+|---|---|
+| 1 | 注入 |
+| 0 | 硬依赖报错，列出注册表里**方法最接近**的类型与差哪几个方法 |
+| >1 | **报错**，列出全部候选，要求用 `xbc:"inject,name=xxx"` 消歧 |
+
+歧义不猜、直接报错——两个 redis 实例都满足 `Counter` 时，框架无从知道限流该用哪个，猜错比报错更难查。
+
+> **现实约束，必须写进插件开发文档。** `*redis.Client` 的 `Incr` 返回 `*redis.IntCmd` 而非 `(int64, error)`，**不会天然满足**上面这个 `Counter`。想让接口匹配成立，redis 插件得额外 provide 一个适配过的类型。
+>
+> 这不是设计缺陷，而是 Go 生态的普遍事实：**第三方 SDK 的方法签名不是为「消费方定义接口」准备的**。因此首批插件里凡是要被其他插件复用的（redis 尤其），都要显式设计一组窄接口并 provide 其实现——这是插件作者的责任，框架只保证匹配机制成立。
+
+#### 通用插件依赖多实例基础设施
+
+限流要用哪个 redis 实例？答案不写死在代码里，走配置：
+
+```yaml
+plugins:
+  ratelimit:
+    counter_instance: cache      # 用 redis[cache] 而非 redis[default]
+```
+
+插件据此在 `Dependencies()` 里返回具名依赖——**实例名来自配置，依赖声明在阶段 4 仍是静态可知的**（配置在阶段 3 已绑定）：
+
+```go
+func (p *Plugin) Dependencies() xbc.Deps {
+    return xbc.Deps{Types: []xbc.Dep{
+        xbc.NeedNamed(xbc.RefOf[Counter](), p.Cfg.CounterInstance),
+    }}
+}
+```
+
+tag 只能写字面量，所以**依赖实例名可配置的场景必须走 `Dependencies()`**，这是两种声明方式并存的正当理由，不是冗余。
 
 ### 5.7 依赖与产物：一次 tag 扫描，得到依赖图两端
 
@@ -524,7 +593,7 @@ type Middleware struct {
 type Phase int
 const (
     PhaseRecover  Phase = iota  // 最外层，panic 兜底      ← 内建 recovery
-    PhaseObserve                // 可观测                 ← 内建 requestid、accesslog
+    PhaseObserve                // 可观测                 ← 内建 trace、accesslog
     PhaseSecurity               // cors / ratelimit / 防重放
     PhaseAuth                   // 认证鉴权
     PhaseBusiness               // 业务中间件
@@ -883,7 +952,354 @@ return nil, ErrUserNotFound.WithMsg("用户 %d 不存在", id).Wrap(err)
 
 ---
 
-## 8. 目录结构
+## 8. 日志与链路追踪
+
+`github.com/xbcio/xbc/log` —— **零框架依赖**，只依赖 `zap` + `lumberjack` + OTel 的 **API 包**。硬约束：**这个包一行都不能 import xbc 根包**，否则「其他仓库直接用」就变成拖进整个框架。
+
+结构是 SLF4J 式的两层：**`Logger` 接口是契约，zap 是默认 binding**（§8.3）。调用点只碰接口，后端可整体替换。
+
+选 zap 而非 slog 做默认 binding：日期滚动、多 sink、分级落盘、采样这些能力 zap 生态已经成熟，slog 的 handler 得自己补一遍；且 logger 要被其他仓库直接 import，标准库那点抽象反而不够。
+
+**ID 类型与传播协议直接用 OpenTelemetry**，不自己造：
+
+| 用途 | 用什么 | 为什么不自己写 |
+|---|---|---|
+| ID 类型 | `trace.TraceID` `trace.SpanID` | 编码、校验、全零检查都已处理好 |
+| header 解析/注入 | `propagation.TraceContext` | `traceparent`/`tracestate` 的规范实现 |
+| 上下文载体 | `trace.SpanContext` | 接 OTel SDK 时天然互通，无需转换 |
+
+依赖的是 `go.opentelemetry.io/otel` + `go.opentelemetry.io/otel/trace` 两个 **API-only** module，不含 SDK、exporter、collector——很轻。真要导出 span 到 Jaeger/Tempo 时才引 SDK，见 8.7。
+
+### 8.1 链路标识模型
+
+| 字段 | 生成 | 跨服务传播 | 用途 |
+|---|---|---|---|
+| `request_id` | 每次 HTTP 请求，ULID | ❌ | 人读的请求号，带时间前缀 |
+| `trace_id` | 无上游时由 `request_id` 构造；有上游则继承 | ✅ `traceparent` | 串整条链；**回给客户端做报障号** |
+| `span_id` | 每个 span 生成；可自定义 | ✅ 作为下游的 parent | 定位链上具体节点 |
+| `span_name` | 业务显式命名；未开 span 时取路由模板 | ❌ | 看出当前在哪个操作里 |
+| `parent_span_id` | 上游传入或父 span | — | 只在 span 结束日志里输出 |
+
+**request_id 与 trace_id 是同一个 128 位值的两种编码。** ULID 是 128 bit，`trace.TraceID` 是 `[16]byte`——同样 128 bit，直接构造，不必二选一：
+
+```go
+var tid trace.TraceID = trace.TraceID(ulid.Bytes())   // 零转换成本
+```
+
+```
+request_id  01J8XQZ7K3M4N5P6Q7R8S9T0V1          Crockford Base32，26 字符，人读、可排序
+trace_id    01926f7e8c83a4d5b6c7d8e9fa0b1c2d    trace.TraceID.String()，32 hex
+```
+
+ULID 前 48 bit 是毫秒时间戳，天然非全零，满足 OTel 对 `TraceID.IsValid()` 的要求。
+
+有上游 `traceparent` 时二者**不同**——`trace_id` 继承上游，`request_id` 仍是本服务本次请求的号。这正是它们该不同的场合。
+
+### 8.2 链路怎么串
+
+传播走 OTel 的 `propagation.TraceContext`，即 **W3C Trace Context** 标准：
+
+```
+traceparent: 00-{trace_id:32hex}-{parent_span_id:16hex}-{flags:2hex}
+```
+
+```
+       网关                     订单服务                    库存服务
+         │                         │                          │
+生成 trace_id ────traceparent────► 继承 trace_id ──────────► 继承 trace_id
+  span: a1…                parent=a1…, span: b2…      parent=b2…, span: c3…
+  request_id: R1                request_id: R2             request_id: R3
+         │                         │                          │
+    ─────┴─────────────────────────┴──────────────────────────┴─────
+     trace_id 全程一致 → 一个 ID 捞出整条链的全部日志
+```
+
+解析与注入都交给 OTel 的 propagator，我们不碰 header 字符串：
+
+```go
+prop := propagation.TraceContext{}
+sc := prop.Extract(ctx, propagation.HeaderCarrier(req.Header))   // 入站
+prop.Inject(ctx, propagation.HeaderCarrier(outReq.Header))       // 出站
+```
+
+### 8.3 门面接口：调用方不 import zap
+
+参考 SLF4J 的**门面 + 可插拔后端**：`Logger` 是接口，zap 是默认绑定。
+
+```go
+package log   // 零框架依赖
+
+// ── 门面：业务代码与插件依赖这个，不 import zap ──────────
+type Logger interface {
+    Debug(msg string, kv ...any)
+    Info(msg string, kv ...any)
+    Warn(msg string, kv ...any)
+    Error(msg string, kv ...any)
+
+    With(kv ...any) Logger              // 派生子 logger
+    Enabled(lv Level) bool              // 避免昂贵的字段构造
+}
+
+// 可选接口：后端若是 zap，就能拿到强类型入口（同插件契约的窄接口组合）
+type ZapProvider interface{ Zap() *zap.Logger }
+
+func Zap(ctx context.Context) (*zap.Logger, bool)   // 逃生舱口，后端非 zap 时 ok=false
+
+// ── 后端绑定 ────────────────────────────────────────────
+func Init(cfg Config) error             // 装配默认的 zap 实现
+func SetLogger(l Logger)                // 换成自己的实现（SLF4J 的 binding）
+func L() Logger                         // 全局
+func Sync() error                       // 退出前刷盘
+
+// ── 链路：字段绑进 context，业务代码只传 ctx ─────────────
+func Ctx(ctx context.Context) Logger    // 取不到则返回 L()，不 panic
+func NewContext(ctx context.Context, l Logger) context.Context
+
+// ── span ───────────────────────────────────────────────
+func Span(ctx context.Context, name string) (context.Context, func())
+func SpanWith(ctx context.Context, name string, opts ...SpanOption) (context.Context, func())
+func SpanID(id trace.SpanID) SpanOption // 自定义 span_id
+
+// ── 链路上下文：内嵌 OTel 的 SpanContext，天然互操作 ──────
+type Trace struct {
+    trace.SpanContext            // TraceID / SpanID / TraceFlags / Remote
+    ParentSpanID trace.SpanID
+    SpanName     string
+    RequestID    string          // ULID，本框架扩展字段
+}
+
+func TraceFrom(ctx context.Context) Trace
+func WithTrace(ctx context.Context, t Trace) context.Context
+func (t Trace) Fork(name string) Trace   // 新 span，继承 trace_id
+```
+
+**为什么门面用 `...any` 的 KV 而不是 `...zap.Field`：** 若签名里出现 `zap.Field`，每个调用点都得 `import "go.uber.org/zap"`，门面就白做了——业务代码依然绑死在 zap 上。KV 风格让调用点干干净净：
+
+```go
+log.Ctx(ctx).Info("订单创建", "order_id", id, "amount", amt)
+```
+
+**性能税用 `log.Zap()` 找补。** zap 的 Sugar 层为便利付出了一点分配开销，热路径（每请求几十条日志的场景）可以直接下探到强类型：
+
+```go
+if zl, ok := log.Zap(ctx); ok {
+    zl.Info("hot path", zap.String("k", v))   // 零分配
+}
+```
+
+这条 API 承认了一个事实：**门面的价值在调用点数量，不在性能**。几千个普通调用点受益于零 zap 依赖，少数几个热点用逃生舱口——比反过来强。
+
+`Zap()` 走可选接口而非门面方法，是因为**接口不该逼着每个实现都产出 zap logger**——换成 zerolog 后端时，`Zap() *zap.Logger` 这个方法根本无从实现。同插件契约里 `Configurable`/`Runner` 的处理：能力是可选的，用类型断言问。
+
+`Enabled()` 是给昂贵字段用的，避免无谓构造：
+
+```go
+if l := log.Ctx(ctx); l.Enabled(log.DebugLevel) {
+    l.Debug("请求详情", "dump", expensiveDump())
+}
+```
+
+**接口里刻意没有 `Fatal`。** 库代码不该有权决定进程退出——`Fatal` 只保留在具体实现上，由 `main` 显式调用。
+
+#### 门面换来的三件事
+
+| 收益 | 场景 |
+|---|---|
+| 调用方零 zap 依赖 | 业务代码、domain 层、插件都只 import `xbc/log` |
+| 后端可替换 | 其他仓库已有日志体系 → `log.SetLogger(自己的实现)` |
+| 测试可捕获 | `log.SetLogger(testLogger)` 后直接断言日志内容 |
+
+插件作者写 `Logger` 接口而非 `*zap.Logger`，插件就能跑在任何后端上——这跟 §5.6 的「接口定义在消费方」是同一条原则的应用。
+
+#### 门面与 binding 不分包
+
+SLF4J 在 Java 里必须分成 `slf4j-api` + `slf4j-logback` 两个 jar，是因为它要调和 log4j / commons-logging / JUL 的历史三国杀。**xbc 没有这个包袱**，所以门面接口与 zap binding**同放在 `log/` 一个包里**：
+
+- zap 自身传递依赖极少（`zapcore` + `multierr`），import 进来不污染
+- 分包会让 99% 只想用默认后端的人多 import 一个包、多写一行装配，为 1% 的换后端场景买单
+- 换后端的人本来就要写实现代码，多一次 `SetLogger` 调用不算负担
+
+真正要紧的约束——**调用点不出现 zap**——已经由 KV 签名达成了，不需要靠分包来保证。
+
+`Ctx(ctx)` 取的是**已绑好字段的 logger**（存在 context 里），不是每次现构造——O(1)，无反射。
+
+### 8.4 业务代码的样子
+
+只传 ctx，链路字段自动带上：
+
+```go
+func (s *OrderService) Create(ctx context.Context, req Req) error {
+    ctx, end := log.Span(ctx, "OrderService.Create")
+    defer end()
+
+    log.Ctx(ctx).Info("校验通过", "order_id", id)
+    return s.dao.Insert(ctx, o)   // 传 ctx 下去，dao 里可再开子 span
+}
+```
+
+```json
+{"level":"info","ts":"2026-08-24T10:23:45.123+08:00","caller":"order/service.go:42",
+ "msg":"校验通过","trace_id":"01926f7e8c83a4d5b6c7d8e9fa0b1c2d",
+ "span_id":"b2c3d4e5f6a7b8c9","span_name":"OrderService.Create",
+ "request_id":"01J8XQZ7K3M4N5P6Q7R8S9T0V1","order_id":"1001"}
+```
+
+`end()` 自动打一条耗时日志，嵌套 span 自动串父子：
+
+```json
+{"level":"info","msg":"span done","span_name":"OrderService.Create",
+ "span_id":"b2c3d4e5f6a7b8c9","parent_span_id":"a1b2c3d4e5f6a7b8","duration_ms":42}
+```
+
+**不显式开 span 也有 span_name。** 内建中间件用路由模板做根 span 名（`POST /api/v1/orders`），所以业务一个 `log.Span` 都不写，日志里也看得出这条是什么请求。显式开 span 是**增量收益**，不是使用门槛。
+
+`span_id` 默认自动生成，`SpanID()` 选项可自定义——手写 span_id 是少数场景（如对齐外部系统的 ID），不该成为默认负担。
+
+### 8.5 与 OTel SDK 互操作
+
+用 OTel 的类型，最大的收益在这里：**接不接 SDK，业务代码一个字不改。**
+
+`TraceFrom` 优先读 OTel 官方的 SpanContext，读不到才回退到 log 包自己维护的：
+
+```go
+func TraceFrom(ctx context.Context) Trace {
+    if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+        return Trace{SpanContext: sc, ...}   // 用户接了 OTel SDK，直接用它的
+    }
+    return traceFromLocal(ctx)               // 没接，用轻量实现
+}
+```
+
+于是两种模式自动切换：
+
+| 模式 | `log.Span()` 行为 | 依赖 | span 去哪 |
+|---|---|---|---|
+| **默认** | 自己生成 span_id | API-only，很轻 | 只进日志 |
+| `log.UseTracer(tracer)` 之后 | 委托给 OTel tracer 开真 span | 需引 OTel SDK | 日志 **+** Jaeger/Tempo |
+
+一行配置从「日志链路」升级到「完整 tracing」，`log.Span(ctx, name)` 的调用点一个都不用动。这是不自己造 ID 类型换来的直接收益——自己造的话，这里得写一层双向转换，且永远有对不齐的风险。
+
+### 8.6 配置
+
+```yaml
+log:
+  level: info
+  format: json              # json | console
+  caller: true
+  stacktrace: error         # 该级别以上附堆栈
+  output: [stdout, file]
+  file:
+    path: logs/app.log
+    rotate: daily           # daily | size
+    max_size: 100           # MB，rotate=size 时生效
+    max_age: 30             # 保留天数
+    max_backups: 30
+    compress: true
+    error_path: logs/error.log   # error 级别单独落盘
+  sampling:                 # 高 QPS 防刷爆
+    initial: 100
+    thereafter: 100
+  mask_fields: []           # 追加脱敏字段，内置黑名单始终生效
+```
+
+`rotate: daily` 需在 lumberjack 外包一层——它只按大小滚，按日期得自己换 writer（文件名模板 + 零点触发）。实现不复杂，但要写清这是**我们的实现**而非 lumberjack 能力，免得后来者去它文档里找。
+
+### 8.7 脱敏做在 encoder 层
+
+> **[SEC-INFO] 字段脱敏不能靠调用方自觉。** 包一层 `zapcore.Encoder` 拦截字段名，命中黑名单直接替换为 `***`：
+
+```go
+log.Ctx(ctx).Info("登录", "password", pwd)
+// → {"msg":"登录","password":"***"}
+```
+
+内置黑名单（始终生效，不可关闭）：`password`、`token`、`ulp-token`、`access_token`、`refresh_token`、`secret`、`private_key`、`AK`、`SK`、`db_url`、`id_card`、`bank_card`、`phone`。`log.mask_fields` 只能**追加**不能移除。
+
+放在 encoder 层而非调用点的理由：调用点有几千个，encoder 只有一个。**走 `log.Zap()` 逃生舱口的日志同样被拦截**——脱敏在 encoder，绕过 Sugar 层绕不过它。
+
+这也划出了 `SetLogger` 的边界：换掉后端就意味着**脱敏也换成了对方的实现**。文档必须明说这一点，否则「我换了个 logger，密码就进日志了」会成为一个没人预料到的事故。
+
+### 8.8 框架侧接入
+
+| 时机 | 动作 |
+|---|---|
+| 阶段 1 之后 | `log.Init(cfg)` 装配默认 zap 后端，此时配置已加载 |
+| 内建 `trace` 中间件 | `propagation.TraceContext` 解析入站 header → 建根 span → `WithTrace` |
+| 插件 `ctx.Log()` | 返回 `log.Logger` 接口，自动附 `plugin=gorm instance=readonly` |
+| 阶段 10 最末 | `log.Sync()` 刷盘，放在所有插件 `Stop` 之后 |
+
+宿主想换后端，在 `app.Run()` 之前调 `log.SetLogger(自己的实现)`，`log.Init` 就跳过 zap 装配。此后框架与全部插件的日志都走宿主的实现——因为它们依赖的是接口。
+
+原设计的 `requestid` 中间件扩展为 `trace` 中间件——职责从「生成一个 ID」变成「建立链路上下文」，位置仍在 `PhaseObserve`，仍不可拔除。
+
+### 8.9 其他仓库怎么用
+
+零框架依赖意味着它可以脱离 xbc 单独用：
+
+```go
+import "github.com/xbcio/xbc/log"
+
+func main() {
+    log.Init(log.Config{Level: "info", Format: "json"})
+    defer log.Sync()
+    log.L().Info("独立使用，不需要 xbc 框架")
+}
+```
+
+已有日志体系的仓库，用门面接管即可——`log.SetLogger` 之后，所有走 `log.Ctx()` / `log.L()` 的代码（包括 xbc 插件）都落到你的实现上：
+
+```go
+log.SetLogger(myLogger{})   // 实现 log.Logger 的四个日志方法 + With + Enabled
+```
+
+**当前作为子包而非独立 module**：外部仓库 import 它会在 `go.sum` 里拉进 xbc 的全部依赖，但**编译产物不受影响**（Go 链接器只打包实际用到的包），代价仅是 `go mod download` 慢与 CVE 扫描噪音。
+
+留好了拆的余地：`log/` 目录自包含、零框架依赖，将来真被大量外部使用，加一个 `log/go.mod` 即可拆成独立 module，**import path 不变**（下游只需改 `go.mod` 的 require 行）。
+
+---
+
+## 9. 零依赖子包
+
+`log` 不是特例，而是一条原则的应用：**纯数据类型与通用能力，不该拖着 gin 一起走。**
+
+问题出在这里：
+
+```go
+// domain/order.go —— 一个纯粹的领域层，不该知道 HTTP 存在
+import "github.com/xbcio/xbc"
+var ErrOrderClosed = xbc.New("ORDER.CLOSED", 409, "订单已关闭")
+```
+
+这一行 import 把 **gin 拖进了 domain 层**。因为根包里 `router.go` import 了 gin，而 Go 的编译单位是包——用 `xbc.Error` 就等于依赖整个根包。
+
+所以零依赖的部分拆出去，根包用**类型别名**重新导出：
+
+```go
+// xbc.go
+type Error        = errs.Error           // 别名，不是新类型
+type Response[T any] = resp.Response[T]
+var  ErrNotFound  = errs.ErrNotFound
+func New(code string, status int, msg string) *Error { return errs.New(code, status, msg) }
+```
+
+两条路径并存，且拿到的是**同一个类型**（别名保证，不会出现两个 `Error` 互不兼容）：
+
+| 使用者 | 写法 | 传递依赖 |
+|---|---|---|
+| 写 handler 的人 | `xbc.ErrNotFound` | 整个根包（本来就要用 gin） |
+| domain 层 / 其他仓库 | `errs.ErrNotFound` | **零** |
+
+| 子包 | 内容 | 依赖 |
+|---|---|---|
+| `log/` | `Logger` 门面 + zap binding + 链路追踪 | zap、lumberjack、OTel API |
+| `errs/` | `Error` + 预置错误码 | 无 |
+| `resp/` | `Response` / `Paged` | 无 |
+
+代价是三个小包加十几行别名，收益是框架能用在有分层洁癖的项目里。
+
+---
+
+## 10. 目录结构
 
 单 module。**公开 API 全部集中在根包**，插件与用户只需 import 一个包；实现细节关进 `internal/`，内部重构不破坏兼容。
 
@@ -901,15 +1317,26 @@ xbc/
 ├── registry.go               Provide / Get / GetNamed / MustGet / MustGetNamed
 ├── router.go                 Router 链式元数据 + RouteInfo + 冻结路由表查询
 ├── middleware.go             Middleware / Phase
-├── response.go               Response / Paged / H()
-├── errors.go                 Error + 预置错误
+├── response.go               resp 的类型别名重导出 + H()
+├── errors.go                 errs 的类型别名重导出
+│
+├── log/                      零框架依赖，可脱离 xbc 单独用
+│   ├── logger.go             Logger 门面接口 + Level + ZapProvider
+│   ├── zap.go                默认 binding：zap 装配、SetLogger、L / Ctx
+│   ├── trace.go              Trace（内嵌 OTel SpanContext）/ Span / Fork
+│   ├── mask.go               脱敏 encoder：内置黑名单 + mask_fields
+│   ├── rotate.go             daily 滚动（lumberjack 只按大小滚，日期得自己来）
+│   └── config.go             Config + 默认值
+│
+├── errs/                     零依赖：Error + 预置错误码
+├── resp/                     零依赖：Response / Paged
 │
 ├── internal/
 │   ├── assemble/             十阶段装配管线、失败回滚、逆序关闭
 │   ├── graph/                通用拓扑排序器（插件序 / 中间件序共用）
 │   ├── inject/               tag 扫描（inject + provide）、注入与产物收割
 │   ├── conf/                 koanf 加载、profile、ENV 映射、default + validate
-│   └── httpx/                recovery / requestid / accesslog 内建实现
+│   └── httpx/                recovery / trace / accesslog 内建实现
 │
 ├── plugins/
 │   ├── gorm/                 基础设施（多实例）
@@ -929,7 +1356,7 @@ xbc/
 
 ---
 
-## 9. 首批插件
+## 11. 首批插件
 
 每个插件对应压测一类机制：
 
@@ -954,18 +1381,18 @@ xbc/
 
 ---
 
-## 10. 测试策略
+## 12. 测试策略
 
 **内核用假插件测，不碰任何真实中间件。** 拓扑排序、环检测、缺失依赖报错、逆序关闭、失败回滚全是纯逻辑，一组 `fakePlugin` 即可覆盖：
 
 ```go
 func TestShutdownReverseOrder(t *testing.T) {
-    var log []string
-    a := fake("a").onStop(func() { log = append(log, "a") })
-    b := fake("b").needs(a).onStop(func() { log = append(log, "b") })
+    var stopped []string
+    a := fake("a").onStop(func() { stopped = append(stopped, "a") })
+    b := fake("b").needs(a).onStop(func() { stopped = append(stopped, "b") })
     app := xbc.New().Register(a, b)
     app.start(); app.stop()
-    assert.Equal(t, []string{"b", "a"}, log)   // 依赖者先停
+    assert.Equal(t, []string{"b", "a"}, stopped)   // 依赖者先停
 }
 ```
 
@@ -982,10 +1409,20 @@ func TestShutdownReverseOrder(t *testing.T) {
 - 配置：默认值填充、validate 报错路径正确、ENV 覆盖、profile 合并
 - 启用规则：显式 Register 无配置节仍启用 / blank import 无配置节不启用 / `enabled: false` 两条路径都关得掉
 - tag 注入：必需 / 可选 / 具名 / 与 `Dependencies()` 合并
+- **接口匹配：唯一实现命中 / 零实现报错含最接近类型 / 多实现报错列全部候选 / `name=` 消歧后命中**
 - **产物：`provide` tag 被收割登记 / 声明了却留零值 → 报错 / 与 `Provides()` 合并 / 多实例产物键正确**
 - **`GoCritical`：panic 触发完整 shutdown（其他插件仍逆序 Stop）、提前返回同样触发、退出码为 1**
 - **`Go`：panic 恢复后应用继续、shutdown 时被 cancel 且计入等待组**
 - 迁移：默认不执行 / `--migrate` 执行 / `migrate` 子命令跑完即退
+
+**日志包独立测**，门面接口让它变得容易——`SetLogger(captureLogger)` 就能断言输出：
+
+- 脱敏：内置黑名单命中 → `***`；`mask_fields` 追加生效；**尝试移除内置项无效**
+- 脱敏对 `log.Zap()` 逃生舱口同样生效（证明拦截在 encoder 而非 Sugar 层）
+- 链路：入站 `traceparent` 被解析并沿用 / 无入站头时新建 / `Fork` 后 trace_id 不变而 span_id 变
+- `Ctx()` 在无链路上下文时回落到 `L()`，不 panic
+- `SetLogger` 后框架与插件的日志全部落到替换实现上
+- `rotate: daily` 跨零点换文件（注入可控时钟，不靠 sleep）
 
 **对外提供契约测试套件**，第三方插件作者引一行即可自检：
 
@@ -1003,9 +1440,11 @@ func TestGormPluginConformance(t *testing.T) {
 
 ---
 
-## 11. 实施顺序
+## 13. 实施顺序
 
 ```
+0. log 子包     Logger 门面 + zap binding + 脱敏 encoder + Trace/Span + daily 滚动
+      ↑ 排在最前：内核自己就要用它，且它零框架依赖，可独立测完再往上盖
 1. 内核骨架     Plugin 接口族 / Base / Context / Register / Name 自动推导
 2. 配置         koanf 加载 + profile + ENV + default/validate 绑定 + 多实例展开
                 + 两条注册路径的启用规则
@@ -1015,7 +1454,7 @@ func TestGormPluginConformance(t *testing.T) {
                 + doctor 子命令 + 启动日志
       ↑ 到此内核可用假插件跑通全部测试，未引入 gin 之外任何依赖
 5. HTTP 骨架    Router 元数据 + 冻结路由表 + PostRoutes / 响应 / 错误
-                / recovery+requestid+accesslog / healthz
+                / recovery+trace+accesslog / healthz
 6. 插件         cors → jwt → gorm → redis → ratelimit → cron
       ↑ 顺序有讲究：cors 最薄先跑通形态，jwt 验证请求时查元数据，
         gorm 验证多实例与 provide 收割，cron 验证 Runner 与硬依赖
@@ -1028,7 +1467,7 @@ func TestGormPluginConformance(t *testing.T) {
 
 ---
 
-## 12. 已知取舍
+## 14. 已知取舍
 
 | 取舍 | 代价 | 缓解 |
 |---|---|---|
@@ -1039,11 +1478,13 @@ func TestGormPluginConformance(t *testing.T) {
 | 产物需显式声明 | 比「直接 Provide」多一行 tag | 换来阶段 4 可建图、可 `doctor`、可在启动期抓出 nil 产物——这是必要成本，不是可选糖 |
 | 元数据请求时查 | 每请求一次 map 查找 | 冻结后无锁，O(1)，代价可忽略；换来时序上的绝对正确 |
 | 迁移默认关闭 | 「改了 model 表没变」会成为新的常见困惑 | 启动日志主动打印「迁移未执行」与修法；dev profile 一行开启 |
+| 日志门面用 KV 变参 | 编译期不校验键值配对，`Info("m", "k")` 落地成一条 dangling key | binding 侧检测奇数参并降级为 `!BADKEY` 字段（同 slog）；`go vet` 风格的 lint 规则可后补 |
+| `SetLogger` 换后端 | **脱敏一并换成对方的实现**，内置黑名单失效 | 文档在 `SetLogger` 处显式警示；`doctor` 检测到非默认后端时打印一行提示 |
 | 不做热重载 | 改配置须重启 | 插件接口保持简单；如确有需要，待接口稳定后再评估 |
 | 内建三中间件不可拔 | 违背「一切皆插件」的纯粹性 | 它们是请求契约本身，可拔会让 `traceId` 与日志契约同时失效 |
 | 接口数量偏多（12 个） | 第一印象复杂，学习曲线陡 | README 首屏必须是「最小插件长什么样」——一个 `Name()` 加一个 `Middlewares()` 的 15 行 cors；其余接口按需查表 |
 
-### 12.1 审阅中考虑过但未采纳的方案
+### 14.1 审阅中考虑过但未采纳的方案
 
 | 方案 | 未采纳的理由 |
 |---|---|
