@@ -882,7 +882,7 @@ git commit -m "feat(log): 配置结构与文件后缀推导格式"
 
 **`[SEC-INFO]` 为什么做在 Core 层而不是 Encoder 层：** spec §8.8 说"做在 encoder 层"，实现上落到 `zapcore.Core` —— 安全语义完全相同（调用点之外的统一拦截，调用方无法绕过），但可靠性高一个量级。zap 的字段有两条路径：`logger.With(kv)` 走 `Core.With([]Field)`，`logger.Info(msg, kv)` 走 `Core.Write(entry, []Field)`。包一层 Core 覆盖这两个方法就全拦住了，一共 5 个方法；包 Encoder 则要覆盖 `zapcore.ObjectEncoder` 的 20 多个 `Add*` 方法，**漏一个就是一条明文密码进日志**。
 
-**装配位置（Task 7 会用到）：** maskCore 包在 `zapcore.NewTee(...)` **之外**，一次拦截覆盖全部 sink；因为它是 `*zap.Logger` 的组成部分，`log.Zap()` 逃生舱口拿到的 logger 同样被覆盖。
+**装配位置（Task 7 会用到）：** 每个叶子 sink 各包一层 maskCore，maskCore 在 `zapcore.NewTee(...)` **之内**，采样器在 Tee **之外**。不能反过来把 maskCore 包在 Tee 之外 —— `maskCore.Check` 会把自己挂进 CheckedEntry，Tee 的 per-sink 级别过滤（`zapcore/tee.go:74-79`）便再也不会执行，`error_path` 会收到全量日志。因为 maskCore 是 `*zap.Logger` 的组成部分，`log.Zap()` 逃生舱口拿到的 logger 同样被覆盖。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -2015,7 +2015,14 @@ git commit -m "feat(log): 给 lumberjack 补按日滚动"
 
 1. **两个 caller skip 实例。** `zapLogger` 同时持有 `raw`（未加门面 skip）与 `z`（`raw` + `AddCallerSkip(1)`）。门面方法走 `z`，`Zap()` 逃生舱口返回 `raw`。gfa 用单一 `AddCallerSkip(2)` 又把 `*Logger` 暴露出去，拿到手直接调方法时 caller 就指进 logger.go 内部 —— 这里用两个实例根治。
 
-2. **Core 的装配顺序：`sampler → mask → tee → [console, file, error]`。** mask 在 Tee 之外，一次拦截覆盖全部 sink 与 `Zap()` 逃生舱口；sampler 在最外，被丢弃的日志连脱敏开销都省掉。
+2. **Core 的装配顺序：`sampler → tee → [mask(console), mask(file), mask(error)]`。** 每个叶子 sink 各包一层 maskCore，mask 在 Tee 之内；sampler 在最外。
+
+   两个包裹关系都不能颠倒，而且**颠倒之后是静默失效，不报任何错**：
+
+   - mask 若包在 Tee 之外，`maskCore.Check` 会把自己挂进 CheckedEntry，`multiCore.Check`（`zapcore/tee.go:74-79` —— per-sink 级别过滤的唯一发生地）便再也不会执行，`error_path` 收到全量日志。`TestInitErrorPathOnlyReceivesErrors` 守这条。
+   - sampler 若包在 mask 之内，`sampler.Check`（`zapcore/sampler.go:214-229` —— 采样的唯一发生地）被同样的机制短路，`log.sampling` 完全失效。`TestSamplingWrapsOutsideMaskCore` 守这条。
+
+   脱敏语义一字不减：每条 Write 仍然经过 maskCore，`Zap()` 逃生舱口拿到的 logger 同样被覆盖。sampler 在最外还顺带保住了「被丢弃的日志连脱敏开销都省掉」。
 
 3. **`L()` 用 `atomic.Pointer[Logger]` 而不是 `atomic.Value`。** 后者要求每次 `Store` 的动态类型一致，`SetLogger` 换后端时会直接 panic。
 
@@ -2229,7 +2236,7 @@ func TestInitErrorPathOnlyReceivesErrors(t *testing.T) {
 	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
 
 	L().Info("普通信息")
-	L().Error("出事了")
+	L().Error("出事了", "password", "hunter2")
 	require.NoError(t, Close())
 
 	all, err := os.ReadFile(cfg.File.Path)
@@ -2241,6 +2248,38 @@ func TestInitErrorPathOnlyReceivesErrors(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(errOnly), "普通信息", "error sink 只收 error 及以上")
 	assert.Contains(t, string(errOnly), "出事了")
+
+	// 每个叶子 sink 都各包了一层 maskCore，漏包任何一个都会在这里暴露。
+	assert.NotContains(t, string(all), "hunter2", "app sink 必须脱敏")
+	assert.NotContains(t, string(errOnly), "hunter2", "error sink 必须同样脱敏")
+	assert.Contains(t, string(errOnly), maskPlaceholder)
+}
+
+// 回归测试：采样器必须包在 maskCore 之外（即 Tee 之外）。
+//
+// 若顺序颠倒成 newMaskCore(sampler)，maskCore.Check 会把自己挂进 CheckedEntry，
+// sampler.Check（zapcore/sampler.go:214-229 —— 采样的唯一发生地）便再也不会执行，
+// log.sampling 静默失效：5 条重复日志全部落盘而不是 1 条。
+func TestSamplingWrapsOutsideMaskCore(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Console.Enabled = false
+	cfg.File.Enabled = true
+	cfg.File.Path = filepath.Join(dir, "app.jsonl")
+	cfg.Sampling.Initial = 1
+	cfg.Sampling.Thereafter = 0 // 窗口内首条之后全丢
+	require.NoError(t, Init(cfg))
+	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
+
+	for i := 0; i < 5; i++ {
+		L().Info("重复消息")
+	}
+	require.NoError(t, Close())
+
+	b, err := os.ReadFile(cfg.File.Path)
+	require.NoError(t, err)
+	assert.Equal(t, 1, bytes.Count(b, []byte("重复消息")),
+		"采样必须生效：5 条相同消息只应落盘 1 条")
 }
 
 func TestInitCreatesMissingLogDir(t *testing.T) {
@@ -2540,12 +2579,15 @@ func Init(cfg Config) error {
 		cls   []func() error
 	)
 
+	// 三个 sink 共用同一个 masker，各自包一层 maskCore（原因见下面的 NewTee）。
+	m := newMasker(cfg.MaskFields)
+
 	if cfg.Console.Enabled {
-		cores = append(cores, zapcore.NewCore(
+		cores = append(cores, newMaskCore(zapcore.NewCore(
 			buildEncoder(cfg.Console.Format, wantColor(cfg.Console.Color, os.Stdout)),
 			zapcore.Lock(os.Stdout),
 			zapcore.Level(lv),
-		))
+		), m))
 	}
 
 	if cfg.File.Enabled {
@@ -2555,8 +2597,8 @@ func Init(cfg Config) error {
 			return err
 		}
 		cls = append(cls, closeFn)
-		cores = append(cores, zapcore.NewCore(
-			buildEncoder(cfg.File.Format, false), w, zapcore.Level(lv)))
+		cores = append(cores, newMaskCore(zapcore.NewCore(
+			buildEncoder(cfg.File.Format, false), w, zapcore.Level(lv)), m))
 
 		if cfg.File.ErrorPath != "" {
 			ew, ecloseFn, err := buildFileWriter(cfg.File, cfg.File.ErrorPath)
@@ -2565,8 +2607,8 @@ func Init(cfg Config) error {
 				return err
 			}
 			cls = append(cls, ecloseFn)
-			cores = append(cores, zapcore.NewCore(
-				buildEncoder(cfg.File.errorFormat, false), ew, zapcore.ErrorLevel))
+			cores = append(cores, newMaskCore(zapcore.NewCore(
+				buildEncoder(cfg.File.errorFormat, false), ew, zapcore.ErrorLevel), m))
 		}
 	}
 
@@ -2576,10 +2618,17 @@ func Init(cfg Config) error {
 		return nil
 	}
 
-	// 脱敏包在 Tee 之外：一次拦截覆盖全部 sink，也覆盖 Zap() 逃生舱口。
-	core := newMaskCore(zapcore.NewTee(cores...), newMasker(cfg.MaskFields))
+	// 脱敏已经逐个 sink 包好了，这里只做扇出。
+	//
+	// 绝不能反过来把 maskCore 包在 Tee 之外：maskCore.Check 会把自己挂进
+	// CheckedEntry，于是 multiCore.Check（zapcore/tee.go:74-79 —— per-sink 级别
+	// 过滤的唯一发生地）根本不会执行，随后 multiCore.Write 无条件写进每个子 core，
+	// error_path 就变成 app.log 的完整副本。
+	core := zapcore.NewTee(cores...)
 
-	// 采样在最外层：被丢弃的日志连脱敏开销都省掉。
+	// 采样必须在最外层，包在 maskCore 之外 —— sampler.Check
+	// （zapcore/sampler.go:214-229）是采样的唯一发生地，被 maskCore.Check 短路的话
+	// log.sampling 会静默失效。顺带的好处：被丢弃的日志连脱敏开销都省掉。
 	if cfg.Sampling.Initial > 0 {
 		core = zapcore.NewSamplerWithOptions(core, time.Second,
 			cfg.Sampling.Initial, cfg.Sampling.Thereafter)
