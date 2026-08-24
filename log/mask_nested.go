@@ -11,7 +11,7 @@
 //
 // # 防线覆盖不到的地方
 //
-// 以下三条不在本防线的覆盖范围内，读代码的人不要以为它是全覆盖的：
+// 以下四条不在本防线的覆盖范围内，读代码的人不要以为它是全覆盖的：
 //
 //  1. 敏感值写在 Entry.Message 里（log.L().Info("password=" + pwd)）——
 //     字段级黑名单管不到消息体。
@@ -22,19 +22,33 @@
 //  3. 深度超过 maxMaskDepth 的子树被整体替换为 ***，这是有意的信息损失，
 //     用来防御恶意或病态的深嵌套，不是性能优化。maxMaskDepth 数的是结构嵌套
 //     层数，指针解引用与 interface 拆箱不计入。
+//  4. 直传给 zap.Any 的 fmt.Stringer / error —— zap.Any 的类型 switch 里
+//     这两个分支排在 Reflect 之前，值会走 StringerType / ErrorType，落盘的是
+//     String() / Error() 的结果，压根进不了本文件。与第 2 条同类：调用方显式
+//     决定了输出形式。字段 key 仍然受检，zap.Any("password", stringerValue)
+//     拦得住；拦不住的是 zap.Any("creds", v) 里 v.String() 自己吐出口令。
 //
 // 匿名嵌入字段按 encoding/json 的规则平铺进父层（无 json 名字 + 解一层指针后是
 // struct 才平铺），冲突时外层优先。这一点必须与 json 对齐：形状只在命中时才变，
 // 恰好是最需要日志形状稳定的时候 —— {"Base":{"password":"***"}} 会让针对
 // .password 的检索规则失效。多路同深度冲突不做 encoding/json 那套完整消歧，
 // 先出现的嵌入胜出。
+//
+// # 与 encoding/json 对齐时的注意事项
+//
+// Go 1.27 起 GOEXPERIMENT 默认打开 jsonv2，encoding/json 的实现换成了
+// encoding/json/v2 + jsontext（encode.go 里的 newMapEncoder / typeFields /
+// isValidTag 已经不参与编译）。本文件的对齐依据一律以**实测落盘字节**为准，
+// 不以 v1 源码为准 —— 两者在 map key、非法 tag 名两处的行为并不相同。
 
 package log
 
 import (
 	"encoding"
 	"encoding/json"
+	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -469,7 +483,7 @@ func (m *masker) maskStruct(rv reflect.Value, depth int, seen *map[uintptr]struc
 	// 第一遍：本层命名字段。
 	for i := range n {
 		sf := t.Field(i)
-		if maskEmbedFlatten(sf) || !sf.IsExported() {
+		if !maskNamedField(sf) {
 			continue
 		}
 		name := maskFieldName(sf)
@@ -478,11 +492,21 @@ func (m *masker) maskStruct(rv reflect.Value, depth int, seen *map[uintptr]struc
 		}
 		fv := rv.Field(i)
 
-		if m.hit(name) {
+		if m.hitFieldName(sf, name) {
 			if out == nil {
 				out = maskNamedRaw(rv)
 			}
 			out[name] = maskPlaceholder
+			continue
+		}
+		if !fv.CanInterface() {
+			// 未导出的匿名 struct 嵌入（json tag 给了名字，所以不平铺）。
+			// 它是唯一一类"json 会收录、reflect 却不给 Interface()"的字段，
+			// 无条件走重建路径 —— 下面"原样返回"那条路必须 Interface()，走不通。
+			if out == nil {
+				out = maskNamedRaw(rv)
+			}
+			out[name] = m.maskUnexported(fv, depth+1, seen)
 			continue
 		}
 		nv, ch := m.maskValue(fv, depth+1, seen)
@@ -538,6 +562,98 @@ func (m *masker) maskStruct(rv reflect.Value, depth int, seen *map[uintptr]struc
 		return nil, false
 	}
 	return out, true
+}
+
+// maskNamedField 判断一个字段是否按"本层命名字段"处理，规则与 encoding/json
+// 对齐（实测 Go 1.27 落盘字节，v1 的 typeFields 注释也是同一个意思）：
+//
+//   - 平铺的匿名嵌入不算命名字段，走第二遍；
+//   - 导出字段都算；
+//   - 未导出字段里，只有**匿名且解一层指针后是 struct**的那种算 —— json 的
+//     跳过条件是"未导出**且**类型非 struct"，因为未导出的 struct 类型里可能有
+//     导出字段。type S struct{ sHidden `json:"base"` } 就落在这里，实测
+//     json.Marshal 产出 {"base":{"password":"…"}}。
+//
+// 此前这里无条件跳过所有未导出字段，比 json 严 —— 严在这里等于漏放：json 照样
+// 把里面的 password 落盘，我们却根本没去看。
+func maskNamedField(sf reflect.StructField) bool {
+	if maskEmbedFlatten(sf) {
+		return false
+	}
+	if sf.IsExported() {
+		return true
+	}
+	if !sf.Anonymous {
+		return false // 未导出的具名字段，json 直接忽略
+	}
+	t := sf.Type
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.Struct
+}
+
+// hitFieldName 用 json tag 名与 Go 字段名双查黑名单，任一命中即脱敏。
+//
+// 起因：tag 名非法时（`json:"pass\"word"` 这种）encoding/json 不会原样采用它，
+// 我们却拿着这个名字去查黑名单，必然不命中 —— 而字段值是货真价实的口令。
+// 复刻 json 的 tag 校验规则是个陷阱：v1 校验失败退回 Go 字段名，v2 把名字截断到
+// 第一个非法字符（实测 pass"word → pass），两个版本的选择都不一样。与其预测它
+// 用哪个名字输出，不如两个名字都挡住。
+//
+// 误伤面是可控的：Token string `json:"count"` 会因 Go 名命中而脱敏（值大概率
+// 真是 token，脱敏是对的），而 TokenCount int `json:"n"` 的后缀词组是
+// count / tokencount，两边都不命中。
+func (m *masker) hitFieldName(sf reflect.StructField, name string) bool {
+	if m.hit(name) {
+		return true
+	}
+	return name != sf.Name && m.hit(sf.Name)
+}
+
+// maskUnexported 处理拿不到 Interface() 的字段值，也就是未导出的匿名 struct
+// 嵌入（带 json 名字 tag 因而不平铺的那种）。
+//
+// reflect 的只读标记只加在这一层：flagEmbedRO 不会传给它的导出子字段（这正是
+// 提升方法能被调用的原因），所以按 json 的形状逐字段重建一个 map 就够了，
+// 不需要 unsafe —— 为了读一个未导出字段而在安全关键代码里引入 unsafe.Pointer，
+// 代价大于收益。
+//
+// 代价是形状固定为逐字段展开的对象：这类字段永远走重建路径，即使子树里一个
+// 敏感字段都没有。若嵌入类型自带 MarshalJSON，encoding/json 会用它的自定义
+// 形式而我们用不了（方法调不到只读值上），只能逐字段展开 —— 这是本函数与
+// json 唯一的形状偏差，只落在"未导出 + 匿名 + 带 json 名字 tag + 自带序列化"
+// 这一种形态上。
+func (m *masker) maskUnexported(fv reflect.Value, depth int, seen *map[uintptr]struct{}) any {
+	if depth > maxMaskDepth {
+		return maskPlaceholder
+	}
+	if fv.Kind() == reflect.Pointer {
+		if fv.IsNil() {
+			return nil // json 输出 null
+		}
+		// type a struct{ *a `json:"base"` } 是合法的，自引用得挡住。
+		addr := fv.Pointer()
+		if *seen == nil {
+			*seen = make(map[uintptr]struct{}, 4)
+		}
+		if _, dup := (*seen)[addr]; dup {
+			return maskPlaceholder
+		}
+		(*seen)[addr] = struct{}{}
+		defer delete(*seen, addr)
+		fv = fv.Elem()
+	}
+	if fv.Kind() != reflect.Struct {
+		return maskPlaceholder // maskNamedField 保证到不了
+	}
+	if nv, ch := m.maskStruct(fv, depth, seen); ch {
+		return nv
+	}
+	// maskStruct 说整棵子树一个字段都没命中，原样重建是安全的。
+	out := make(map[string]any, fv.NumField())
+	maskStructRaw(out, fv, maxMaskDepth)
+	return out
 }
 
 // maskEmbedFlatten 判断一个字段是否按 encoding/json 的规则平铺进父层：
@@ -596,14 +712,20 @@ func maskNamedRaw(rv reflect.Value) map[string]any {
 	out := make(map[string]any, n)
 	for i := range n {
 		sf := t.Field(i)
-		if maskEmbedFlatten(sf) || !sf.IsExported() {
+		if !maskNamedField(sf) {
 			continue
 		}
 		name := maskFieldName(sf)
 		if name == "" {
 			continue
 		}
-		out[name] = rv.Field(i).Interface()
+		fv := rv.Field(i)
+		if !fv.CanInterface() {
+			// 未导出的匿名 struct 嵌入。这里不预先物化它未脱敏的原样值 ——
+			// maskStruct 对这类字段无条件走重建路径，一定会补上。
+			continue
+		}
+		out[name] = fv.Interface()
 	}
 	return out
 }
@@ -611,6 +733,9 @@ func maskNamedRaw(rv reflect.Value) map[string]any {
 // maskStructRaw 把 rv 按平铺后的形状原样写进 out：先命名字段再嵌入字段，
 // 已存在的 key 不覆盖。budget 只是兜底 —— 真正的自引用嵌入会在 maskEmbedStruct
 // 里被 seen 判成 changed 而走不到这条原样路径，这里不依赖它保正确性。
+//
+// 只在"整棵子树都没命中"时才会走到这里（调用方拿到的是 changed==false），
+// 所以原样搬运不会物化任何敏感值。
 func maskStructRaw(out map[string]any, rv reflect.Value, budget int) {
 	if budget <= 0 {
 		return
@@ -628,16 +753,24 @@ func maskStructRaw(out map[string]any, rv reflect.Value, budget int) {
 	n := t.NumField()
 	for i := range n {
 		sf := t.Field(i)
-		if maskEmbedFlatten(sf) || !sf.IsExported() {
+		if !maskNamedField(sf) {
 			continue
 		}
 		name := maskFieldName(sf)
 		if name == "" {
 			continue
 		}
-		if _, dup := out[name]; !dup {
-			out[name] = rv.Field(i).Interface()
+		if _, dup := out[name]; dup {
+			continue
 		}
+		fv := rv.Field(i)
+		if !fv.CanInterface() {
+			// 未导出的匿名 struct 嵌入。上面那条"子树无命中"的前提保证走不到
+			// 这里：maskStruct 对这类字段无条件 changed=true，调用方就不会
+			// 选原样路径。真走到了也只是少一个键，不会 panic、更不会漏放。
+			continue
+		}
+		out[name] = fv.Interface()
 	}
 	for i := range n {
 		if maskEmbedFlatten(t.Field(i)) {
@@ -663,12 +796,32 @@ func maskFieldName(sf reflect.StructField) string {
 	return name
 }
 
-// maskMap 只对 string key 的 map 做判定，其余原样返回。
+// maskMap 递归 map。string key 走零分配的快路径，其余 key 类型先按
+// encoding/json 的规则字符串化再走同一套判定。
+//
+// 曾经这里对非 string key 直接放行，连 value 递归一起跳过了 —— 那是基于
+// "encoding/json 处理不了非 string key 的 map"这个未经验证的假设。它处理得很好：
+// map[int64]Order / map[uint64]User 是 Go 里最常见的按 ID 索引写法，实测落盘
+// {"7":{"user":"alice","password":"hunter2"}}，整块明文。
 func (m *masker) maskMap(rv reflect.Value, depth int, seen *map[uintptr]struct{}) (any, bool) {
-	if rv.IsNil() || rv.Type().Key().Kind() != reflect.String {
+	if rv.IsNil() {
 		return nil, false
 	}
+	kt := rv.Type().Key()
+	if kt.Kind() == reflect.String && !kt.Implements(textMarshalerType) {
+		return m.maskStringKeyMap(rv, depth, seen)
+	}
+	if !maskMapKeyEncodable(kt) {
+		// 这类 key encoding/json 编不出成员名，会报 unsupported value，
+		// zap 把整个字段记成 "<key>Error":"json: unsupported value: …"，
+		// 不落盘明文（实测 map[bool]X / map[struct]X 都是如此）。原样交回即可。
+		return nil, false
+	}
+	return m.maskOtherKeyMap(rv, depth, seen)
+}
 
+// maskStringKeyMap 是 string key 的快路径：key 不用转换，无命中时一个字节都不拷贝。
+func (m *masker) maskStringKeyMap(rv reflect.Value, depth int, seen *map[uintptr]struct{}) (any, bool) {
 	var out map[string]any
 	snapshot := func() map[string]any {
 		// map 迭代顺序随机，"已处理的前缀"无从谈起，第一次命中就整份快照。
@@ -703,6 +856,183 @@ func (m *masker) maskMap(rv reflect.Value, depth int, seen *map[uintptr]struct{}
 		return nil, false
 	}
 	return out, true
+}
+
+// maskOtherKeyMap 处理非 string key 的 map，输出 map[string]any。
+//
+// 形状不变：map[int]X 本来就序列化成 {"1":{…}}，转成 map[string]any{"1":…}
+// 序列化还是 {"1":{…}}。零拷贝原则照旧 —— 只在第一次命中时才整份快照。
+//
+// 任何一个 key 字符串化失败就整块原样交回：encoding/json 对 map 是全有全无的，
+// 一个 key 编不出成员名，整个字段就编码失败记成 <key>Error。我们跟着它走，
+// 不自作主张把一条本来编不出来的记录改成能编出来的形状。
+func (m *masker) maskOtherKeyMap(rv reflect.Value, depth int, seen *map[uintptr]struct{}) (any, bool) {
+	var out map[string]any
+	snapshot := func() (map[string]any, bool) {
+		dst := make(map[string]any, rv.Len())
+		it := rv.MapRange()
+		for it.Next() {
+			name, ok := maskMapKeyName(it.Key())
+			if !ok {
+				return nil, false
+			}
+			dst[name] = it.Value().Interface()
+		}
+		return dst, true
+	}
+
+	iter := rv.MapRange()
+	for iter.Next() {
+		name, ok := maskMapKeyName(iter.Key())
+		if !ok {
+			return nil, false
+		}
+		// 字符串化后的 key 统一查一次黑名单：hit 走零分配路径，成本可忽略，
+		// 收益是 key 类型的 MarshalText 产出有意义字符串时（比如一个
+		// HeaderName 类型产出 "authorization"）能挡住。
+		if m.hitMapKey(iter.Key(), name) {
+			if out == nil {
+				if out, ok = snapshot(); !ok {
+					return nil, false
+				}
+			}
+			out[name] = maskPlaceholder
+			continue
+		}
+		nv, ch := m.maskValue(iter.Value(), depth+1, seen)
+		if ch {
+			if out == nil {
+				if out, ok = snapshot(); !ok {
+					return nil, false
+				}
+			}
+			out[name] = nv
+		}
+	}
+
+	if out == nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// hitMapKey 查 map 成员名是否需要脱敏。除了成员名本身，还补查一种情况：
+// 底层是 string 又自带 MarshalText 的 key 类型，jsonv2 用 MarshalText 的结果
+// 当成员名，jsonv1 用原串 —— 两个名字都挡住，免得换个工具链就漏一条。
+func (m *masker) hitMapKey(k reflect.Value, name string) bool {
+	if m.hit(name) {
+		return true
+	}
+	if k.Kind() == reflect.Interface && !k.IsNil() {
+		k = k.Elem()
+	}
+	if k.Kind() != reflect.String {
+		return false
+	}
+	raw := k.String()
+	return raw != name && m.hit(raw)
+}
+
+// maskMapKeyEncodable 判断这类 key 有没有可能编出 JSON 成员名。
+// 只做类型级筛查，具体到某个 key 能不能编（NaN、MarshalText 报错、
+// map[any]V 里装了个 bool）由 maskMapKeyName 逐个判定。
+func maskMapKeyEncodable(t reflect.Type) bool {
+	if t.Implements(textMarshalerType) {
+		return true
+	}
+	switch t.Kind() {
+	case reflect.String,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uintptr, reflect.Float32, reflect.Float64,
+		reflect.Interface: // map[any]V 合法，实测 {1:…} 落盘成 {"1":…}
+		return true
+	}
+	return false
+}
+
+// maskMapKeyName 把 map key 转成它在 JSON 对象里的成员名，ok=false 表示编不出来。
+//
+// 规则以 Go 1.27 的实测落盘字节为准（此时 encoding/json 由 json/v2 实现，
+// v1 的 resolveKeyName 已不参与编译，两者并不等价）：
+//
+//   - interface 先拆箱，按动态类型再判一次；
+//   - 实现 encoding.TextMarshaler 的用 MarshalText 的结果，**优先于 Kind** ——
+//     v2 连底层是 string 的类型也走 MarshalText，v1 则是 string 优先。分歧只
+//     影响成员名的写法，查黑名单时下面会把原串也补查一次；
+//   - 整数十进制，浮点按 JSON 数值格式；
+//   - key 类型自己的 MarshalJSON **不算**：实测 v2 在成员名位置不调用它，
+//     落盘的是底层数值。
+func maskMapKeyName(k reflect.Value) (string, bool) {
+	if k.Kind() == reflect.Interface {
+		if k.IsNil() {
+			return "", false
+		}
+		return maskMapKeyName(k.Elem())
+	}
+	if k.Type().Implements(textMarshalerType) {
+		if k.Kind() == reflect.Pointer && k.IsNil() {
+			return "", true // v1/v2 都写成空成员名
+		}
+		if !k.CanInterface() {
+			return "", false
+		}
+		tm, ok := k.Interface().(encoding.TextMarshaler)
+		if !ok {
+			return "", false
+		}
+		b, err := tm.MarshalText()
+		if err != nil {
+			return "", false // json 同样会失败，不落盘
+		}
+		return string(b), true
+	}
+	switch k.Kind() {
+	case reflect.String:
+		return k.String(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(k.Int(), 10), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
+		reflect.Uint64, reflect.Uintptr:
+		return strconv.FormatUint(k.Uint(), 10), true
+	case reflect.Float32:
+		return maskFormatFloat(k.Float(), 32)
+	case reflect.Float64:
+		return maskFormatFloat(k.Float(), 64)
+	}
+	return "", false
+}
+
+// maskFormatFloat 复刻 encoding/json 写 JSON 数值的格式
+// （internal/jsonwire.AppendFloat，即 ECMAScript 的 Number::toString）：
+// |x| 落在 [1e-6, 1e21) 用 'f'，否则用 'e'，再把 e-09 收敛成 e-9。
+//
+// 直接用 strconv 的 'g' 会在 1e20 这一带写出 1e+20 而 json 写的是
+// 100000000000000000000 —— 成员名对不上，日志检索规则就会失效。
+// NaN / ±Inf 编不出 JSON 数值，json 报 unsupported value，返回 ok=false。
+func maskFormatFloat(f float64, bits int) (string, bool) {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return "", false
+	}
+	if bits == 32 {
+		f = float64(float32(f))
+	}
+	abs := math.Abs(f)
+	format := byte('f')
+	if abs != 0 {
+		if bits == 64 && (abs < 1e-6 || abs >= 1e21) ||
+			bits == 32 && (float32(abs) < 1e-6 || float32(abs) >= 1e21) {
+			format = 'e'
+		}
+	}
+	b := strconv.AppendFloat(make([]byte, 0, 32), f, format, -1, bits)
+	if format == 'e' {
+		if n := len(b); n >= 4 && b[n-4] == 'e' && b[n-3] == '-' && b[n-2] == '0' {
+			b[n-2] = b[n-1]
+			b = b[:n-1]
+		}
+	}
+	return string(b), true
 }
 
 // maskSlice 递归每个元素。[]byte 原样返回，否则会被渲染成一串数字。

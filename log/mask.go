@@ -14,6 +14,10 @@ const maskPlaceholder = "***"
 var builtinMaskFields = []string{
 	// 口令
 	"password", "passwd", "pwd", "old_password", "new_password",
+	// 确认口令：值就是明文口令本身，不是关于口令的元数据（对比不命中的
+	// password_hash —— 那是哈希，留着有排查价值）。后缀词组规则在这几个词上
+	// 给出的中心词是 confirm / repeat，靠规则命不中，只能作为整串补进来。
+	"password_confirm", "password2", "password_repeat",
 	// 令牌
 	"token", "ulp-token", "access_token", "refresh_token", "id_token",
 	"authorization", "cookie", "set-cookie", "session_id", "jwt",
