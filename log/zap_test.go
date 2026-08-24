@@ -281,6 +281,13 @@ func TestSyncOnStdoutIsNotAnError(t *testing.T) {
 
 type fakeBackend struct{ Logger }
 
+// captureStderr redirects os.Stderr to a pipe for the duration of fn,
+// then returns whatever was written.
+//
+// This directly assigns os.Stderr = w, which is not concurrency-safe:
+// tests using captureStderr must not call t.Parallel(). If a future test
+// introduces parallelism, it will race on the os.Stderr global — the
+// same constraint as nowFunc in rotate.go (see the comment there).
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()

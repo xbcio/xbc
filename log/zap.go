@@ -137,7 +137,12 @@ func L() Logger {
 // Security note: replacing the default backend also replaces the built-in
 // sensitive-field masking -- that's implemented in this package's maskCore,
 // and a third-party implementation won't automatically carry it over. This
-// warns explicitly once.
+// prints a warning to stderr on every non-default replacement, deliberately
+// not gated by sync.Once: each call to SetLogger is an independent security
+// event (the new backend may or may not carry its own masking), so every
+// replacement deserves its own explicit warning. Silencing the second
+// warning with sync.Once would let a second replacement go unnoticed, which
+// is a security regression, not a UX improvement.
 func SetLogger(l Logger) {
 	if l == nil {
 		l = Nop()
@@ -328,7 +333,15 @@ func jsonEncoderConfig() zapcore.EncoderConfig {
 func buildFileWriter(cfg FileConfig, path string) (zapcore.WriteSyncer, func() error, error) {
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		// 0o750 instead of 0o755: the log directory shouldn't be readable by
-		// other users
+		// other users.
+		//
+		// This MkdirAll intentionally duplicates the one inside
+		// newDailyRotator: under the RotateSize path, there is no
+		// newDailyRotator call at all, so this is the only place the
+		// directory gets created. Under the RotateDaily path both
+		// MkdirAll calls execute, but that is harmless — MkdirAll on an
+		// existing directory returns nil without touching permissions
+		// (measured), so the second call is a no-op.
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return nil, nil, fmt.Errorf("log: 创建日志目录 %s 失败: %w", dir, err)
 		}
