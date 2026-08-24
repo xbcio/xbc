@@ -21,20 +21,44 @@ import (
 
 // Hard-constraint automated gate: the log package must not depend on the
 // framework internals, not even by one line.
+//
+// -test is required: without it, go list -deps only walks the production
+// import graph and is blind to imports inside _test.go files. A forbidden
+// import added only in a test file would slip through silently -- this gate
+// exists precisely to catch that once the root package and internal
+// packages exist.
 func TestLogPackageHasNoFrameworkDependency(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go command unavailable, skipping dependency direction check")
 	}
-	out, err := exec.Command("go", "list", "-deps", "github.com/xbcio/xbc/log").Output()
+	out, err := exec.Command("go", "list", "-test", "-deps", "github.com/xbcio/xbc/log").Output()
 	require.NoError(t, err)
 
 	for _, line := range strings.Split(string(out), "\n") {
 		p := strings.TrimSpace(line)
-		if p == "" || p == "github.com/xbcio/xbc/log" {
+		if p == "" || isLogPackageItself(p) {
 			continue
 		}
 		assert.False(t, strings.HasPrefix(p, "github.com/xbcio/xbc"),
 			"log 包必须零框架依赖，但依赖了 %s", p)
+	}
+}
+
+// isLogPackageItself filters out the synthetic self-referential entries that
+// "go list -test -deps" emits for the package under test: the plain package,
+// the test-instrumented variant "pkg [pkg.test]", the compiled test binary
+// "pkg.test", and (if this package ever grows an external "log_test" test
+// package) its test-instrumented variant too. None of these represent an
+// actual dependency on framework code, so they must not trip the gate.
+func isLogPackageItself(p string) bool {
+	const self = "github.com/xbcio/xbc/log"
+	switch {
+	case p == self, p == self+".test":
+		return true
+	case strings.HasPrefix(p, self+" ["), strings.HasPrefix(p, self+"_test"):
+		return true
+	default:
+		return false
 	}
 }
 
