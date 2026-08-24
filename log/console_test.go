@@ -299,17 +299,21 @@ func TestConsoleNestedDepthIsBounded(t *testing.T) {
 	case out := <-done:
 		assert.Contains(t, out, "m.k=v")
 
-		// Depth limit hit at maxConsoleDepth: the full key is "m" followed
-		// by maxConsoleDepth ".self" segments, and the value must be the
-		// placeholder, not a further-expanded sub-structure.
-		atLimit := "m." + strings.Repeat("self.", maxConsoleDepth-1) + "self"
+		// Depth limit hit at level 8: the full key is "m" followed by 8
+		// ".self" segments, and the value must be the placeholder, not a
+		// further-expanded sub-structure.
+		//
+		// The expected string is a literal, not computed from
+		// maxConsoleDepth -- if someone changes the constant, this test
+		// must actually turn red rather than self-adjusting along with it.
+		atLimit := "m.self.self.self.self.self.self.self.self"
 		assert.Contains(t, out, atLimit+"=<depth-limit>",
 			"触顶后必须打印占位符，而不是悄悄丢弃或继续展开")
 
 		// Must not go one level deeper than this -- one more ".self" would
 		// mean the depth limit did not take effect.
 		assert.NotContains(t, out, atLimit+".self",
-			"不能超过 maxConsoleDepth 层继续展开")
+			"不能超过 8 层继续展开")
 	case <-time.After(5 * time.Second):
 		t.Fatal("展平递归没有停下来")
 	}
