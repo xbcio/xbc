@@ -2059,6 +2059,42 @@ func TestDailyRotatorSyncIsNoop(t *testing.T) {
 
 并发用例记得开竞态检测跑。
 
+**再补两条测试（探针实测所得）：**
+
+```go
+func TestDailyRotatorSkipsRotateOnEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	require.NoError(t, os.WriteFile(path, nil, 0o600)) // 0 字节的当前文件
+
+	fake := time.Date(2026, 8, 24, 23, 59, 0, 0, time.Local)
+	defer setNow(func() time.Time { return fake })()
+
+	d := newDailyRotator(&lumberjack.Logger{Filename: path, MaxBackups: 3, LocalTime: true})
+	fake = fake.Add(2 * time.Minute) // 跨天
+	_, err := d.Write([]byte("day2\n"))
+	require.NoError(t, err)
+	require.NoError(t, d.Close())
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "空文件跨天不该滚出 0 字节归档")
+}
+
+func TestDailyRotatorCreatesDirWith0750(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "logs")
+	d := newDailyRotator(&lumberjack.Logger{Filename: filepath.Join(dir, "app.log")})
+	defer d.Close()
+
+	fi, err := os.Stat(dir)
+	require.NoError(t, err)
+	// [SEC-INFO] lumberjack 自己建目录是 0755，必须由我们抢先建成 0750
+	assert.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "日志目录权限")
+}
+```
+
+**测试注意（实测踩过）：** lumberjack 的 `MaxBackups` 清理由后台 `millRun` goroutine 做，**不保证 `Rotate()` 返回时已完成**。凡是断言 backup 文件数量的用例，必须轮询等待（例如 `require.Eventually`，1.5 秒超时、50ms 间隔），直接断言会 flaky。上面几个用例断言的是"滚了 / 没滚"而不是清理后的数量，不受影响。
+
 - [ ] **Step 2: 跑测试确认失败**
 
 ```bash
@@ -2075,6 +2111,8 @@ Expected: 编译失败，`undefined: newDailyRotator` / `undefined: nowFunc`。
 package log
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -2101,6 +2139,11 @@ type dailyRotator struct {
 }
 
 func newDailyRotator(lj *lumberjack.Logger) *dailyRotator {
+	// [SEC-INFO] 日志目录必须是 0750。lumberjack 自己建目录时硬编码 0755
+	// （实测 -rwxr-xr-x），违反安全规范，所以抢先建好：os.MkdirAll 对已存在
+	// 的目录直接返回 nil、不改权限，之后 lumberjack 那次调用就成了 no-op。
+	// 这里忽略错误 —— 真建不出来，lumberjack 首次写盘会报出真正的原因。
+	_ = os.MkdirAll(filepath.Dir(lj.Filename), 0o750)
 	return &dailyRotator{lj: lj, day: nowFunc().Format(time.DateOnly)}
 }
 
@@ -2108,8 +2151,12 @@ func (d *dailyRotator) Write(p []byte) (int, error) {
 	d.mu.Lock()
 	if today := nowFunc().Format(time.DateOnly); today != d.day {
 		d.day = today
-		// 滚动失败不能阻塞写入：日志滚不动是运维问题，日志丢了是事故。
-		_ = d.lj.Rotate()
+		// 空文件不滚：Rotate() 对 0 字节的当前文件照样产出一个 0 字节归档
+		// （实测），进程在新的一天首启时就会滚出这种垃圾，长期累积。
+		if fi, err := os.Stat(d.lj.Filename); err != nil || fi.Size() > 0 {
+			// 滚动失败不能阻塞写入：日志滚不动是运维问题，日志丢了是事故。
+			_ = d.lj.Rotate()
+		}
 	}
 	d.mu.Unlock()
 
@@ -2118,6 +2165,9 @@ func (d *dailyRotator) Write(p []byte) (int, error) {
 }
 
 // Sync 满足 zapcore.WriteSyncer。lumberjack 直写 fd 不缓冲，无事可做。
+//
+// 注意 lumberjack.Logger **没有** Sync 方法（方法集只有 Close/Rotate/Write），
+// 别去转发一个不存在的方法。
 func (d *dailyRotator) Sync() error { return nil }
 
 func (d *dailyRotator) Close() error { return d.lj.Close() }
