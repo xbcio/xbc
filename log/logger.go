@@ -38,13 +38,15 @@ func (l Level) String() string {
 	}
 }
 
-// ParseLevel 解析级别名。未知级别返回错误而不是静默降级，
-// 免得配置写错时线上悄悄丢日志。
+// ParseLevel 解析级别名。空字符串视为"未指定"，返回 InfoLevel；
+// 除此之外任何无法识别的名字（如拼错的 "verbose"）都返回错误，
+// 绝不静默降级——免得配置写错时线上悄悄丢日志却查不出原因。
 func ParseLevel(s string) (Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
 		return DebugLevel, nil
-	case "info", "":
+	case "info", "": // 零值可用惯例：与 zapcore.Level.UnmarshalText 对空字符串的处理一致，
+		// 让 YAML/环境变量里留空的 Level 字段直接落到 info，而不是报错。
 		return InfoLevel, nil
 	case "warn", "warning":
 		return WarnLevel, nil
