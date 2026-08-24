@@ -17,3 +17,7 @@ go.work.sum
 application-local.yml
 *.local.yml
 .env
+
+# 工具的本地暂存目录
+.superpowers/
+.worktrees/
