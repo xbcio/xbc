@@ -19,42 +19,52 @@ func tLogger(ctx context.Context) Logger {
 	return l
 }
 
-// The T-series is sugar for Ctx(ctx).Xxx(...); the two paths are entirely
-// equivalent.
+// TDebug is sugar for Ctx(ctx).Debug(msg, kv...). The two paths are entirely
+// equivalent:
 //
 //	log.TInfo(ctx, "下单", "order_id", 1001)
 //	log.Ctx(ctx).Info("下单", "order_id", 1001)
-
 func TDebug(ctx context.Context, msg string, kv ...any) { tLogger(ctx).Debug(msg, kv...) }
-func TInfo(ctx context.Context, msg string, kv ...any)  { tLogger(ctx).Info(msg, kv...) }
-func TWarn(ctx context.Context, msg string, kv ...any)  { tLogger(ctx).Warn(msg, kv...) }
+
+// TInfo is sugar for Ctx(ctx).Info(msg, kv...).
+func TInfo(ctx context.Context, msg string, kv ...any) { tLogger(ctx).Info(msg, kv...) }
+
+// TWarn is sugar for Ctx(ctx).Warn(msg, kv...).
+func TWarn(ctx context.Context, msg string, kv ...any) { tLogger(ctx).Warn(msg, kv...) }
+
+// TError is sugar for Ctx(ctx).Error(msg, kv...).
 func TError(ctx context.Context, msg string, kv ...any) { tLogger(ctx).Error(msg, kv...) }
 
-// The f-series uses printf semantics, for cases that genuinely don't need
-// structure (startup banners, debug strings). Anything that can be broken
-// into KV pairs shouldn't use it -- fields folded into msg can't be searched.
+// TDebugf uses printf semantics, for cases that genuinely don't need structure
+// (startup banners, debug strings). Anything that can be broken into KV pairs
+// shouldn't use it -- fields folded into msg can't be searched.
 //
 // Checks the level before formatting: a disabled log level shouldn't pay the
 // formatting cost.
-
 func TDebugf(ctx context.Context, format string, args ...any) {
 	if l := tLogger(ctx); l.Enabled(DebugLevel) {
 		l.Debug(fmt.Sprintf(format, args...))
 	}
 }
 
+// TInfof is the printf variant of TInfo. Fields folded into msg can't be
+// searched -- anything that can be broken into KV pairs shouldn't use it.
 func TInfof(ctx context.Context, format string, args ...any) {
 	if l := tLogger(ctx); l.Enabled(InfoLevel) {
 		l.Info(fmt.Sprintf(format, args...))
 	}
 }
 
+// TWarnf is the printf variant of TWarn. Fields folded into msg can't be
+// searched -- anything that can be broken into KV pairs shouldn't use it.
 func TWarnf(ctx context.Context, format string, args ...any) {
 	if l := tLogger(ctx); l.Enabled(WarnLevel) {
 		l.Warn(fmt.Sprintf(format, args...))
 	}
 }
 
+// TErrorf is the printf variant of TError. Fields folded into msg can't be
+// searched -- anything that can be broken into KV pairs shouldn't use it.
 func TErrorf(ctx context.Context, format string, args ...any) {
 	if l := tLogger(ctx); l.Enabled(ErrorLevel) {
 		l.Error(fmt.Sprintf(format, args...))
