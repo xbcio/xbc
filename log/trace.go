@@ -85,3 +85,63 @@ func TraceFrom(ctx context.Context) Trace {
 	t, _ := ctx.Value(traceKey{}).(Trace)
 	return t
 }
+
+// ── Span ─────────────────────────────────────────────────
+
+type spanOptions struct {
+	spanID trace.SpanID
+}
+
+// SpanOption adjusts how a span is created.
+type SpanOption func(*spanOptions)
+
+// SpanID sets the span_id, used to align with an external system. A zero
+// value is ignored.
+func SpanID(id trace.SpanID) SpanOption {
+	return func(o *spanOptions) { o.spanID = id }
+}
+
+// Span opens a child span, returning a ctx carrying the trace and a done
+// callback.
+//
+//	ctx, done := log.Span(ctx, "db.query")
+//	defer done()
+//
+// The ctx already has a Logger bound to it with trace fields attached, so
+// subsequent log.TInfo(ctx, ...) calls retrieve it with zero allocations.
+func Span(ctx context.Context, name string) (context.Context, func()) {
+	return SpanWith(ctx, name)
+}
+
+// SpanWith is the option-taking version of Span.
+func SpanWith(ctx context.Context, name string, opts ...SpanOption) (context.Context, func()) {
+	var o spanOptions
+	for _, fn := range opts {
+		fn(&o)
+	}
+
+	var child Trace
+	if parent := TraceFrom(ctx); parent.Valid() {
+		child = parent.Fork(name)
+	} else {
+		child = NewTrace(name)
+	}
+	if o.spanID.IsValid() {
+		child.SpanContext = child.SpanContext.WithSpanID(o.spanID)
+	}
+
+	l := L().With(traceKV(child)...)
+	ctx = NewContext(WithTrace(ctx, child), l)
+
+	start := nowFunc()
+	return ctx, func() {
+		done := l
+		// The callback adds one extra closure frame vs. a normal call; skip one
+		// more so the caller points to the function containing defer done()
+		if cs, ok := done.(CallerSkipper); ok {
+			done = cs.WithCallerSkip(1)
+		}
+		done.Debug("span 结束", "elapsed_ms",
+			float64(nowFunc().Sub(start).Microseconds())/1000)
+	}
+}
