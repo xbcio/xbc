@@ -7,30 +7,33 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Trace 是一次调用的链路上下文。
+// Trace is the tracing context of a single call.
 //
-// 内嵌 OTel 的 trace.SpanContext，所以能直接喂给 OTel SDK，
-// 也能被 W3C traceparent 头解析出来的值填充 —— 不需要任何转换层。
+// It embeds OTel's trace.SpanContext, so it can be fed directly into the OTel
+// SDK and can also be populated from values parsed out of a W3C traceparent
+// header -- no conversion layer required.
 //
-// TraceID 与 RequestID 是同一个 128 bit 值的两种编码：
-// 前者是 W3C 要求的 32 位 hex，后者是 ULID 的 26 位 Crockford Base32。
-// ULID 前 6 字节是毫秒时间戳，所以 request_id 天然按时间有序、肉眼可比大小。
+// TraceID and RequestID are two encodings of the same 128-bit value:
+// the former is the 32-hex-digit form required by W3C, the latter is the
+// 26-character Crockford Base32 form used by ULID.
+// The first 6 bytes of a ULID are a millisecond timestamp, so request_id is
+// naturally time-ordered and can be compared by eye.
 type Trace struct {
 	trace.SpanContext
 
-	// ParentSpanID 是上游 span。根 span 为零值。
+	// ParentSpanID is the upstream span. A root span has the zero value.
 	ParentSpanID trace.SpanID
 
-	// SpanName 是当前 span 的名字，如 "GET /orders/:id"、"db.query"。
+	// SpanName is the name of the current span, e.g. "GET /orders/:id", "db.query".
 	SpanName string
 
-	// RequestID 是 TraceID 的 ULID 编码，贯穿整条链路不变。
+	// RequestID is the ULID encoding of TraceID, unchanged throughout the whole chain.
 	RequestID string
 }
 
 type traceKey struct{}
 
-// NewTrace 开一条新链路。
+// NewTrace starts a new trace.
 func NewTrace(name string) Trace {
 	id := ulid.Make()
 	return Trace{
@@ -44,19 +47,20 @@ func NewTrace(name string) Trace {
 	}
 }
 
-// newSpanID 生成 8 字节 span_id。
-// 取 ULID 的 [8:16] —— ULID 布局是 6 字节时间戳 + 10 字节随机熵，
-// 这一段整个落在随机区内，够用且省掉直接依赖 crypto/rand。
+// newSpanID generates an 8-byte span_id.
+// Takes ULID's [8:16] -- a ULID's layout is 6 bytes of timestamp + 10 bytes
+// of random entropy, and this slice falls entirely within the random region,
+// which is enough for our purposes and avoids depending directly on crypto/rand.
 func newSpanID() trace.SpanID {
 	u := ulid.Make()
 	return trace.SpanID(u[8:])
 }
 
-// Valid 报告这条链路是否有效。零值 Trace 返回 false。
+// Valid reports whether this trace is valid. The zero-value Trace returns false.
 func (t Trace) Valid() bool { return t.TraceID().IsValid() }
 
-// Fork 派生子 span：trace_id 与 request_id 不变，span_id 换新，
-// parent 指向当前 span。值语义，不改调用者。
+// Fork derives a child span: trace_id and request_id stay the same, span_id
+// is regenerated, and parent points at the current span. Value semantics -- the caller is not mutated.
 func (t Trace) Fork(name string) Trace {
 	child := t
 	child.ParentSpanID = t.SpanID()
@@ -65,7 +69,7 @@ func (t Trace) Fork(name string) Trace {
 	return child
 }
 
-// WithTrace 把链路存进 ctx。
+// WithTrace stores the trace into ctx.
 func WithTrace(ctx context.Context, t Trace) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -73,7 +77,7 @@ func WithTrace(ctx context.Context, t Trace) context.Context {
 	return context.WithValue(ctx, traceKey{}, t)
 }
 
-// TraceFrom 从 ctx 取链路。取不到返回零值 Trace（Valid() == false），不 panic。
+// TraceFrom retrieves the trace from ctx. Returns the zero-value Trace (Valid() == false) if not found, without panicking.
 func TraceFrom(ctx context.Context) Trace {
 	if ctx == nil {
 		return Trace{}
