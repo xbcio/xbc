@@ -111,3 +111,54 @@ func TestNoSinkEnabledIsAllowed(t *testing.T) {
 	c.File.Enabled = false
 	assert.NoError(t, c.Normalize(), "全关等价于 Nop，是合法配置（测试环境常用）")
 }
+
+// TestNormalizeClampsBoundaryValues pins down the 5 numeric clamp points in
+// Normalize: each out-of-range value must be snapped back to a documented
+// boundary, not silently ignored or rejected.
+func TestNormalizeClampsBoundaryValues(t *testing.T) {
+	// ── File clamps (only active when File.Enabled == true) ──
+
+	t.Run("MaxSize<=0 clamped to 100", func(t *testing.T) {
+		c := DefaultConfig()
+		c.File.Enabled = true
+		c.File.MaxSize = 0
+		require.NoError(t, c.Normalize())
+		assert.Equal(t, 100, c.File.MaxSize, "MaxSize=0 必须夹回默认值 100")
+
+		c.File.MaxSize = -5
+		require.NoError(t, c.Normalize())
+		assert.Equal(t, 100, c.File.MaxSize, "MaxSize=-5 必须夹回默认值 100")
+	})
+
+	t.Run("MaxAge<0 clamped to 0", func(t *testing.T) {
+		c := DefaultConfig()
+		c.File.Enabled = true
+		c.File.MaxAge = -1
+		require.NoError(t, c.Normalize())
+		assert.Equal(t, 0, c.File.MaxAge, "MaxAge=-1 必须夹回 0（不限期）")
+	})
+
+	t.Run("MaxBackups<0 clamped to 0", func(t *testing.T) {
+		c := DefaultConfig()
+		c.File.Enabled = true
+		c.File.MaxBackups = -3
+		require.NoError(t, c.Normalize())
+		assert.Equal(t, 0, c.File.MaxBackups, "MaxBackups=-3 必须夹回 0（不限个数）")
+	})
+
+	// ── Sampling clamps (always active) ──
+
+	t.Run("Sampling.Initial<0 clamped to 0", func(t *testing.T) {
+		c := DefaultConfig()
+		c.Sampling.Initial = -10
+		require.NoError(t, c.Normalize())
+		assert.Equal(t, 0, c.Sampling.Initial, "负的采样初始值必须夹回 0（禁用采样）")
+	})
+
+	t.Run("Sampling.Thereafter<0 clamped to 0", func(t *testing.T) {
+		c := DefaultConfig()
+		c.Sampling.Thereafter = -1
+		require.NoError(t, c.Normalize())
+		assert.Equal(t, 0, c.Sampling.Thereafter, "负的采样后续值必须夹回 0")
+	})
+}
