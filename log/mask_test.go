@@ -235,7 +235,7 @@ func TestMaskKeepsSelfMarshalingTypesIntact(t *testing.T) {
 func TestMaskTruncatesOverDeepNesting(t *testing.T) {
 	const levels = 24
 	var deep any = "bottom"
-	for i := 0; i < levels; i++ {
+	for range levels {
 		deep = map[string]any{"n": deep}
 	}
 
@@ -364,10 +364,254 @@ func TestMaskDoesNotTrustPointerOnlyMarshaler(t *testing.T) {
 	assert.Equal(t, "alice", creds["user"])
 }
 
+// stringerOnlyCreds 只实现 String()。encoding/json 的编码器只查 json.Marshaler
+// 与 encoding.TextMarshaler，压根不看 String() —— 判它"自带序列化"而跳过遍历，
+// json 照样把它逐字段摊开，是纯粹的漏放。
+type stringerOnlyCreds struct {
+	User     string `json:"user"`
+	Password string `json:"password"`
+}
+
+func (c stringerOnlyCreds) String() string { return "redacted" }
+
+func TestMaskDoesNotTrustStringer(t *testing.T) {
+	type wrapper struct {
+		Creds stringerOnlyCreds `json:"creds"`
+	}
+	l, logs := maskedLogger(nil)
+	l.Info("any", zap.Any("w", wrapper{
+		Creds: stringerOnlyCreds{User: "alice", Password: "hunter2"},
+	}))
+
+	require.Len(t, logs.All(), 1)
+	w, ok := logs.All()[0].ContextMap()["w"].(map[string]any)
+	require.True(t, ok, "只实现 String() 的类型不能当成自带序列化，实际 %T",
+		logs.All()[0].ContextMap()["w"])
+	creds, ok := w["creds"].(map[string]any)
+	require.True(t, ok, "实际 %T", w["creds"])
+	assert.Equal(t, maskPlaceholder, creds["password"])
+	assert.Equal(t, "alice", creds["user"])
+}
+
+// maxMaskDepth 数的是结构嵌套层数，不是反射的间接层数。
+// 把指针/接口解引用也算进去的话，map[string]any 每层要吃 2 个 depth，
+// 上限 8 实际只剩 4 层 —— 这个常量的含义就变得不可预测了。
+func TestMaskDepthCountsStructureNotIndirection(t *testing.T) {
+	const levels = 6
+	var deep any = map[string]any{"leaf": "visible", "token": "s3cr3t"}
+	for i := 1; i < levels; i++ {
+		deep = map[string]any{"n": deep}
+	}
+
+	l, logs := maskedLogger(nil)
+	l.Info("deep", zap.Any("root", deep))
+
+	require.Len(t, logs.All(), 1)
+	cur := logs.All()[0].ContextMap()["root"]
+	for i := 1; i < levels; i++ {
+		sub, ok := cur.(map[string]any)
+		require.True(t, ok, "第 %d 层应仍是 map，实际 %T", i, cur)
+		cur = sub["n"]
+	}
+	bottom, ok := cur.(map[string]any)
+	require.True(t, ok, "第 %d 层应仍是 map，实际 %T", levels, cur)
+	assert.Equal(t, "visible", bottom["leaf"], "上限之内的正常字段不能被整体替换")
+	assert.Equal(t, maskPlaceholder, bottom["token"], "遍历确实走到了最深一层")
+}
+
+// ---------------------------------------------------------------------------
+// 匿名嵌入字段按 encoding/json 的规则平铺
+//
+// 形状只在命中时才变 —— 恰好是最需要日志形状正确的时候。
+// {"Base":{"password":"***"}} 会让针对 .password 的检索规则失效。
+// ---------------------------------------------------------------------------
+
+type MaskBase struct {
+	Password string `json:"password"`
+	Region   string `json:"region"`
+}
+
+type embedReq struct {
+	MaskBase
+	User string `json:"user"`
+}
+
+type embedPtrReq struct {
+	*MaskBase
+	User string `json:"user"`
+}
+
+type taggedEmbedReq struct {
+	MaskBase `json:"base"`
+	User     string `json:"user"`
+}
+
+// maskUnexportedBase 是未导出的嵌入类型。encoding/json 照样提升它的导出字段，
+// 不平铺就等于放行 —— reflect 允许读取它的导出子字段。
+type maskUnexportedBase struct {
+	Password string `json:"password"`
+}
+
+type embedUnexportedReq struct {
+	maskUnexportedBase
+	User string `json:"user"`
+}
+
+// MaskInt 是非 struct 的嵌入类型，encoding/json 按类型名当作普通字段。
+type MaskInt int
+
+type embedNonStructReq struct {
+	MaskInt
+	Password string `json:"password"`
+}
+
+type embedConflictReq struct {
+	MaskBase
+	Region string `json:"region"` // 与嵌入体同名，外层优先
+}
+
+func TestMaskFlattensEmbeddedStruct(t *testing.T) {
+	l, logs := maskedLogger(nil)
+	l.Info("any", zap.Any("req", embedReq{
+		MaskBase: MaskBase{Password: "hunter2", Region: "cn-north"},
+		User:     "alice",
+	}))
+
+	require.Len(t, logs.All(), 1)
+	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
+	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	assert.Equal(t, maskPlaceholder, req["password"], "应平铺到顶层而不是 MaskBase.password")
+	assert.Equal(t, "cn-north", req["region"], "嵌入体的非敏感字段也要平铺")
+	assert.Equal(t, "alice", req["user"])
+	assert.NotContains(t, req, "MaskBase", "不能留下按类型名嵌套的那一层")
+}
+
+func TestMaskFlattensEmbeddedStructPointer(t *testing.T) {
+	l, logs := maskedLogger(nil)
+	l.Info("any", zap.Any("req", embedPtrReq{
+		MaskBase: &MaskBase{Password: "hunter2", Region: "cn-north"},
+		User:     "alice",
+	}))
+
+	require.Len(t, logs.All(), 1)
+	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
+	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	assert.Equal(t, maskPlaceholder, req["password"])
+	assert.Equal(t, "cn-north", req["region"])
+	assert.Equal(t, "alice", req["user"])
+}
+
+func TestMaskFlattensUnexportedEmbeddedStruct(t *testing.T) {
+	l, logs := maskedLogger(nil)
+	l.Info("any", zap.Any("req", embedUnexportedReq{
+		maskUnexportedBase: maskUnexportedBase{Password: "hunter2"},
+		User:               "alice",
+	}))
+
+	require.Len(t, logs.All(), 1)
+	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
+	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	assert.Equal(t, maskPlaceholder, req["password"], "encoding/json 会提升它，不平铺就是放行")
+	assert.Equal(t, "alice", req["user"])
+}
+
+// 带 json tag 的匿名嵌入按普通命名字段处理，不平铺。
+func TestMaskKeepsTaggedEmbeddedStructNested(t *testing.T) {
+	l, logs := maskedLogger(nil)
+	l.Info("any", zap.Any("req", taggedEmbedReq{
+		MaskBase: MaskBase{Password: "hunter2", Region: "cn-north"},
+		User:     "alice",
+	}))
+
+	require.Len(t, logs.All(), 1)
+	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
+	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	base, ok := req["base"].(map[string]any)
+	require.True(t, ok, "有 tag 就该按普通字段嵌套，实际 %T", req["base"])
+	assert.Equal(t, maskPlaceholder, base["password"])
+	assert.NotContains(t, req, "password", "不该平铺")
+}
+
+// 嵌入非 struct 类型时按类型名当普通字段。
+func TestMaskKeepsNonStructEmbeddedAsNamedField(t *testing.T) {
+	l, logs := maskedLogger(nil)
+	l.Info("any", zap.Any("req", embedNonStructReq{MaskInt: 7, Password: "hunter2"}))
+
+	require.Len(t, logs.All(), 1)
+	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
+	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	assert.Equal(t, maskPlaceholder, req["password"])
+	assert.Equal(t, MaskInt(7), req["MaskInt"], "非 struct 的嵌入按类型名成为普通字段")
+}
+
+// 字段名冲突时外层优先。
+func TestMaskEmbeddedFlatteningPrefersOuterField(t *testing.T) {
+	l, logs := maskedLogger(nil)
+	l.Info("any", zap.Any("req", embedConflictReq{
+		MaskBase: MaskBase{Password: "hunter2", Region: "inner"},
+		Region:   "outer",
+	}))
+
+	require.Len(t, logs.All(), 1)
+	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
+	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	assert.Equal(t, maskPlaceholder, req["password"])
+	assert.Equal(t, "outer", req["region"], "同名时外层字段胜出")
+}
+
+type MaskPlain struct {
+	Zone string `json:"zone"`
+}
+
+type embedRawReq struct {
+	MaskPlain
+	Token string `json:"token"`
+}
+
+type embedTwoReq struct {
+	MaskPlain
+	MaskBase
+	User string `json:"user"`
+}
+
+// 命中发生在本层命名字段上时，未命中的嵌入体也要按平铺形状原样搬过来，
+// 不能整块丢掉、也不能退回按类型名嵌套。
+func TestMaskFlattensUnchangedEmbeddedOnOuterHit(t *testing.T) {
+	l, logs := maskedLogger(nil)
+	l.Info("any", zap.Any("req", embedRawReq{
+		MaskPlain: MaskPlain{Zone: "az-1"},
+		Token:     "s3cr3t",
+	}))
+
+	require.Len(t, logs.All(), 1)
+	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
+	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	assert.Equal(t, maskPlaceholder, req["token"])
+	assert.Equal(t, "az-1", req["zone"], "未命中的嵌入体也要平铺")
+	assert.NotContains(t, req, "MaskPlain")
+}
+
+// 命中发生在靠后的嵌入体里时，它之前的嵌入体同样要补进结果。
+func TestMaskFlattensEarlierEmbeddedOnLaterHit(t *testing.T) {
+	l, logs := maskedLogger(nil)
+	l.Info("any", zap.Any("req", embedTwoReq{
+		MaskPlain: MaskPlain{Zone: "az-1"},
+		MaskBase:  MaskBase{Password: "hunter2", Region: "cn-north"},
+		User:      "alice",
+	}))
+
+	require.Len(t, logs.All(), 1)
+	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
+	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	assert.Equal(t, maskPlaceholder, req["password"])
+	assert.Equal(t, "cn-north", req["region"])
+	assert.Equal(t, "alice", req["user"])
+	assert.Equal(t, "az-1", req["zone"], "命中字段之前的嵌入体不能丢")
+}
+
 // ---------------------------------------------------------------------------
 // Fix 2：内层 core 不能被反射掏出来
 // ---------------------------------------------------------------------------
-
 func TestMaskCoreHidesInnerCoreFromReflection(t *testing.T) {
 	obs, _ := observer.New(zapcore.DebugLevel)
 	c := newMaskCore(obs, newMasker(nil))

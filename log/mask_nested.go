@@ -15,22 +15,25 @@
 //
 //  1. 敏感值写在 Entry.Message 里（log.L().Info("password=" + pwd)）——
 //     字段级黑名单管不到消息体。
-//  2. 类型自己实现了 MarshalJSON / MarshalText / String 并在其中输出敏感内容 ——
+//  2. 类型自己实现了 MarshalJSON / MarshalText 并在其中输出敏感内容 ——
 //     反射遍历会原样保留这类类型（否则 time.Time 会被拆成 wall/ext/loc 三个
 //     未导出字段而输出全毁），那是调用方显式定制的序列化，由调用方负责。
+//     注意只有这两个接口算数，fmt.Stringer 不算，理由见 hasSelfMarshal。
 //  3. 深度超过 maxMaskDepth 的子树被整体替换为 ***，这是有意的信息损失，
-//     用来防御恶意或病态的深嵌套，不是性能优化。
+//     用来防御恶意或病态的深嵌套，不是性能优化。maxMaskDepth 数的是结构嵌套
+//     层数，指针解引用与 interface 拆箱不计入。
 //
-// 另外，反射遍历对匿名嵌入字段按普通命名字段处理（键名取类型名），
-// 与 encoding/json 的平铺行为不同。这只影响命中后重建出来的 JSON 形状，
-// 不影响脱敏本身 —— 嵌入结构里的敏感字段一样会被替换。
+// 匿名嵌入字段按 encoding/json 的规则平铺进父层（无 json 名字 + 解一层指针后是
+// struct 才平铺），冲突时外层优先。这一点必须与 json 对齐：形状只在命中时才变，
+// 恰好是最需要日志形状稳定的时候 —— {"Base":{"password":"***"}} 会让针对
+// .password 的检索规则失效。多路同深度冲突不做 encoding/json 那套完整消歧，
+// 先出现的嵌入胜出。
 
 package log
 
 import (
 	"encoding"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -347,25 +350,29 @@ func (e *maskArrayEncoder) AppendUintptr(v uintptr) { e.enc.AppendUintptr(v) }
 // ---------------------------------------------------------------------------
 
 var (
-	jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
-	textMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
-	stringerType      = reflect.TypeOf((*fmt.Stringer)(nil)).Elem()
+	jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
+	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
 )
 
 // hasSelfMarshal 判断类型是否自带序列化。这类类型必须原样保留 ——
 // 否则 time.Time 会被拆成 wall/ext/loc 三个未导出字段，输出全毁。
 //
-// 只查类型自身的方法集，不查 reflect.PointerTo(t)。指针接收者的方法不在值类型
-// 的方法集里，encoding/json 对不可寻址的值同样不会调用它们 —— 如果这里认了，
+// 只查 json.Marshaler 与 encoding.TextMarshaler 两个接口，**不查 fmt.Stringer**。
+// 这不是漏了一个，别顺手补上：zap 对 ReflectType 走 json 编码，而 encoding/json
+// 只认这两个接口，压根不看 String()。把只实现了 String() 的类型判成"自带序列化"
+// 就等于主动跳过遍历，随后 json 照样把它逐字段摊开 —— 纯粹的漏放，没有任何补偿
+// 收益。time.Time 由 MarshalJSON / MarshalText 挡住，net.IP、uuid.UUID 走
+// MarshalText，time.Duration、zapcore.Level 是标量 Kind 根本不进 struct 分支。
+//
+// 同理只查类型自身的方法集，不查 reflect.PointerTo(t)。指针接收者的方法不在值
+// 类型的方法集里，encoding/json 对不可寻址的值同样不会调用它们 —— 如果这里认了，
 // 一个只在指针上实现 MarshalJSON 的类型按值打日志时会被判为"自带序列化"而跳过
-// 遍历，随后 json.Marshal 照样把它逐字段摊开，形成一条绕过路径。
+// 遍历，同样形成绕过路径。
 func hasSelfMarshal(t reflect.Type) bool {
 	if t == nil {
 		return false
 	}
-	return t.Implements(jsonMarshalerType) ||
-		t.Implements(textMarshalerType) ||
-		t.Implements(stringerType)
+	return t.Implements(jsonMarshalerType) || t.Implements(textMarshalerType)
 }
 
 // maskReflected 递归脱敏任意值。changed 为 false 时调用方必须用原值，不要用返回值。
@@ -387,6 +394,12 @@ func (m *masker) maskReflected(v any, depth int) (out any, changed bool) {
 
 // maskValue 是 maskReflected 的递归体。seen 记录递归路径上已访问的指针地址，
 // 只在真正递归到指针时才分配，无嵌套指针时保持 nil。
+//
+// depth 只数**结构嵌套层数**：指针解引用与 interface 拆箱都是间接层，不是嵌套层，
+// 不递增 depth。否则 maxMaskDepth 的实际含义会随值的表示方式漂移 ——
+// map[string]any 每层要吃掉 2 个额度（Interface + Map），8 只剩 4 层可用。
+// 不递增是安全的：循环引用由 seen 独立挡住，从不依赖 depth 兜底；
+// interface 装箱最终必须装一个具体类型，不存在无限间接。
 func (m *masker) maskValue(rv reflect.Value, depth int, seen *map[uintptr]struct{}) (any, bool) {
 	if !rv.IsValid() {
 		return nil, false
@@ -420,7 +433,7 @@ func (m *masker) maskValue(rv reflect.Value, depth int, seen *map[uintptr]struct
 			return maskPlaceholder, true
 		}
 		(*seen)[addr] = struct{}{}
-		nv, ch := m.maskValue(rv.Elem(), depth+1, seen)
+		nv, ch := m.maskValue(rv.Elem(), depth, seen)
 		delete(*seen, addr)
 		return nv, ch
 
@@ -428,7 +441,7 @@ func (m *masker) maskValue(rv reflect.Value, depth int, seen *map[uintptr]struct
 		if rv.IsNil() {
 			return nil, false
 		}
-		return m.maskValue(rv.Elem(), depth+1, seen)
+		return m.maskValue(rv.Elem(), depth, seen)
 
 	case reflect.Struct:
 		return m.maskStruct(rv, depth, seen)
@@ -445,14 +458,18 @@ func (m *masker) maskValue(rv reflect.Value, depth int, seen *map[uintptr]struct
 
 // maskStruct 遍历导出字段。字段名取 json tag 的名字部分，无 tag 则用 Go 字段名。
 // 没有任何导出字段的 struct 原样返回（time.Time 之外的同类兜底）。
+//
+// 分两遍：先本层命名字段，再平铺的匿名嵌入字段（合并时不覆盖已有 key）。
+// 顺序不能反 —— 这就是"外层优先"，与 encoding/json 的浅层胜出一致。
 func (m *masker) maskStruct(rv reflect.Value, depth int, seen *map[uintptr]struct{}) (any, bool) {
 	t := rv.Type()
 	n := t.NumField()
 	var out map[string]any
 
-	for i := 0; i < n; i++ {
+	// 第一遍：本层命名字段。
+	for i := range n {
 		sf := t.Field(i)
-		if !sf.IsExported() {
+		if maskEmbedFlatten(sf) || !sf.IsExported() {
 			continue
 		}
 		name := maskFieldName(sf)
@@ -463,7 +480,7 @@ func (m *masker) maskStruct(rv reflect.Value, depth int, seen *map[uintptr]struc
 
 		if m.hit(name) {
 			if out == nil {
-				out = maskStructPrefix(rv, t, i)
+				out = maskNamedRaw(rv)
 			}
 			out[name] = maskPlaceholder
 			continue
@@ -471,13 +488,49 @@ func (m *masker) maskStruct(rv reflect.Value, depth int, seen *map[uintptr]struc
 		nv, ch := m.maskValue(fv, depth+1, seen)
 		if ch {
 			if out == nil {
-				out = maskStructPrefix(rv, t, i)
+				out = maskNamedRaw(rv)
 			}
 			out[name] = nv
+		}
+	}
+
+	// 第二遍：平铺的匿名嵌入字段。
+	for i := range n {
+		sf := t.Field(i)
+		if !maskEmbedFlatten(sf) {
 			continue
 		}
-		if out != nil {
-			out[name] = fv.Interface()
+		fv := rv.Field(i)
+		if fv.Kind() == reflect.Pointer && fv.IsNil() {
+			continue // nil 嵌入指针：encoding/json 同样不产出任何键
+		}
+
+		nv, ch := m.maskEmbedStruct(fv, depth, seen)
+		if !ch {
+			if out != nil {
+				maskStructRaw(out, fv, maxMaskDepth)
+			}
+			continue
+		}
+		if out == nil {
+			out = maskNamedRaw(rv)
+			for j := range i { // 本字段之前的嵌入字段原样补上
+				if maskEmbedFlatten(t.Field(j)) {
+					maskStructRaw(out, rv.Field(j), maxMaskDepth)
+				}
+			}
+		}
+		if sub, isMap := nv.(map[string]any); isMap {
+			for k, v := range sub {
+				if _, dup := out[k]; !dup {
+					out[k] = v
+				}
+			}
+			continue
+		}
+		// 循环引用等退化情况：平铺不了，按类型名挂上去。
+		if _, dup := out[sf.Name]; !dup {
+			out[sf.Name] = nv
 		}
 	}
 
@@ -487,21 +540,110 @@ func (m *masker) maskStruct(rv reflect.Value, depth int, seen *map[uintptr]struc
 	return out, true
 }
 
-// maskStructPrefix 在第一次命中时才建 map，把下标 [0, upto) 的导出字段原样搬进去。
-func maskStructPrefix(rv reflect.Value, t reflect.Type, upto int) map[string]any {
-	out := make(map[string]any, t.NumField())
-	for j := 0; j < upto; j++ {
-		sf := t.Field(j)
-		if !sf.IsExported() {
+// maskEmbedFlatten 判断一个字段是否按 encoding/json 的规则平铺进父层：
+// 匿名嵌入、json tag 没给名字、且（解一层指针后）是 struct。
+//
+// json tag 给了名字（含 json:"-"）就按普通命名字段处理；嵌入非 struct 类型
+// （type Req struct{ MyInt }）也按普通命名字段处理，key 用类型名。
+// 嵌入类型未导出不影响平铺 —— encoding/json 照样提升它的导出字段，
+// 反射对这些字段的 CanInterface 也是 true，不跟着平铺就会漏掉里面的敏感字段。
+func maskEmbedFlatten(sf reflect.StructField) bool {
+	if !sf.Anonymous {
+		return false
+	}
+	if tag, ok := sf.Tag.Lookup("json"); ok {
+		if name, _, _ := strings.Cut(tag, ","); name != "" {
+			return false
+		}
+	}
+	t := sf.Type
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.Struct
+}
+
+// maskEmbedStruct 展开一个平铺的嵌入字段，depth 不递增 —— 平铺后的字段与父层
+// 同处一个结构层。
+//
+// 直接走 maskStruct 而不经 maskValue：encoding/json 决定平铺时只看类型形状，
+// 不看嵌入类型自身有没有 MarshalJSON —— 那个方法要么被提升到外层、在
+// maskValue 入口就把整个外层挡住了，要么因多路歧义而根本不会被调用。
+// 经 maskValue 会被 hasSelfMarshal 拦下，与 json 的实际输出对不上。
+func (m *masker) maskEmbedStruct(fv reflect.Value, depth int, seen *map[uintptr]struct{}) (any, bool) {
+	if fv.Kind() != reflect.Pointer {
+		return m.maskStruct(fv, depth, seen)
+	}
+	// type A struct{ *A } 是合法的，自引用得挡住。
+	addr := fv.Pointer()
+	if *seen == nil {
+		*seen = make(map[uintptr]struct{}, 4)
+	}
+	if _, dup := (*seen)[addr]; dup {
+		return maskPlaceholder, true
+	}
+	(*seen)[addr] = struct{}{}
+	nv, ch := m.maskStruct(fv.Elem(), depth, seen)
+	delete(*seen, addr)
+	return nv, ch
+}
+
+// maskNamedRaw 在第一次命中时才建 map，把本层的命名字段（不含平铺嵌入）原样搬进去。
+// 只在首次命中调用 —— 此前没有任何字段被改写过，整份原样搬是安全的。
+func maskNamedRaw(rv reflect.Value) map[string]any {
+	t := rv.Type()
+	n := t.NumField()
+	out := make(map[string]any, n)
+	for i := range n {
+		sf := t.Field(i)
+		if maskEmbedFlatten(sf) || !sf.IsExported() {
 			continue
 		}
 		name := maskFieldName(sf)
 		if name == "" {
 			continue
 		}
-		out[name] = rv.Field(j).Interface()
+		out[name] = rv.Field(i).Interface()
 	}
 	return out
+}
+
+// maskStructRaw 把 rv 按平铺后的形状原样写进 out：先命名字段再嵌入字段，
+// 已存在的 key 不覆盖。budget 只是兜底 —— 真正的自引用嵌入会在 maskEmbedStruct
+// 里被 seen 判成 changed 而走不到这条原样路径，这里不依赖它保正确性。
+func maskStructRaw(out map[string]any, rv reflect.Value, budget int) {
+	if budget <= 0 {
+		return
+	}
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return
+	}
+	t := rv.Type()
+	n := t.NumField()
+	for i := range n {
+		sf := t.Field(i)
+		if maskEmbedFlatten(sf) || !sf.IsExported() {
+			continue
+		}
+		name := maskFieldName(sf)
+		if name == "" {
+			continue
+		}
+		if _, dup := out[name]; !dup {
+			out[name] = rv.Field(i).Interface()
+		}
+	}
+	for i := range n {
+		if maskEmbedFlatten(t.Field(i)) {
+			maskStructRaw(out, rv.Field(i), budget-1)
+		}
+	}
 }
 
 // maskFieldName 取字段在日志里的名字：json tag 的名字部分优先，否则 Go 字段名。
@@ -574,12 +716,12 @@ func (m *masker) maskSlice(rv reflect.Value, depth int, seen *map[uintptr]struct
 
 	n := rv.Len()
 	var out []any
-	for i := 0; i < n; i++ {
+	for i := range n {
 		nv, ch := m.maskValue(rv.Index(i), depth+1, seen)
 		if ch {
 			if out == nil {
 				out = make([]any, n)
-				for j := 0; j < i; j++ {
+				for j := range i {
 					out[j] = rv.Index(j).Interface()
 				}
 			}
