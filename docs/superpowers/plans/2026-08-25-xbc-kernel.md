@@ -1173,26 +1173,9 @@ func TestRefStringWithInstance(t *testing.T) {
 	r := RefOf[*depsFixturePlugin]().Instance("readonly")
 	assert.Equal(t, "*xbc.depsFixturePlugin[readonly]", r.String())
 }
-
-// TestRefOfConstraintRejectsNonPluginTypes documents, at a compilable and
-// test-discoverable location, why RefOf is declared as RefOf[T Plugin]()
-// rather than RefOf[T any](). There is no runtime behavior to assert here --
-// the point is a compile-time rejection -- so this test only records the
-// reasoning; see RefOf's doc comment in deps.go for the full argument.
-//
-// If RefOf were RefOf[T any](), the following would compile and produce a
-// Ref that can never correspond to a real registration, because a Ref names
-// one specific plugin by its own concrete type and "string" is not a plugin:
-//
-//	RefOf[string]()
-//
-// Constraining T to Plugin makes that a compile error instead of a
-// silently-useless Ref, at no cost to any real call site (which always
-// passes a concrete *SomePlugin type already).
-func TestRefOfConstraintRejectsNonPluginTypes(t *testing.T) {
-	t.Log("RefOf[T Plugin]() 在编译期拒绝 RefOf[string]() 这类无意义调用，理由见本测试的文档注释")
-}
 ```
+
+`RefOf` 的类型约束是 `[T Plugin]` 而不是 `[T any]`，这条**不写测试**：它是编译期拒绝，运行时没有任何行为可断言，写出来的只能是一个调 `t.Log` 的空壳，永远通过，还在覆盖率里冒充一个"测过了"的信号。理由写进 `RefOf` 自己的文档注释（见 Step 3），读者在用它的时候就能看见，比藏在测试文件里更管用。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -1339,7 +1322,7 @@ func (r Ref) String() string {
 gofmt -l . && go vet ./... && go test . -run 'TestTypeOf|TestNormInstance|TestNeed|TestOpt|TestOffer|TestDepString|TestRef' -count=1 -v
 ```
 
-Expected：`deps_test.go` 里全部 17 个测试 PASS，`go vet`/`gofmt -l` 无输出。
+Expected：`deps_test.go` 里全部 18 个测试 PASS，`go vet`/`gofmt -l` 无输出。
 
 - [ ] **Step 5: Commit**
 
@@ -1903,7 +1886,7 @@ type registryKey struct {
 	instance string
 }
 
-type registry struct { /* 见 Step 3 */ }
+type registry struct { /* see Step 3 */ }
 
 func newRegistry() *registry
 func (r *registry) put(typ reflect.Type, instance string, v any)
@@ -1928,7 +1911,7 @@ func GetNamed[T any](ctx *Context, name string) (T, bool)
 func MustGet[T any](ctx *Context) T
 func MustGetNamed[T any](ctx *Context, name string) T
 
-func (c *Context) registry() *registry // context.go 追加
+func (c *Context) registry() *registry // appended to context.go
 ```
 
 `registry` 是整个内核里唯一负责回答「这个类型、这个实例，谁能提供」的地方——阶段 4 的依赖解析（Task 10）和插件运行期互相取产物（`xbc.Get`/`xbc.MustGet`）走的是同一份存储，行为必须完全一致，所以只写一次、写在这里。
@@ -1972,9 +1955,9 @@ xbc: 插件 ratelimit 需要 xbc_test.Counter，无任何插件提供
   	"github.com/stretchr/testify/require"
   )
 
-  // ---- 本文件全部用本地假类型，不 import gorm/redis 等真实中间件 ----
+  // ---- everything in this file uses local fake types; no importing gorm/redis or any real middleware ----
 
-  // Counter 是一个两方法的小接口，用来练接口可赋值性匹配这条路径。
+  // Counter is a small two-method interface, exercising the interface-assignability matching path.
   type Counter interface {
   	Incr(key string) int64
   	Expire(key string, seconds int) error
@@ -1992,7 +1975,8 @@ xbc: 插件 ratelimit 需要 xbc_test.Counter，无任何插件提供
   func (c *counterB) Incr(key string) int64               { return 1 }
   func (c *counterB) Expire(key string, seconds int) error { return nil }
 
-  // halfCounter 只实现了 Incr，用来测"零命中，报最接近候选缺哪个方法"这条诊断路径。
+  // halfCounter implements only Incr, for testing the "zero hits, report the
+  // closest candidate's missing method" diagnostic path.
   type halfCounter struct{}
 
   func (c *halfCounter) Incr(key string) int64 { return 0 }
@@ -2001,8 +1985,9 @@ xbc: 插件 ratelimit 需要 xbc_test.Counter，无任何插件提供
   	return &App{registry: newRegistry()}
   }
 
-  // newTestContext 接收共享的 app，而不是每次都新建一份注册表——
-  // 否则"跨 instance/跨插件能不能看到对方 Provide 的东西"这类测试根本测不出真实行为。
+  // newTestContext takes a shared app rather than building a fresh registry each
+  // time -- otherwise tests for "can one instance see what another Provide'd"
+  // would not exercise the real behavior at all.
   func newTestContext(app *App, instance string) *Context {
   	return &Context{app: app, name: "test", instance: instance}
   }
@@ -2041,10 +2026,13 @@ xbc: 插件 ratelimit 需要 xbc_test.Counter，无任何插件提供
   }
 
   func TestRegistryLookupDoesNotNormalizeInstance(t *testing.T) {
-  	// registry 是最底层的存储，本身不做实例名归一化——空串和 "default" 在这一层是两个不同的 key。
-  	// 归一化职责在 Get/GetNamed/Provide 这一层的 facade 函数里（见下一条测试），这里先钉住
-  	// "registry 原始行为不做归一"这个设计事实，避免以后有人在 registry 里偷偷加归一化，
-  	// 导致 facade 层的归一化变成重复劳动或者互相打架。
+  	// registry is the lowest-level store and does not normalize instance
+  	// names itself -- an empty string and "default" are two distinct keys at
+  	// this layer. Normalization is the job of the facade functions above it
+  	// (Get/GetNamed/Provide, see the next test); this pins down the fact that
+  	// registry's raw behavior never normalizes, so nobody later sneaks
+  	// normalization into registry itself, which would turn the facade
+  	// layer's normalization into duplicated or conflicting work.
   	r := newRegistry()
   	db := &fakeDB{name: "x"}
   	r.put(reflect.TypeOf(db), "default", db)
@@ -2427,7 +2415,7 @@ xbc: 插件 ratelimit 需要 xbc_test.Counter，无任何插件提供
 
   ```go
   type App struct {
-  	// ...Task 1 已有的字段保持不变...
+  	// ...Task 1's existing fields stay unchanged...
   	registry *registry
   }
   ```
@@ -2437,7 +2425,7 @@ xbc: 插件 ratelimit 需要 xbc_test.Counter，无任何插件提供
   ```go
   func New() *App {
   	return &App{
-  		// ...Task 1 已有的初始化保持不变...
+  		// ...Task 1's existing initialization stays unchanged...
   		registry: newRegistry(),
   	}
   }
@@ -2636,8 +2624,9 @@ func Bind(k *koanf.Koanf, path string, out any, envPrefix string) error
   	"github.com/stretchr/testify/require"
   )
 
-  // gormLikeConfig 模拟一个真实插件 Config 的形状，专门带一个多词 key，
-  // 用来钉住裁决 R2（ENV 覆盖不能靠字面 `_` -> `.` 替换）。
+  // gormLikeConfig mimics the shape of a real plugin Config, deliberately
+  // carrying a multi-word key to pin down ruling R2 (ENV overrides cannot
+  // rely on a literal `_` -> `.` replacement).
   type gormLikeConfig struct {
   	DSN         string        `yaml:"dsn"`
   	MaxOpenConn int           `yaml:"max_open_conn" default:"10"`
@@ -2662,8 +2651,10 @@ func Bind(k *koanf.Koanf, path string, out any, envPrefix string) error
   	Timeout time.Duration `yaml:"timeout" default:"not-a-duration"`
   }
 
-  // koanfFrom 用嵌套 map 直接搭一棵 koanf 树，不走文件系统——bind_test.go 测的是 Bind，
-  // 不是 Load，没有必要为了造一棵树而写临时 YAML 文件。delim 传空串表示 data 已经是嵌套的。
+  // koanfFrom builds a koanf tree directly from a nested map, bypassing the
+  // filesystem -- bind_test.go tests Bind, not Load, so there is no need to
+  // write a temporary YAML file just to grow a tree. An empty delim means
+  // data is already nested.
   func koanfFrom(t *testing.T, data map[string]any) *koanf.Koanf {
   	t.Helper()
   	k := koanf.New(".")
@@ -2756,7 +2747,8 @@ func Bind(k *koanf.Koanf, path string, out any, envPrefix string) error
   }
 
   func TestPriorityChainDefaultFileProfileEnvOverrides(t *testing.T) {
-  	// 三个 tier 分别用不同的 key，避免和下一条"已知限制"测试撞在同一个 key 上。
+  	// The three tiers each use a different key, avoiding a collision with
+  	// the next "known limitation" test's key.
   	k := koanfFrom(t, map[string]any{
   		"plugins": map[string]any{"gorm": map[string]any{"default": map[string]any{
   			"dsn": "from-file",
@@ -2773,12 +2765,16 @@ func Bind(k *koanf.Koanf, path string, out any, envPrefix string) error
   }
 
   func TestBindEnvBeatsOverridesOnSameKeyKnownLimitation(t *testing.T) {
-  	// 已知的结构性限制：进入 Bind 之前，文件、profile、Load 阶段的 Overrides 已经被拍扁成
-  	// 同一棵 koanf 树，Bind 看不出树里某个值最初是从哪一层来的。全局优先级是
-  	// default < file < profile < ENV < flag，但 Bind 契约给定的三步算法
-  	// （unmarshal -> ENV -> default）里，ENV 永远覆盖"koanf 树里已经有的值"，无法单独
-  	// 识别出那个值是不是来自 flag Overrides。这里钉住这条真实行为：同一个 key 上，
-  	// ENV 赢过 Overrides——这不是四处都成立的优先级规则，只是 Bind 这一步的边界。
+  	// Known structural limitation: by the time Bind runs, the file, profile,
+  	// and Load-stage Overrides have already been flattened into one koanf
+  	// tree, so Bind cannot tell which layer a given value originally came
+  	// from. The global priority is default < file < profile < ENV < flag,
+  	// but within the three-step algorithm the Bind contract specifies
+  	// (unmarshal -> ENV -> default), ENV always overrides whatever value is
+  	// already in the koanf tree, with no way to tell whether that value came
+  	// from flag Overrides. This test pins down the real behavior: on the
+  	// same key, ENV beats Overrides -- this is not a globally-true priority
+  	// rule, only a boundary of this one Bind step.
   	t.Chdir(t.TempDir())
   	k, err := Load(Options{Overrides: map[string]any{"plugins.gorm.default.max_open_conn": 7}})
   	require.NoError(t, err)
@@ -2848,7 +2844,8 @@ func Bind(k *koanf.Koanf, path string, out any, envPrefix string) error
   					return nil, fmt.Errorf("xbc: 读取 profile 配置文件 %s 失败：%w", profilePath, err)
   				}
   			}
-  			// profile 文件不存在时静默跳过：它是可选叠加，不是像 --config 那样的显式承诺。
+  			// A missing profile file is silently skipped: it is an optional
+  			// overlay, not an explicit promise like --config.
   		}
   	}
 
@@ -3937,7 +3934,7 @@ func TestScanUnknownOptionErrors(t *testing.T) {
 }
 
 type unexportedTaggedPlugin struct {
-	x int `xbc:"inject"` //nolint:unused // 故意用未导出字段测报错分支
+	x int `xbc:"inject"` //nolint:unused // deliberately an unexported field, to test the error-reporting branch
 }
 
 func TestScanUnexportedFieldWithTagErrors(t *testing.T) {
@@ -4494,7 +4491,7 @@ func TestExpandMultiInstanceNonMapKeyErrors(t *testing.T) {
 		"plugins": map[string]any{
 			"gorm": map[string]any{
 				"default":     map[string]any{"dsn": "a"},
-				"max_retries": 3, // 标量但不是 enabled —— 非法
+				"max_retries": 3, // a scalar but not "enabled" -- invalid
 			},
 		},
 	})}
@@ -5275,7 +5272,7 @@ type svcA struct{}
 type svcB struct{}
 type svcC struct{}
 
-// ---- fake plugin族：每个只带测试要用到的最少字段 ----
+// ---- fake plugin family: each carries only the minimal fields its test needs ----
 
 // fakeProducerA provides *svcA via tag only.
 type fakeProducerA struct {
@@ -5284,7 +5281,7 @@ type fakeProducerA struct {
 
 func (p *fakeProducerA) Name() string { return "producer-a" }
 
-// fakeMiddle injects *svcA via tag and provides *svcB via tag —— 用来串成一条线性链。
+// fakeMiddle injects *svcA via tag and provides *svcB via tag -- used to chain into a linear pipeline.
 type fakeMiddle struct {
 	In  *svcA `xbc:"inject"`
 	Out *svcB `xbc:"provide"`
@@ -5292,21 +5289,23 @@ type fakeMiddle struct {
 
 func (p *fakeMiddle) Name() string { return "middle" }
 
-// fakeConsumer injects *svcB via tag only —— 链的末端。
+// fakeConsumer injects *svcB via tag only -- the end of the chain.
 type fakeConsumer struct {
 	In *svcB `xbc:"inject"`
 }
 
 func (p *fakeConsumer) Name() string { return "consumer" }
 
-// fakeJWT stands in for a "jwt 插件" —— 除了 Name() 什么都不做，专门给 Deps.Plugins 的
-// Ref 匹配当靶子。它不产出任何类型，纯粹靠"在场"满足硬依赖。
+// fakeJWT stands in for a "jwt plugin" -- it does nothing beyond Name(), and
+// exists purely as a target for Deps.Plugins' Ref matching. It produces no
+// type at all; it satisfies a hard dependency purely by "being present".
 type fakeJWT struct{}
 
 func (p *fakeJWT) Name() string { return "jwt" }
 
-// fakeAudit 同时用 tag（inject *svcA）与 Dependencies()（RefOf[*fakeJWT]）——
-// 验证两种写法在阶段 4 合并成同一张图，可自由混用。
+// fakeAudit uses both a tag (inject *svcA) and Dependencies()
+// (RefOf[*fakeJWT]) -- verifying that stage 4 merges both styles into the
+// same graph, so they can be freely mixed.
 type fakeAudit struct {
 	DB *svcA `xbc:"inject"`
 }
@@ -5316,23 +5315,25 @@ func (p *fakeAudit) Dependencies() Deps {
 	return Deps{Plugins: []Ref{RefOf[*fakeJWT]()}}
 }
 
-// fakeOptionalConsumer 的字段带 optional，缺失不该报错，也不该连边。
+// fakeOptionalConsumer's field carries optional -- missing it should neither error nor add a graph edge.
 type fakeOptionalConsumer struct {
 	Cache *svcC `xbc:"inject,optional"`
 }
 
 func (p *fakeOptionalConsumer) Name() string { return "opt-consumer" }
 
-// fakeBadTag 的 tag 动作拼错了，inject.Scan 必然报错 —— 用来验证 resolve 的
-// pass 0 会把扫描错误一路抛出去，而不是吞掉后带着空 fields 继续跑。
+// fakeBadTag's tag action is misspelled, so inject.Scan is bound to error --
+// this verifies that resolve's pass 0 propagates the scan error all the way
+// out, instead of swallowing it and carrying on with empty fields.
 type fakeBadTag struct {
 	In *svcA `xbc:"injct"`
 }
 
 func (p *fakeBadTag) Name() string { return "bad" }
 
-// newInst 手工组装一个 *instance：绕开 Register/expand，直接喂给 resolve()。
-// fields 用真实的 inject.Scan 扫描，理由见本 Step 说明。
+// newInst hand-assembles an *instance, bypassing Register/expand and
+// feeding it straight to resolve(). fields is scanned with the real
+// inject.Scan; see this Step's explanation for why.
 func newInst(t *testing.T, name, instanceName string, p Plugin) *instance {
 	t.Helper()
 	fields, err := inject.Scan(p)
@@ -5340,13 +5341,16 @@ func newInst(t *testing.T, name, instanceName string, p Plugin) *instance {
 	return &instance{plugin: p, name: name, instance: instanceName, fields: fields}
 }
 
-// TestResolveScansTagsItself 用不带 fields 的裸 *instance 调 resolve，
-// 钉死「扫 tag 是 resolve 自己的活」——别的测试都走 newInst，夹具已经把
-// fields 填好了，即便 resolve 的 pass 0 被删掉它们照样通过。
+// TestResolveScansTagsItself calls resolve with a bare *instance that has no
+// fields, pinning down that "scanning tags is resolve's own job" -- every
+// other test goes through newInst, whose fixture has already filled in
+// fields, so those tests would still pass even if resolve's pass 0 were
+// deleted.
 func TestResolveScansTagsItself(t *testing.T) {
 	a := &App{}
-	// 裸 *instance：不预填 fields，逼 resolve 自己扫。producer 产出 *svcA，
-	// middle 消费 *svcA —— 这条边只存在于 tag 里，Dependencies() 一个字都没写。
+	// A bare *instance: fields is not pre-filled, forcing resolve to scan it
+	// itself. producer produces *svcA, middle consumes *svcA -- this edge exists
+	// only in the tags; Dependencies() says nothing about it at all.
 	producer := &instance{plugin: &fakeProducerA{}, name: "producer-a", instance: defaultInstance}
 	middle := &instance{plugin: &fakeMiddle{}, name: "middle", instance: defaultInstance}
 
@@ -5374,7 +5378,7 @@ func TestResolve_LinearOrder(t *testing.T) {
 	middle := newInst(t, "middle", defaultInstance, &fakeMiddle{})
 	producer := newInst(t, "producer-a", defaultInstance, &fakeProducerA{})
 
-	// 打乱输入顺序：排序结果不该依赖调用者传入的顺序，只依赖依赖图本身。
+	// Input order is shuffled: the sorted result must not depend on the caller's order, only on the dependency graph itself.
 	order, misses, err := a.resolve([]*instance{consumer, middle, producer})
 	require.NoError(t, err, "线性依赖链不应报错")
 	assert.Empty(t, misses, "没有声明任何软约束，misses 必须是空的")
@@ -5392,7 +5396,7 @@ func TestResolve_MergeTagAndDependencies(t *testing.T) {
 	order, misses, err := a.resolve([]*instance{audit, jwt, producer})
 	require.NoError(t, err, "tag 的 svcA 依赖与 Dependencies() 的 jwt 依赖应当都被满足")
 	assert.Empty(t, misses)
-	// audit 必须排在 jwt 与 producer-a 之后——两条边都要生效，缺一条这个断言就会失败。
+	// audit must sort after both jwt and producer-a -- both edges must take effect, and this assertion fails if either one is missing.
 	assert.Equal(t, "audit", order[len(order)-1].id())
 }
 
@@ -5410,7 +5414,7 @@ func TestResolve_OptionalMissingLeavesZero(t *testing.T) {
 	assert.True(t, zero, "optional 缺失时字段必须留零值，框架不能塞任何东西进去")
 }
 
-// idsOf 把拓扑序渲染成 id 字符串切片，方便用 assert.Equal 直接比对顺序。
+// idsOf renders a topological order into a slice of id strings, so assert.Equal can compare order directly.
 func idsOf(insts []*instance) []string {
 	ids := make([]string, len(insts))
 	for i, inst := range insts {
@@ -5424,16 +5428,18 @@ func idsOf(insts []*instance) []string {
 继续在同一个文件里追加下列类型与测试，覆盖「具体类型缺失」「具名实例缺失」两种报错文案。断言用 `assert.Contains` 而不是整串 `assert.Equal`——契约第 13 节「逐字」约束的是**固定的中文模板片段**（"无任何插件提供"、"是否忘了 import ..."、"当前只有"、"下添加 ... 实例" 这些不会因为测试用的假类型名不同而变化的部分），插入的类型名/插件名本身在真实场景是 `*redis.Client`、`gorm` 这样的具体标识符，本测试里换成假类型完全等价，逐字比对整串反而会把「假类型名恰好不等于契约示例里的名字」误判成失败。
 
 ```go
-// fakeDBConsumer injects *svcC via tag (default 实例)，没有任何插件提供 *svcC。
+// fakeDBConsumer injects *svcC via tag (default instance); no plugin provides *svcC.
 type fakeDBConsumer struct {
 	DB *svcC `xbc:"inject"`
 }
 
 func (p *fakeDBConsumer) Name() string { return "user" }
 
-// fakeNamedConsumer 用 Dependencies() 声明一个具名实例依赖——因为 NeedNamed 的实例名
-// 在这里是字面量，也可以用 tag 的 name= 选项表达；这里选 Dependencies() 只是顺手验证
-// 该写法本身能正确合并进图，跟 tag 是等价的两条路。
+// fakeNamedConsumer declares a named-instance dependency via Dependencies()
+// -- since NeedNamed's instance name is a literal here, it could equally be
+// expressed with the tag's name= option; Dependencies() is chosen here
+// simply to verify this style also merges correctly into the graph, as an
+// equivalent path to the tag.
 type fakeNamedConsumer struct{}
 
 func (p *fakeNamedConsumer) Name() string { return "report" }
@@ -5471,7 +5477,7 @@ func TestResolve_NamedInstanceMissing(t *testing.T) {
 	assert.Contains(t, err.Error(), "插件 report 依赖")
 	assert.Contains(t, err.Error(), "[readonly]")
 	assert.Contains(t, err.Error(), "当前只有")
-	// 「当前只有」的列表必须把已存在的两个实例都列出来，不能只列第一个。
+	// The "当前只有" list must enumerate both existing instances, not just the first.
 	assert.Contains(t, err.Error(), "[default]")
 	assert.Contains(t, err.Error(), "[cache]")
 	assert.Contains(t, err.Error(), "下添加 readonly 实例")
@@ -5482,7 +5488,7 @@ func TestResolve_NamedInstanceMissing(t *testing.T) {
 继续追加 `Deps.Plugins`（`Ref`）两种缺失场景的测试：整个插件都没启用，与启用了但缺了收窄的那个实例。
 
 ```go
-// fakeRefConsumer 硬依赖 *fakeJWT 这个插件在场（不收窄实例）。
+// fakeRefConsumer hard-depends on the *fakeJWT plugin being present (without narrowing to an instance).
 type fakeRefConsumer struct{}
 
 func (p *fakeRefConsumer) Name() string { return "audit" }
@@ -5490,7 +5496,7 @@ func (p *fakeRefConsumer) Dependencies() Deps {
 	return Deps{Plugins: []Ref{RefOf[*fakeJWT]()}}
 }
 
-// fakeNarrowedRefConsumer 收窄到 *fakeJWT 的 "readonly" 实例。
+// fakeNarrowedRefConsumer narrows to *fakeJWT's "readonly" instance.
 type fakeNarrowedRefConsumer struct{}
 
 func (p *fakeNarrowedRefConsumer) Name() string { return "audit" }
@@ -5504,9 +5510,12 @@ func TestResolve_RefMissing(t *testing.T) {
 
 	_, _, err := a.resolve([]*instance{consumer})
 	require.Error(t, err, "jwt 一个实例都没启用")
-	// 插件名这里走 deriveName 的包路径推导（fakeJWT 与本测试同在 package xbc 下，
-	// 推出来的名字必然是 "xbc" 而不是真实场景里的 "jwt"）——断言只钉住契约里固定不变
-	// 的中文模板片段，插值出来的包名不做字面比较，理由见 Step 1 开头的说明。
+	// The plugin name here goes through deriveName's package-path inference
+	// (fakeJWT lives in package xbc alongside this test, so the derived name is
+	// necessarily "xbc" rather than "jwt" as in a real scenario) -- the assertion
+	// only pins down the fixed template fragment from the contract, and never
+	// compares the interpolated package name literally; see the note at the top
+	// of Step 1 for why.
 	assert.Contains(t, err.Error(), "插件 audit 依赖插件")
 	assert.Contains(t, err.Error(), "未启用")
 	assert.Contains(t, err.Error(), "在 application.yml 中添加 plugins.")
@@ -5532,13 +5541,13 @@ func TestResolve_RefInstanceNarrowedMissing(t *testing.T) {
 继续追加接口匹配三种命中数（1 / 0 / >1）的测试。`Counter` 接口定义在消费方——这正是 spec §5.6 要示范的"接口定义在消费方"套路，只是这里的"消费方"与"提供方"全在同一个测试文件里，免去 import 真实 redis 的麻烦。
 
 ```go
-// Counter 是接口定义在消费方的示例：消费者只认这个接口，不关心谁实现它。
+// Counter is an example of an interface defined on the consumer side: the consumer only cares about this interface, not who implements it.
 type Counter interface {
 	Incr() int64
 	Expire() error
 }
 
-// fullCounterA / fullCounterB 都完整实现 Counter —— 用来制造"多候选"歧义。
+// fullCounterA / fullCounterB both fully implement Counter -- used to manufacture a "multiple candidates" ambiguity.
 type fullCounterA struct{}
 
 func (*fullCounterA) Incr() int64   { return 0 }
@@ -5549,7 +5558,7 @@ type fullCounterB struct{}
 func (*fullCounterB) Incr() int64   { return 0 }
 func (*fullCounterB) Expire() error { return nil }
 
-// halfCounter 只实现了 Incr，缺 Expire —— 用来制造"零命中，但有最接近的候选"。
+// halfCounter implements only Incr, missing Expire -- used to manufacture "zero hits, but with a closest candidate".
 type halfCounter struct{}
 
 func (*halfCounter) Incr() int64 { return 0 }
@@ -5560,10 +5569,14 @@ type fakeCounterConsumer struct {
 
 func (p *fakeCounterConsumer) Name() string { return "ratelimit" }
 
-// fakeCounterProviderConcrete 用 Provides() 声明产出具体类型 *fullCounterA。
-// 必须走 Provides()（不是 tag）：tag 扫描拿到的是字段的静态声明类型，如果字段声明成
-// 接口 Counter，产物索引里存的就是接口本身，没法表达"实际产出的具体实现是谁"——
-// 产物必须是具体类型，接口只出现在依赖侧，这是 §5.6 "接口定义在消费方" 的另一半含义。
+// fakeCounterProviderConcrete declares, via Provides(), that it produces the
+// concrete type *fullCounterA. It must go through Provides() (not a tag):
+// tag scanning picks up a field's statically declared type, so if the field
+// were declared as the interface Counter, the product index would store the
+// interface itself, unable to express "which concrete implementation was
+// actually produced" -- a product must be a concrete type, with interfaces
+// appearing only on the dependency side. That is the other half of §5.6's
+// "interface defined on the consumer side".
 type fakeCounterProviderConcrete struct{}
 
 func (p *fakeCounterProviderConcrete) Name() string { return "provider" }
@@ -5633,7 +5646,7 @@ func (p *fakeCounterProviderConcreteB) Provides() []Dep { return []Dep{Offer[*fu
 继续追加产物冲突、软约束（命中改变顺序 / 未命中不中止）、成环、多条错误一次报完、`provide` tag 与 `Provides()` 合并这六个场景。
 
 ```go
-// fakeConflictProducer 与 fakeConflictProducerAlt 都声明产出 *svcA[default] —— 冲突。
+// fakeConflictProducer and fakeConflictProducerAlt both declare producing *svcA[default] -- a conflict.
 type fakeConflictProducer struct {
 	Out *svcA `xbc:"provide"`
 }
@@ -5658,7 +5671,7 @@ func TestResolve_ProductConflict(t *testing.T) {
 	assert.Contains(t, err.Error(), "都声明产出")
 }
 
-// fakeSoftAfter 没有任何硬依赖，只声明"有 tracing 就排我后面"。
+// fakeSoftAfter has no hard dependency at all; it only declares "if tracing exists, sort me after it".
 type fakeSoftAfter struct{}
 
 func (p *fakeSoftAfter) Name() string { return "business" }
@@ -5672,7 +5685,7 @@ func (p *fakeTracing) Name() string { return "tracing" }
 
 func TestResolve_SoftConstraintOrdering(t *testing.T) {
 	a := &App{}
-	// 故意把 business 排在 tracing 前面传入：如果 After 没生效，插入序会让 business 靠前。
+	// business is deliberately passed in before tracing: if After has no effect, insertion order would keep business ahead.
 	business := newInst(t, "business", defaultInstance, &fakeSoftAfter{})
 	tracing := newInst(t, "tracing", defaultInstance, &fakeTracing{})
 
@@ -5683,7 +5696,7 @@ func TestResolve_SoftConstraintOrdering(t *testing.T) {
 		"After 软约束命中，必须把 tracing 排到 business 前面")
 }
 
-// fakeSoftMiss 声明 After 一个压根不存在的插件名——不该中止启动。
+// fakeSoftMiss declares After on a plugin name that does not exist at all -- this must not abort startup.
 type fakeSoftMiss struct{}
 
 func (p *fakeSoftMiss) Name() string { return "z-plugin" }
@@ -5702,7 +5715,7 @@ func TestResolve_SoftConstraintMissNotFatal(t *testing.T) {
 	assert.Equal(t, graph.Miss{Node: "z-plugin", Ref: "ghost", Dir: "after"}, misses[0])
 }
 
-// fakeCycleA/B/C 用 Dependencies() 手拉手形成一个环：a 需要 b、b 需要 c、c 需要 a。
+// fakeCycleA/B/C hold hands via Dependencies() to form a cycle: a needs b, b needs c, c needs a.
 type fakeCycleA struct{}
 
 func (p *fakeCycleA) Name() string       { return "user" }
@@ -5732,8 +5745,9 @@ func TestResolve_Cycle(t *testing.T) {
 
 func TestResolve_MultipleErrorsReportedTogether(t *testing.T) {
 	a := &App{}
-	// 两个互不相关的缺失：user 缺 *svcC，audit 缺插件 jwt。一次 resolve 必须把两条都报出来，
-	// 不能因为先撞上第一个就提前 return。
+	// Two unrelated misses: user is missing *svcC, audit is missing the jwt
+	// plugin. A single resolve call must report both, not return early just
+	// because it hit the first one.
 	userConsumer := newInst(t, "user", defaultInstance, &fakeDBConsumer{})
 	auditConsumer := newInst(t, "audit", defaultInstance, &fakeRefConsumer{})
 
@@ -5744,8 +5758,9 @@ func TestResolve_MultipleErrorsReportedTogether(t *testing.T) {
 	assert.Contains(t, err.Error(), "未启用")
 }
 
-// fakeDualProvider 同时用 tag（provide *svcA）与 Provides()（额外 offer *svcB）——
-// 验证产物侧的两种写法也在阶段 4 合并，不是只有依赖侧能混用。
+// fakeDualProvider uses both a tag (provide *svcA) and Provides() (an extra
+// offer of *svcB) -- verifying that stage 4 also merges both styles on the
+// product side, not just on the dependency side.
 type fakeDualProvider struct {
 	Out *svcA `xbc:"provide"`
 }
@@ -6370,8 +6385,9 @@ func TestPhaseStringKnownAndOutOfRange(t *testing.T) {
 	}
 }
 
-// spec §4.4 的启动日志里，cors 插件的 cors 中间件与 ratelimit 插件的 ratelimit
-// 中间件都显示为不带前缀的裸名字——这是「同名不加前缀」规则的两个真实例子。
+// In spec §4.4's startup log, the cors plugin's cors middleware and the
+// ratelimit plugin's ratelimit middleware both render as a bare, unprefixed
+// name -- two real examples of the "same name gets no prefix" rule.
 func TestQualifySameNameAsPluginIsNotPrefixed(t *testing.T) {
 	assert.Equal(t, "cors", qualify("cors", "cors"),
 		"spec §4.4 例子：cors 插件的 cors 中间件不应显示成 cors.cors")
@@ -6379,15 +6395,18 @@ func TestQualifySameNameAsPluginIsNotPrefixed(t *testing.T) {
 		"spec §4.4 例子：ratelimit 插件的 ratelimit 中间件同理")
 }
 
-// spec §4.4 的启动日志里，jwt 插件的 auth 中间件显示为 jwt.auth——这是
-// 「名字与插件名不同则加前缀」规则的真实例子。
+// In spec §4.4's startup log, the jwt plugin's auth middleware renders as
+// jwt.auth -- a real example of the "a different name gets the plugin
+// prefix" rule.
 func TestQualifyDifferentNameGetsPluginPrefix(t *testing.T) {
 	assert.Equal(t, "jwt.auth", qualify("jwt", "auth"),
 		"spec §4.4 例子：jwt 插件的 auth 中间件应显示为 jwt.auth")
 }
 
-// 名字里已经带点号的情况 spec 没给出真实例子，用合成用例验证：一旦名字已经
-// 完成过限定（不管是谁做的），qualify 必须原样放行，不能再套一层插件名前缀。
+// spec gives no real example for a name that already contains a dot, so a
+// synthetic case verifies it: once a name has already been qualified (no
+// matter by whom), qualify must pass it through unchanged, never adding
+// another layer of plugin-name prefix.
 func TestQualifyDottedNamePassesThroughUnchanged(t *testing.T) {
 	assert.Equal(t, "jwt.auth", qualify("audit", "jwt.auth"),
 		"名字里已经带点号，说明调用方已经完成过一次限定，不能被再套一层插件名前缀")
@@ -6427,8 +6446,9 @@ func TestOrderMiddlewaresWithinGroupRegistrationOrderIsStableAcrossManyRuns(t *t
 }
 
 func TestOrderMiddlewaresWithinGroupAfterConstraintTakesEffect(t *testing.T) {
-	// 注册顺序是 ratelimit 在前、cors 在后；若 After 不生效，稳定排序会保留
-	// 这个注册顺序。ratelimit 声明 After=cors 之后，结果必须反过来。
+	// Registration order is ratelimit first, cors second; if After had no
+	// effect, the stable sort would keep this registration order. Once
+	// ratelimit declares After=cors, the result must be reversed.
 	entries := []mwEntry{
 		newFixtureEntry("ratelimit", "ratelimit", PhaseSecurity, []string{"cors"}, nil),
 		newFixtureEntry("cors", "cors", PhaseSecurity, nil, nil),
@@ -6441,8 +6461,9 @@ func TestOrderMiddlewaresWithinGroupAfterConstraintTakesEffect(t *testing.T) {
 }
 
 func TestOrderMiddlewaresWithinGroupBeforeConstraintTakesEffect(t *testing.T) {
-	// 注册顺序是 ratelimit 在前、cors 在后；cors 声明 Before=ratelimit，
-	// 结果必须把 cors 提到 ratelimit 前面，与注册顺序相反。
+	// Registration order is ratelimit first, cors second; cors declares
+	// Before=ratelimit, so the result must move cors ahead of ratelimit,
+	// opposite to registration order.
 	entries := []mwEntry{
 		newFixtureEntry("ratelimit", "ratelimit", PhaseSecurity, nil, nil),
 		newFixtureEntry("cors", "cors", PhaseSecurity, nil, []string{"ratelimit"}),
@@ -6454,9 +6475,11 @@ func TestOrderMiddlewaresWithinGroupBeforeConstraintTakesEffect(t *testing.T) {
 		"cors 声明 Before=ratelimit，即便注册顺序是 ratelimit 在前，排序结果也必须把 cors 排到前面")
 }
 
-// spec §5.8 的 audit 例子：audit（PhaseBusiness）声明 After: "jwt.auth"
-// （PhaseAuth）。300 < 400，jwt.auth 本来就排在 audit 前面，这条跨 Phase
-// 约束与 Phase 顺序一致，是冗余声明，必须被安静地忽略，不能报错也不能进 misses。
+// spec §5.8's audit example: audit (PhaseBusiness) declares After:
+// "jwt.auth" (PhaseAuth). 300 < 400, so jwt.auth already sorts before audit;
+// this cross-phase constraint agrees with Phase order and is a redundant
+// declaration, which must be silently ignored -- no error, and it must not
+// land in misses either.
 func TestOrderMiddlewaresCrossPhaseConsistentConstraintIsRedundantAndIgnored(t *testing.T) {
 	entries := []mwEntry{
 		newFixtureEntry("audit", "audit", PhaseBusiness, []string{"jwt.auth"}, nil),
@@ -6468,9 +6491,10 @@ func TestOrderMiddlewaresCrossPhaseConsistentConstraintIsRedundantAndIgnored(t *
 	assert.Equal(t, []string{"jwt.auth", "audit"}, qnames(ordered))
 }
 
-// 反过来：一个 PhaseSecurity 的中间件声明 After: "jwt.auth"（PhaseAuth）。
-// security(200) 排在 auth(300) 之前，但 After 却要求 jwt.auth 排在它前面，
-// 方向与 Phase 顺序相反，必须中止启动并把两个中间件名与两个 Phase 名都打出来。
+// The reverse case: a PhaseSecurity middleware declares After: "jwt.auth"
+// (PhaseAuth). security(200) sorts before auth(300), but After demands
+// jwt.auth sort before it -- the direction contradicts Phase order, so
+// startup must abort and print both middleware names and both Phase names.
 func TestOrderMiddlewaresCrossPhaseReversedConstraintAbortsWithPhaseConflictError(t *testing.T) {
 	entries := []mwEntry{
 		newFixtureEntry("early", "check", PhaseSecurity, []string{"jwt.auth"}, nil),
@@ -6748,17 +6772,17 @@ git commit -m "feat(xbc): mwchain 中间件排序——Phase 硬边界、组内�
 **Files:**
 - Create: `goroutine.go`
 - Modify: `context.go`（补 `Go` / `GoCritical` 两个方法体；Task 1 只留了 `Context` 骨架，`kernel-api.md` §6 明确把这两个方法记在 `context.go` 名下）
-- Modify: `xbc.go`（`App` 补 `runCtx` / `criticalOnce` / `criticalReason` 三个未导出字段；`cancel` / `wg` / `criticalCh` / `exitCode` 四个字段的名字与类型已经由 `stage_run.go`（Task 14）钉死并直接在测试里赋值使用，本 task 是它们第一次被真正写入/消费的地方，必须原样对齐，见下方 Interfaces 的强调）
+- Verify: `xbc.go`（**只核对，不新增**。托管 goroutine 用到的七个字段——`runCtx` / `cancel` / `wg` / `criticalCh` / `criticalOnce` / `criticalReason` / `exitCode`——已由 Task 1 一次性声明在 `App` 里，见裁决 R12。本 task 只写它们的读写代码，再新增一遍就是 `duplicate field`，`go build` 直接红）
 - Test: `goroutine_test.go`
 
 **Interfaces:**
 - Consumes（前置 task 的产物，本 task 不重复实现，只引用）：
   - `type Context struct{ app *App; name, instance string; logger log.Logger }` 及其已有方法 `func (c *Context) Log() log.Logger`、`func (c *Context) Name() string`、`func (c *Context) Instance() string`（Task 1，`context.go` 骨架）
-  - `App` 的部分骨架字段（Task 1，`xbc.go`）。**强调**：`kernel-api.md` 没有列出托管 goroutine 用到的字段，但 `stage_run.go`（Task 14）已经把其中四个的名字和类型钉死，并直接在它自己的测试里对它们赋值：`cancel context.CancelFunc`、`wg *sync.WaitGroup`、`criticalCh chan struct{}`、`exitCode int`。本 task 必须原样复用这四个名字与类型（尤其是 `wg` 是指针、`criticalCh` 是不带数据的 `chan struct{}`），不能按自己的设想另起一套（比如 `wg sync.WaitGroup` 值类型或 `critical chan criticalEvent` 带原因的缓冲 channel）——那样 `stage_run.go` 会编译不过，两份产物就对不上
+  - `App` 的骨架字段（Task 1，`xbc.go`）。**强调**：托管 goroutine 用到的七个字段已由 Task 1 声明完毕，本 task 只读写、不新增。四个跨 task 共用的字段——`cancel context.CancelFunc`、`wg *sync.WaitGroup`、`criticalCh chan struct{}`、`exitCode int`——`stage_run.go`（Task 14）会直接在它自己的测试里赋值使用，名字与类型必须原样沿用（尤其是 `wg` 是指针、`criticalCh` 是不带数据的 `chan struct{}`），不能按自己的设想另起一套（比如 `wg sync.WaitGroup` 值类型或 `critical chan criticalEvent` 带原因的缓冲 channel）——那样 `stage_run.go` 会编译不过，两份产物就对不上
   - `log.L() log.Logger`、`log.Logger` 接口：`Debug/Info/Warn/Error(msg string, kv ...any)`、`With(kv ...any) Logger`、`Enabled(lv Level) bool`（`log` 包已完成）
 - Produces:
   - `func (a *App) initGoroutines()` —— `wg`、`runCtx`、`cancel`、`criticalCh` 四个字段唯一的构造点（`cli.go`，Task 15，会在阶段 5 Init 之前调用它；本 task 不实现 `cli.go`，只把这个函数准备好）
-  - `App` 新增未导出字段：`runCtx context.Context`、`criticalOnce sync.Once`、`criticalReason string`
+  - `App` 已声明字段的首个消费点（**不新增声明**）：`runCtx context.Context`、`criticalOnce sync.Once`、`criticalReason string`
   - `func (c *Context) Go(fn func(context.Context))`
   - `func (c *Context) GoCritical(fn func(context.Context))`
   - `func (a *App) goManaged(ctx *Context, fn func(context.Context), critical bool)`
@@ -6883,7 +6907,7 @@ Expected: 编译失败，`undefined: (*App).initGoroutines`——`goroutine.go` 
 在 `goroutine_test.go` 末尾追加以下测试函数（`Step 1` 的 import 块已经够用，不用改）。全部同步只靠 channel / `sync.WaitGroup`，`time.After` 只在两处出现，且只当"死锁兜底"用——真正判断"事情发生没有"永远是 channel 接收或 `errorCount()`，`time.After` 触发只意味着测试本身挂了，不参与断言的正确性判断。
 
 ```go
-// ---- Go: panic 恢复但应用继续 ----
+// ---- Go: panic recovered but the application keeps running ----
 
 func TestGoPanicRecoveredAppKeepsRunningAndLogsError(t *testing.T) {
 	a := newGoroutineTestApp(t)
@@ -6903,7 +6927,7 @@ func TestGoPanicRecoveredAppKeepsRunningAndLogsError(t *testing.T) {
 	assert.Nil(t, a.runCtx.Err(), "Go 的 panic 不能取消 runCtx")
 }
 
-// ---- Go: 正常返回无事发生 ----
+// ---- Go: a normal return is a non-event ----
 
 func TestGoNormalReturnTriggersNothing(t *testing.T) {
 	a := newGoroutineTestApp(t)
@@ -6920,7 +6944,7 @@ func TestGoNormalReturnTriggersNothing(t *testing.T) {
 	}
 }
 
-// ---- Go: shutdown 期间收到 cancel，且被等待组等到 ----
+// ---- Go: cancel arrives during shutdown, and is waited on by the WaitGroup ----
 
 func TestGoObservesShutdownCancelAndIsWaitedOn(t *testing.T) {
 	a := newGoroutineTestApp(t)
@@ -6933,7 +6957,7 @@ func TestGoObservesShutdownCancelAndIsWaitedOn(t *testing.T) {
 	})
 
 	a.cancel()
-	<-sawDone // fn 必须真的收到取消信号才会走到这里，不是碰巧退出
+	<-sawDone // fn must actually observe the cancel signal to reach here, not exit by coincidence
 
 	waitReturned := make(chan struct{})
 	go func() {
@@ -6947,7 +6971,7 @@ func TestGoObservesShutdownCancelAndIsWaitedOn(t *testing.T) {
 	}
 }
 
-// ---- GoCritical: panic 触发 shutdown ----
+// ---- GoCritical: panic triggers shutdown ----
 
 func TestGoCriticalPanicTriggersShutdown(t *testing.T) {
 	a := newGoroutineTestApp(t)
@@ -6957,14 +6981,14 @@ func TestGoCriticalPanicTriggersShutdown(t *testing.T) {
 		panic("模拟 consumer panic")
 	})
 
-	<-a.criticalCh // 关闭即代表触发
+	<-a.criticalCh // closed means triggered
 	a.wg.Wait()
 	assert.Equal(t, 1, rl.errorCount(), "panic 必须被恢复并记一条 error 日志")
 	assert.NotEmpty(t, a.criticalReason, "触发原因必须被记录")
 	require.Error(t, a.runCtx.Err(), "触发 critical 必须取消 runCtx，这正是 stage_run.go 的 shutdown 依赖的信号")
 }
 
-// ---- GoCritical: 提前正常返回同样触发 shutdown ----
+// ---- GoCritical: an early normal return also triggers shutdown ----
 
 func TestGoCriticalEarlyReturnTriggersShutdown(t *testing.T) {
 	a := newGoroutineTestApp(t)
@@ -6979,7 +7003,7 @@ func TestGoCriticalEarlyReturnTriggersShutdown(t *testing.T) {
 	require.Error(t, a.runCtx.Err())
 }
 
-// ---- GoCritical: shutdown 期间返回不二次触发 ----
+// ---- GoCritical: returning during shutdown does not re-trigger ----
 
 func TestGoCriticalReturnDuringShutdownDoesNotRetrigger(t *testing.T) {
 	a := newGoroutineTestApp(t)
@@ -6989,7 +7013,7 @@ func TestGoCriticalReturnDuringShutdownDoesNotRetrigger(t *testing.T) {
 	started := make(chan struct{})
 	ctxB.GoCritical(func(c context.Context) {
 		close(started)
-		<-c.Done() // 等 consumer-a 的 panic 取消 runCtx 才会返回
+		<-c.Done() // returns only once consumer-a's panic cancels runCtx
 	})
 	<-started
 
@@ -6997,20 +7021,22 @@ func TestGoCriticalReturnDuringShutdownDoesNotRetrigger(t *testing.T) {
 		panic("模拟 consumer-a panic")
 	})
 
-	a.wg.Wait() // 两个托管 goroutine 都必须正常退出：不卡死、也不因二次 close 而 panic
+	a.wg.Wait() // both managed goroutines must return cleanly: no deadlock, and no panic from a second close
 	assert.Equal(t, "插件 consumer-a 的托管 goroutine panic: 模拟 consumer-a panic", a.criticalReason,
 		"只保留第一个触发原因，consumer-b 的返回不能覆盖它")
 	assert.Equal(t, 0, rlB.errorCount(), "consumer-b 是响应 shutdown 的正常返回，不是 panic，不应该记 error 日志")
 }
 
-// ---- triggerCritical 的信号契约：stage_run.go 靠它拿到退出码 1 ----
+// ---- triggerCritical's signal contract: stage_run.go relies on it for exit code 1 ----
 //
-// 本 task 在执行顺序上排在 stage_init.go / stage_run.go 之前，仓库里还没有
-// 完整的 run() 可测，所以只验证到"信号被正确点燃"这一层：criticalCh 关闭、
-// runCtx 被取消。真正把这两个信号读出来、驱动完整阶段 10、把 a.exitCode
-// 置 1 的，是 stage_run.go 的 serve()/shutdown()（Task 14 的
-// TestGoCriticalTriggersFullShutdownAndExitCodeOne 覆盖了那一段，只是它
-// 测试里手写 close(a.criticalCh) 模拟触发，没有真的调用 triggerCritical）。
+// This task sits before stage_init.go / stage_run.go in execution order, and
+// the repo does not yet have a complete testable run(), so verification only
+// goes as far as "the signal was correctly lit": criticalCh closed, runCtx
+// cancelled. The code that actually reads those two signals, drives the full
+// stage 10, and sets a.exitCode to 1 is stage_run.go's serve()/shutdown()
+// (Task 14's TestGoCriticalTriggersFullShutdownAndExitCodeOne covers that
+// part, except its test hand-writes close(a.criticalCh) to simulate the
+// trigger, without actually calling triggerCritical).
 func TestTriggerCriticalSignalIsWhatStage9ReadsForExitCodeOne(t *testing.T) {
 	a := newGoroutineTestApp(t)
 	a.triggerCritical("手工触发，验证契约")
@@ -7021,7 +7047,7 @@ func TestTriggerCriticalSignalIsWhatStage9ReadsForExitCodeOne(t *testing.T) {
 		"runCtx 必须已取消——真正把 exitCode 置 1 的是 stage_run.go 的 shutdown(\"critical\")，本 task 只负责点燃信号")
 }
 
-// ---- 并发 critical：只留第一个原因，且不互相拖住 ----
+// ---- Concurrent criticals: keep only the first reason, and never block each other ----
 
 func TestTriggerCriticalConcurrentFailuresKeepOnlyFirstReasonAndDoNotBlock(t *testing.T) {
 	a := newGoroutineTestApp(t)
@@ -7037,7 +7063,7 @@ func TestTriggerCriticalConcurrentFailuresKeepOnlyFirstReasonAndDoNotBlock(t *te
 		<-release
 		panic("worker-2 炸了")
 	})
-	close(release) // 让两个 panic 尽量同时发生
+	close(release) // makes the two panics happen as close to simultaneously as possible
 
 	waitReturned := make(chan struct{})
 	go func() {
@@ -7058,7 +7084,7 @@ func TestTriggerCriticalConcurrentFailuresKeepOnlyFirstReasonAndDoNotBlock(t *te
 		"必须恰好保留其中一个原因，不能是空、也不能是两个拼接在一起")
 }
 
-// ---- 等待组真的等到全部托管 goroutine 退出才返回 ----
+// ---- The WaitGroup really does wait for every managed goroutine to return before returning itself ----
 
 func TestWaitGroupBlocksUntilAllManagedGoroutinesReturn(t *testing.T) {
 	a := newGoroutineTestApp(t)
@@ -7470,8 +7496,10 @@ func (p *stoppablePlugin) Stop(context.Context) error {
 
 // ---- tests ----
 
-// Covers both "注入 default 实例" and "provide tag 被收割且下游能注入到":
-// gorm[default] 产出连接，user 依赖它，两步在同一次 initAll 里连起来验证。
+// Covers both "injecting the default instance" and "a provide tag being
+// harvested with the downstream able to inject it": gorm[default] produces a
+// connection, user depends on it, and both steps are verified chained
+// together in one initAll call.
 func TestProvideHarvestedAndInjectedToDownstreamDefaultInstance(t *testing.T) {
 	a := newTestApp(t)
 	prov := &providerPlugin{}
@@ -7518,8 +7546,10 @@ func TestInjectRequiredMissingIsTreatedAsInternalError(t *testing.T) {
 	assert.Contains(t, err.Error(), "内部错误")
 }
 
-// 测试用假类型验证的是错误文案的模板与排版，占位符替换为测试自己的插件标签与类型名——
-// 内核测试不允许 import 真实 gorm，所以不可能出现字面的 "*gorm.DB"。
+// The fake types in this test verify the error message's template and
+// layout; the placeholders are filled with this test's own plugin labels
+// and type names -- kernel tests are not allowed to import real gorm, so the
+// literal string "*gorm.DB" can never appear.
 func TestHarvestZeroValueErrorMessageVerbatim(t *testing.T) {
 	a := newTestApp(t)
 	prov := &providerPlugin{forget: true}
@@ -7784,7 +7814,7 @@ func validateManualProvides(a *App, inst *instance) error {
 
 // rollback stops every instance whose Init has already completed
 // successfully, in reverse topological order -- dependents before their
-// dependencies, mirroring shutdown's ordering (spec §4.1 约束 a). A Stop
+// dependencies, mirroring shutdown's ordering (spec §4.1 constraint a). A Stop
 // error or panic is logged and swallowed: the original failure that
 // triggered the rollback is the one the user needs to see, and letting a
 // second failure stomp on it would hide the real cause.
@@ -8039,8 +8069,10 @@ func TestMigrateAllRunsWhenRequested(t *testing.T) {
 	assert.True(t, ran, "--migrate / migrate 子命令 / server.auto_migrate 命中任一个都要跑迁移")
 }
 
-// "migrate 子命令跑完即退（阶段 1~6 后退出，不起 HTTP）" 是 cli.go 的子命令分派逻辑，
-// 在 Task 15 的 cli_test.go 里端到端验证；这里只测 migrateAll 本身的开关行为。
+// The fact that "the migrate subcommand exits as soon as it finishes
+// (stages 1-6, then exit, no HTTP)" is cli.go's subcommand dispatch logic,
+// verified end-to-end in Task 15's cli_test.go; this test only covers
+// migrateAll's own on/off behavior.
 
 // ---- stage 7: AssembleHTTP ----
 
@@ -8053,7 +8085,7 @@ func TestAssembleHTTPMiddlewareRunsInPhaseOrderOnARealRequest(t *testing.T) {
 	businessMW := &mwPlugin{name: "audit", order: &order, phase: PhaseBusiness}
 	route := &routePlugin{handler: func(c *gin.Context) { c.Status(http.StatusOK) }}
 
-	// 注册顺序故意打乱，断言排序只看 Phase，不看注册顺序。
+	// Registration order is deliberately shuffled; the assertion checks that sorting only looks at Phase, not registration order.
 	insts := []*instance{
 		mustInstance(t, businessMW, "audit", "default"),
 		mustInstance(t, route, "demo", "default"),
@@ -8135,7 +8167,7 @@ func TestShutdownStopsInReverseTopologicalOrder(t *testing.T) {
 
 	var stopped []string
 	gormPlugin := &closerPlugin{name: "gorm", stopped: &stopped}
-	userPlugin := &closerPlugin{name: "user", stopped: &stopped} // user depends on gorm -> 排在后面
+	userPlugin := &closerPlugin{name: "user", stopped: &stopped} // user depends on gorm -> sorts after it
 	insts := []*instance{
 		mustInstance(t, gormPlugin, "gorm", "default"),
 		mustInstance(t, userPlugin, "user", "default"),
@@ -8169,13 +8201,15 @@ func TestInFlightRequestIsDrainedBeforeShutdownCompletes(t *testing.T) {
 		require.NoError(t, err)
 		reqDone <- resp.StatusCode
 	}()
-	<-reached // 请求已经进了 handler，正卡在里面
+	<-reached // the request has already entered the handler and is stuck there
 
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- a.shutdown("test") }()
 
-	// 不用 sleep 等「shutdown 应该正在等 in-flight」这件事——直接放开 handler，
-	// 然后用 channel 顺序收敛：请求必须先跑完，shutdown 才应该返回。
+	// Instead of sleeping to wait for "shutdown should be waiting on the
+	// in-flight request", release the handler directly and let channel ordering
+	// converge: the request must finish first, and only then should shutdown
+	// return.
 	close(release)
 
 	assert.Equal(t, http.StatusOK, <-reqDone, "in-flight 请求必须正常跑完，不能被 shutdown 打断")
@@ -8188,7 +8222,7 @@ func TestShutdownTimeoutForceKillsStuckConnection(t *testing.T) {
 	reached := make(chan struct{})
 	route := &routePlugin{handler: func(c *gin.Context) {
 		close(reached)
-		<-block // 故意永不放开，模拟一个不理会关闭信号的连接
+		<-block // deliberately never released, simulating a connection that ignores the shutdown signal
 	}}
 	insts := []*instance{mustInstance(t, route, "demo", "default")}
 	a := newServeTestApp(t, insts)
@@ -8225,7 +8259,7 @@ func TestGoCriticalTriggersFullShutdownAndExitCodeOne(t *testing.T) {
 	go func() { serveDone <- a.serve() }()
 	<-a.ready
 
-	close(a.criticalCh) // 模拟 GoCritical 触发
+	close(a.criticalCh) // simulates a GoCritical trigger
 
 	require.NoError(t, <-serveDone)
 	assert.Equal(t, []string{"gorm"}, stopped, "GoCritical 触发的关闭仍要走完整阶段 10，其他插件照样被 Stop")
@@ -8342,7 +8376,7 @@ func setGinMode(level string) {
 
 // assembleHTTP drives stage 7: load middleware in Phase order, register
 // routes, freeze the route table, then run PostRoutes. Per spec §4.1
-// 约束 g，middleware is loaded before any route exists (gin requires
+// constraint g, middleware is loaded before any route exists (gin requires
 // engine.Use before route registration), so middleware must never read
 // route metadata at load time -- only at request time via ctx.Route.
 func (a *App) assembleHTTP(insts []*instance) error {
@@ -8490,7 +8524,7 @@ func (a *App) serve() error {
 
 // shutdown drives stage 10: stop accepting new requests, drain in-flight
 // ones, cancel every managed goroutine and wait for them, stop every
-// initialized plugin in reverse topological order (spec §4.1 约束 a:
+// initialized plugin in reverse topological order (spec §4.1 constraint a:
 // dependents before their dependencies), then force-kill anything still
 // stuck past shutdown_timeout. reason distinguishes a clean signal-triggered
 // shutdown from a GoCritical-triggered one, which additionally sets the
@@ -8722,7 +8756,7 @@ import (
 	kyaml "github.com/knadh/koanf/parsers/yaml"
 )
 
-// ---- lifecycle tracker：记录方法调用顺序，不需要真实中间件也能断言到哪个阶段 ----
+// ---- lifecycle tracker: records method call order, so assertions about which stage was reached need no real middleware ----
 
 type lifecycleTracker struct {
 	mu    sync.Mutex
@@ -8769,9 +8803,10 @@ func (p *trackedPlugin) Stop(ctx context.Context) error {
 	return nil
 }
 
-// newRunnableTestApp 准备一个能跑到 serve() 且能被外部提前叫停的 App：
-// 预置 :0 监听、ready/criticalCh 信道，测试拿到 ready 之后关掉 criticalCh
-// 就能让 serve() 立刻返回，不需要 time.Sleep 猜时间。
+// newRunnableTestApp prepares an App that can reach serve() and be stopped
+// early from outside: a :0 listener plus ready/criticalCh channels are
+// pre-wired, so once a test receives ready it can close criticalCh to make
+// serve() return immediately, with no need to guess timing via time.Sleep.
 func newRunnableTestApp(t *testing.T, p Plugin) *App {
 	t.Helper()
 	a := &App{}
@@ -8912,10 +8947,12 @@ func TestApplicationExampleYmlIsValidYAML(t *testing.T) {
 	raw, err := os.ReadFile("application.example.yml")
 	require.NoError(t, err, "样例配置文件必须存在于仓库根目录")
 
-	// 用 koanf 自带的 yaml parser（本计划已经锁定的依赖），不额外引入
-	// gopkg.in/yaml.v3 之类计划外的第三方包。这里只做「合法 YAML + 四段俱全」
-	// 的通用检查——server/log 之外的 plugins 段字段属于 Plan 4 各插件自己的
-	// Config，内核测试不认识 gorm/redis/jwt，不在这里做 schema 级校验。
+	// Uses koanf's own yaml parser (a dependency this plan has already locked
+	// in), instead of pulling in an out-of-plan third-party package such as
+	// gopkg.in/yaml.v3. This only does the generic check of "valid YAML with all
+	// four sections present" -- fields under plugins other than server/log belong
+	// to each Plan 4 plugin's own Config; kernel tests do not know gorm/redis/
+	// jwt, and do not do schema-level validation here.
 	doc, err := kyaml.Parser().Unmarshal(raw)
 	require.NoError(t, err, "样例配置必须是合法 YAML")
 
@@ -8944,7 +8981,7 @@ import (
 	"github.com/xbcio/xbc/log"
 )
 
-// ---- capturingLogger：把 Info 调用原样存下来，断言用，不用真的写文件 ----
+// ---- capturingLogger: records Info calls verbatim for assertions, without actually writing to a file ----
 
 type capturingLogger struct {
 	mu    sync.Mutex
@@ -8970,7 +9007,7 @@ func (c *capturingLogger) snapshot() []string {
 	return append([]string(nil), c.lines...)
 }
 
-// ---- plugin fixtures：每个只实现测试需要的那一小组接口 ----
+// ---- plugin fixtures: each implements only the small set of interfaces its test needs ----
 
 type tableInitPlugin struct{ Base }
 
@@ -9032,8 +9069,10 @@ func TestBuildPluginTableAlignsColumnsByActualContentWidth(t *testing.T) {
 
 	assert.Equal(t, "xbc: 装配完成，2 个插件实例", lines[0])
 
-	// "gorm"/"user" 都是 4 个字符；"migrate routes(12)" 是两行里最长的能力列，19 个字符——
-	// 这两个数就是列宽应该算出来的值，不是本测试拍脑袋定的。
+	// "gorm"/"user" are both 4 characters; "migrate routes(12)" is the longest
+	// capability column across the two rows, at 19 characters -- these two
+	// numbers are exactly what the column width should compute to, not a number
+	// this test picked by hand.
 	const labelWidth, capsWidth = 4, 19
 	wantGorm := fmtRow(labelWidth, "gorm", capsWidth, "init stop", "provides *xbc.fakeConn")
 	wantUser := fmtRow(labelWidth, "user", capsWidth, "migrate routes(12)", "requires *xbc.fakeConn")
@@ -9044,8 +9083,10 @@ func TestBuildPluginTableAlignsColumnsByActualContentWidth(t *testing.T) {
 	assert.Equal(t, wantMark, lines[3], "user 是显式 Register，必须标出来")
 }
 
-// fmtRow 用跟 buildPluginTable 完全相同的格式串拼期望值，这样测试锁住的是
-// "列宽按实际内容算" 这条规则本身，而不是某一次手工数出来的空格数。
+// fmtRow assembles the expected value with exactly the same format string as
+// buildPluginTable, so what the test locks down is the rule "column width is
+// computed from actual content" itself, not a hand-counted number of spaces
+// from one particular run.
 func fmtRow(labelWidth int, label string, capsWidth int, caps, suffix string) string {
 	return fmtSprintfRow(labelWidth, label, capsWidth, caps, suffix)
 }
@@ -9133,13 +9174,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestInternalPackagesDoNotImportRootOrEachOther 是 Global Constraints「internal/
-// 的洁癖」那条硬约束的自动化守卫的另一半——log/ 那一半已经在
-// log/integration_test.go 的 TestLogPackageHasNoFrameworkDependency 里实现了。
+// TestInternalPackagesDoNotImportRootOrEachOther is the other half of the
+// automated guard for Global Constraints' hard rule that internal/ stays
+// pure -- the log/ half is already implemented in log/integration_test.go's
+// TestLogPackageHasNoFrameworkDependency.
 //
-// 用 go list -test -deps 而不是字符串 grep：grep 会被注释、字符串常量里恰好出现
-// 的包名污染，产生假阳性或假阴性；go list 走的是真实编译期 import 图，且 -test
-// 让它连 _test.go 里才出现的 import 也不会漏。
+// Uses go list -test -deps instead of a string grep: grep gets polluted by
+// package names that happen to appear in comments or string constants,
+// producing false positives or false negatives; go list walks the real
+// compile-time import graph, and -test makes sure it does not miss an import
+// that only appears in a _test.go file.
 func TestInternalPackagesDoNotImportRootOrEachOther(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go 命令不可用，跳过依赖方向检查")
@@ -9170,8 +9214,10 @@ func TestInternalPackagesDoNotImportRootOrEachOther(t *testing.T) {
 	}
 }
 
-// isInternalPackageItself 过滤 "go list -test -deps" 对被测包自身产生的合成条目：
-// 裸包名、带测试插桩的变体 "pkg [pkg.test]"、编译出的测试二进制 "pkg.test"。
+// isInternalPackageItself filters out the synthetic entries "go list -test
+// -deps" produces for the package under test itself: the bare package name,
+// the test-instrumented variant "pkg [pkg.test]", and the compiled test
+// binary "pkg.test".
 func isInternalPackageItself(dep, pkg string) bool {
 	switch {
 	case dep == pkg, dep == pkg+".test":
@@ -9239,7 +9285,7 @@ func parseArgs(args []string) (cliOptions, error) {
 	}
 
 	if err := fs.Parse(rest); err != nil {
-		return opts, err // flag 包已经把 usage 打到 fs.Output()（默认 os.Stderr）了
+		return opts, err // the flag package has already printed usage to fs.Output() (os.Stderr by default)
 	}
 	if fs.NArg() > 0 {
 		fs.Usage()
@@ -9300,7 +9346,7 @@ func (a *App) run(args []string) (exitCode int, err error) {
 	a.softMisses = append(a.softMisses, misses...)
 
 	if opts.subcommand == "doctor" {
-		a.printStartupLog(order) // 只讲装配结果，不建立任何连接
+		a.printStartupLog(order) // reports only the assembly result, without establishing any connection
 		return 0, nil
 	}
 
@@ -9313,7 +9359,7 @@ func (a *App) run(args []string) (exitCode int, err error) {
 	}
 
 	if opts.subcommand == "migrate" {
-		a.rollback(order) // 一次性进程，跑完即退也要干净地 Stop，不留连接常驻
+		a.rollback(order) // a one-shot process; even exiting right after finishing must Stop cleanly, leaving no lingering connections
 		return 0, nil
 	}
 
