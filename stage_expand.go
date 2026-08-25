@@ -14,17 +14,28 @@ import (
 // prototypes (entries) into plugin instances, applying the enable-rule
 // matrix (spec §6.4) and the multi-instance expansion shape (spec §6.5).
 func (a *App) expand() ([]*instance, error) {
-	seen := make(map[string]struct{}, len(a.entries))
+	seen := make(map[string]entry, len(a.entries))
 	var out []*instance
 
 	for _, e := range a.entries {
 		// A duplicate plugin name is illegal regardless of multi/single --
 		// letting it through would let two unrelated entries collapse onto
 		// the same graph node id in stage 4 (see the id()/label() doc above).
-		if _, dup := seen[e.name]; dup {
-			return nil, fmt.Errorf("xbc: 插件名 %s 重复注册", e.name)
+		//
+		// This branch is unreachable through either normal registration
+		// path: the package-level Register and (*App).Register both already
+		// reject a name collision at registration time. Anything that still
+		// lands here got into a.entries some other way (a hand-built
+		// []entry in a test fixture, or a future third registration path
+		// that forgot to check) -- exactly the kind of cold path that
+		// deserves more diagnostic detail, not less, so this reports both
+		// concrete types rather than just the name.
+		if existing, dup := seen[e.name]; dup {
+			return nil, fmt.Errorf(
+				"xbc: 插件名 %q 重复注册：%T 与 %T 用了同一个名字，请检查是否有注册路径绕过了 Register 的查重",
+				e.name, existing.proto, e.proto)
 		}
-		seen[e.name] = struct{}{}
+		seen[e.name] = e
 
 		insts, err := a.expandEntry(e)
 		if err != nil {
@@ -236,7 +247,7 @@ func (i *instance) label() string {
 // Only the plugins.* namespace is scanned. server./log./app. are reserved
 // top-level namespaces handled elsewhere in the pipeline and are never
 // treated as candidate plugin sections.
-func (a *App) checkOrphanSections(registered map[string]struct{}) error {
+func (a *App) checkOrphanSections(registered map[string]entry) error {
 	section := a.cfg.Sub("plugins")
 	if section == nil {
 		return nil
