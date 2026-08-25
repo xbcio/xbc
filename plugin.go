@@ -68,10 +68,11 @@ type Base struct {
 	name string
 }
 
-// Ctx returns the Context bound to this plugin. It is nil before stage 5
-// (Init): Base itself gets a name bound earlier, at registration, purely to
-// resolve Name(); the Context that carries the registry and config isn't
-// built until Init.
+// Ctx returns the Context bound to this plugin. It is bound during stage 2
+// (expand): newInstance constructs the plugin's *Context there and calls
+// bindBase to wire it in, well before Init runs. Before that -- e.g. right
+// after Register hands off a bare prototype, or a bindBase(p, nil, name)
+// call that only needs to resolve Name() -- it is nil.
 func (b *Base) Ctx() *Context { return b.ctx }
 
 // Log is a shortcut for Ctx().Log(). Safe to call before stage 5: it falls
