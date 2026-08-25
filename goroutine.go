@@ -45,11 +45,17 @@ func (a *App) initGoroutines() {
 // in-flight HTTP requests still drain, every other plugin still gets
 // Stop() in reverse topological order, and the process exits with code 1
 // so the surrounding orchestrator knows this was not a clean stop.
+//
+// This uses (*sync.WaitGroup).Go rather than a hand-rolled Add(1) + go +
+// defer Done(): the classic bug in that pattern is moving the Add inside
+// the new goroutine, which lets Wait return before the goroutine has even
+// been scheduled. wg.Go folds Add and Done into one call, at the one
+// correct location, so that failure mode no longer has anywhere to hide.
+// wg.Go's own contract is that its function must not panic -- but the
+// deferred recover below always catches whatever fn does before this
+// function returns, so nothing ever escapes to wg.Go's wrapper.
 func (a *App) goManaged(ctx *Context, fn func(context.Context), critical bool) {
-	a.wg.Add(1)
-	go func() {
-		defer a.wg.Done()
-
+	a.wg.Go(func() {
 		// expected records whether the eventual return (if fn doesn't
 		// panic) happened because shutdown was already underway. It is
 		// only read by the deferred recover below, in the same goroutine,
@@ -79,7 +85,7 @@ func (a *App) goManaged(ctx *Context, fn func(context.Context), critical bool) {
 		// exactly the "consumer silently stopped consuming" failure this
 		// whole mechanism exists to catch.
 		expected = a.runCtx.Err() != nil
-	}()
+	})
 }
 
 // triggerCritical fires the application-wide shutdown alarm. It runs from
