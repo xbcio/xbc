@@ -106,8 +106,9 @@ func TestBindConfigsAggregatesErrorsAcrossPlugins(t *testing.T) {
 	require.Len(t, verr.Lines, 2,
 		"两个插件各错一条，必须一次全部报出，不能第一个错就退，也不能多报或少报")
 
-	// Lines 每条的格式是 "<path>\t<message>"（见 internal/conf/validate.go
-	// ValidationError 的文档注释与 joinPath/renderViolation 的拼接方式）。
+	// Each entry of Lines has the shape "<path>\t<message>" -- see
+	// ValidationError's doc comment in internal/conf/validate.go and the way
+	// joinPath/renderViolation assemble it there.
 	assert.True(t, strings.HasPrefix(verr.Lines[0], "plugins.demo.dsn\t"),
 		"实例必须按 expand() 返回的注册顺序处理，demo 先注册就必须先报错，"+
 			"顺序一旦颠倒，多插件同时报错时输出就会跟着抖动")
