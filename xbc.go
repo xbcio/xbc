@@ -193,9 +193,6 @@ func newEntry(p Plugin, src source) (entry, error) {
 		return entry{}, err
 	}
 
-	e := entry{proto: p, name: name, src: src}
-	if mi, ok := p.(MultiInstancer); ok {
-		e.multi = mi.MultiInstance()
-	}
+	e := entry{proto: p, name: name, src: src, multi: isMultiInstance(p)}
 	return e, nil
 }
