@@ -15,9 +15,12 @@ type registryKey struct {
 }
 
 // registry is the (type, instance) -> value store shared by every Context
-// that belongs to the same App. It never normalizes the instance argument --
-// that is the caller's job (see normInstance in deps.go), so this type can
-// be tested in isolation from the "" == "default" convention.
+// that belongs to the same App. It normalizes the instance argument itself
+// (via normInstance in deps.go) at every entry point -- "" and "default" are
+// the same key here, not just at the facade layer above. Later stages (Task
+// 10's resolve, Task 13's provides check) call put/lookup directly,
+// bypassing Provide/Get/GetNamed, and a call site that forgets to normalize
+// must not silently miss a registration made through the other spelling.
 type registry struct {
 	mu    sync.RWMutex
 	m     map[registryKey]any
@@ -30,8 +33,12 @@ func newRegistry() *registry {
 
 // put stores v under (typ, instance). Re-putting the same key overwrites the
 // value but does not change its position in order -- order only tracks the
-// first registration of each key.
+// first registration of each key. instance is normalized before use, so ""
+// and "default" land on the same key regardless of which spelling the
+// caller used.
 func (r *registry) put(typ reflect.Type, instance string, v any) {
+	instance = normInstance(instance)
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -45,8 +52,11 @@ func (r *registry) put(typ reflect.Type, instance string, v any) {
 // lookup implements the three-branch semantics documented in the API
 // contract §5.6: exact hit for concrete types; for interface types, an
 // exact hit first, then a scan of every concrete type registered under the
-// same instance for AssignableTo(want).
+// same instance for AssignableTo(want). instance is normalized before use,
+// matching put.
 func (r *registry) lookup(want reflect.Type, instance string) (any, error) {
+	instance = normInstance(instance)
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -81,8 +91,11 @@ func (r *registry) lookup(want reflect.Type, instance string) (any, error) {
 
 // concreteTypes returns every concrete type registered under instance, in
 // registration order. Used by later stages (e.g. startup diagnostics) that
-// need to enumerate what an instance actually provides.
+// need to enumerate what an instance actually provides. instance is
+// normalized before use, matching put/lookup.
 func (r *registry) concreteTypes(instance string) []reflect.Type {
+	instance = normInstance(instance)
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 

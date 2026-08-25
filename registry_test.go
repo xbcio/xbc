@@ -35,6 +35,18 @@ type halfCounter struct{}
 
 func (c *halfCounter) Incr(key string) int64 { return 0 }
 
+// onlyIncr and onlyExpire each implement exactly one of Counter's two
+// methods, so against want=Counter they score a tie (1 method hit, 1
+// missing). Registering them in this order exercises the "ties keep the
+// earliest registered candidate" rule in closestMatch.
+type onlyIncr struct{}
+
+func (c *onlyIncr) Incr(key string) int64 { return 0 }
+
+type onlyExpire struct{}
+
+func (c *onlyExpire) Expire(key string, seconds int) error { return nil }
+
 func newTestApp() *App {
 	return &App{registry: newRegistry()}
 }
@@ -79,20 +91,28 @@ func TestRegistryInstanceIsolation(t *testing.T) {
 	require.Same(t, ro, got)
 }
 
-func TestRegistryLookupDoesNotNormalizeInstance(t *testing.T) {
-	// registry is the lowest-level store and does not normalize instance
-	// names itself -- an empty string and "default" are two distinct keys at
-	// this layer. Normalization is the job of the facade functions above it
-	// (Get/GetNamed/Provide, see the next test); this pins down the fact that
-	// registry's raw behavior never normalizes, so nobody later sneaks
-	// normalization into registry itself, which would turn the facade
-	// layer's normalization into duplicated or conflicting work.
+func TestRegistryLookupNormalizesInstance(t *testing.T) {
+	// registry normalizes the instance argument itself (in put and lookup),
+	// so "" and "default" refer to the same key no matter which spelling a
+	// caller used on either side. This matters because Task 10's resolve and
+	// Task 13's provides check call put/lookup directly, bypassing the
+	// Provide/Get/GetNamed facade -- if registry didn't normalize on its
+	// own, a call site that forgot normInstance would silently miss a
+	// registration made through the other spelling, instead of erroring.
 	r := newRegistry()
 	db := &fakeDB{name: "x"}
-	r.put(reflect.TypeOf(db), "default", db)
+	r.put(reflect.TypeOf(db), "", db)
 
-	_, err := r.lookup(reflect.TypeOf(db), "")
-	require.Error(t, err, "registry 这一层不把空串等同于 default")
+	got, err := r.lookup(reflect.TypeOf(db), "default")
+	require.NoError(t, err, "put 用空串登记，lookup 用 default 查找应当命中同一个 key")
+	require.Same(t, db, got)
+
+	db2 := &fakeDB{name: "y"}
+	r.put(reflect.TypeOf(db2), "default", db2)
+
+	got2, err := r.lookup(reflect.TypeOf(db2), "")
+	require.NoError(t, err, "put 用 default 登记，lookup 用空串查找应当命中同一个 key")
+	require.Same(t, db2, got2)
 }
 
 func TestEmptyInstanceEqualsDefaultThroughFacade(t *testing.T) {
@@ -133,6 +153,42 @@ func TestRegistryInterfaceZeroHitReportsClosest(t *testing.T) {
 	require.ErrorAs(t, err, &nfe)
 	require.Equal(t, reflect.TypeOf(half), nfe.Closest, "唯一候选即最接近的候选")
 	require.Equal(t, []string{"Expire"}, nfe.Missing, "halfCounter 只缺 Expire 这一个方法")
+}
+
+func TestRegistryClosestMatchTiesKeepEarliestRegistered(t *testing.T) {
+	// onlyIncr and onlyExpire both score exactly 1 method hit against
+	// want=Counter (2 methods total) -- a genuine tie. §5 requires ties to
+	// keep the earliest-registered candidate; this pins that down, since a
+	// suite with only ever one candidate registered (as in the zero-hit test
+	// above) can never distinguish ">" from ">=" in closestMatch.
+	r := newRegistry()
+	first := &onlyIncr{}
+	second := &onlyExpire{}
+	r.put(reflect.TypeOf(first), "default", first)
+	r.put(reflect.TypeOf(second), "default", second)
+
+	want := reflect.TypeOf((*Counter)(nil)).Elem()
+	_, err := r.lookup(want, "default")
+	require.Error(t, err)
+	var nfe *NotFoundError
+	require.ErrorAs(t, err, &nfe)
+	require.Equal(t, reflect.TypeOf(first), nfe.Closest,
+		"两个候选命中方法数并列时，必须保留先登记的那个")
+	require.Equal(t, []string{"Expire"}, nfe.Missing, "先登记的 onlyIncr 缺的是 Expire")
+}
+
+func TestRegistryConcreteTypesReturnsOwnInstanceInOrder(t *testing.T) {
+	r := newRegistry()
+	a := &fakeDB{name: "a"}
+	other := &counterA{}
+	b := &halfCounter{}
+	r.put(reflect.TypeOf(a), "default", a)
+	r.put(reflect.TypeOf(other), "other", other)
+	r.put(reflect.TypeOf(b), "default", b)
+
+	got := r.concreteTypes("default")
+	require.Equal(t, []reflect.Type{reflect.TypeOf(a), reflect.TypeOf(b)}, got,
+		"concreteTypes 只应返回本 instance 下的类型，且顺序与登记顺序一致，不能混入 other 实例的类型")
 }
 
 func TestRegistryInterfaceMultiHitReportsCandidatesInOrder(t *testing.T) {
