@@ -97,6 +97,12 @@ type App struct {
 	// registry is the (type, instance) store shared by every Context of this
 	// App -- see registry.go (Task 4).
 	registry *registry
+
+	// cfg is the merged configuration, filled by stage 1's loadConfig and
+	// read by every stage after it. It stays nil until then, so anything
+	// that touches it before stage 1 is a pipeline-ordering bug, not a
+	// missing nil check.
+	cfg *Config
 }
 
 // instance is one expanded plugin instance -- the unit every stage after
