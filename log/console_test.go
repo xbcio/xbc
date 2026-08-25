@@ -214,7 +214,7 @@ func TestConsoleLevelColors(t *testing.T) {
 		ent := sampleEntry()
 		ent.Level = lv
 		out := encodeOne(t, true, ent, nil, nil)
-		assert.Contains(t, out, want+padRight(lv.CapitalString(), widthLevel)+ansiReset, "级别 %s", lv)
+		assert.Contains(t, out, want+padRightRef(lv.CapitalString(), widthLevel)+ansiReset, "级别 %s", lv)
 	}
 }
 

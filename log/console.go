@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/mattn/go-isatty"
@@ -27,9 +28,9 @@ const (
 //
 // widthLevel is 6, not 5: the longest zapcore level text is DPANIC (6
 // characters, measured: `zapcore.DPanicLevel.CapitalString()` == "DPANIC").
-// Using 5 would make padRight return the string unchanged whenever
-// len(s) >= w, shifting the four trailing columns of the DPanic line one
-// space to the right.
+// Using 5 would leave the string unpadded whenever its rune count >= w,
+// shifting the four trailing columns of the DPanic line one space to the
+// right.
 //
 // widthCaller is 24, per the spec §8.7 table.
 //
@@ -61,6 +62,12 @@ const (
 	widthLevel  = 6
 	widthTrace  = 8
 	widthCaller = 24
+
+	// consoleTimeLayout has no date -- the date lives in the log file name.
+	// widthTime is derived from it rather than written as 12, so the two can
+	// never drift apart.
+	consoleTimeLayout = "15:04:05.000"
+	widthTime         = len(consoleTimeLayout)
 )
 
 // Fields excluded from the KV section under console: trace_id already has
@@ -81,6 +88,18 @@ var consolePool = buffer.NewPool()
 // It embeds *zapcore.MapObjectEncoder to get all of ObjectEncoder's Add*
 // methods for free, and only needs to add Clone and EncodeEntry itself to
 // satisfy zapcore.Encoder.
+//
+// That embedding is also where most of this encoder's allocations come from:
+// profiling one entry (12 allocs/op) put NewMapObjectEncoder plus its Add*
+// methods at roughly half the total, because every field is routed through a
+// map[string]any before it can be grouped (With context vs call site) and
+// sorted by key. Streaming fields straight into the buffer would remove that,
+// at the cost of rebuilding both the grouping and the sorting by hand.
+//
+// Deliberately not done. This encoder targets a developer's terminal;
+// production writes json, which measures 2 allocs/op on the same entry and is
+// untouched by any of this. The column writers below were worth fixing because
+// they are self-contained; the map routing is load-bearing structure.
 type consoleEncoder struct {
 	*zapcore.MapObjectEncoder
 	color bool
@@ -192,21 +211,21 @@ func (e *consoleEncoder) EncodeEntry(ent zapcore.Entry, fs []zapcore.Field) (*bu
 
 	b := consolePool.Get()
 
-	// (1) time: fixed 12 wide, no date -- the date is in the file name
-	e.paint(b, ansiDim, ent.Time.Format("15:04:05.000"))
+	// (1) time: fixed widthTime wide, no date -- the date is in the file name
+	e.paintTime(b, ent.Time)
 	b.AppendByte(' ')
 
 	// (2) level: left-aligned to 6 wide (widthLevel), colored by level
-	e.paint(b, levelColor(ent.Level), padRight(ent.Level.CapitalString(), widthLevel))
+	e.paintPadRight(b, levelColor(ent.Level), ent.Level.CapitalString(), widthLevel)
 	b.AppendByte(' ')
 
 	// (3) trace: fixed 8 wide, first 8 chars of trace_id
-	e.paint(b, ansiDim, padRight(shortTrace(e.Fields, call.Fields), widthTrace))
+	e.paintPadRight(b, ansiDim, shortTrace(e.Fields, call.Fields), widthTrace)
 	b.AppendByte(' ')
 
 	// (4) caller: right-aligned to widthCaller wide, truncated from the left
 	// when too long
-	e.paint(b, ansiDim, padCallerLeft(callerText(ent.Caller), widthCaller))
+	e.paintPadCallerLeft(b, ansiDim, callerText(ent.Caller), widthCaller)
 	b.AppendByte(' ')
 
 	// (5) msg, followed by two spaces and then the KV section
@@ -378,7 +397,7 @@ func levelColor(lv zapcore.Level) string {
 func isErrorKey(k string) bool { return k == "err" || k == "error" }
 
 // shortTrace takes the first 8 characters of trace_id. Returns an empty
-// string when there is no trace (padRight then pads it out to a blank
+// string when there is no trace (paintPadRight then pads it out to a blank
 // column).
 func shortTrace(ms ...map[string]any) string {
 	for _, m := range ms {
@@ -399,14 +418,13 @@ func callerText(c zapcore.EntryCaller) string {
 	return c.TrimmedPath()
 }
 
-// padRight / padCallerLeft count by rune, not by byte.
+// paintPadRight / paintPadCallerLeft count by rune, not by byte.
 //
 // Of the three leading columns (level, trace, caller), level and trace are
 // always ASCII, but caller comes from a Go source file path, and a user's
 // directory names can be Chinese. Measured consequence of counting by byte:
-// padRight("中文", 5) returns the string unchanged because len == 6 >= 5,
-// even though it actually only occupies 2 display columns, misaligning the
-// whole line.
+// padding "中文" to 5 leaves it untouched because len == 6 >= 5, even though
+// it actually only occupies 2 display columns, misaligning the whole line.
 //
 // This only does rune alignment, not East Asian double-width handling (a
 // CJK rune occupies two terminal columns) -- that would require an
@@ -414,15 +432,69 @@ func callerText(c zapcore.EntryCaller) string {
 // ASCII-dominated anyway. Conclusion: a caller path containing CJK will
 // still have an off display width, but will no longer produce invalid
 // UTF-8.
-func padRight(s string, w int) string {
-	n := utf8.RuneCountInString(s)
-	if n >= w {
-		return s
+//
+// They write into the buffer rather than returning a padded string. Building
+// the string first cost one allocation per column per entry -- for a value
+// the buffer was about to copy and discard. console_column_test.go keeps the
+// string-building versions as the reference these are checked against.
+
+// consoleSpaces is the source of every run of padding. Slicing a constant
+// string costs nothing, where strings.Repeat allocates. It is sized to the
+// widest column so a single AppendString covers the common case.
+const consoleSpaces = "                        " // widthCaller spaces
+
+func appendSpaces(b *buffer.Buffer, n int) {
+	for n > len(consoleSpaces) {
+		b.AppendString(consoleSpaces)
+		n -= len(consoleSpaces)
 	}
-	return s + strings.Repeat(" ", w-n)
+	if n > 0 {
+		b.AppendString(consoleSpaces[:n])
+	}
 }
 
-// padCallerLeft right-aligns to a width of w. When too long, truncates
+// consoleTimeBufSize is the scratch array paintTime formats into. It is
+// deliberately NOT widthTime.
+//
+// Measured: AppendFormat overshoots the final length while building the
+// output, so a widthTime-sized (12) array forces a heap reallocation and the
+// whole point of avoiding Time.Format is lost -- 16 still allocates, 20 does
+// not. 32 leaves headroom above that boundary. Tightening this to "the width
+// it actually produces" is the obvious-looking edit that silently reintroduces
+// the allocation; TestConsoleColumnWritersAreAllocationFree is what catches it.
+const consoleTimeBufSize = 32
+
+// paintTime writes the timestamp column. It formats into a stack array via
+// AppendFormat: Time.Format allocates a fresh string on every entry, and this
+// runs once per line.
+func (e *consoleEncoder) paintTime(b *buffer.Buffer, t time.Time) {
+	var tbuf [consoleTimeBufSize]byte
+	if e.color {
+		b.AppendString(ansiDim)
+	}
+	_, _ = b.Write(t.AppendFormat(tbuf[:0], consoleTimeLayout))
+	if e.color {
+		b.AppendString(ansiReset)
+	}
+}
+
+// paintPadRight left-aligns s to a width of w. Pad first, then close the
+// color -- ANSI sequences are zero width, so the reset belongs after the
+// padding, not before it.
+func (e *consoleEncoder) paintPadRight(b *buffer.Buffer, c, s string, w int) {
+	if e.color {
+		b.AppendString(c)
+	}
+	b.AppendString(s)
+	if n := utf8.RuneCountInString(s); n < w {
+		appendSpaces(b, w-n)
+	}
+	if e.color {
+		b.AppendString(ansiReset)
+	}
+}
+
+// paintPadCallerLeft right-aligns to a width of w. When too long, truncates
 // from the left and adds "…", keeping the line-number side intact --
 // locating code relies on the file name and line number, not the top-level
 // directory.
@@ -431,12 +503,27 @@ func padRight(s string, w int) string {
 // (s[len(s)-(w-1):]) can slice through the middle of a multi-byte
 // character, producing a U+FFFD replacement character on output, and the
 // resulting width would not even be w.
-func padCallerLeft(s string, w int) string {
-	rs := []rune(s)
-	if len(rs) > w {
-		return "…" + string(rs[len(rs)-(w-1):])
+func (e *consoleEncoder) paintPadCallerLeft(b *buffer.Buffer, c, s string, w int) {
+	if e.color {
+		b.AppendString(c)
 	}
-	return strings.Repeat(" ", w-len(rs)) + s
+	if n := utf8.RuneCountInString(s); n > w {
+		// Drop the leading n-(w-1) runes; the ellipsis takes the freed column.
+		// Scanning for the byte offset avoids the []rune conversion.
+		cut := 0
+		for i := 0; i < n-(w-1); i++ {
+			_, size := utf8.DecodeRuneInString(s[cut:])
+			cut += size
+		}
+		b.AppendString("…")
+		b.AppendString(s[cut:])
+	} else {
+		appendSpaces(b, w-n)
+		b.AppendString(s)
+	}
+	if e.color {
+		b.AppendString(ansiReset)
+	}
 }
 
 // stringify converts a field value to a string.
