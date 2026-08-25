@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/xbcio/xbc/internal/graph"
 	"github.com/xbcio/xbc/internal/inject"
 )
 
@@ -85,6 +86,21 @@ type App struct {
 	listener    net.Listener
 	ready       chan struct{}  // closed once the listener accepts
 	routeCounts map[string]int // plugin name -> routes it registered
+
+	// softMisses collects every soft ordering constraint (After/Before)
+	// that named something which does not exist -- from stage 4's plugin
+	// sort and from this stage's middleware sort alike. cli.go's startup
+	// log renders them as one warning block; they are never fatal, since a
+	// preference that points at an absent plugin is a stale preference,
+	// not a broken dependency.
+	softMisses []graph.Miss
+
+	// middlewareChain is the ordered chain assembled by stage 7. It is kept
+	// on App so cli.go's startup log can print the final order without
+	// re-running orderMiddlewares -- printing a second, independently
+	// computed order would be a chance for the log to disagree with what
+	// gin actually runs.
+	middlewareChain []mwEntry
 
 	// Managed goroutine lifecycle, see goroutine.go (Task 12).
 	runCtx         context.Context // handed to every ctx.Go / ctx.GoCritical callback

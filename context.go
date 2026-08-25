@@ -3,6 +3,8 @@ package xbc
 import (
 	"context"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/xbcio/xbc/log"
 )
 
@@ -52,4 +54,35 @@ func (c *Context) Go(fn func(context.Context)) {
 // semantics of Go vs GoCritical.
 func (c *Context) GoCritical(fn func(context.Context)) {
 	c.app.goManaged(c, fn, true)
+}
+
+// Route reports which frozen route table entry gc is currently handling, by
+// matching its method and gin-assigned FullPath. It returns nil before
+// stage 7 has run (no router yet) and nil for a request that somehow
+// matches nothing in the table -- middleware loaded in stage 7 runs before
+// any route exists (spec §4.1 constraint g), so this request-time lookup is
+// the only way a middleware can ever learn which route it is wrapping.
+func (c *Context) Route(gc *gin.Context) *RouteInfo {
+	if c.app.router == nil {
+		return nil
+	}
+	full := gc.FullPath()
+	for _, r := range *c.app.router.routes {
+		if r.Method == gc.Request.Method && r.Path == full {
+			info := r
+			return &info
+		}
+	}
+	return nil
+}
+
+// Routes returns the full frozen route table. It is only meaningful after
+// stage 7's freeze -- PostRoutes (which runs right after freeze) is the
+// intended caller, for plugins like swagger or a casbin policy sync that
+// need every route at once rather than one at a time.
+func (c *Context) Routes() []RouteInfo {
+	if c.app.router == nil {
+		return nil
+	}
+	return *c.app.router.routes
 }
