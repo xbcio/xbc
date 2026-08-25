@@ -419,6 +419,19 @@ func setScalar(v reflect.Value, typ reflect.Type, s string) error
 
 `time.Duration` 必须在 int64 之前判断 —— 它底层就是 int64，判断顺序反了会把 `"1h"` 当整数解析失败。
 
+`[]string` 分支对**空串短路成空切片**（len 0），不是 `strings.Split("", ",")` 那个含一个空字符串的
+单元素切片。理由不是「反直觉」，而是三段链「文件 → ENV → default」里**用 ENV 把一个带
+`default:"a,b,c"` 的列表显式清空是合法意图**——不短路的话它做不到，只能得到 `[""]`，
+既不是清空也不是默认值，是第三种谁都没预期的状态。三条语义：
+
+| 输入 | 结果 |
+|---|---|
+| ENV 未设 | 走 `default` tag，`["a","b","c"]` |
+| `XBC_X=""` | 空切片，**覆盖掉 default** |
+| `XBC_X="a,b"` | `["a","b"]` |
+
+非空值按 `,` 切分后逐元素 `TrimSpace`。
+
 ---
 
 ## 9. `internal/inject`
