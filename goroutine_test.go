@@ -291,8 +291,19 @@ func TestTriggerCriticalSignalIsWhatStage9ReadsForExitCodeOne(t *testing.T) {
 	a := newGoroutineTestApp(t)
 	a.triggerCritical("手工触发，验证契约")
 
-	_, stillOpen := <-a.criticalCh
-	assert.False(t, stillOpen, "criticalCh 必须已关闭——stage_run.go 的 serve() 在 select 里等的正是这个信号")
+	// triggerCritical ran synchronously above, so the channel's state is
+	// already settled -- a non-blocking probe is enough, and unlike a plain
+	// receive it cannot hang for ten minutes when a regression stops closing
+	// the channel at all. The probe also keeps the distinction that matters
+	// here: a closed channel is ready forever and yields stillOpen == false,
+	// whereas a single sent value would yield stillOpen == true. Only close
+	// wakes every waiter at once, which is what serve() relies on.
+	select {
+	case _, stillOpen := <-a.criticalCh:
+		assert.False(t, stillOpen, "criticalCh 必须是被 close 的，不能是收到过一个值——只有 close 才能让所有等待者同时醒来")
+	default:
+		t.Fatal("criticalCh 没有立刻就绪，说明 triggerCritical 没有关闭它——stage_run.go 的 serve() 在 select 里等的正是这个信号")
+	}
 	require.Error(t, a.runCtx.Err(),
 		"runCtx 必须已取消——真正把 exitCode 置 1 的是 stage_run.go 的 shutdown(\"critical\")，本 task 只负责点燃信号")
 }
