@@ -108,6 +108,28 @@ type provideOnlyPlugin struct {
 
 func (p *provideOnlyPlugin) Name() string { return "widget" }
 
+// provideAndDeclarePlugin declares the same type through both provide
+// channels at once: a "provide" tag field (harvested by harvestInstance)
+// and a Provides() entry (checked by validateManualProvides). Init only
+// sets the tagged field -- it never calls xbc.Provide manually -- so
+// validateManualProvides's registry lookup can only succeed if
+// harvestInstance has already run and put the field's value into the
+// registry. This is the fixture that pins down harvest-before-validate
+// ordering: swapping the two steps makes this test fail even though every
+// other test in this file still passes, because none of them declares
+// Provides() for a type that is *only* satisfied via a provide tag.
+type provideAndDeclarePlugin struct {
+	Base
+	Widget *fakeWidget `xbc:"provide"`
+}
+
+func (p *provideAndDeclarePlugin) Name() string    { return "combo" }
+func (p *provideAndDeclarePlugin) Provides() []Dep { return []Dep{Offer[*fakeWidget]()} }
+func (p *provideAndDeclarePlugin) Init(ctx *Context) error {
+	p.Widget = &fakeWidget{n: 9}
+	return nil
+}
+
 type stoppablePlugin struct {
 	Base
 	name      string
@@ -234,6 +256,25 @@ func TestMultiInstanceProductKeysDoNotCollide(t *testing.T) {
 	assert.Equal(t, "readonly", gotRO.(*fakeConn).id, "readonly 实例的产物必须能按 readonly 键取到，不能串成 default 的")
 }
 
+// Offer[T]() always builds Dep{Instance: ""} -- Provides() has no way to
+// name which instance produces what, since that is decided by which
+// instance the plugin itself is. validateManualProvides must therefore
+// check the registry under the *instance's own name* (inst.instance), never
+// under dep.Instance: reading dep.Instance would always mean "default" and
+// silently fail to find anything a non-default instance actually
+// registered.
+func TestValidateManualProvidesChecksOwningInstanceNotDepInstance(t *testing.T) {
+	a := newInitTestApp(t)
+	p := &manualProviderPlugin{registerOnInit: true}
+	inst := mustInstance(t, a, p, "cache", "readonly")
+
+	require.NoError(t, a.initAll([]*instance{inst}),
+		"Provides() 声明的 Dep 的实例名恒为空串，校验必须按插件自己的实例名 readonly 去查")
+	got, err := a.registry.lookup(typeOf[*fakeWidget](), "readonly")
+	require.NoError(t, err)
+	assert.Equal(t, &fakeWidget{n: 1}, got)
+}
+
 func TestRollbackStopsInReverseOrderOnInitFailure(t *testing.T) {
 	a := newInitTestApp(t)
 	var stopped []string
@@ -273,6 +314,23 @@ func TestRollbackStopErrorAndPanicDoNotMaskOriginalError(t *testing.T) {
 	assert.Equal(t, "xbc: 插件 gorm 初始化失败: 原始错误：模拟初始化失败", err.Error(),
 		"回滚阶段任何 Stop 错误或 panic 都不能覆盖最初触发回滚的错误")
 	assert.Equal(t, []string{"b", "a"}, stopped, "b 的 panic 不能挡住 a 也被 Stop")
+}
+
+// This is the fixture from the task rationale that tells "harvest then
+// validate" apart from "validate then harvest": the same type is declared
+// via Provides() but only ever registered by harvestInstance reading a
+// provide tag, never via a manual xbc.Provide call. If validation ran
+// first, this would fail even though the plugin did everything right.
+func TestValidateManualProvidesRunsAfterHarvestSoTaggedFieldsCount(t *testing.T) {
+	a := newInitTestApp(t)
+	p := &provideAndDeclarePlugin{}
+	inst := mustInstance(t, a, p, "combo", "default")
+
+	require.NoError(t, a.initAll([]*instance{inst}),
+		"Provides() 声明的类型由 provide 字段收割进注册表，harvest 必须先于校验运行")
+	got, err := a.registry.lookup(typeOf[*fakeWidget](), "default")
+	require.NoError(t, err)
+	assert.Equal(t, &fakeWidget{n: 9}, got)
 }
 
 func TestSkipsInitWhenNotImplementedButStillHarvests(t *testing.T) {
