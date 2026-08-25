@@ -13,6 +13,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/xbcio/xbc/internal/graph"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -29,6 +31,24 @@ func (p *migratorPlugin) Name() string { return p.name }
 func (p *migratorPlugin) Migrate(ctx *Context) error {
 	*p.migrated = true
 	return nil
+}
+
+// failingMigratorPlugin implements both Initializer (so it can be "already
+// Init'd successfully" ahead of the failure) and Migrator (whose Migrate
+// always fails). See TestMigrateAllRollsBackAlreadyInitedPluginsOnFailure --
+// without this fixture, migrateAll's rollback call is untestable, since
+// rollback is a no-op unless some other instance in the same batch actually
+// has inst.inited == true and implements Closer.
+type failingMigratorPlugin struct {
+	Base
+	name string
+	err  error
+}
+
+func (p *failingMigratorPlugin) Name() string        { return p.name }
+func (p *failingMigratorPlugin) Init(*Context) error { return nil }
+func (p *failingMigratorPlugin) Migrate(*Context) error {
+	return p.err
 }
 
 type mwPlugin struct {
@@ -89,6 +109,66 @@ func (p *postRouterPlugin) Name() string { return "swagger" }
 func (p *postRouterPlugin) PostRoutes(ctx *Context) error {
 	*p.seen = append(*p.seen, ctx.Routes()...)
 	return nil
+}
+
+// failingPostRouterPlugin implements Initializer (Init trivially succeeds,
+// so this instance can sit in a batch alongside "an Init'd Closer") and
+// PostRouter (whose PostRoutes always fails). See
+// TestAssembleHTTPRollsBackAlreadyInitedPluginsOnPostRoutesFailure.
+type failingPostRouterPlugin struct {
+	Base
+	name string
+	err  error
+}
+
+func (p *failingPostRouterPlugin) Name() string        { return p.name }
+func (p *failingPostRouterPlugin) Init(*Context) error { return nil }
+func (p *failingPostRouterPlugin) PostRoutes(*Context) error {
+	return p.err
+}
+
+// lateRoutePlugin implements both RouteProvider and PostRouter. RegisterRoutes
+// stashes the *Router handed to it; PostRoutes then tries to register one
+// more route through that same *Router. That call must panic, because
+// freeze() runs between RegisterRoutes and PostRoutes in assembleHTTP -- this
+// is the only way to observe that the route table is frozen *during*
+// PostRoutes execution, as opposed to merely "test code can't add routes
+// after assembleHTTP has already returned" (TestRouterHandleAfterFreezePanics
+// covers that, but does not pin freeze()'s position in the sequence).
+type lateRoutePlugin struct {
+	Base
+	router *Router
+}
+
+func (p *lateRoutePlugin) Name() string { return "late" }
+func (p *lateRoutePlugin) RegisterRoutes(r *Router) {
+	p.router = r
+}
+func (p *lateRoutePlugin) PostRoutes(*Context) error {
+	p.router.GET("/late", func(c *gin.Context) {})
+	return nil
+}
+
+// routeInfoPlugin registers one route with a trailing slash and one without,
+// each capturing what ctx.Route(gc) reports for the request that hit it. See
+// TestContextRouteMatchesTrailingSlashRoutes.
+type routeInfoPlugin struct {
+	Base
+	withSlash    **RouteInfo
+	withoutSlash **RouteInfo
+}
+
+func (p *routeInfoPlugin) Name() string { return "demo" }
+func (p *routeInfoPlugin) RegisterRoutes(r *Router) {
+	ctx := p.Ctx()
+	r.GET("/health/", func(c *gin.Context) {
+		*p.withSlash = ctx.Route(c)
+		c.Status(http.StatusOK)
+	})
+	r.GET("/status", func(c *gin.Context) {
+		*p.withoutSlash = ctx.Route(c)
+		c.Status(http.StatusOK)
+	})
 }
 
 type runnerPlugin struct {
@@ -202,6 +282,32 @@ func TestMigrateAllRunsWhenRequested(t *testing.T) {
 // verified end-to-end in Task 15's cli_test.go; this test only covers
 // migrateAll's own on/off behavior.
 
+// TestMigrateAllRollsBackAlreadyInitedPluginsOnFailure pins spec §140: a
+// stage 6 failure must roll back every instance that already completed Init
+// successfully, the same as stage 5's own failure path. gorm sits ahead of
+// the failing migrator and is a Closer, so it is the only fixture element
+// that can tell "rollback runs" apart from "rollback call was silently
+// dropped" -- neither the failing migrator itself (not a Closer) nor an
+// instance after it in insts (Migrate never even reaches it) can.
+func TestMigrateAllRollsBackAlreadyInitedPluginsOnFailure(t *testing.T) {
+	a := newInitTestApp(t)
+	a.migrate = true
+	var stopped []string
+	closer := &closerPlugin{name: "gorm", stopped: &stopped}
+	failing := &failingMigratorPlugin{name: "broken", err: errors.New("模拟迁移失败")}
+
+	closerInst := mustInstance(t, a, closer, "gorm", "default")
+	failInst := mustInstance(t, a, failing, "broken", "default")
+	insts := []*instance{closerInst, failInst}
+	require.NoError(t, a.initAll(insts))
+
+	err := a.migrateAll(insts)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "模拟迁移失败")
+	assert.Equal(t, []string{"gorm"}, stopped,
+		"迁移失败必须回滚已经 Init 成功的插件，否则它已经打开的连接会在进程退出时泄漏")
+}
+
 // ---- stage 7: AssembleHTTP ----
 
 func TestAssembleHTTPMiddlewareRunsInPhaseOrderOnARealRequest(t *testing.T) {
@@ -239,6 +345,110 @@ func TestRouterHandleAfterFreezePanics(t *testing.T) {
 	assert.PanicsWithValue(t, "xbc: 路由表已在阶段 7 冻结，PostRoutes 里不能再加路由", func() {
 		a.router.GET("/late", func(c *gin.Context) {})
 	})
+}
+
+// TestFreezeHappensBeforePostRoutesRuns proves the route table is frozen
+// *during* PostRoutes execution, not merely "frozen once assembleHTTP has
+// returned" (which TestRouterHandleAfterFreezePanics already covers but
+// does not pin the ordering within the function). late stashes the *Router
+// from RegisterRoutes and tries to register through it again from inside
+// PostRoutes -- freeze() must have already run by then, so this panics.
+func TestFreezeHappensBeforePostRoutesRuns(t *testing.T) {
+	a := newAssembleTestApp(t)
+	late := &lateRoutePlugin{}
+	inst := mustInstance(t, a, late, "late", "default")
+
+	assert.Panics(t, func() {
+		_ = a.assembleHTTP([]*instance{inst})
+	}, "freeze() 必须在 PostRoutes 执行之前完成，PostRoutes 里加路由必须 panic")
+}
+
+// TestAssembleHTTPRollsBackAlreadyInitedPluginsOnMiddlewareOrderError covers
+// the orderMiddlewares failure path: two mwPlugin fixtures deliberately
+// share the same qualified middleware name ("dup" == both plugin name and
+// Middleware.Name, see qualify), which orderMiddlewares rejects as a
+// duplicate. gorm is a Closer and already Init'd, so it is what makes the
+// missing rollback call observable.
+func TestAssembleHTTPRollsBackAlreadyInitedPluginsOnMiddlewareOrderError(t *testing.T) {
+	a := newAssembleTestApp(t)
+	var stopped []string
+	closer := &closerPlugin{name: "gorm", stopped: &stopped}
+	dup1 := &mwPlugin{name: "dup", order: new([]string), phase: PhaseObserve}
+	dup2 := &mwPlugin{name: "dup", order: new([]string), phase: PhaseObserve}
+
+	insts := []*instance{
+		mustInstance(t, a, closer, "gorm", "default"),
+		mustInstance(t, a, dup1, "dup", "default"),
+		mustInstance(t, a, dup2, "dup", "readonly"), // same qname "dup" as dup1: qualify() ignores instance name
+	}
+	require.NoError(t, a.initAll(insts))
+
+	err := a.assembleHTTP(insts)
+	require.Error(t, err, "重复的中间件名必须报错")
+	assert.Equal(t, []string{"gorm"}, stopped,
+		"排序失败也必须回滚已经 Init 成功的插件，不能只在 PostRoutes 失败时才回滚")
+}
+
+// TestAssembleHTTPRollsBackAlreadyInitedPluginsOnPostRoutesFailure covers the
+// PostRoutes failure path with the same gorm-Closer fixture element.
+func TestAssembleHTTPRollsBackAlreadyInitedPluginsOnPostRoutesFailure(t *testing.T) {
+	a := newAssembleTestApp(t)
+	var stopped []string
+	closer := &closerPlugin{name: "gorm", stopped: &stopped}
+	failing := &failingPostRouterPlugin{name: "swagger", err: errors.New("模拟 PostRoutes 失败")}
+
+	insts := []*instance{
+		mustInstance(t, a, closer, "gorm", "default"),
+		mustInstance(t, a, failing, "swagger", "default"),
+	}
+	require.NoError(t, a.initAll(insts))
+
+	err := a.assembleHTTP(insts)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "模拟 PostRoutes 失败")
+	assert.Equal(t, []string{"gorm"}, stopped,
+		"PostRoutes 失败必须回滚已经 Init 成功的插件，否则它已经打开的连接会在进程退出时泄漏")
+}
+
+// TestContextRouteMatchesTrailingSlashRoutes pins spec §827's "c.FullPath()
+// 与 RouteInfo.Path 天然对齐" claim for a route registered with a trailing
+// slash, which gin's own joinPaths keeps but a bare path.Join silently
+// drops. /status is the control: it must keep matching too.
+func TestContextRouteMatchesTrailingSlashRoutes(t *testing.T) {
+	a := newAssembleTestApp(t)
+	var withSlash, withoutSlash *RouteInfo
+	p := &routeInfoPlugin{withSlash: &withSlash, withoutSlash: &withoutSlash}
+	insts := []*instance{mustInstance(t, a, p, "demo", "default")}
+	require.NoError(t, a.assembleHTTP(insts))
+
+	reqSlash := httptest.NewRequest(http.MethodGet, "/health/", nil)
+	a.router.engine.ServeHTTP(httptest.NewRecorder(), reqSlash)
+	require.NotNil(t, withSlash, "带尾斜杠注册的路由，ctx.Route 不能返回 nil")
+	assert.Equal(t, "/health/", withSlash.Path)
+
+	reqNoSlash := httptest.NewRequest(http.MethodGet, "/status", nil)
+	a.router.engine.ServeHTTP(httptest.NewRecorder(), reqNoSlash)
+	require.NotNil(t, withoutSlash, "不带尾斜杠的路由作为对照，也必须能命中")
+	assert.Equal(t, "/status", withoutSlash.Path)
+}
+
+// TestAssembleHTTPAccumulatesSoftMissesInsteadOfOverwriting pins the "="
+// vs "= append(...)" distinction on a.softMisses: stage 4's plugin sort may
+// already have contributed entries before assembleHTTP ever runs, and stage
+// 7's own middleware sort must add to that list, not replace it.
+func TestAssembleHTTPAccumulatesSoftMissesInsteadOfOverwriting(t *testing.T) {
+	a := newAssembleTestApp(t)
+	a.softMisses = []graph.Miss{{Node: "stage4-node", Ref: "stage4-ref", Dir: "after"}}
+
+	mw := &mwPlugin{name: "mw", order: new([]string), phase: PhaseObserve, after: []string{"missing-ref"}}
+	insts := []*instance{mustInstance(t, a, mw, "mw", "default")}
+
+	require.NoError(t, a.assembleHTTP(insts))
+
+	require.Len(t, a.softMisses, 2, "阶段 7 必须累加进阶段 4 已经收集的 softMisses，不能覆盖掉")
+	assert.Equal(t, "stage4-node", a.softMisses[0].Node, "阶段 4 的记录必须保留")
+	assert.Equal(t, "mw", a.softMisses[1].Node, "阶段 7 自己产生的记录必须追加在后面")
+	assert.Equal(t, "missing-ref", a.softMisses[1].Ref)
 }
 
 func TestPostRoutesSeesFullFrozenRouteTable(t *testing.T) {
@@ -473,4 +683,33 @@ func TestGoCriticalTriggersFullShutdownAndExitCodeOne(t *testing.T) {
 	require.NoError(t, <-serveDone)
 	assert.Equal(t, []string{"gorm"}, stopped, "GoCritical 触发的关闭仍要走完整阶段 10，其他插件照样被 Stop")
 	assert.Equal(t, 1, a.exitCode, "GoCritical 触发的退出码必须是 1")
+}
+
+// TestServeErrorStillRunsShutdown covers the third arm of serve()'s select:
+// Serve returning on its own for an unplanned reason (here: someone closes
+// a.listener directly, not through httpServer.Shutdown/Close, so Serve's
+// Accept loop dies with an ordinary "closed" error instead of the deliberate
+// http.ErrServerClosed sentinel). That must still walk through shutdown()
+// -- gorm's Stop is the only fixture element that can tell "shutdown ran"
+// apart from "the error was just returned, no stage 10 at all".
+func TestServeErrorStillRunsShutdown(t *testing.T) {
+	var stopped []string
+	closer := &closerPlugin{name: "gorm", stopped: &stopped}
+	a := newAssembleTestApp(t)
+	insts := []*instance{mustInstance(t, a, closer, "gorm", "default")}
+	a = newServeTestApp(t, a, insts)
+
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- a.serve() }()
+	<-a.ready
+
+	require.NoError(t, a.listener.Close())
+
+	err := <-serveDone
+	require.Error(t, err, "非计划内的 Serve 错误必须原样返回")
+	assert.False(t, errors.Is(err, http.ErrServerClosed),
+		"这条路径必须是意料之外的错误，不是优雅关闭的 http.ErrServerClosed")
+	assert.Equal(t, []string{"gorm"}, stopped,
+		"Serve 异常退出也必须走完阶段 10，把已经 Init 的插件 Stop 掉，不能绕过优雅关闭")
+	assert.Equal(t, 1, a.exitCode, "非计划内的 Serve 错误退出码必须是 1")
 }

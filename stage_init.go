@@ -141,6 +141,16 @@ func validateManualProvides(a *App, inst *instance) error {
 // logged and swallowed: the original failure that triggered the rollback is
 // the one the user needs to see, and letting a second failure stomp on it
 // would hide the real cause.
+//
+// Every instance rollback actually stops has inst.inited cleared back to
+// false afterward. That is what makes rollback idempotent by data rather
+// than by call-site discipline: nothing prevents the same insts/a.order
+// slice from being handed to rollback a second time (e.g. shutdown running
+// after a rollback already ran during an earlier failed stage, or a
+// GoCritical firing while a signal-triggered shutdown is already underway),
+// and without this, a second pass would call Stop again on every instance --
+// exactly the double-Stop bug a Closer like a database pool cannot recover
+// from.
 func (a *App) rollback(insts []*instance) {
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Server.ShutdownTimeout)
 	defer cancel()
@@ -151,6 +161,7 @@ func (a *App) rollback(insts []*instance) {
 			continue
 		}
 		stopInstanceSafely(ctx, inst)
+		inst.inited = false
 	}
 }
 

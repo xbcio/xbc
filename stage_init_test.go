@@ -466,3 +466,26 @@ func TestSkipsInitWhenNotImplementedButStillHarvests(t *testing.T) {
 	assert.Equal(t, &fakeWidget{n: 7}, got)
 	assert.True(t, inst.inited, "没有 Init 方法不代表初始化失败，仍应视为已完成，允许后续被 Stop")
 }
+
+// TestRollbackIsIdempotentAcrossRepeatedCalls pins rollback's data-level
+// idempotency (ruling N4/T14-5): a second rollback call against the same
+// instance must be a no-op, because the first call already cleared
+// inst.inited back to false -- not because some call-site guard remembers
+// "already ran". Nothing prevents shutdown/rollback from being invoked twice
+// against the same instance in production (e.g. a GoCritical firing while a
+// signal-triggered shutdown is already underway), and a database pool's
+// Stop is not generally safe to call twice.
+func TestRollbackIsIdempotentAcrossRepeatedCalls(t *testing.T) {
+	a := newInitTestApp(t)
+	var stopped []string
+	p := &stoppablePlugin{name: "gorm", stopped: &stopped}
+	inst := mustInstance(t, a, p, "gorm", "default")
+	inst.inited = true
+
+	a.rollback([]*instance{inst})
+	a.rollback([]*instance{inst})
+
+	assert.Equal(t, []string{"gorm"}, stopped,
+		"第二次 rollback 必须是 no-op：第一次已经把 inited 置回 false")
+	assert.False(t, inst.inited, "rollback 成功 Stop 之后必须把 inited 清回 false")
+}
