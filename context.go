@@ -57,8 +57,10 @@ func (c *Context) GoCritical(fn func(context.Context)) {
 }
 
 // Route reports which frozen route table entry gc is currently handling, by
-// matching its method and gin-assigned FullPath. It returns nil before
-// stage 7 has run (no router yet) and nil for a request that somehow
+// matching its method and gin-assigned FullPath against the map compiled by
+// Router.freeze -- see router.go's freeze for why this is a map lookup
+// rather than a scan over Routes(). It returns nil before stage 7 has run
+// (no router yet, index still empty) and nil for a request that somehow
 // matches nothing in the table -- middleware loaded in stage 7 runs before
 // any route exists (spec §4.1 constraint g), so this request-time lookup is
 // the only way a middleware can ever learn which route it is wrapping.
@@ -66,14 +68,11 @@ func (c *Context) Route(gc *gin.Context) *RouteInfo {
 	if c.app.router == nil {
 		return nil
 	}
-	full := gc.FullPath()
-	for _, r := range *c.app.router.routes {
-		if r.Method == gc.Request.Method && r.Path == full {
-			info := r
-			return &info
-		}
+	info, ok := (*c.app.router.index)[routeKey(gc.Request.Method, gc.FullPath())]
+	if !ok {
+		return nil
 	}
-	return nil
+	return &info
 }
 
 // Routes returns the full frozen route table. It is only meaningful after

@@ -21,6 +21,12 @@ import (
 // cli.go from --migrate / the migrate subcommand / server.auto_migrate --
 // migration is a side-effecting write operation, and binding it to every
 // boot would mean every rolling restart silently touches the schema.
+//
+// Per spec §140, a failure here must roll back every instance that already
+// completed Init successfully, the same way stage 5's own initAll does --
+// otherwise a plugin further along in insts that already opened a live
+// connection (a database pool, a redis client, ...) leaks it when the
+// process exits right after this error.
 func (a *App) migrateAll(insts []*instance) error {
 	if !a.migrate {
 		return nil
@@ -31,6 +37,7 @@ func (a *App) migrateAll(insts []*instance) error {
 			continue
 		}
 		if err := migrator.Migrate(inst.ctx); err != nil {
+			a.rollback(insts)
 			return fmt.Errorf("xbc: 插件 %s 迁移失败: %w", inst.label(), err)
 		}
 	}
@@ -95,6 +102,9 @@ func (a *App) assembleHTTP(insts []*instance) error {
 	}
 	ordered, misses, err := orderMiddlewares(entries)
 	if err != nil {
+		// Same rationale as migrateAll: some instances ahead of this failure
+		// in insts may already hold a live resource acquired during Init.
+		a.rollback(insts)
 		return err
 	}
 	a.softMisses = append(a.softMisses, misses...)
@@ -139,6 +149,7 @@ func (a *App) assembleHTTP(insts []*instance) error {
 			continue
 		}
 		if err := pr.PostRoutes(inst.ctx); err != nil {
+			a.rollback(insts)
 			return fmt.Errorf("xbc: 插件 %s 的 PostRoutes 失败: %w", inst.label(), err)
 		}
 	}
@@ -221,7 +232,22 @@ func (a *App) serve() error {
 	case <-a.criticalCh:
 		return a.shutdown("critical")
 	case err := <-serveErr:
-		if err != nil && err != http.ErrServerClosed {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			// Serve returning on its own -- for any reason other than the
+			// two deliberate stop signals above -- is exactly as abnormal
+			// as a GoCritical trigger: something has already killed the
+			// ability to accept new connections, and the ten-stage
+			// pipeline's promise of a graceful shutdown (drain in-flight
+			// requests, cancel managed goroutines, Stop every plugin in
+			// reverse order) cannot have a silent exception carved out of
+			// it just because the failure originated here instead of in a
+			// GoCritical goroutine. The original error is what the caller
+			// actually needs to see, so it is returned unchanged; a
+			// failure from shutdown itself is only logged, never allowed
+			// to replace it.
+			if shutdownErr := a.shutdown("serve-error"); shutdownErr != nil {
+				log.L().Error("xbc: Serve 异常退出后的关闭失败", "error", shutdownErr)
+			}
 			return err
 		}
 		return nil
@@ -257,7 +283,12 @@ func (a *App) shutdown(reason string) error {
 
 	a.rollback(a.order)
 
-	if reason == "critical" {
+	// "critical" is a GoCritical trigger; "serve-error" is Serve returning
+	// on its own for an unplanned reason (see serve()) -- both mean the
+	// process died for a reason nobody asked for, so both must surface as a
+	// non-zero exit code. A plain signal-triggered shutdown ("signal") or a
+	// direct test-driven call ("test") is an intentional stop and must not.
+	if reason == "critical" || reason == "serve-error" {
 		a.exitCode = 1
 	}
 	return nil
