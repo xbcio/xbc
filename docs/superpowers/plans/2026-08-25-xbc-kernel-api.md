@@ -68,7 +68,12 @@ func bindBase(p Plugin, ctx *Context, name string) bool
 
 // nameReserved reports whether s contains a character the framework reserves.
 // Reserved: '.' (middleware qualification), '[' ']' (instance display),
-// whitespace, and any character outside [a-z0-9_-] after lowercasing.
+// whitespace, and any character outside [a-z0-9_-].
+//
+// It does NOT lowercase first: an uppercase letter is rejected, not folded.
+// Folding would let "Gorm" and "gorm" silently collide into one plugin name,
+// and the conflict would surface as a confusing duplicate-registration panic
+// far from the typo that caused it.
 func validateName(s string) error
 ```
 
