@@ -131,6 +131,26 @@ func TestNewEntryDetectsMultiInstancer(t *testing.T) {
 		"实现 MultiInstancer 且返回 true 时 entry.multi 必须为 true")
 }
 
+// TestNewEntryLeavesMultiFalseWithoutMultiInstancer directly covers the
+// false branch of isMultiInstance as called from newEntry. Without this,
+// the only thing pinning "a plugin that doesn't implement MultiInstancer
+// gets entry.multi == false" is stage_expand_test.go's
+// TestInstanceIDAndLabel -- which exercises isMultiInstance directly on an
+// *instance, not through newEntry's call site. That's an accidental,
+// not a deliberate, cross-check: newEntry switched from its own inline
+// type assertion to calling isMultiInstance (task 8's approved
+// out-of-scope edit to xbc.go), and the sole justification for that switch
+// is behavioral equivalence with the code it replaced -- which deserves its
+// own direct assertion here, not a borrowed one from a different test that
+// could be refactored away without anyone noticing this path went dark.
+func TestNewEntryLeavesMultiFalseWithoutMultiInstancer(t *testing.T) {
+	app := New()
+	app.Register(&noBasePlugin{})
+	require.Len(t, app.entries, 1)
+	assert.False(t, app.entries[0].multi,
+		"不实现 MultiInstancer 的插件，entry.multi 必须为 false")
+}
+
 func TestNewSeedsFromPackageLevelRegistrations(t *testing.T) {
 	withCleanRegistry(t)
 	Register(&noBasePlugin{})

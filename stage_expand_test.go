@@ -1,12 +1,15 @@
 package xbc
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/knadh/koanf/providers/confmap"
 	koanf "github.com/knadh/koanf/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/xbcio/xbc/log"
 )
 
 // newTestConfig builds a *Config directly from a nested map, bypassing file
@@ -223,11 +226,97 @@ func TestExpandDuplicatePluginNameErrors(t *testing.T) {
 	a := &App{cfg: newTestConfig(t, nil)}
 	a.entries = []entry{
 		{proto: &fakeSinglePlugin{}, name: "dup", src: sourceRegister},
-		{proto: &fakeSinglePlugin{}, name: "dup", src: sourceRegister},
+		{proto: &fakeMultiPlugin{}, name: "dup", src: sourceRegister},
 	}
 	_, err := a.expand()
 	require.Error(t, err, "重复插件名必须报错，否则会在图节点 id 上悄悄合并成同一个节点")
 	assert.Contains(t, err.Error(), "dup")
+	assert.Contains(t, err.Error(), "*xbc.fakeSinglePlugin",
+		"这条路径正常 API 走不到，报错要带上先注册的那个的具体类型，方便定位是谁绕过了 Register 的查重")
+	assert.Contains(t, err.Error(), "*xbc.fakeMultiPlugin",
+		"报错要带上后注册的那个的具体类型")
+}
+
+// warnCall is one recorded call to warnRecorder.Warn.
+type warnCall struct {
+	msg string
+	kv  []any
+}
+
+// kvMap turns a flat key/value KV sequence (as passed to log.Logger.Warn)
+// into a map, for asserting on individual fields regardless of order.
+func kvMap(kv []any) map[string]any {
+	m := make(map[string]any, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		if k, ok := kv[i].(string); ok {
+			m[k] = kv[i+1]
+		}
+	}
+	return m
+}
+
+// warnRecorder is a minimal log.Logger that only records Warn calls. It
+// exists to let TestExpandR7WarnsOnMultipleInstancesFromExplicitRegister
+// observe that stage_expand actually calls Warn, instead of trusting the
+// call site by inspection alone.
+type warnRecorder struct {
+	mu    sync.Mutex
+	calls []warnCall
+}
+
+func (r *warnRecorder) Debug(string, ...any) {}
+
+func (r *warnRecorder) Info(string, ...any) {}
+
+func (r *warnRecorder) Warn(msg string, kv ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, warnCall{msg: msg, kv: kv})
+}
+
+func (r *warnRecorder) Error(string, ...any) {}
+
+func (r *warnRecorder) Fatal(string, ...any) {}
+
+func (r *warnRecorder) With(...any) log.Logger { return r }
+
+func (r *warnRecorder) Enabled(log.Level) bool { return true }
+
+// TestExpandR7WarnsOnMultipleInstancesFromExplicitRegister covers the R7
+// warning path: an explicit app.Register() whose plugin expands into more
+// than one instance loses its constructor-supplied prototype (every
+// instance must fall back to a fresh zero value, since the state can't be
+// split between them), and that silent data loss must be logged.
+//
+// Not parallel: log.SetLogger mutates process-global state, and this test
+// both replaces and restores it.
+func TestExpandR7WarnsOnMultipleInstancesFromExplicitRegister(t *testing.T) {
+	old := log.L()
+	defer log.SetLogger(old)
+
+	rec := &warnRecorder{}
+	log.SetLogger(rec)
+
+	a := &App{cfg: newTestConfig(t, map[string]any{
+		"plugins": map[string]any{
+			"gorm": map[string]any{
+				"default":  map[string]any{},
+				"readonly": map[string]any{},
+			},
+		},
+	})}
+	a.entries = []entry{{proto: &fakeMultiPlugin{}, name: "gorm", src: sourceRegister, multi: true}}
+
+	_, err := a.expand()
+	require.NoError(t, err)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.Len(t, rec.calls, 1,
+		"显式 Register 且展开出 >1 个实例必须警告一次，构造参数被静默丢弃是不允许的")
+	fields := kvMap(rec.calls[0].kv)
+	assert.Equal(t, "gorm", fields["plugin"], "警告必须带上插件名，方便定位是哪个插件丢了构造参数")
+	assert.Equal(t, 2, fields["instances"], "警告必须带上展开出的实例数")
 }
 
 func TestExpandR7ReusesPrototypeForSingleRegisteredInstance(t *testing.T) {
