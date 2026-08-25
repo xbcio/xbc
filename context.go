@@ -1,6 +1,10 @@
 package xbc
 
-import "github.com/xbcio/xbc/log"
+import (
+	"context"
+
+	"github.com/xbcio/xbc/log"
+)
 
 // Context is the per-instance handle a plugin receives from Init onward. It
 // carries just enough identity (name/instance) to pre-bind the logger; the
@@ -35,4 +39,17 @@ func (c *Context) Instance() string { return c.instance }
 // Unexported: Provide/Get/GetNamed/MustGet/MustGetNamed are the public seam.
 func (c *Context) registry() *registry {
 	return c.app.registry
+}
+
+// Go hands fn to the framework as a managed background goroutine.
+// See goroutine.go for the full semantics of Go vs GoCritical.
+func (c *Context) Go(fn func(context.Context)) {
+	c.app.goManaged(c, fn, false)
+}
+
+// GoCritical is Go's stricter twin: a panic or an unprompted return
+// triggers a full application shutdown. See goroutine.go for the full
+// semantics of Go vs GoCritical.
+func (c *Context) GoCritical(fn func(context.Context)) {
+	c.app.goManaged(c, fn, true)
 }
