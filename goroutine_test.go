@@ -85,6 +85,50 @@ func newGoroutineTestContext(a *App, name string) (*Context, *recordingLogger) {
 	return ctx, rl
 }
 
+// mustWaitTimeout bounds every blocking wait below. It is a failure-time
+// upper bound, not a success-condition sleep: a passing test never waits
+// for it, it only caps how long a real regression (a channel that should
+// have closed, or a WaitGroup that should have drained, but didn't) takes
+// to surface as a reported failure instead of hanging the test binary for
+// the full "go test" timeout. That distinction matters because a batch of
+// mutations against goManaged/triggerCritical (e.g. "the critical branch
+// never fires", "triggerCritical never closes criticalCh") turns exactly
+// the receives below into permanent blocks -- without a bound, running
+// that batch costs an hour of wall clock instead of two seconds per
+// mutation.
+const mustWaitTimeout = 2 * time.Second
+
+// mustClosed waits for ch to close (or to have a value ready), failing the
+// test with msg if that does not happen within mustWaitTimeout.
+func mustClosed(t *testing.T, ch <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(mustWaitTimeout):
+		t.Fatal(msg)
+	}
+}
+
+// mustWait waits for wg to reach zero, failing the test with msg if that
+// does not happen within mustWaitTimeout. wg.Wait itself takes no timeout,
+// so this runs it on a helper goroutine and races that against the clock;
+// if it times out, the helper goroutine is simply abandoned (calling
+// wg.Wait, blocked) -- harmless leakage in a failing test that is about to
+// tear the process down anyway.
+func mustWait(t *testing.T, wg *sync.WaitGroup, msg string) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(mustWaitTimeout):
+		t.Fatal(msg)
+	}
+}
+
 // ---- Go: panic recovered but the application keeps running ----
 
 func TestGoPanicRecoveredAppKeepsRunningAndLogsError(t *testing.T) {
@@ -95,7 +139,7 @@ func TestGoPanicRecoveredAppKeepsRunningAndLogsError(t *testing.T) {
 		panic("模拟 cron 任务 panic")
 	})
 
-	a.wg.Wait()
+	mustWait(t, a.wg, "托管 goroutine panic 恢复后应该正常结束，wg.Wait 不应该被卡住")
 	assert.Equal(t, 1, rl.errorCount(), "panic 必须被恢复并记一条 error 日志")
 	select {
 	case <-a.criticalCh:
@@ -113,7 +157,7 @@ func TestGoNormalReturnTriggersNothing(t *testing.T) {
 
 	ctx.Go(func(context.Context) {})
 
-	a.wg.Wait()
+	mustWait(t, a.wg, "正常返回的托管 goroutine 应该立即结束，wg.Wait 不应该被卡住")
 	assert.Equal(t, 0, rl.errorCount(), "正常返回不应该记任何 error 日志")
 	select {
 	case <-a.criticalCh:
@@ -135,18 +179,9 @@ func TestGoObservesShutdownCancelAndIsWaitedOn(t *testing.T) {
 	})
 
 	a.cancel()
-	<-sawDone // fn must actually observe the cancel signal to reach here, not exit by coincidence
+	mustClosed(t, sawDone, "托管 goroutine 必须真的观察到 cancel 信号并返回，不能是恰好碰到别的原因退出")
 
-	waitReturned := make(chan struct{})
-	go func() {
-		a.wg.Wait()
-		close(waitReturned)
-	}()
-	select {
-	case <-waitReturned:
-	case <-time.After(2 * time.Second):
-		t.Fatal("wg.Wait 应该在托管 goroutine 观察到 cancel 并返回后完成")
-	}
+	mustWait(t, a.wg, "wg.Wait 应该在托管 goroutine 观察到 cancel 并返回后完成")
 }
 
 // ---- GoCritical: panic triggers shutdown ----
@@ -159,8 +194,8 @@ func TestGoCriticalPanicTriggersShutdown(t *testing.T) {
 		panic("模拟 consumer panic")
 	})
 
-	<-a.criticalCh // closed means triggered
-	a.wg.Wait()
+	mustClosed(t, a.criticalCh, "GoCritical 的 panic 必须触发 triggerCritical，criticalCh 必须被关闭")
+	mustWait(t, a.wg, "触发 critical 之后，托管 goroutine 仍然要正常结束，wg.Wait 不应该被卡住")
 	assert.Equal(t, 1, rl.errorCount(), "panic 必须被恢复并记一条 error 日志")
 	assert.NotEmpty(t, a.criticalReason, "触发原因必须被记录")
 	require.Error(t, a.runCtx.Err(), "触发 critical 必须取消 runCtx，这正是 stage_run.go 的 shutdown 依赖的信号")
@@ -174,8 +209,8 @@ func TestGoCriticalEarlyReturnTriggersShutdown(t *testing.T) {
 
 	ctx.GoCritical(func(context.Context) {})
 
-	<-a.criticalCh
-	a.wg.Wait()
+	mustClosed(t, a.criticalCh, "GoCritical 的提前正常返回必须触发 triggerCritical，criticalCh 必须被关闭")
+	mustWait(t, a.wg, "触发 critical 之后，托管 goroutine 仍然要正常结束，wg.Wait 不应该被卡住")
 	assert.Equal(t, 0, rl.errorCount(), "提前正常返回不是 panic，不应该记 error 日志，但仍要触发关闭")
 	assert.Contains(t, a.criticalReason, "意外提前返回")
 	require.Error(t, a.runCtx.Err())
@@ -204,10 +239,10 @@ func TestGoCriticalReturnAfterCleanCancelDoesNotTrigger(t *testing.T) {
 		close(started)
 		<-c.Done() // returns once a.cancel() below fires, same as a clean shutdown would
 	})
-	<-started
+	mustClosed(t, started, "consumer 的托管 goroutine 必须先跑起来才能观察后续的 cancel")
 
 	a.cancel() // simulates stage 10's clean shutdown cancelling runCtx directly, NOT via triggerCritical
-	a.wg.Wait()
+	mustWait(t, a.wg, "干净关闭引发的返回也要被正常等到，wg.Wait 不应该被卡住")
 
 	assert.Equal(t, 0, rl.errorCount(), "干净关闭期间的正常返回不是 panic，不应该记 error 日志")
 	select {
@@ -230,13 +265,13 @@ func TestGoCriticalReturnDuringShutdownDoesNotRetrigger(t *testing.T) {
 		close(started)
 		<-c.Done() // returns only once consumer-a's panic cancels runCtx
 	})
-	<-started
+	mustClosed(t, started, "consumer-b 的托管 goroutine 必须先跑起来才能观察后续的 cancel")
 
 	ctxA.GoCritical(func(context.Context) {
 		panic("模拟 consumer-a panic")
 	})
 
-	a.wg.Wait() // both managed goroutines must return cleanly: no deadlock, and no panic from a second close
+	mustWait(t, a.wg, "两个托管 goroutine 都必须正常结束：不能死锁，也不能因为第二次 close 而 panic")
 	assert.Equal(t, "插件 consumer-a 的托管 goroutine panic: 模拟 consumer-a panic", a.criticalReason,
 		"只保留第一个触发原因，consumer-b 的返回不能覆盖它")
 	assert.Equal(t, 0, rlB.errorCount(), "consumer-b 是响应 shutdown 的正常返回，不是 panic，不应该记 error 日志")
@@ -280,16 +315,7 @@ func TestTriggerCriticalConcurrentFailuresKeepOnlyFirstReasonAndDoNotBlock(t *te
 	})
 	close(release) // makes the two panics happen as close to simultaneously as possible
 
-	waitReturned := make(chan struct{})
-	go func() {
-		a.wg.Wait()
-		close(waitReturned)
-	}()
-	select {
-	case <-waitReturned:
-	case <-time.After(2 * time.Second):
-		t.Fatal("并发 critical 触发不能让任何一个托管 goroutine 卡死")
-	}
+	mustWait(t, a.wg, "并发 critical 触发不能让任何一个托管 goroutine 卡死")
 
 	assert.Equal(t, 1, rl1.errorCount())
 	assert.Equal(t, 1, rl2.errorCount(), "各自的 panic 仍然各自记一条 error 日志，触发 shutdown 这个动作才只认第一个")
@@ -319,18 +345,8 @@ func TestWaitGroupBlocksUntilAllManagedGoroutinesReturn(t *testing.T) {
 		})
 	}
 
-	waitReturned := make(chan struct{})
-	go func() {
-		a.wg.Wait()
-		close(waitReturned)
-	}()
-
 	close(release)
-	select {
-	case <-waitReturned:
-	case <-time.After(2 * time.Second):
-		t.Fatal("释放全部 goroutine 后 wg.Wait 必须返回")
-	}
+	mustWait(t, a.wg, "释放全部 goroutine 后 wg.Wait 必须返回")
 
 	mu.Lock()
 	defer mu.Unlock()
