@@ -36,6 +36,22 @@ var (
 
 // ── Facade implementation ─────────────────────────────────
 
+// exitFunc is the process-termination hook Fatal goes through. It is a
+// variable so tests can observe the exit instead of dying with the test
+// binary; nothing outside this package may reassign it.
+var exitFunc = os.Exit
+
+// deferExitHook is the fatal hook installed on zapLogger.z. It does nothing,
+// leaving termination to Fatal so the flush can happen first.
+//
+// It deliberately is NOT zapcore.WriteThenNoop: that constant is the option's
+// zero value, so zap's terminalHookOverride rewrites it straight back to
+// WriteThenFatal -- passing it would silently leave zap owning the exit, with
+// the code reading as though it didn't.
+type deferExitHook struct{}
+
+func (deferExitHook) OnWrite(*zapcore.CheckedEntry, []zapcore.Field) {}
+
 // zapLogger is the default binding.
 //
 // It holds two zap instances so the caller frame points to the right place:
@@ -43,6 +59,11 @@ var (
 //     so the caller is correct when a caller invokes raw.Info directly
 //   - z: raw + AddCallerSkip(1); facade methods go through it, skipping the
 //     zapLogger.Info frame itself
+//
+// z also carries the deferExitHook fatal hook so the facade's Fatal, not zap,
+// decides when the process dies -- see Fatal. raw deliberately does not: the
+// escape hatch hands back a plain *zap.Logger, and a caller reaching for it
+// expects zap's documented semantics, exit included.
 type zapLogger struct {
 	raw *zap.Logger
 	z   *zap.Logger
@@ -52,13 +73,34 @@ type zapLogger struct {
 }
 
 func newZapLogger(raw *zap.Logger) *zapLogger {
-	return &zapLogger{raw: raw, z: raw.WithOptions(zap.AddCallerSkip(1))}
+	return &zapLogger{
+		raw: raw,
+		z:   raw.WithOptions(zap.AddCallerSkip(1), zap.WithFatalHook(deferExitHook{})),
+	}
 }
 
 func (l *zapLogger) Debug(msg string, kv ...any) { l.z.Debug(msg, toFields(kv)...) }
 func (l *zapLogger) Info(msg string, kv ...any)  { l.z.Info(msg, toFields(kv)...) }
 func (l *zapLogger) Warn(msg string, kv ...any)  { l.z.Warn(msg, toFields(kv)...) }
 func (l *zapLogger) Error(msg string, kv ...any) { l.z.Error(msg, toFields(kv)...) }
+
+// Fatal writes the entry, flushes, then exits -- strictly in that order.
+//
+// zap's default fatal hook calls os.Exit from inside the write. zapcore's own
+// ioCore happens to Sync first for levels above Error, so with today's backend
+// nothing is actually lost -- but that is one implementation's courtesy, not
+// anything the zapcore.Core interface promises, and SetLogger lets a
+// third-party core in that owes us nothing. Flushing here makes it the
+// facade's guarantee instead of a coincidence.
+func (l *zapLogger) Fatal(msg string, kv ...any) {
+	l.z.Fatal(msg, toFields(kv)...)
+	if err := l.raw.Sync(); err != nil && !isBenignSyncError(err) {
+		// The process is about to die, so stderr is the only channel left --
+		// silently dropping this would hide a lost final entry.
+		fmt.Fprintf(os.Stderr, "log: Fatal 落盘失败: %v\n", err)
+	}
+	exitFunc(1)
+}
 
 func (l *zapLogger) With(kv ...any) Logger {
 	if len(kv) == 0 {
@@ -73,6 +115,9 @@ func (l *zapLogger) Enabled(lv Level) bool {
 
 // Zap implements ZapProvider. Returns the instance without the facade's
 // caller skip.
+//
+// It keeps zap's native fatal behaviour: Zap().Fatal exits from inside the
+// write without the facade's flush. Use log.Fatal when that flush matters.
 func (l *zapLogger) Zap() *zap.Logger { return l.raw }
 
 // WithCallerSkip implements CallerSkipper.
