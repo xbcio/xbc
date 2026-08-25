@@ -1,10 +1,14 @@
 package xbc
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/xbcio/xbc/internal/conf"
 )
 
 type demoConfig struct {
@@ -95,9 +99,21 @@ func TestBindConfigsAggregatesErrorsAcrossPlugins(t *testing.T) {
 
 	err := a.bindConfigs(insts)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "plugins.demo.dsn",
-		"两个插件各错一条，必须一次全部报出，不能第一个错就退")
-	assert.Contains(t, err.Error(), "plugins.gorm.readonly.dsn")
+
+	var verr *conf.ValidationError
+	require.True(t, errors.As(err, &verr),
+		"聚合错误必须能还原成 *conf.ValidationError，否则下面对 Lines 的顺序与路径断言无法进行")
+	require.Len(t, verr.Lines, 2,
+		"两个插件各错一条，必须一次全部报出，不能第一个错就退，也不能多报或少报")
+
+	// Lines 每条的格式是 "<path>\t<message>"（见 internal/conf/validate.go
+	// ValidationError 的文档注释与 joinPath/renderViolation 的拼接方式）。
+	assert.True(t, strings.HasPrefix(verr.Lines[0], "plugins.demo.dsn\t"),
+		"实例必须按 expand() 返回的注册顺序处理，demo 先注册就必须先报错，"+
+			"顺序一旦颠倒，多插件同时报错时输出就会跟着抖动")
+	assert.True(t, strings.HasPrefix(verr.Lines[1], "plugins.gorm.readonly.dsn\t"),
+		"错误路径必须精确到具体实例 plugins.gorm.readonly.dsn，不能是粗粒度的 plugins.gorm.dsn，"+
+			"这正是 spec §4.1(c) 要求 Expand 必须早于 BindConfig 的原因")
 }
 
 func TestBindConfigsSkipsPluginsWithoutConfigurable(t *testing.T) {
