@@ -282,16 +282,26 @@ func TestRollbackStopsInReverseOrderOnInitFailure(t *testing.T) {
 	aPlugin := &stoppablePlugin{name: "a", stopped: &stopped}
 	bPlugin := &stoppablePlugin{name: "b", stopped: &stopped}
 	cPlugin := &providerPlugin{failErr: errors.New("模拟 c 初始化失败")}
+	// d sits after the failing c and is a Closer, so it is the only fixture
+	// element that can tell rollback's "skip anything not inited" guard apart
+	// from no guard at all. Without it, dropping the guard changes nothing
+	// observable: c is not a Closer, so stopInstanceSafely returns early for
+	// it either way, and every instance ahead of c really was inited.
+	dPlugin := &stoppablePlugin{name: "d", stopped: &stopped}
 
 	aInst := mustInstance(t, a, aPlugin, "a", "default")
 	bInst := mustInstance(t, a, bPlugin, "b", "default")
 	cInst := mustInstance(t, a, cPlugin, "gorm", "default")
+	dInst := mustInstance(t, a, dPlugin, "d", "default")
 
-	err := a.initAll([]*instance{aInst, bInst, cInst})
+	err := a.initAll([]*instance{aInst, bInst, cInst, dInst})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "模拟 c 初始化失败")
-	assert.Equal(t, []string{"b", "a"}, stopped, "已成功 Init 的插件必须按拓扑序的逆序 Stop")
+	assert.Equal(t, []string{"b", "a"}, stopped,
+		"已成功 Init 的插件必须按拓扑序的逆序 Stop；d 排在失败的 c 之后，压根没轮到 Init，"+
+			"绝不能被 Stop——对一个从未初始化的插件调 Stop 正是空指针的经典来源")
 	assert.False(t, cInst.inited, "c 自己 Init 失败，不能标记为已初始化")
+	assert.False(t, dInst.inited, "d 根本没轮到 Init，不能标记为已初始化")
 }
 
 func TestRollbackStopErrorAndPanicDoNotMaskOriginalError(t *testing.T) {
