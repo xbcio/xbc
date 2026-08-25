@@ -132,6 +132,36 @@ func TestSetScalarParsesDurationNotAsInt(t *testing.T) {
 		"time.Duration 底层是 int64，判断顺序反了会把 1h 当整数解析失败")
 }
 
+func TestSetScalarStringSliceSplitsOnComma(t *testing.T) {
+	var ss []string
+	v := reflect.ValueOf(&ss).Elem()
+	require.NoError(t, setScalar(v, v.Type(), "a,b,c"))
+	require.Equal(t, []string{"a", "b", "c"}, ss)
+}
+
+func TestSetScalarStringSliceSingleElementNoComma(t *testing.T) {
+	var ss []string
+	v := reflect.ValueOf(&ss).Elem()
+	require.NoError(t, setScalar(v, v.Type(), "a"))
+	require.Equal(t, []string{"a"}, ss)
+}
+
+func TestSetScalarStringSliceTrimsSurroundingSpaces(t *testing.T) {
+	var ss []string
+	v := reflect.ValueOf(&ss).Elem()
+	require.NoError(t, setScalar(v, v.Type(), " a , b "))
+	require.Equal(t, []string{"a", "b"}, ss,
+		"实现对每个逗号分隔的元素都做了 strings.TrimSpace，前后空格应被去掉")
+}
+
+func TestSetScalarStringSliceEmptyStringYieldsOneEmptyElement(t *testing.T) {
+	var ss []string
+	v := reflect.ValueOf(&ss).Elem()
+	require.NoError(t, setScalar(v, v.Type(), ""))
+	require.Equal(t, []string{""}, ss,
+		"strings.Split(\"\", \",\") 返回单元素 []string{\"\"}，实现没有对空串做特殊处理，据实断言")
+}
+
 func TestPriorityChainDefaultFileProfileEnvOverrides(t *testing.T) {
 	// The three tiers each use a different key, avoiding a collision with
 	// the next "known limitation" test's key.
