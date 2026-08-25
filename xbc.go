@@ -93,6 +93,10 @@ type App struct {
 	criticalReason string
 
 	exitCode int
+
+	// registry is the (type, instance) store shared by every Context of this
+	// App -- see registry.go (Task 4).
+	registry *registry
 }
 
 // instance is one expanded plugin instance -- the unit every stage after
@@ -116,7 +120,7 @@ func New() *App {
 	seed := make([]entry, len(registered))
 	copy(seed, registered)
 	registerMu.Unlock()
-	return &App{entries: seed}
+	return &App{entries: seed, registry: newRegistry()}
 }
 
 // Register registers one or more plugins explicitly. Unlike the
