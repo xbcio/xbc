@@ -682,8 +682,8 @@ xbc: plugins.kafka 有配置但无对应插件
 
 ```
 xbc: 插件 ratelimit 需要 xbc_test.Counter，有 2 个候选
-  *fake.RedisA[default]
-  *fake.RedisB[default]
+    *fake.RedisA[default]
+    *fake.RedisB[default]
   → 用 xbc:"inject,name=xxx" 指定实例消歧
 ```
 
@@ -691,7 +691,7 @@ xbc: 插件 ratelimit 需要 xbc_test.Counter，有 2 个候选
 
 ```
 xbc: 插件 ratelimit 需要 xbc_test.Counter，无任何插件提供
-  最接近的是 *fake.HalfCounter，缺少方法：Expire
+    最接近的是 *fake.HalfCounter，缺少方法：Expire
 ```
 
 启动日志见 spec §4.4，逐字实现。
