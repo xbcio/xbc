@@ -21,6 +21,32 @@ type Leaf struct {
 
 // Leaves walks out's yaml-tag schema and returns every leaf, with Path
 // rooted at root (root == "" means unrooted, paths start at the struct itself).
+//
+// Two current limitations of this walk, both by design-gap rather than bug,
+// and both worth knowing before writing a plugin Config:
+//
+//  1. Pointer-typed sub-struct fields (e.g. `Pool *PoolConfig`) are NOT
+//     recursed into -- walkLeaves treats them as an opaque scalar leaf (see
+//     walkLeaves) and setScalar has no case for reflect.Ptr, so if the ENV
+//     or default machinery ever reaches such a leaf it fails with "不支持的
+//     标量类型" rather than descending into it. In practice this means: a
+//     value written for that subtree in the config file still binds fine
+//     (mapstructure allocates and populates the pointer directly), but ENV
+//     overrides and `default` tags on leaves *inside* that pointed-to struct
+//     are silently unreachable -- Bind will not error, it will simply never
+//     look for XBC_..._POOL_... variables or apply their default tags. This
+//     is deliberate: eagerly allocating a nil pointer during a schema walk
+//     would materialize a config subtree the user never wrote, and deciding
+//     when to lazily allocate one (e.g. "only if some ENV var under it is
+//     set") is a separate design problem left for a future task.
+//  2. Exported anonymous embedded structs ARE recursed into, but walkLeaves
+//     never special-cases f.Anonymous, so the embedded field's Go type name
+//     (e.g. "PoolConfig" for `PoolConfig` embedded under Server) is always
+//     appended as its own path segment -- even a `yaml:",inline"` tag on the
+//     embedded field is not honored, because yamlTagName falls back to
+//     f.Name whenever the tag's name component is empty. The caller ends up
+//     with a path like "server.PoolConfig.field" instead of the flattened
+//     "server.field" that struct embedding usually implies for YAML users.
 func Leaves(root string, out any) []Leaf {
 	t := reflect.TypeOf(out)
 	for t.Kind() == reflect.Ptr {
@@ -31,8 +57,12 @@ func Leaves(root string, out any) []Leaf {
 	return leaves
 }
 
-// walkLeaves recurses only into plain structs (time.Time is treated as a
-// scalar -- it has no yaml-tagged fields of its own that this scheme cares about).
+// walkLeaves recurses only into plain (non-pointer) structs -- time.Time is
+// treated as a scalar (it has no yaml-tagged fields of its own that this
+// scheme cares about), and reflect.Ptr struct fields are treated as opaque
+// scalar leaves rather than recursed into. See the two numbered limitations
+// on Leaves' doc comment for what that means for pointer sub-structs and for
+// anonymous embedded structs.
 func walkLeaves(prefix string, t reflect.Type, index []int, out *[]Leaf) {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
