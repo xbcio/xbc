@@ -479,6 +479,14 @@ func TestResolve_GraphNodeUsesIDNotLabelForMultiInstanceDefault(t *testing.T) {
 	require.NoError(t, err, "单个多实例插件的 default 实例，不该报任何错")
 	assert.Empty(t, misses)
 	require.Len(t, order, 1)
+	// resolve maps the sorted node ids back through byID, and a map miss there
+	// yields a nil *instance rather than an error. Assert non-nil before
+	// dereferencing so that building the graph with label() fails here with a
+	// readable message, instead of panicking on a nil receiver and taking the
+	// rest of the package's tests down with it.
+	require.NotNil(t, order[0],
+		"拓扑序里出现了 nil 实例，说明建图用的 key 和 byID 的 key 对不上——"+
+			"建图必须用 id()，不能用 label()")
 	assert.Equal(t, "multi", order[0].id(),
 		"图节点必须用 id()（不带 [default] 后缀）建图；如果建图时误用了 label()，"+
 			"这里的查找会因为 key 不匹配而失败")
