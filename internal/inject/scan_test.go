@@ -248,3 +248,60 @@ func TestValueReturnsCurrentValue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "cors", v)
 }
+
+// assertFieldValueGuardErrors exercises all three fieldValue callers (Set,
+// IsZero, Value) with the same (v, spec) pair and asserts each one returns an
+// error containing want -- instead of panicking. Set/IsZero/Value can be
+// called with a hand-built FieldSpec independently of Scan, so these guard
+// branches are part of the exported contract, not internal fallback code.
+func assertFieldValueGuardErrors(t *testing.T, v any, spec FieldSpec, want string) {
+	t.Helper()
+
+	err := Set(v, spec, nil)
+	require.Error(t, err, "Set 必须报错而不是 panic")
+	assert.Contains(t, err.Error(), want)
+
+	_, err = IsZero(v, spec)
+	require.Error(t, err, "IsZero 必须报错而不是 panic")
+	assert.Contains(t, err.Error(), want)
+
+	_, err = Value(v, spec)
+	require.Error(t, err, "Value 必须报错而不是 panic")
+	assert.Contains(t, err.Error(), want)
+}
+
+func TestFieldValueRejectsNonPointerReceiver(t *testing.T) {
+	spec := FieldSpec{Index: 0, Name: "DB", Type: reflect.TypeOf((*int)(nil))}
+	assertFieldValueGuardErrors(t, setPlugin{}, spec, "指针")
+}
+
+func TestFieldValueRejectsNilPointerReceiver(t *testing.T) {
+	var p *setPlugin
+	spec := FieldSpec{Index: 0, Name: "DB", Type: reflect.TypeOf((*int)(nil))}
+	assertFieldValueGuardErrors(t, p, spec, "指针")
+}
+
+func TestFieldValueRejectsPointerToNonStruct(t *testing.T) {
+	n := 1
+	spec := FieldSpec{Index: 0, Name: "DB", Type: reflect.TypeOf((*int)(nil))}
+	assertFieldValueGuardErrors(t, &n, spec, "结构体")
+}
+
+func TestFieldValueRejectsOutOfRangeIndex(t *testing.T) {
+	p := &setPlugin{}
+	// Derive the field count instead of hardcoding it, so adding a field to
+	// setPlugin later cannot silently drop this test's coverage of the
+	// boundary case (Index == NumField(), the off-by-one a "<" vs "<=" or
+	// ">" vs ">=" typo would miss).
+	numFields := reflect.TypeOf(*p).NumField()
+
+	t.Run("索引恰好等于字段数", func(t *testing.T) {
+		spec := FieldSpec{Index: numFields, Name: "越界"}
+		assertFieldValueGuardErrors(t, p, spec, "超出范围")
+	})
+
+	t.Run("索引为负数", func(t *testing.T) {
+		spec := FieldSpec{Index: -1, Name: "越界"}
+		assertFieldValueGuardErrors(t, p, spec, "超出范围")
+	})
+}
