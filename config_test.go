@@ -104,3 +104,56 @@ func TestLoadConfigReportsServerValidationError(t *testing.T) {
 	err := a.loadConfig(conf.Options{File: path, EnvPrefix: defaultEnvPrefix})
 	require.Error(t, err, "server 段绑定失败要一路冒泡到 loadConfig 的调用方")
 }
+
+// TestLoadConfigSyncsLogSectionIntoK guards bindLog's syncBack call
+// (config.go), which the Task 6 review's mutation M6 found unguarded: deleting
+// those three lines left every test green. server and log must behave the
+// same way here -- the first person to notice Exists("server.addr") is true
+// while Exists("log.level") is false would reasonably assume it's a bug, not
+// an intentional asymmetry, so the two sections are kept consistent on
+// purpose and that consistency needs its own test.
+func TestLoadConfigSyncsLogSectionIntoK(t *testing.T) {
+	a := &App{}
+	require.NoError(t, a.loadConfig(conf.Options{EnvPrefix: defaultEnvPrefix}))
+
+	require.True(t, a.cfg.Exists("log.level"), "log 段全靠 default tag 撑起来时，回写也要覆盖 log，不能只覆盖 server")
+	require.Equal(t, log.DefaultConfig().Level, a.cfg.Get("log.level"))
+
+	// A nested leaf (one level under log), to confirm the sync walks the
+	// whole subtree rather than stopping at log's own top-level fields.
+	require.True(t, a.cfg.Exists("log.console.enabled"), "回写要覆盖整棵子树，不能止步于顶层字段")
+	require.Equal(t, log.DefaultConfig().Console.Enabled, a.cfg.Get("log.console.enabled"))
+}
+
+// TestLoadConfigServerDurationReboundIsStable guards against the concern
+// raised in the Task 6 report: syncBack writes a bound time.Duration field
+// back into k as its underlying int64-nanoseconds value, and a later
+// Config.Unmarshal of the same subtree re-parses whatever is in k. If that
+// round trip drifted, ReadTimeout would not survive a second Bind.
+func TestLoadConfigServerDurationReboundIsStable(t *testing.T) {
+	a := &App{}
+	require.NoError(t, a.loadConfig(conf.Options{EnvPrefix: defaultEnvPrefix}))
+	require.Equal(t, 10*time.Second, a.cfg.Server.ReadTimeout)
+
+	var second ServerConfig
+	require.NoError(t, a.cfg.Unmarshal("server", &second))
+	require.Equal(t, 10*time.Second, second.ReadTimeout,
+		"syncBack 把 Duration 回写成纳秒整数后，再次 Bind 同一子树应仍解析回相同的 Duration")
+}
+
+// TestLoadConfigServerDurationReboundWithEnvOverrideIsStable is the ENV-driven
+// half of the same round-trip concern: an ENV override must also survive
+// repeated re-binding, not just the default-tag path.
+func TestLoadConfigServerDurationReboundWithEnvOverrideIsStable(t *testing.T) {
+	t.Setenv("XBC_SERVER_READ_TIMEOUT", "42s")
+
+	a := &App{}
+	require.NoError(t, a.loadConfig(conf.Options{EnvPrefix: defaultEnvPrefix}))
+	require.Equal(t, 42*time.Second, a.cfg.Server.ReadTimeout)
+
+	for i := 0; i < 3; i++ {
+		var again ServerConfig
+		require.NoError(t, a.cfg.Unmarshal("server", &again))
+		require.Equal(t, 42*time.Second, again.ReadTimeout, "第 %d 次重复 Bind 应仍恒为 42s", i+1)
+	}
+}

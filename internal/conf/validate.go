@@ -61,6 +61,35 @@ func (e *ValidationError) Append(other *ValidationError) {
 // Validate runs go-playground/validator over out and renders every violation
 // as a Chinese line prefixed with its full config path (path + the field's
 // own yaml-tag path, dot-joined).
+//
+// Recursion into pointer sub-structs is the OPPOSITE of Leaves' behavior, and
+// that mismatch has a sharp, easy-to-miss consequence worth knowing before
+// relying on `validate:"required"` inside a pointer sub-struct that also
+// carries `default:"..."` tags:
+//
+// validator.Struct (which this function wraps) recurses into a pointer
+// sub-struct field as long as it is non-nil -- unlike Leaves/walkLeaves
+// (see limitation 1 on Leaves' doc comment), which never recurses into a
+// pointer sub-struct at all, treating it as one opaque leaf. Bind's `default`
+// tag filling is driven by Leaves, so it inherits that same limitation.
+//
+// Put the two together and the failure mode is backwards from what most
+// people would guess: a plugin config with a pointer sub-struct field that
+// has both `validate:"required"` and `default:"..."` tags on its own fields
+// is safe to leave completely unset (the pointer stays nil, validator never
+// descends into it, `required` never fires) but becomes MORE likely to fail
+// validation the moment the user sets even one field inside that sub-struct.
+// Setting one field makes mapstructure allocate the pointer during Bind's
+// unmarshal step; the pointer is then non-nil so validator does recurse into
+// it and DOES check `required` on the fields the user left alone -- but
+// Bind's default-filling pass never reached those same fields (Leaves never
+// walked into the pointer to find them), so they are still their Go zero
+// value, and `required` reports them missing. Configuring one field ends up
+// more likely to blow up than configuring none. This is not a bug introduced
+// by Validate -- it is Leaves' existing pointer-recursion limitation
+// (Task 5) surfacing through a second, independent code path that happens to
+// recurse the opposite way; fixing it means changing one of the two walks to
+// agree with the other, which is future work, not a defect in either one.
 func Validate(out any, path string) error {
 	v := validator.New()
 	err := v.Struct(out)

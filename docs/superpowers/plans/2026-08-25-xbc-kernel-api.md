@@ -357,6 +357,26 @@ func (c *Config) Exists(path string) bool
 func (c *Config) Sub(path string) map[string]any // nil when absent or not a map
 ```
 
+### `Exists` 对两类配置段回答的是两个不同的问题
+
+阶段 1 绑定完 `server` / `log` 之后会把绑定结果**回写进 `k`**（`syncBack`），
+否则一份全靠 `default` tag 撑起来的配置（没有配置文件、没有 ENV）在 `Get`/`Exists`/`Sub`
+眼里根本不存在——而它明明是生效中的配置。回写的代价是：**没有 `default` tag、用户也没配的字段，
+会以零值进入 `k`**（当前 `ServerConfig` 里唯一这样的字段是 `auto_migrate`）。于是：
+
+| 配置段 | 有无 schema | `Exists` 实际回答的问题 |
+|---|---|---|
+| `server` / `log` | 框架自己的强类型 schema | 「**这个配置项存在吗**」——schema 定义了它，所以恒 `true` |
+| `app.*` / `plugins.*` | 无 schema，自由配置 | 「**用户配过吗**」——只有真的写了才 `true` |
+
+这不是 bug 而是两类段的性质差异，但**必须知道**：R6 的孤儿配置节检测（`plugins.<key>` 有配置
+却无对应插件）用的是无 schema 段，语义正确、不受影响。
+
+**给后续 task 的钉子**：doctor / 配置回显如果需要区分「用户配的」和「框架填的」，
+**不能用 `Exists`**。真要区分，得让 `internal/conf` 把「哪些叶子真的被文件/ENV/default 设置过」
+一并返回（给 `Leaf` 带上 default tag 信息），让 `syncBack` 只回写被设置过的叶子。
+现在不做，是因为那要跨 task 改 Task 5 的导出 API，代价高于记录它。
+
 ---
 
 ## 8. `internal/conf`
