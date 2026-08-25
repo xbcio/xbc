@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"sync"
+
+	"github.com/xbcio/xbc/internal/inject"
 )
 
 // source records which registration path a plugin arrived by. The two paths
@@ -114,6 +116,14 @@ type instance struct {
 	instance string // instance name, e.g. "default" / "readonly"
 	src      source
 	ctx      *Context
+
+	// fields is the xbc-tag scan of this instance's plugin, filled by
+	// resolve's pass 0. Stage 5 injects into these fields and harvests the
+	// provide-tagged ones back out, so both stages read the same scan
+	// instead of each doing their own -- one scan, one source of truth for
+	// what the plugin's tags actually said.
+	fields []inject.FieldSpec
+
 	deps     Deps
 	provides []Dep
 	inited   bool
