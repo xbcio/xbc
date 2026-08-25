@@ -37,6 +37,10 @@ type badDefaultConfig struct {
 	Timeout time.Duration `yaml:"timeout" default:"not-a-duration"`
 }
 
+type tagsConfig struct {
+	Tags []string `yaml:"tags" default:"a,b,c"`
+}
+
 // koanfFrom builds a koanf tree directly from a nested map, bypassing the
 // filesystem -- bind_test.go tests Bind, not Load, so there is no need to
 // write a temporary YAML file just to grow a tree. An empty delim means
@@ -154,12 +158,13 @@ func TestSetScalarStringSliceTrimsSurroundingSpaces(t *testing.T) {
 		"实现对每个逗号分隔的元素都做了 strings.TrimSpace，前后空格应被去掉")
 }
 
-func TestSetScalarStringSliceEmptyStringYieldsOneEmptyElement(t *testing.T) {
+func TestSetScalarStringSliceEmptyStringYieldsEmptySlice(t *testing.T) {
 	var ss []string
 	v := reflect.ValueOf(&ss).Elem()
 	require.NoError(t, setScalar(v, v.Type(), ""))
-	require.Equal(t, []string{""}, ss,
-		"strings.Split(\"\", \",\") 返回单元素 []string{\"\"}，实现没有对空串做特殊处理，据实断言")
+	require.Equal(t, []string{}, ss,
+		"空串是显式清空列表的意图，必须短路成空切片，不能是 strings.Split(\"\", \",\") 的单元素 [\"\"]")
+	require.Len(t, ss, 0)
 }
 
 func TestPriorityChainDefaultFileProfileEnvOverrides(t *testing.T) {
@@ -178,6 +183,22 @@ func TestPriorityChainDefaultFileProfileEnvOverrides(t *testing.T) {
 	require.Equal(t, "from-file", cfg.DSN, "文件设置的字段应该生效")
 	require.Equal(t, 99, cfg.MaxOpenConn, "ENV 设置的字段应该覆盖 default")
 	require.Equal(t, 5*time.Second, cfg.ConnTimeout, "两者都没设的字段落到 default")
+}
+
+func TestBindEnvEmptyStringClearsDefaultStringSlice(t *testing.T) {
+	// Setting the ENV var itself (as opposed to leaving it unset) is how a
+	// user explicitly overrides a default:"a,b,c" list down to zero
+	// elements -- this exercises the ENV overlay stage of Bind, not just
+	// setScalar in isolation, since the "does the default tag get skipped
+	// once ENV has set this leaf" bookkeeping lives in Bind's envSet map.
+	k := koanf.New(".")
+	t.Setenv("XBC_TAGS", "")
+
+	var cfg tagsConfig
+	require.NoError(t, Bind(k, "", &cfg, "XBC_"))
+
+	require.Equal(t, []string{}, cfg.Tags,
+		"ENV 显式设为空串是清空列表的意图，绑定结果应是空切片，而不是落回 default:\"a,b,c\"")
 }
 
 func TestBindEnvBeatsOverridesOnSameKeyKnownLimitation(t *testing.T) {
