@@ -106,3 +106,34 @@ func TestValidatePassesWithNoViolations(t *testing.T) {
 	err := Validate(&cfg, "plugins.gorm.default")
 	require.NoError(t, err)
 }
+
+// TestValidationErrorColumnAlignmentIsExact pins the exact rendered block
+// down to its byte content -- the spacing between the longest path and its
+// message, the em dash in the hostname_port message, and the fact that the
+// shorter path's column gets one extra space to line up with the longer one.
+// The Task 6 review's mutation M3 (changing the "+2" padding in Error() to
+// "+1") left every other test green because they all use require.Contains
+// on substrings; this is the one test that would actually go red for that
+// mutation. The two example paths and messages are taken verbatim from API
+// contract §13.
+func TestValidationErrorColumnAlignmentIsExact(t *testing.T) {
+	cfg1 := gormValidateConfig{}
+	err1 := Validate(&cfg1, "plugins.gorm.readonly")
+	var e1 *ValidationError
+	require.ErrorAs(t, err1, &e1)
+
+	cfg2 := redisValidateConfig{Addr: "127.0.0.1"}
+	err2 := Validate(&cfg2, "plugins.redis.default")
+	var e2 *ValidationError
+	require.ErrorAs(t, err2, &e2)
+
+	e1.Append(e2)
+
+	// "plugins.gorm.readonly.dsn" is 25 runes, "plugins.redis.default.addr"
+	// is 26 -- the wider one sets the column, so the dsn line gets 3 spaces
+	// of padding after it (26-25+2) and the addr line gets 2 (26-26+2).
+	want := "xbc: 配置错误\n" +
+		"  plugins.gorm.readonly.dsn   必填项缺失\n" +
+		"  plugins.redis.default.addr  不是合法的 host:port —— 得到 \"127.0.0.1\""
+	require.Equal(t, want, e1.Error())
+}

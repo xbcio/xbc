@@ -65,6 +65,32 @@ func (c *Config) Get(path string) any {
 }
 
 // Exists reports whether path was set by any of the loaded layers.
+//
+// It answers two different questions depending on which section path falls
+// under, because loadConfig's syncBack (below) only ever runs against
+// server/log:
+//
+//   - Under "server" / "log" (the framework's own typed schema): Exists
+//     answers "does this config item exist" -- effectively always true for
+//     any leaf on the schema, because syncBack writes every leaf's final
+//     value back into k, including leaves that have no `default` tag and
+//     that the user never set (they land as their Go zero value, e.g.
+//     ServerConfig.AutoMigrate defaults to false and Exists("server.auto_migrate")
+//     is true regardless of whether anyone wrote it).
+//   - Under "app.*" / "plugins.*" (no schema, freeform): Exists answers "did
+//     the user actually set this" -- true only when the file/ENV/Overrides
+//     layers actually wrote it, because nothing ever syncs those sections
+//     back into k the way server/log are synced.
+//
+// Pinned consequence for later tasks: anything that needs to tell "the user
+// configured this" apart from "the framework filled this in with a zero or
+// default value" -- a config doctor command, a config echo/dump endpoint,
+// etc. -- must NOT use Exists for that purpose on the server/log sections.
+// Doing so would report every schema leaf as user-configured. Making that
+// distinction properly would require internal/conf's Leaf to also carry
+// whether a `default` tag exists and whether ENV/file actually hit it, and
+// syncBack to only write back the leaves that were actually set -- a change
+// to Task 5's exported API this task deliberately did not make.
 func (c *Config) Exists(path string) bool {
 	if c == nil || c.k == nil {
 		return false
@@ -141,10 +167,16 @@ func bindLog(k *koanf.Koanf, envPrefix string) (log.Config, error) {
 // the logger up, bind and validate the framework's own server section, and
 // park the result on App for the nine stages that follow.
 //
-// Log comes up before server is bound on purpose. Everything after this line
-// -- including the error paths of the very next statement -- wants a working
-// logger, and the log section is the one section that can be bound without
-// anything else already being in place.
+// Log is bound before server, but as of this task that ordering does not
+// actually change any observable behavior: neither Bind nor Validate emits a
+// log line on their error paths today, so swapping the two blocks leaves
+// every test green (verified by hand, not just asserted). The ordering is
+// kept log-first anyway so that the moment a later change makes the server
+// section's error paths want to log something, it already has a working
+// logger to log through -- nobody has to remember to reorder these two
+// blocks first. If that day comes, add a test that actually observes a log
+// line here; until then a test asserting on ordering alone would just be a
+// tautology dressed up as coverage.
 func (a *App) loadConfig(opts conf.Options) error {
 	if opts.EnvPrefix == "" {
 		opts.EnvPrefix = defaultEnvPrefix
