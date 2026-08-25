@@ -41,6 +41,30 @@ log.Sync()          // flush only, don't close; use when a long-lived process wa
 
 `Close()` 内部先 `Sync()` 再关文件，两者都对「往终端/管道 fsync 返回 EINVAL」这个 zap 的著名毛刺做了吞掉处理 —— 不会让 `defer` 在每次正常退出时报一个假错。
 
+## Fatal
+
+`Fatal` 记录日志、刷盘，然后以退出码 1 结束进程，**永不返回**：
+
+```go
+log.TFatal(ctx, "配置文件不可读", "path", cfgPath)
+log.L().Fatal("端口被占用", "port", 8080)
+```
+
+刷盘正是它值得放进门面的原因。`os.Exit` 不跑任何 `defer`，直接用 zap 的 `Fatal`
+会在写入过程中就退出；本包保证退出前先落盘，解释「进程为什么死」的那一条日志才不会丢。
+
+三条边界要清楚：
+
+- **它同样不跑你自己的 `defer`。** `Fatal` 只适合启动期那种「没什么可收尾」的失败
+  ——配置读不出来、端口起不来。进程还握着值得释放的状态时，请返回 error。
+- **`Nop()` 也会退出。** Nop 丢掉的是「记录」，不是「终止」；调用方写下 `Fatal`
+  时已经按「下一行不会执行」安排了控制流，吞掉退出会把门面的选择变成调用方的
+  控制流 bug。zap 的 `NewNop().Fatal` 同样会退出。
+- **`log.Zap()` 逃生舱保持 zap 原生语义。** `log.Zap(ctx).Fatal(...)` 在写入内部
+  就退出，不走本包的刷盘。需要那次刷盘就用 `log.Fatal`。
+
+本包不提供 `Panic` / `DPanic`：门面只暴露 debug / info / warn / error / fatal 五级。
+
 ## 两条等价路径
 
 ```go
@@ -109,7 +133,7 @@ tracer 生命周期管理、`done()` 需要调 `span.End()`、引入 SDK 依赖�
 
 ```yaml
 log:
-  level: info           # debug | info | warn | error
+  level: info           # debug | info | warn | error | fatal
   caller: true          # whether to record the call site
   stacktrace: error     # from which level a stacktrace is attached
 

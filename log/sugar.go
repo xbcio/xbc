@@ -35,6 +35,9 @@ func TWarn(ctx context.Context, msg string, kv ...any) { tLogger(ctx).Warn(msg, 
 // TError is sugar for Ctx(ctx).Error(msg, kv...).
 func TError(ctx context.Context, msg string, kv ...any) { tLogger(ctx).Error(msg, kv...) }
 
+// TFatal is sugar for Ctx(ctx).Fatal(msg, kv...). It never returns.
+func TFatal(ctx context.Context, msg string, kv ...any) { tLogger(ctx).Fatal(msg, kv...) }
+
 // TDebugf uses printf semantics, for cases that genuinely don't need structure
 // (startup banners, debug strings). Anything that can be broken into KV pairs
 // shouldn't use it -- fields folded into msg can't be searched.
@@ -69,4 +72,14 @@ func TErrorf(ctx context.Context, format string, args ...any) {
 	if l := tLogger(ctx); l.Enabled(ErrorLevel) {
 		l.Error(fmt.Sprintf(format, args...))
 	}
+}
+
+// TFatalf is the printf variant of TFatal. It never returns.
+//
+// Unlike its siblings it does NOT guard on Enabled: a disabled backend (Nop,
+// say) would report false, the call would fall through, and the process would
+// keep running past a line the caller wrote expecting termination. Formatting
+// one string on the way out of the process is not a cost worth that risk.
+func TFatalf(ctx context.Context, format string, args ...any) {
+	tLogger(ctx).Fatal(fmt.Sprintf(format, args...))
 }

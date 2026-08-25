@@ -22,6 +22,12 @@ const (
 	InfoLevel
 	WarnLevel
 	ErrorLevel
+
+	// FatalLevel is 5, not 3. The values above mirror zapcore.Level, and
+	// zapcore reserves 3 for DPanic and 4 for Panic -- levels this facade
+	// deliberately does not expose. Continuing the iota run here would map
+	// Fatal onto DPanic, and every Fatal entry would render as DPANIC.
+	FatalLevel Level = 5
 )
 
 func (l Level) String() string {
@@ -34,6 +40,8 @@ func (l Level) String() string {
 		return "WARN"
 	case ErrorLevel:
 		return "ERROR"
+	case FatalLevel:
+		return "FATAL"
 	default:
 		return fmt.Sprintf("LEVEL(%d)", int8(l))
 	}
@@ -55,8 +63,10 @@ func ParseLevel(s string) (Level, error) {
 		return WarnLevel, nil
 	case "error":
 		return ErrorLevel, nil
+	case "fatal":
+		return FatalLevel, nil
 	default:
-		return InfoLevel, fmt.Errorf("log: 未知日志级别 %q，可选 debug/info/warn/error", s)
+		return InfoLevel, fmt.Errorf("log: 未知日志级别 %q，可选 debug/info/warn/error/fatal", s)
 	}
 }
 
@@ -68,6 +78,20 @@ type Logger interface {
 	Info(msg string, kv ...any)
 	Warn(msg string, kv ...any)
 	Error(msg string, kv ...any)
+
+	// Fatal records the entry, flushes the sink, and terminates the process
+	// with exit code 1. It never returns.
+	//
+	// The flush is the reason this belongs on the facade rather than being left
+	// to the backend: zap's own Fatal calls os.Exit from inside the write, and
+	// os.Exit runs no deferred functions -- so the entry explaining why the
+	// process died is exactly the one at risk of never reaching disk.
+	//
+	// It does NOT run the application's own defers either; Fatal is for
+	// startup failures that leave nothing worth unwinding (unreadable config,
+	// an unusable port). Anywhere the process still holds state worth releasing,
+	// return an error instead.
+	Fatal(msg string, kv ...any)
 
 	// With derives a child Logger with fixed fields attached.
 	With(kv ...any) Logger
@@ -98,9 +122,19 @@ func (nopLogger) Debug(string, ...any) {}
 func (nopLogger) Info(string, ...any)  {}
 func (nopLogger) Warn(string, ...any)  {}
 func (nopLogger) Error(string, ...any) {}
-func (nopLogger) With(...any) Logger   { return nopLogger{} }
-func (nopLogger) Enabled(Level) bool   { return false }
 
-// Nop returns a Logger that discards everything.
+// Fatal drops the message -- that is what Nop means -- but still terminates.
+// Fatal's contract has two halves, record and terminate, and only the first is
+// Nop's to discard: a caller writing log.Fatal has arranged its control flow
+// around the next line never running. Swallowing the exit would turn a facade
+// choice into a silent control-flow bug in the caller. zap made the same call:
+// zap.NewNop().Fatal exits too.
+func (nopLogger) Fatal(string, ...any) { exitFunc(1) }
+
+func (nopLogger) With(...any) Logger { return nopLogger{} }
+func (nopLogger) Enabled(Level) bool { return false }
+
+// Nop returns a Logger that discards everything it is asked to record.
 // Used for tests, and as the fallback for L() before Init -- logging before initialization must not panic.
+// The one thing it does not discard is Fatal's exit; see nopLogger.Fatal.
 func Nop() Logger { return nopLogger{} }
