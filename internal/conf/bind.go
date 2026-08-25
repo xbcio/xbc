@@ -237,6 +237,16 @@ func setScalar(v reflect.Value, typ reflect.Type, s string) error {
 		v.SetFloat(f)
 		return nil
 	case typ.Kind() == reflect.Slice && typ.Elem().Kind() == reflect.String:
+		if s == "" {
+			// An explicit empty string is a deliberate "clear this list"
+			// signal (e.g. an ENV override meant to blank out a
+			// default:"a,b,c" list), not the one-element list
+			// strings.Split("", ",") would otherwise produce -- without
+			// this short-circuit there would be no way to override a
+			// []string leaf down to zero elements.
+			v.Set(reflect.MakeSlice(typ, 0, 0))
+			return nil
+		}
 		parts := strings.Split(s, ",")
 		for i, p := range parts {
 			parts[i] = strings.TrimSpace(p)
