@@ -19,11 +19,17 @@ func tLogger(ctx context.Context) Logger {
 	return l
 }
 
-// TDebug is sugar for Ctx(ctx).Debug(msg, kv...). The two paths are entirely
-// equivalent:
+// TDebug is sugar for Ctx(ctx).Debug(msg, kv...). The two paths produce
+// identical output, caller included:
 //
 //	log.TInfo(ctx, "下单", "order_id", 1001)
 //	log.Ctx(ctx).Info("下单", "order_id", 1001)
+//
+// Identical output, not identical cost: the T-series adds the tLogger call
+// above, whose CallerSkipper type assertion measured ~3% slower per entry at
+// the same allocation count. Pick by readability, not by speed -- and reach
+// for the facade when deriving a child logger, since With returns one worth
+// holding onto.
 func TDebug(ctx context.Context, msg string, kv ...any) { tLogger(ctx).Debug(msg, kv...) }
 
 // TInfo is sugar for Ctx(ctx).Info(msg, kv...).

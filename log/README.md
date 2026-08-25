@@ -72,7 +72,10 @@ log.TInfo(ctx, "下单", "order_id", 1001)     // sugar
 log.Ctx(ctx).Info("下单", "order_id", 1001)  // facade
 ```
 
-产出完全相同，caller 都指向你的调用行。链式派生时用门面：
+产出完全相同，caller 都指向你的调用行。开销不完全相同：T 系列多一次
+`CallerSkipper` 类型断言，实测每条慢约 3%（分配次数一样）。按可读性选，别按快慢选。
+
+链式派生时用门面：
 
 ```go
 l := log.Ctx(ctx).With("module", "payment")
