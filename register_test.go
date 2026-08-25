@@ -56,6 +56,15 @@ type multiCapablePlugin struct{ Base }
 
 func (p *multiCapablePlugin) MultiInstance() bool { return true }
 
+// emptyNameNoBasePlugin satisfies Plugin (Name() is implemented) but returns
+// an empty string and does not embed Base. newEntry falls back to
+// deriveName in the empty-string branch, but bindBase then has nothing to
+// bind into -- there is no embedded Base to reach through baseAnchor -- so
+// this must be rejected rather than silently accepted.
+type emptyNameNoBasePlugin struct{}
+
+func (p *emptyNameNoBasePlugin) Name() string { return "" }
+
 func TestRegisterRespectsOverriddenName(t *testing.T) {
 	app := New()
 	app.Register(&overriddenNamePlugin{})
@@ -128,4 +137,13 @@ func TestNewSeedsFromPackageLevelRegistrations(t *testing.T) {
 	app := New()
 	require.Len(t, app.entries, 1, "New() 必须把包级 Register 的插件带入 App")
 	assert.Equal(t, sourceImport, app.entries[0].src)
+}
+
+func TestAppRegisterRejectsEmptyNameWithoutBase(t *testing.T) {
+	app := New()
+	assert.PanicsWithError(t,
+		`xbc: 插件 *xbc.emptyNameNoBasePlugin 的 Name() 返回空字符串，且未嵌入 xbc.Base，无法确定插件名`,
+		func() { app.Register(&emptyNameNoBasePlugin{}) },
+		"Name() 返回空字符串且未嵌入 Base 时必须 panic，而不是静默接受",
+	)
 }
