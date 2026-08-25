@@ -1,6 +1,11 @@
 package xbc
 
-import "github.com/gin-gonic/gin"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+)
 
 // Phase is a coarse, ordered anchor for middleware placement. It is a hard
 // boundary: middleware in an earlier Phase always runs outside (before) all
@@ -30,4 +35,40 @@ type Middleware struct {
 	After   []string // soft ordering preference within the same Phase
 	Before  []string
 	Handler gin.HandlerFunc
+}
+
+// String renders the phase name used in startup logs and error copy. An
+// out-of-range value -- reached only via the PhaseRecover-1 escape hatch
+// described in the design doc, or a stray literal -- falls back to
+// "phase(N)" instead of an empty string, so it is always safe to print.
+func (p Phase) String() string {
+	switch p {
+	case PhaseRecover:
+		return "recover"
+	case PhaseObserve:
+		return "observe"
+	case PhaseSecurity:
+		return "security"
+	case PhaseAuth:
+		return "auth"
+	case PhaseBusiness:
+		return "business"
+	default:
+		return fmt.Sprintf("phase(%d)", int(p))
+	}
+}
+
+// qualify applies ruling R5. A name that already contains "." is assumed to
+// be pre-qualified and passes through unchanged; a name identical to its own
+// plugin's name is left bare (so a plugin named "cors" registering a
+// middleware named "cors" doesn't render as "cors.cors"); everything else
+// gets the plugin name prefixed so names stay unique across plugins.
+func qualify(plugin, name string) string {
+	if strings.Contains(name, ".") {
+		return name
+	}
+	if name == plugin {
+		return plugin
+	}
+	return plugin + "." + name
 }
