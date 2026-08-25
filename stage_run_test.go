@@ -127,23 +127,23 @@ func (p *closerPlugin) Stop(ctx context.Context) error {
 	return nil
 }
 
-// orderedEventPlugin's Stop records into a mutex-guarded, shared event log
-// instead of just its own name -- see TestShutdownStopsHTTPServerBeforePlugins,
-// which needs to interleave this with an in-flight HTTP handler's own event
-// on the very same log to pin down the relative order of the two.
-type orderedEventPlugin struct {
+// signalStopPlugin's Stop closes stopCalled instead of recording into a
+// shared log -- see TestShutdownStopsHTTPServerBeforePlugins, which needs to
+// prove a *negative* ("Stop has not run yet") at a specific instant, and a
+// closed-channel check is the one primitive that lets a bounded wait be a
+// deterministic assertion instead of a sleep-and-hope guess: Stop itself
+// does no I/O, so if it had already run, closing stopCalled happens
+// essentially instantly, well inside any reasonable bound.
+type signalStopPlugin struct {
 	Base
-	name   string
-	mu     *sync.Mutex
-	events *[]string
+	name       string
+	stopCalled chan struct{}
 }
 
-func (p *orderedEventPlugin) Name() string        { return p.name }
-func (p *orderedEventPlugin) Init(*Context) error { return nil }
-func (p *orderedEventPlugin) Stop(context.Context) error {
-	p.mu.Lock()
-	*p.events = append(*p.events, "stopped:"+p.name)
-	p.mu.Unlock()
+func (p *signalStopPlugin) Name() string        { return p.name }
+func (p *signalStopPlugin) Init(*Context) error { return nil }
+func (p *signalStopPlugin) Stop(context.Context) error {
+	close(p.stopCalled)
 	return nil
 }
 
@@ -398,27 +398,27 @@ func TestShutdownTimeoutForceKillsStuckConnection(t *testing.T) {
 }
 
 // TestShutdownStopsHTTPServerBeforePlugins pins the ordering between stage
-// 10's two halves: the HTTP server must fully drain (every in-flight
-// request finished) before any plugin's Stop runs. Both the handler and the
-// plugin's Stop append to the same mutex-guarded log, so once shutdown and
-// the request have both signalled completion, the log's order is a
-// deterministic fact, not a race -- there is no sleep-and-hope step here.
+// 10's two halves: the HTTP server must fully drain (every in-flight request
+// finished) before any plugin's Stop runs. The check is deliberately a
+// negative one, taken *while the request is still deliberately stuck in its
+// handler*: at that instant, a correct shutdown() cannot possibly have
+// reached the plugin-stop step yet, because http.Server.Shutdown blocks
+// synchronously on that very connection -- so stopCalled provably cannot be
+// closed yet, no matter how slow or fast the test machine is. A regression
+// that reorders the two steps calls Stop with no I/O in between, so it closes
+// stopCalled essentially instantly; the bounded wait below only needs to be
+// long enough to reliably observe that, not to "guess" anything.
 func TestShutdownStopsHTTPServerBeforePlugins(t *testing.T) {
 	release := make(chan struct{})
 	reached := make(chan struct{})
-
-	var mu sync.Mutex
-	var events []string
+	stopCalled := make(chan struct{})
 
 	route := &routePlugin{handler: func(c *gin.Context) {
 		close(reached)
 		<-release
-		mu.Lock()
-		events = append(events, "response")
-		mu.Unlock()
 		c.Status(http.StatusOK)
 	}}
-	closer := &orderedEventPlugin{name: "gorm", mu: &mu, events: &events}
+	closer := &signalStopPlugin{name: "gorm", stopCalled: stopCalled}
 
 	a := newAssembleTestApp(t)
 	insts := []*instance{
@@ -443,16 +443,18 @@ func TestShutdownStopsHTTPServerBeforePlugins(t *testing.T) {
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- a.shutdown("test") }()
 
+	select {
+	case <-stopCalled:
+		t.Fatal("阶段 10 必须先让 HTTP 服务器排干在飞请求，插件的 Stop 不能在请求还卡着的时候被调用")
+	case <-time.After(200 * time.Millisecond):
+	}
+
 	close(release)
 
-	assert.Equal(t, http.StatusOK, <-reqDone)
+	assert.Equal(t, http.StatusOK, <-reqDone, "in-flight 请求必须正常跑完，不能被 shutdown 打断")
+	mustClosed(t, stopCalled, "HTTP 服务器排干后插件必须被 Stop")
 	require.NoError(t, <-shutdownDone)
 	require.NoError(t, <-serveDone)
-
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, []string{"response", "stopped:gorm"}, events,
-		"阶段 10 必须先让 HTTP 服务器排干在飞请求，再去 Stop 插件，不能反过来或并发抢跑")
 }
 
 func TestGoCriticalTriggersFullShutdownAndExitCodeOne(t *testing.T) {
