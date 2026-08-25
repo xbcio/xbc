@@ -1,6 +1,8 @@
 package log
 
 import (
+	"sync"
+
 	"go.uber.org/zap/zapcore"
 )
 
@@ -183,18 +185,66 @@ func (m *masker) hit(key string) bool {
 	return false
 }
 
+// maskSlowBuf is the buf/starts pair the overflow path borrows instead of
+// allocating.
+//
+// Field names reach hit straight from outside the process: maskStringKeyMap
+// runs every map key through it, and map keys routinely come from a parsed
+// request body or a query string. Allocating per call let the caller's input
+// size dictate a per-key, per-entry allocation -- correct, but an allocation
+// amplifier anyone could turn up by sending longer names. Pooling makes the
+// overflow path amortized allocation-free.
+type maskSlowBuf struct {
+	buf    []byte
+	starts []int
+}
+
+// maskSlowBufMax caps what may go back into the pool. Without it a single
+// pathological field name would leave a pooled pair permanently that large,
+// turning one oversized request into a permanent memory floor.
+const maskSlowBufMax = 1024
+
+var maskSlowPool = sync.Pool{New: func() any { return new(maskSlowBuf) }}
+
+// maskSlowBufReusable reports whether a pair is small enough to keep around.
+func maskSlowBufReusable(sb *maskSlowBuf) bool {
+	return cap(sb.buf) <= maskSlowBufMax && cap(sb.starts) <= maskSlowBufMax
+}
+
+// getMaskSlowBuf returns a pair sized for a key of n bytes. n bounds both:
+// the normalized form is never longer than the input, and the word count tops
+// out at one word per byte ("aBcD" is four words).
+func getMaskSlowBuf(n int) *maskSlowBuf {
+	sb := maskSlowPool.Get().(*maskSlowBuf)
+	if cap(sb.buf) < n {
+		sb.buf = make([]byte, n)
+	}
+	sb.buf = sb.buf[:n]
+	if cap(sb.starts) < n {
+		sb.starts = make([]int, n)
+	}
+	sb.starts = sb.starts[:n]
+	return sb
+}
+
+func putMaskSlowBuf(sb *maskSlowBuf) {
+	if maskSlowBufReusable(sb) {
+		maskSlowPool.Put(sb)
+	}
+}
+
 // hitSlow is the fallback path for overly long field names or too many words:
-// it switches to a heap buffer; the rule is identical.
+// it switches to a pooled heap buffer; the rule is identical.
 func (m *masker) hitSlow(key string) bool {
-	buf := make([]byte, len(key))
-	starts := make([]int, len(key))
-	n, wc, ok := splitMaskKey(key, buf, starts)
+	sb := getMaskSlowBuf(len(key))
+	defer putMaskSlowBuf(sb)
+	n, wc, ok := splitMaskKey(key, sb.buf, sb.starts)
 	if !ok {
-		// Already allocated for the worst case, so it cannot overflow
+		// Sized for the worst case, so it cannot overflow
 		return false
 	}
 	for i := wc - 1; i >= 0; i-- {
-		if _, found := m.keys[string(buf[starts[i]:n])]; found {
+		if _, found := m.keys[string(sb.buf[sb.starts[i]:n])]; found {
 			return true
 		}
 	}
@@ -227,14 +277,14 @@ func (m *masker) hitWindow(key string) bool {
 // hitWindowSlow is the fallback path for overly long names or too many words;
 // the rule is identical to hitWindow.
 func (m *masker) hitWindowSlow(key string) bool {
-	buf := make([]byte, len(key))
-	starts := make([]int, len(key))
-	n, wc, ok := splitMaskKey(key, buf, starts)
+	sb := getMaskSlowBuf(len(key))
+	defer putMaskSlowBuf(sb)
+	n, wc, ok := splitMaskKey(key, sb.buf, sb.starts)
 	if !ok {
-		// Already allocated for the worst case, so it cannot overflow
+		// Sized for the worst case, so it cannot overflow
 		return false
 	}
-	return m.matchWindow(buf, starts[:wc], n)
+	return m.matchWindow(sb.buf, sb.starts[:wc], n)
 }
 
 // matchWindow enumerates every contiguous word window [i, j). With the word
