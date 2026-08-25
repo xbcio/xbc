@@ -287,7 +287,7 @@ type fullCounterB struct{}
 func (*fullCounterB) Incr() int64   { return 0 }
 func (*fullCounterB) Expire() error { return nil }
 
-// halfCounter implements only Incr, missing Expire -- used to manufacture "zero hits, but with a closest candidate".
+// halfCounterNoArgs implements only Incr, missing Expire -- used to manufacture "zero hits, but with a closest candidate".
 type halfCounterNoArgs struct{}
 
 func (*halfCounterNoArgs) Incr() int64 { return 0 }
@@ -330,11 +330,11 @@ func TestResolve_InterfaceZeroMatchWithClosest(t *testing.T) {
 	producer := newInst(t, "half-provider", defaultInstance, &fakeHalfCounterProvider{})
 
 	_, _, err := a.resolve([]*instance{consumer, producer})
-	require.Error(t, err, "halfCounter 没有 Expire 方法，不满足 Counter")
+	require.Error(t, err, "halfCounterNoArgs 没有 Expire 方法，不满足 Counter")
 	assert.Contains(t, err.Error(), "插件 ratelimit 需要")
 	assert.Contains(t, err.Error(), "无任何插件提供")
 	assert.Contains(t, err.Error(), "最接近的是")
-	assert.Contains(t, err.Error(), "halfCounter")
+	assert.Contains(t, err.Error(), "halfCounterNoArgs")
 	assert.Contains(t, err.Error(), "缺少方法：Expire")
 }
 
@@ -369,6 +369,120 @@ type fakeCounterProviderConcreteB struct{}
 
 func (p *fakeCounterProviderConcreteB) Name() string    { return "provider-b" }
 func (p *fakeCounterProviderConcreteB) Provides() []Dep { return []Dep{Offer[*fullCounterB]()} }
+
+// argCounter's methods match resolveCounter's method names but not their
+// signatures (Incr takes a key argument, while the interface's Incr takes
+// none) -- used to prove methodSignatureMatches actually rejects a
+// same-named, differently-shaped method instead of treating "method exists
+// by name" as good enough.
+type argCounter struct{}
+
+func (*argCounter) Incr(key string) int64 { return 0 }
+func (*argCounter) Expire() error         { return nil }
+
+type fakeArgCounterProvider struct{}
+
+func (p *fakeArgCounterProvider) Name() string { return "arg-provider" }
+func (p *fakeArgCounterProvider) Provides() []Dep {
+	return []Dep{Offer[*argCounter]()}
+}
+
+func TestResolve_InterfaceSignatureMismatchNotSatisfied(t *testing.T) {
+	a := &App{}
+	consumer := newInst(t, "ratelimit", defaultInstance, &fakeCounterConsumer{})
+	producer := newInst(t, "arg-provider", defaultInstance, &fakeArgCounterProvider{})
+
+	_, _, err := a.resolve([]*instance{consumer, producer})
+	require.Error(t, err, "argCounter 的 Incr 方法签名与接口不符，即便方法名都命中也不能算满足")
+	assert.Contains(t, err.Error(), "插件 ratelimit 需要")
+	assert.Contains(t, err.Error(), "无任何插件提供")
+	assert.Contains(t, err.Error(), "最接近的是")
+	assert.Contains(t, err.Error(), "argCounter")
+	assert.Contains(t, err.Error(), "缺少方法：Incr")
+}
+
+// tieIncrOnly and tieExpireOnly each implement exactly one of resolveCounter's
+// two methods, so against want=resolveCounter they score a tie (1 method
+// hit, 1 missing). Named distinctly from registry_test.go's onlyIncr/
+// onlyExpire (Task 4), whose methods take a key argument -- reusing those
+// names here would collide on type name with a different method signature.
+type tieIncrOnly struct{}
+
+func (*tieIncrOnly) Incr() int64 { return 0 }
+
+type tieExpireOnly struct{}
+
+func (*tieExpireOnly) Expire() error { return nil }
+
+type fakeTieIncrProvider struct{}
+
+func (p *fakeTieIncrProvider) Name() string    { return "tie-incr" }
+func (p *fakeTieIncrProvider) Provides() []Dep { return []Dep{Offer[*tieIncrOnly]()} }
+
+type fakeTieExpireProvider struct{}
+
+func (p *fakeTieExpireProvider) Name() string    { return "tie-expire" }
+func (p *fakeTieExpireProvider) Provides() []Dep { return []Dep{Offer[*tieExpireOnly]()} }
+
+func TestResolve_InterfaceZeroMatchClosestTieKeepsFirstRegistered(t *testing.T) {
+	// §5 / T4-2 requires ties in the closest-candidate score to keep the
+	// earliest-registered candidate; a suite with only ever one candidate
+	// registered (as in TestResolve_InterfaceZeroMatchWithClosest above) can
+	// never distinguish ">" from ">=" in closestProductMatch. Mirrors
+	// registry_test.go's TestRegistryClosestMatchTiesKeepEarliestRegistered.
+	a := &App{}
+	consumer := newInst(t, "ratelimit", defaultInstance, &fakeCounterConsumer{})
+	incrProvider := newInst(t, "tie-incr", defaultInstance, &fakeTieIncrProvider{})
+	expireProvider := newInst(t, "tie-expire", defaultInstance, &fakeTieExpireProvider{})
+
+	_, _, err := a.resolve([]*instance{consumer, incrProvider, expireProvider})
+	require.Error(t, err, "两个候选都只命中一个方法，谁都不满足 resolveCounter")
+	assert.Contains(t, err.Error(), "最接近的是")
+	assert.Contains(t, err.Error(), "tieIncrOnly",
+		"同分时必须保留先注册的候选 tieIncrOnly，不能被后注册的 tieExpireOnly 顶替")
+	assert.NotContains(t, err.Error(), "tieExpireOnly")
+	assert.Contains(t, err.Error(), "缺少方法：Expire",
+		"先注册的 tieIncrOnly 缺的是 Expire")
+}
+
+func TestResolve_InterfaceZeroProductsInWholeApp(t *testing.T) {
+	// No instance at all provides any product -- allProducts is empty, so
+	// closestProductMatch has nothing to score and must return a nil type,
+	// which resolveTypeDep renders as the "did you forget to import" hint
+	// instead of a "closest candidate" one.
+	a := &App{}
+	consumer := newInst(t, "ratelimit", defaultInstance, &fakeCounterConsumer{})
+
+	_, _, err := a.resolve([]*instance{consumer})
+	require.Error(t, err, "整个应用没有任何插件提供任何产物，接口依赖必然无法满足")
+	assert.Contains(t, err.Error(), "插件 ratelimit 需要")
+	assert.Contains(t, err.Error(), "无任何插件提供")
+	assert.Contains(t, err.Error(), "是否忘了 import 提供该类型的插件包")
+}
+
+// fakeMultiDefault implements MultiInstancer and is registered under the
+// default instance -- its label() renders "multi[default]" while its id()
+// renders "multi" with no bracket (see stage_expand.go's id()/label() doc
+// comments). Every other fixture in this file is single-instance, where the
+// two methods happen to render identically, so this is the only fixture that
+// can prove resolve builds the graph with id(), not label().
+type fakeMultiDefault struct{}
+
+func (p *fakeMultiDefault) Name() string        { return "multi" }
+func (p *fakeMultiDefault) MultiInstance() bool { return true }
+
+func TestResolve_GraphNodeUsesIDNotLabelForMultiInstanceDefault(t *testing.T) {
+	a := &App{}
+	m := newInst(t, "multi", defaultInstance, &fakeMultiDefault{})
+
+	order, misses, err := a.resolve([]*instance{m})
+	require.NoError(t, err, "单个多实例插件的 default 实例，不该报任何错")
+	assert.Empty(t, misses)
+	require.Len(t, order, 1)
+	assert.Equal(t, "multi", order[0].id(),
+		"图节点必须用 id()（不带 [default] 后缀）建图；如果建图时误用了 label()，"+
+			"这里的查找会因为 key 不匹配而失败")
+}
 
 // fakeConflictProducer and fakeConflictProducerAlt both declare producing *svcA[default] -- a conflict.
 type fakeConflictProducer struct {
@@ -501,4 +615,29 @@ func TestResolve_ProvideTagAndProvidesMerge(t *testing.T) {
 	require.NoError(t, err, "tag 声明的 *svcA 与 Provides() 声明的 *svcB 都要生效")
 	assert.Empty(t, misses)
 	assert.Equal(t, []string{"dual", "consumer"}, idsOf(order))
+}
+
+// fakeDualSameTypeProvider declares producing the exact same concrete type,
+// *svcA, twice on the exact same instance -- once via tag, once via
+// Provides(). Unlike fakeDualProvider above (two *different* types), this is
+// a true duplicate declaration of one type, which Pass 2's "other == inst"
+// branch must recognize as harmless rather than as a conflict between two
+// plugins.
+type fakeDualSameTypeProvider struct {
+	Out *svcA `xbc:"provide"`
+}
+
+func (p *fakeDualSameTypeProvider) Name() string    { return "dual-same" }
+func (p *fakeDualSameTypeProvider) Provides() []Dep { return []Dep{Offer[*svcA]()} }
+
+func TestResolve_ProvideTagAndProvidesSameTypeDeduped(t *testing.T) {
+	a := &App{}
+	dual := newInst(t, "dual-same", defaultInstance, &fakeDualSameTypeProvider{})
+
+	order, misses, err := a.resolve([]*instance{dual})
+	require.NoError(t, err,
+		"同一实例通过 tag 与 Provides() 各声明一次同一类型，属于无害重复，不该报冲突")
+	assert.Empty(t, misses)
+	require.Len(t, order, 1)
+	assert.Equal(t, "dual-same", order[0].id())
 }
