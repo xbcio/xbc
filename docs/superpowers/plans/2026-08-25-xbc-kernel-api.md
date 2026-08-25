@@ -428,6 +428,28 @@ type ValidationError struct{ Lines []string }
 func (e *ValidationError) Error() string
 ```
 
+### `Validate` 与 `Leaves` 的遍历方向相反——插件配置最容易炸的一处
+
+`Validate` 走 validator 自己的遍历，**能**递归进非 nil 的指针子结构体；
+`Leaves`/`walkLeaves` **不**递归指针子结构体（见下面 `Leaves` 的限制 1）。方向相反，于是：
+
+一个插件配置带指针子结构体（`Pool *PoolConfig`），子结构体里某字段同时挂了
+`validate:"required"` 和 `default:"..."`：
+
+| 用户怎么配 | 发生什么 |
+|---|---|
+| 整个子结构体一个字段都不写 | 指针为 nil → validator 不递归 → `required` **不触发**，一切正常 |
+| 子结构体里写了**任意一个**字段 | mapstructure 分配了指针 → validator 开始递归 → 但其余字段的 `default` 因 `Leaves` 不递归而**永远填不上** → `required` **突然报错** |
+
+**配一个字段反而比一个都不配更容易炸。** 这不是待修缺陷，是 Task 5 那条已知限制的自然延伸，
+但撞上的人几乎不可能自己想通——他看到的只是一行 `plugins.xxx.pool.yyy  必填项缺失`，
+那行文案里没有任何线索指向这里。
+
+**这条必须写进 README 的插件配置章节（Plan 5）。** 它现在活在 `internal/conf/validate.go`
+的文档注释里，那是个 internal 包：同 module 的代码 import 得到，但通过 `go get` 引入本框架、
+只对着根包写插件的作者**看不到**（`pkg.go.dev` 不展示 internal 包）。契约文档这一节同样是
+计划产物、会随计划归档。代码注释保证它不丢，README 才保证它被看见——两者都要有。
+
 `Bind` 内部的标量解析（ENV 值与 `default` tag 值共用一个解析器）：
 
 ```go

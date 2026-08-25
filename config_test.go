@@ -141,10 +141,19 @@ func TestLoadConfigServerDurationReboundIsStable(t *testing.T) {
 		"syncBack 把 Duration 回写成纳秒整数后，再次 Bind 同一子树应仍解析回相同的 Duration")
 }
 
-// TestLoadConfigServerDurationReboundWithEnvOverrideIsStable is the ENV-driven
-// half of the same round-trip concern: an ENV override must also survive
-// repeated re-binding, not just the default-tag path.
-func TestLoadConfigServerDurationReboundWithEnvOverrideIsStable(t *testing.T) {
+// TestLoadConfigServerDurationEnvOverrideStaysStableWhileEnvSet guards ENV
+// override idempotency: as long as XBC_SERVER_READ_TIMEOUT stays set, every
+// repeated Config.Unmarshal("server", ...) re-runs Bind's ENV overlay branch
+// and re-parses the same "42s" string straight from the environment, on top
+// of whatever syncBack wrote into k. This is a real, worth-having guarantee,
+// but it does NOT exercise the syncBack round trip through k -- see
+// TestLoadConfigServerDurationEnvOverrideSurvivesRoundTripThroughK for the
+// test that actually does (a prior version of this test claimed to cover
+// that round trip in its own comment while actually only covering this one;
+// the review's mutation -- syncBack writing time.Duration as d.Seconds()
+// instead of its native int64-nanoseconds form -- proved it by staying green
+// when it should have gone red).
+func TestLoadConfigServerDurationEnvOverrideStaysStableWhileEnvSet(t *testing.T) {
 	t.Setenv("XBC_SERVER_READ_TIMEOUT", "42s")
 
 	a := &App{}
@@ -156,4 +165,30 @@ func TestLoadConfigServerDurationReboundWithEnvOverrideIsStable(t *testing.T) {
 		require.NoError(t, a.cfg.Unmarshal("server", &again))
 		require.Equal(t, 42*time.Second, again.ReadTimeout, "第 %d 次重复 Bind 应仍恒为 42s", i+1)
 	}
+}
+
+// TestLoadConfigServerDurationEnvOverrideSurvivesRoundTripThroughK is the
+// test that actually walks the chain "ENV value -> syncBack -> k -> Bind
+// reads it back out of k": the ENV variable is unset right after loadConfig
+// (t.Setenv's own cleanup still restores whatever it was before this test
+// ran, once the test ends), so on the second Unmarshal there is no ENV value
+// left to re-parse, and Bind's default step is skipped too because
+// k.Exists("server.read_timeout") is now true from syncBack's write. The
+// only place ReadTimeout can still come from is whatever syncBack put into
+// k -- if that had been written out in any form other than the native
+// int64-nanoseconds representation (e.g. seconds as a float64), this is the
+// test that would catch the drift.
+func TestLoadConfigServerDurationEnvOverrideSurvivesRoundTripThroughK(t *testing.T) {
+	t.Setenv("XBC_SERVER_READ_TIMEOUT", "42s")
+
+	a := &App{}
+	require.NoError(t, a.loadConfig(conf.Options{EnvPrefix: defaultEnvPrefix}))
+	require.Equal(t, 42*time.Second, a.cfg.Server.ReadTimeout)
+
+	require.NoError(t, os.Unsetenv("XBC_SERVER_READ_TIMEOUT"))
+
+	var second ServerConfig
+	require.NoError(t, a.cfg.Unmarshal("server", &second))
+	require.Equal(t, 42*time.Second, second.ReadTimeout,
+		"ENV 已取消、default 因 k.Exists 为真被跳过，这个值只能来自 syncBack 写进 k 的内容")
 }
