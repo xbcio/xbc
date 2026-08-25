@@ -30,3 +30,9 @@ func (c *Context) Name() string { return c.name }
 // Instance returns the instance name ("default" unless the plugin is
 // multi-instance and configured otherwise).
 func (c *Context) Instance() string { return c.instance }
+
+// registry returns the App-wide (type, instance) store this Context's App owns.
+// Unexported: Provide/Get/GetNamed/MustGet/MustGetNamed are the public seam.
+func (c *Context) registry() *registry {
+	return c.app.registry
+}
