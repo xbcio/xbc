@@ -2,7 +2,7 @@ package xbc
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/xbcio/xbc/internal/graph"
 )
@@ -124,7 +124,7 @@ func orderMiddlewares(entries []mwEntry) (ordered []mwEntry, misses []graph.Miss
 		}
 	}
 
-	sort.Slice(phaseOrder, func(i, j int) bool { return phaseOrder[i] < phaseOrder[j] })
+	slices.Sort(phaseOrder)
 
 	ordered = make([]mwEntry, 0, len(entries))
 	for _, ph := range phaseOrder {
