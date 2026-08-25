@@ -291,6 +291,14 @@ type AmbiguousError struct {
 
 「最接近」的判据：对每个已登记具体类型，数它实现了 `want` 的多少个方法（按方法名比对，签名不符也算缺），取最多的那个；并列时取先登记的。
 
+**实例名归一发生在 `registry` 这一层**：`put` 与 `lookup` 各自在入口调一次 `normInstance`，
+所以 `""` 与 `"default"` 在注册表里就是同一个 key，不是两个。facade（`Provide`/`Get`/
+`GetNamed`）里的 `normInstance` 保留，变成幂等的冗余。
+
+这条不是风格选择。阶段 4 的 `resolve` 与阶段 5 的产物零值校验都**直接调 `lookup`**、
+不经过 facade；把归一押在「每个调用方都记得调 `normInstance`」上，漏一次的后果不是报错，
+是静默查不到——最难查的那类 bug。不变量归数据结构自己管。
+
 ---
 
 ## 6. `context.go`
