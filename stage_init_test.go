@@ -130,6 +130,46 @@ func (p *provideAndDeclarePlugin) Init(ctx *Context) error {
 	return nil
 }
 
+// forgetfulCloserPlugin's Init always succeeds -- so by the time anything
+// downstream fails, it may already hold a live resource -- but it forgets
+// to set its own "provide" field, so harvestInstance fails right after.
+// It also implements Closer. This is the exact combination
+// TestRollbackStopsInstanceWhoseInitSucceededButHarvestFailed needs: none
+// of the other fixtures in this file are both "Init succeeds, a later
+// step fails" and "a Closer", so nothing else can tell "inst.inited flips
+// right after Init" apart from "inst.inited flips only after harvest and
+// validate both succeed too".
+type forgetfulCloserPlugin struct {
+	Base
+	Conn    *fakeConn `xbc:"provide"`
+	stopped *bool
+}
+
+func (p *forgetfulCloserPlugin) Name() string        { return "leaky" }
+func (p *forgetfulCloserPlugin) Init(*Context) error { return nil } // forgets to set Conn
+func (p *forgetfulCloserPlugin) Stop(context.Context) error {
+	*p.stopped = true
+	return nil
+}
+
+// blockingStopPlugin's Stop blocks on ctx.Done() -- a deterministic signal,
+// not a timed sleep -- and records that it actually woke up and returned.
+// It exists to pin rollback's use of a.cfg.Server.ShutdownTimeout: without
+// that deadline, ctx.Done() never fires and Stop blocks forever.
+type blockingStopPlugin struct {
+	Base
+	name     string
+	returned chan struct{}
+}
+
+func (p *blockingStopPlugin) Name() string        { return p.name }
+func (p *blockingStopPlugin) Init(*Context) error { return nil }
+func (p *blockingStopPlugin) Stop(ctx context.Context) error {
+	<-ctx.Done()
+	close(p.returned)
+	return ctx.Err()
+}
+
 type stoppablePlugin struct {
 	Base
 	name      string
@@ -198,6 +238,14 @@ func TestInjectRequiredMissingIsTreatedAsInternalError(t *testing.T) {
 	err := a.initAll([]*instance{consInst})
 	require.Error(t, err, "阶段 4 本该拦住这种缺失，阶段 5 兜底同样要报错，不能让 nil 溜过去")
 	assert.Contains(t, err.Error(), "内部错误")
+
+	// The wrap must be %w, not %v: stage_config.go/stage_resolve.go both
+	// unwrap structured errors via errors.As, and this "internal error"
+	// path is the same convention -- a caller catching this at a higher
+	// layer should be able to errors.As into the underlying *NotFoundError
+	// instead of re-parsing the message string.
+	var notFound *NotFoundError
+	require.ErrorAs(t, err, &notFound, "内部错误包装必须用 %w，errors.As 应该能取到底层 *NotFoundError")
 }
 
 // The fake types in this test verify the error message's template and
@@ -297,11 +345,75 @@ func TestRollbackStopsInReverseOrderOnInitFailure(t *testing.T) {
 	err := a.initAll([]*instance{aInst, bInst, cInst, dInst})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "模拟 c 初始化失败")
+	// The wrap must be %w: errors.Is has to be able to walk through
+	// initAll's "xbc: 插件 %s 初始化失败" wrapper straight back to the
+	// exact error cPlugin.Init returned, the same way stage_config.go and
+	// stage_resolve.go rely on errors.As/Is for their own wraps -- an
+	// error message that merely *looks* the same (via %v) would satisfy
+	// every string assertion here while silently breaking that chain.
+	require.ErrorIs(t, err, cPlugin.failErr, "initAll 包装 Init 失败必须用 %w，errors.Is 应该能追到原始 error")
 	assert.Equal(t, []string{"b", "a"}, stopped,
 		"已成功 Init 的插件必须按拓扑序的逆序 Stop；d 排在失败的 c 之后，压根没轮到 Init，"+
 			"绝不能被 Stop——对一个从未初始化的插件调 Stop 正是空指针的经典来源")
 	assert.False(t, cInst.inited, "c 自己 Init 失败，不能标记为已初始化")
 	assert.False(t, dInst.inited, "d 根本没轮到 Init，不能标记为已初始化")
+}
+
+// initAll must flip inst.inited to true right after Init succeeds, before
+// harvest or validate run -- not only after every stage-5 step for that
+// instance has succeeded. leaky's Init returns nil (so it may already hold
+// a live resource by the time anything else fails), but its harvest step
+// fails right after because it forgot to set its own provide field. If
+// inited were flipped any later than "Init succeeded", rollback's "skip
+// anything not inited" guard would skip Stop here too, leaking whatever
+// leaky's Init had already acquired.
+func TestRollbackStopsInstanceWhoseInitSucceededButHarvestFailed(t *testing.T) {
+	a := newInitTestApp(t)
+	var stopped bool
+	leaky := &forgetfulCloserPlugin{stopped: &stopped}
+	inst := mustInstance(t, a, leaky, "leaky", "default")
+
+	err := a.initAll([]*instance{inst})
+	require.Error(t, err, "忘记赋值的 provide 字段必须让 harvest 报错")
+	assert.True(t, stopped,
+		"Init 已经成功过，哪怕后续 harvest 才失败，回滚也必须 Stop 这个实例，否则它已经打开的资源会泄漏")
+}
+
+// rollback must bound every Stop call with a.cfg.Server.ShutdownTimeout,
+// not context.Background(): blocker's Stop only returns once ctx.Done()
+// fires, which is a deterministic signal tied to that deadline, not a
+// timed sleep the test is gambling on. initAll itself is run on a helper
+// goroutine racing against mustWaitTimeout (shared with goroutine_test.go)
+// so that a regression here fails this test cleanly instead of hanging the
+// whole package for its full "go test" timeout.
+func TestRollbackRespectsShutdownTimeout(t *testing.T) {
+	a := newInitTestApp(t)
+	a.cfg.Server.ShutdownTimeout = 50 * time.Millisecond
+
+	blocker := &blockingStopPlugin{name: "blocker", returned: make(chan struct{})}
+	failing := &providerPlugin{failErr: errors.New("触发回滚：让 blocker 走到 Stop")}
+
+	blockInst := mustInstance(t, a, blocker, "blocker", "default")
+	failInst := mustInstance(t, a, failing, "gorm", "default")
+
+	done := make(chan error, 1)
+	go func() {
+		done <- a.initAll([]*instance{blockInst, failInst})
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(mustWaitTimeout):
+		t.Fatal("initAll 没有在超时上界内返回：rollback 大概丢了 ShutdownTimeout，" +
+			"blocker 的 Stop 卡在 ctx.Done() 上永远等不到信号")
+	}
+
+	select {
+	case <-blocker.returned:
+	case <-time.After(mustWaitTimeout):
+		t.Fatal("blocker 的 Stop 没有在超时上界内被 ctx.Done() 唤醒")
+	}
 }
 
 func TestRollbackStopErrorAndPanicDoNotMaskOriginalError(t *testing.T) {
