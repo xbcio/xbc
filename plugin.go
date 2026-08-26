@@ -14,14 +14,14 @@ type Plugin interface {
 	Name() string
 }
 
-// Dep, Ref and Deps are declared here -- ahead of deps.go (Task 2) -- purely
-// because the Declarer and Provider interfaces immediately below reference
-// them: an interface naming an undefined type fails to compile the moment
-// this file lands, and plugin.go must build on its own by the end of this
-// task. Task 2 adds the constructors (Need, NeedNamed, Opt, Offer, RefOf,
-// Ref.Instance) and the String methods that operate on these same types --
-// splitting "what shape is a dependency" from "how do you build one" across
-// two commits without ever leaving the package non-building in between.
+// Dep, Ref and Deps are declared here -- ahead of deps.go -- purely because
+// the Declarer and Provider interfaces immediately below reference them: an
+// interface naming an undefined type fails to compile the moment this file
+// lands, and plugin.go must build on its own. deps.go adds the constructors
+// (Need, NeedNamed, Opt, Offer, RefOf, Ref.Instance) and the String methods
+// that operate on these same types -- splitting "what shape is a dependency"
+// from "how do you build one" across two files without ever leaving the
+// package non-building in between.
 type Dep struct {
 	Type     reflect.Type
 	Instance string // "" means default
@@ -160,16 +160,23 @@ func bindBase(p Plugin, ctx *Context, name string) bool {
 	return true
 }
 
-// validateName reports whether s contains a character the framework
-// reserves, returning an error describing the first one found.
+// validateIdentifier is the shared character-set check behind validateName
+// and validateInstanceName: both a plugin name and an instance name flow
+// into the same reserved-character surfaces (id()/label()'s "name[instance]"
+// rendering, and the "plugins.<name>.<instance>" config path), so they must
+// be held to the same rule. kind names what is being validated ("插件名" or
+// "实例名") so the error a caller sees actually says which one is wrong,
+// instead of a plugin-name message leaking into an instance-name failure or
+// vice versa.
 //
-// Reserved: '.' (middleware qualification), '[' ']' (instance display),
-// whitespace, and any character outside [a-z0-9_-]. This intentionally does
-// NOT lowercase s first: an uppercase letter is rejected outright rather than
-// silently folded, so "Gorm" and "gorm" can never collide by accident.
-func validateName(s string) error {
+// Reserved: '.' (middleware qualification / config path segmentation), '['
+// ']' (instance display), whitespace, and any character outside [a-z0-9_-].
+// This intentionally does NOT lowercase s first: an uppercase letter is
+// rejected outright rather than silently folded, so "Gorm" and "gorm" (or
+// "Default" and "default") can never collide by accident.
+func validateIdentifier(kind, s string) error {
 	if s == "" {
-		return fmt.Errorf("xbc: 插件名不能为空")
+		return fmt.Errorf("xbc: %s不能为空", kind)
 	}
 	for _, r := range s {
 		switch {
@@ -177,8 +184,29 @@ func validateName(s string) error {
 		case r >= '0' && r <= '9':
 		case r == '_' || r == '-':
 		default:
-			return fmt.Errorf("xbc: 插件名 %q 含非法字符 %q，只允许小写字母、数字、下划线、连字符", s, r)
+			return fmt.Errorf("xbc: %s %q 含非法字符 %q，只允许小写字母、数字、下划线、连字符", kind, s, r)
 		}
 	}
 	return nil
+}
+
+// validateName reports whether s contains a character the framework
+// reserves for a plugin name. See validateIdentifier for the shared rule.
+func validateName(s string) error {
+	return validateIdentifier("插件名", s)
+}
+
+// validateInstanceName reports whether s contains a character the framework
+// reserves for an instance name. See validateIdentifier for the shared rule.
+//
+// Called from expandMulti (stage_expand.go) at the point a multi-instance
+// plugin's config-section keys become instance names: an empty or malformed
+// YAML key there is almost certainly a configuration typo, not a deliberate
+// choice, and letting it through would silently produce an instance whose
+// id() renders as "name[]" -- breaking both RefOf(...).Instance("default")
+// matching (stage_resolve.go compares the *normalized* instance name) and
+// the "instance name is always non-empty" contract documented on
+// instance.instance (context.go).
+func validateInstanceName(s string) error {
+	return validateIdentifier("实例名", s)
 }

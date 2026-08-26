@@ -181,6 +181,54 @@ func TestExpandMultiInstanceNonMapKeyErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), `多实例插件 gorm 的配置节下 "max_retries" 不是实例（实例配置必须是映射）`)
 }
 
+// TestExpandMultiInstanceEmptyKeyErrors pins known-items C1 / final review
+// Important #2: an empty-string instance key (plugins.gorm: {"": {...}}) is
+// almost always a config typo, not a deliberate "default instance" spelling.
+// Before this test, expandMulti let it through unchanged and produced an
+// instance whose instance field was "" -- id()/label() rendered it as
+// "gorm[]" (contradicting context.go's "instance name, always non-empty"
+// contract) and RefOf[T]().Instance("default") could never match it, because
+// stage_resolve.go compares the *normalized* ref instance against the
+// instance's raw, un-normalized field. Rejecting it here, at the one place
+// config-section keys become instance names, closes both holes at once.
+func TestExpandMultiInstanceEmptyKeyErrors(t *testing.T) {
+	a := &App{cfg: newTestConfig(t, map[string]any{
+		"plugins": map[string]any{
+			"gorm": map[string]any{
+				"": map[string]any{"dsn": "a"},
+			},
+		},
+	})}
+	a.entries = []entry{{proto: &fakeMultiPlugin{}, name: "gorm", src: sourceImport, multi: true}}
+
+	_, err := a.expand()
+	require.Error(t, err, "空字符串实例名必须在展开阶段就报错，不能悄悄归一化成 default")
+	assert.Contains(t, err.Error(), "多实例插件 gorm 的实例名")
+	assert.Contains(t, err.Error(), "实例名不能为空")
+}
+
+// TestExpandMultiInstanceReservedCharacterKeyErrors covers the other half of
+// the same fix: an instance name is not just "non-empty", it must also avoid
+// every character the framework already reserves for a plugin name (see
+// validateInstanceName) -- '.' would corrupt the
+// "plugins.<name>.<instance>" config path stage_config.go's configPath
+// builds, and '[' / ']' would corrupt id()'s "name[instance]" rendering.
+func TestExpandMultiInstanceReservedCharacterKeyErrors(t *testing.T) {
+	a := &App{cfg: newTestConfig(t, map[string]any{
+		"plugins": map[string]any{
+			"gorm": map[string]any{
+				"read.only": map[string]any{"dsn": "a"},
+			},
+		},
+	})}
+	a.entries = []entry{{proto: &fakeMultiPlugin{}, name: "gorm", src: sourceImport, multi: true}}
+
+	_, err := a.expand()
+	require.Error(t, err, "实例名含 '.' 会破坏 plugins.<name>.<instance> 配置路径，必须拒绝")
+	assert.Contains(t, err.Error(), `"read.only"`)
+	assert.Contains(t, err.Error(), "含非法字符")
+}
+
 func TestExpandOrphanSectionAbortsWithExactMessage(t *testing.T) {
 	a := &App{cfg: newTestConfig(t, map[string]any{
 		"plugins": map[string]any{
