@@ -84,6 +84,21 @@ func TestCapabilityTokensOnlyListsImplementedInterfaces(t *testing.T) {
 	assert.Equal(t, []string{"init", "stop"}, capabilityTokens(&App{}, inst))
 }
 
+// TestCapabilityTokensRouteCountLookupUsesInstanceIDNotName pins routeCounts'
+// lookup key to inst.id(), not inst.name. Every other fixture in this file
+// uses instance: "default", where inst.id() == inst.name -- the two keys
+// collide numerically, so those fixtures cannot tell an id()-keyed lookup
+// apart from a name-keyed one. Using a non-default instance ("readonly")
+// makes inst.id() ("user[readonly]") diverge from inst.name ("user"), so a
+// lookup keyed by the wrong one reads a missing map entry and silently
+// renders routes(0) instead of the real count.
+func TestCapabilityTokensRouteCountLookupUsesInstanceIDNotName(t *testing.T) {
+	a := &App{routeCounts: map[string]int{"user[readonly]": 7}}
+	inst := &instance{plugin: tableRoutePlugin{}, name: "user", instance: "readonly"}
+	assert.Equal(t, []string{"migrate", "routes(7)"}, capabilityTokens(a, inst),
+		"routeCounts 必须按 inst.id()（\"user[readonly]\"）查找，不是 inst.name（\"user\"）")
+}
+
 func TestBuildPluginTableAlignsColumnsByActualContentWidth(t *testing.T) {
 	gormInst := &instance{
 		plugin:   tableInitPlugin{},
