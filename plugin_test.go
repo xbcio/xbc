@@ -30,6 +30,33 @@ func TestDeriveNameStripsMajorVersionSuffix(t *testing.T) {
 	assert.Equal(t, "foo", name, "末段形如 v+数字时取前一段")
 }
 
+// TestIsMajorVersionSegmentRejectsVPrefixedWords pins the rejection branch of
+// isMajorVersionSegment: a package path segment that merely starts with "v"
+// (a real plugin package named vault, view, or validator is exactly this
+// shape) must NOT be mistaken for a Go major-version element like "v2" or
+// "v10". Before this test, flipping the inner loop's "return false" to
+// "return true" -- which would treat every v-prefixed, length->=2 string as
+// a version segment regardless of what follows "v" -- made the entire suite
+// pass, because nothing exercised this branch with a non-numeric case.
+func TestIsMajorVersionSegmentRejectsVPrefixedWords(t *testing.T) {
+	cases := []string{"vault", "view", "validator", "vx1", "v1a", "value2"}
+	for _, s := range cases {
+		assert.False(t, isMajorVersionSegment(s), "%q 不是版本号段，不应被误判", s)
+	}
+}
+
+func TestIsMajorVersionSegmentAcceptsRealVersionSegments(t *testing.T) {
+	for _, s := range []string{"v2", "v10", "v999"} {
+		assert.True(t, isMajorVersionSegment(s), "%q 是合法的 Go 主版本路径段", s)
+	}
+}
+
+func TestIsMajorVersionSegmentRejectsTooShortOrWrongPrefix(t *testing.T) {
+	for _, s := range []string{"", "v", "2", "a2"} {
+		assert.False(t, isMajorVersionSegment(s), "%q 既不够长也不是以 v 开头的纯数字，不是版本号段", s)
+	}
+}
+
 // notAPointerPlugin and nonStructPlugin don't need a realistic package path
 // -- deriveName rejects them before it ever looks at PkgPath -- so they're
 // defined right here instead of as fixtures.
