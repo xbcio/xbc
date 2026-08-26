@@ -329,7 +329,7 @@ func matchInterface(products []product, want reflect.Type) []product {
 // keep the first-declared type, since allProducts is already in
 // registration order.
 //
-// Named distinctly from registry.go's closestMatch (Task 4): that one scans
+// Named distinctly from registry.go's closestMatch: that one scans
 // []registryKey scoped to a single instance for the runtime lookup path,
 // this one scans []product across every instance for the static resolve-time
 // diagnostic path -- same idea, different input shape, and Go does not allow
@@ -405,7 +405,7 @@ func methodSignatureMatches(concrete, iface reflect.Method) bool {
 // existing helper directly instead of shadowing it.
 func pkgName(typ reflect.Type) string {
 	t := typ
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	pkgPath := t.PkgPath()
@@ -427,7 +427,7 @@ func pkgName(typ reflect.Type) string {
 // non-pointer branch is kept for defensiveness rather than assuming that
 // convention is enforced elsewhere.
 func zeroPluginOf(t reflect.Type) Plugin {
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		return reflect.New(t.Elem()).Interface().(Plugin)
 	}
 	return reflect.New(t).Elem().Interface().(Plugin)
