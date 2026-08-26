@@ -5,11 +5,20 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 
+	"github.com/xbcio/xbc/internal/conf"
 	"github.com/xbcio/xbc/internal/graph"
 	"github.com/xbcio/xbc/internal/inject"
+	"github.com/xbcio/xbc/log"
 )
+
+// osExit is the process-termination hook Run goes through -- indirected
+// through a package var, mirroring log/zap.go's own exitFunc, so a test can
+// observe Run's tail sequence (log.Sync() then exit) in-process without
+// forking a subprocess.
+var osExit = os.Exit
 
 // source records which registration path a plugin arrived by. The two paths
 // carry different intent strength, so they get different enable rules (§6.4,
@@ -185,10 +194,108 @@ func (a *App) Register(p ...Plugin) *App {
 	return a
 }
 
-// Run assembles and serves the application, exiting the process with the
-// resulting code. The ten-stage pipeline (Task 8 onward) fills this in; it
-// is intentionally left minimal here since none of those stages exist yet.
-func (a *App) Run() {}
+// Run is the process entry point: main() calls this and nothing else. It
+// parses os.Args, drives the pipeline, prints a fatal error to stderr on
+// failure, flushes the logger, and exits with the resulting code.
+//
+// log.Sync() runs here, not inside shutdown(): shutdown is stage 10, reached
+// partway through the pipeline (or not at all, e.g. doctor/migrate return
+// before it), so flushing there would happen before the pipeline has
+// actually finished producing log output. Run is the one place that always
+// runs last, on every exit path, so the flush belongs immediately before
+// osExit and nowhere else.
+func (a *App) Run() {
+	code, err := a.run(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	_ = log.Sync()
+	osExit(code)
+}
+
+// run is the testable core behind Run: it never touches os.Exit, so tests
+// can call it directly and assert on the returned exit code without forking
+// a subprocess. Exit code 2 marks a command-line usage error (flag package's
+// own convention); 1 marks a runtime/pipeline failure; 0 is success.
+func (a *App) run(args []string) (exitCode int, err error) {
+	opts, err := parseArgs(args)
+	if err != nil {
+		return 2, err
+	}
+	a.migrate = opts.migrate || opts.subcommand == "migrate"
+
+	if err := a.loadConfig(conf.Options{File: opts.config, Profile: opts.profile, EnvPrefix: "XBC_"}); err != nil {
+		return 1, err
+	}
+	if !a.migrate && a.cfg.Server.AutoMigrate {
+		a.migrate = true
+	}
+
+	insts, err := a.expand()
+	if err != nil {
+		return 1, err
+	}
+	if err := a.bindConfigs(insts); err != nil {
+		return 1, err
+	}
+	order, misses, err := a.resolve(insts)
+	if err != nil {
+		return 1, err
+	}
+	a.order = order
+	a.softMisses = append(a.softMisses, misses...)
+
+	if opts.subcommand == "doctor" {
+		a.printStartupLog(order) // reports only the assembly result, without establishing any connection
+		return 0, nil
+	}
+
+	// initGoroutines must run right here, immediately before initAll: a
+	// plugin's Init already receives a live *Context and is free to call
+	// ctx.Go/ctx.GoCritical from inside Init itself (see goroutine.go's own
+	// doc comment on initGoroutines), so a.wg/a.runCtx/a.criticalCh must
+	// already exist before initAll runs, not merely before startRunners.
+	// Placing this any earlier -- e.g. at the top of run(), before the
+	// doctor check above -- would make doctor set up a background context
+	// it returns without ever cancelling.
+	a.initGoroutines()
+
+	if err := a.initAll(order); err != nil {
+		return 1, err
+	}
+
+	if err := a.migrateAll(order); err != nil {
+		return 1, err
+	}
+
+	if opts.subcommand == "migrate" {
+		// Mirrors shutdown()'s own ordering: a Migrator plugin's Init may
+		// have started managed goroutines that must be cancelled and
+		// drained before rollback runs, otherwise rollback could Stop a
+		// plugin out from under a goroutine that is still using it.
+		a.cancel()
+		a.wg.Wait()
+		a.rollback(order) // a one-shot process; even exiting right after finishing must Stop cleanly, leaving no lingering connections
+		return 0, nil
+	}
+
+	if err := a.assembleHTTP(order); err != nil {
+		return 1, err
+	}
+	a.printStartupLog(order)
+
+	if err := a.startRunners(order); err != nil {
+		return 1, err
+	}
+
+	if err := a.serve(); err != nil {
+		return 1, err
+	}
+	if a.exitCode != 0 {
+		return a.exitCode, nil
+	}
+	return 0, nil
+}
 
 // newEntry resolves a plugin's name and wraps it into an entry.
 //

@@ -1,0 +1,50 @@
+# application.example.yml —— 配置样例，复制为 application.yml 后按需修改。
+# 四个顶级命名空间：server / log 是框架保留字段；plugins 是插件配置区；
+# app 是业务自由区，框架不解析，也不做 ENV 覆盖（裁决 R2 的边界）。
+
+server:
+  addr: :8080                 # 监听地址
+  base_path: /api/v1           # 根路由前缀，所有 RegisterRoutes 注册的路径都挂在它下面
+  read_timeout: 10s            # 读超时，防止慢速请求头占满连接
+  write_timeout: 30s           # 写超时，同上，防止慢速写入占满连接（裁决 R10 补的字段）
+  shutdown_timeout: 30s        # 优雅关闭的最长等待时间，超时后强杀还在处理的连接
+  auto_migrate: false          # 默认关闭迁移；开发环境可以在 application-dev.yml 里覆盖成 true
+
+log:
+  level: info                  # debug/info/warn/error
+  caller: true                 # 是否记录调用位置
+  console:
+    enabled: true               # 终端人读，带色对齐
+  file:
+    enabled: true
+    path: logs/app.log.jsonl    # 后缀决定渲染格式：.log -> console，.jsonl -> json
+
+plugins:
+  gorm:
+    default:
+      dsn: ${MYSQL_DSN}                    # 敏感信息走 ENV 插值，绝不写真实连接串
+      max_open_conn: 20
+      max_idle_conn: 10
+      conn_max_life: 1h
+    readonly:
+      dsn: ${MYSQL_READONLY_DSN}
+      max_open_conn: 50
+
+  redis:
+    default:
+      addr: 127.0.0.1:6379
+      password: ${REDIS_PASSWORD}          # 同样走 ENV，配置文件里不出现明文密码
+
+  cors:
+    allow_origins:
+      - https://example.com
+
+  jwt:
+    secret: ${JWT_SECRET}                  # 绝不写真实密钥；本地开发用 .env 或 shell 导出这个变量
+
+  cron:
+    enabled: false                         # 一行关掉整个插件，不用改代码重新编译
+
+app:
+  # 业务自定义配置，框架不解析
+  feature_x: true
