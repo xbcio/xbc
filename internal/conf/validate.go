@@ -86,10 +86,11 @@ func (e *ValidationError) Append(other *ValidationError) {
 // walked into the pointer to find them), so they are still their Go zero
 // value, and `required` reports them missing. Configuring one field ends up
 // more likely to blow up than configuring none. This is not a bug introduced
-// by Validate -- it is Leaves' existing pointer-recursion limitation
-// (Task 5) surfacing through a second, independent code path that happens to
-// recurse the opposite way; fixing it means changing one of the two walks to
-// agree with the other, which is future work, not a defect in either one.
+// by Validate -- it is Leaves' existing pointer-recursion limitation (see
+// Leaves' own doc comment in bind.go, limitation #1) surfacing through a
+// second, independent code path that happens to recurse the opposite way;
+// fixing it means changing one of the two walks to agree with the other,
+// which is future work, not a defect in either one.
 func Validate(out any, path string) error {
 	v := validator.New()
 	err := v.Struct(out)
@@ -128,7 +129,7 @@ func joinPath(path, sub string) string {
 // uses -- both must agree on the field-name-to-tag-name mapping, or the
 // rendered error path won't match what's actually in the config file.
 func yamlPath(root reflect.Type, structNamespace string) string {
-	for root.Kind() == reflect.Ptr {
+	for root.Kind() == reflect.Pointer {
 		root = root.Elem()
 	}
 
@@ -152,7 +153,7 @@ func yamlPath(root reflect.Type, structNamespace string) string {
 		out = append(out, yamlTagName(f))
 
 		ft := f.Type
-		for ft.Kind() == reflect.Ptr {
+		for ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
 		t = ft

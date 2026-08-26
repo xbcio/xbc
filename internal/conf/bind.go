@@ -27,7 +27,7 @@ type Leaf struct {
 //
 //  1. Pointer-typed sub-struct fields (e.g. `Pool *PoolConfig`) are NOT
 //     recursed into -- walkLeaves treats them as an opaque scalar leaf (see
-//     walkLeaves) and setScalar has no case for reflect.Ptr, so if the ENV
+//     walkLeaves) and setScalar has no case for reflect.Pointer, so if the ENV
 //     or default machinery ever reaches such a leaf it fails with "不支持的
 //     标量类型" rather than descending into it. In practice this means: a
 //     value written for that subtree in the config file still binds fine
@@ -49,7 +49,7 @@ type Leaf struct {
 //     "server.field" that struct embedding usually implies for YAML users.
 func Leaves(root string, out any) []Leaf {
 	t := reflect.TypeOf(out)
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	var leaves []Leaf
@@ -59,7 +59,7 @@ func Leaves(root string, out any) []Leaf {
 
 // walkLeaves recurses only into plain (non-pointer) structs -- time.Time is
 // treated as a scalar (it has no yaml-tagged fields of its own that this
-// scheme cares about), and reflect.Ptr struct fields are treated as opaque
+// scheme cares about), and reflect.Pointer struct fields are treated as opaque
 // scalar leaves rather than recursed into. See the two numbered limitations
 // on Leaves' doc comment for what that means for pointer sub-structs and for
 // anonymous embedded structs.
@@ -174,7 +174,7 @@ func fieldByIndex(v reflect.Value, index []int) reflect.Value {
 // defaultTag reads the `default:"..."` tag off the field at the end of index,
 // walking through intermediate struct types along the way.
 func defaultTag(t reflect.Type, index []int) (string, bool) {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	for depth, i := range index {
@@ -184,7 +184,7 @@ func defaultTag(t reflect.Type, index []int) (string, bool) {
 			return tag, tag != ""
 		}
 		t = f.Type
-		for t.Kind() == reflect.Ptr {
+		for t.Kind() == reflect.Pointer {
 			t = t.Elem()
 		}
 	}
