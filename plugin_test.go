@@ -68,3 +68,28 @@ func TestValidateNameAcceptsPlainLowercase(t *testing.T) {
 func TestValidateNameRejectsEmpty(t *testing.T) {
 	assert.Error(t, validateName(""), "空名字不合法")
 }
+
+// TestValidateInstanceNameSharesValidateNameRule pins that validateInstanceName
+// is not a weaker cousin of validateName -- both go through validateIdentifier,
+// so an instance name is held to exactly the same character-set rule as a
+// plugin name (see stage_expand.go's expandMulti, which is validateInstanceName's
+// only production caller).
+func TestValidateInstanceNameSharesValidateNameRule(t *testing.T) {
+	for _, s := range []string{"a.b", "a[b]", "a]b", "a b", "ABC", "用户", ""} {
+		assert.Error(t, validateInstanceName(s), "实例名 %q 应当被拒绝", s)
+	}
+	for _, s := range []string{"default", "readonly", "read_only", "read-only", "a1"} {
+		assert.NoError(t, validateInstanceName(s), "实例名 %q 应当合法", s)
+	}
+}
+
+// TestValidateInstanceNameErrorMentionsInstanceNotPlugin pins that the error
+// text says "实例名", not "插件名" -- reusing validateName's message verbatim
+// for an instance-name failure would misdirect a user staring at a
+// plugins.gorm.<instance> typo toward looking at the plugin name instead.
+func TestValidateInstanceNameErrorMentionsInstanceNotPlugin(t *testing.T) {
+	err := validateInstanceName("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "实例名")
+	assert.NotContains(t, err.Error(), "插件名")
+}

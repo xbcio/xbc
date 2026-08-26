@@ -96,6 +96,17 @@ func (a *App) expandMulti(e entry) ([]*instance, error) {
 	var names []string
 	for k, v := range section {
 		if _, ok := v.(map[string]any); ok {
+			// A malformed instance key (most commonly an empty string, e.g.
+			// plugins.gorm: {"": {dsn: ...}}) must fail fast here, not
+			// silently become an instance whose id() renders as "name[]" and
+			// whose instance field never normalizes to "default" -- see
+			// validateInstanceName's own doc comment for the two concrete
+			// failure modes that would otherwise slip through.
+			if err := validateInstanceName(k); err != nil {
+				return nil, fmt.Errorf(
+					"xbc: 多实例插件 %s 的实例名 %q 不合法：%w\n  → 实例名只能用小写字母、数字、下划线、连字符；一个空字符串键几乎总是配置笔误",
+					e.name, k, err)
+			}
 			names = append(names, k)
 			continue
 		}
