@@ -251,6 +251,46 @@ func (p *signalStopPlugin) Stop(context.Context) error {
 	return nil
 }
 
+// racyStopPlugin is F1's regression fixture for the wg.Wait()-before-
+// rollback() ordering in shutdown() (stage_run.go). Its Init starts a
+// managed goroutine that, once it observes ctx.Done(), spends a short but
+// non-zero amount of time writing to a shared *int -- the same *int Stop
+// writes to, with no synchronization between the two. If shutdown() ever
+// called rollback() (and therefore Stop) before a.wg.Wait() returned, these
+// two writes would race for real: this is not an assertion on an
+// implementation detail, it is a genuine, -race-detectable data race that
+// only cannot happen because wg.Wait() already guarantees the goroutine has
+// returned by the time Stop runs.
+type racyStopPlugin struct {
+	Base
+	name    string
+	started chan struct{}
+	state   *int
+}
+
+func (p *racyStopPlugin) Name() string { return p.name }
+
+func (p *racyStopPlugin) Init(ctx *Context) error {
+	ctx.Go(func(gctx context.Context) {
+		close(p.started)
+		<-gctx.Done()
+		// A tight loop rather than a single write: this stretches the
+		// window during which a wrongly-ordered Stop could land a
+		// concurrent write, so the race detector reliably has something
+		// to catch instead of relying on both writes happening to land
+		// on the exact same instant.
+		for i := 0; i < 2000; i++ {
+			*p.state++
+		}
+	})
+	return nil
+}
+
+func (p *racyStopPlugin) Stop(context.Context) error {
+	*p.state++
+	return nil
+}
+
 // ---- assembly helpers ----
 
 func newAssembleTestApp(t *testing.T) *App {
@@ -588,6 +628,35 @@ func TestShutdownStopsInReverseTopologicalOrder(t *testing.T) {
 	assert.Equal(t, 0, a.exitCode, "非 critical 原因触发的关闭不能把退出码设为 1")
 }
 
+// TestShutdownWaitsForManagedGoroutinesBeforeStoppingPlugins pins the
+// ordering inside shutdown() between a.wg.Wait() and a.rollback(a.order):
+// managed-goroutine drain must complete before any plugin's Stop runs. Unlike
+// TestShutdownStopsInReverseTopologicalOrder above (which only distinguishes
+// Stop call *order* among plugins), this test uses initGoroutines() for a
+// real wg/runCtx/cancel triple, so cancel() during shutdown actually
+// unblocks racyStopPlugin's managed goroutine -- letting -race catch a
+// genuine concurrent write if the wg.Wait() call is ever skipped or
+// reordered relative to rollback().
+func TestShutdownWaitsForManagedGoroutinesBeforeStoppingPlugins(t *testing.T) {
+	a := newInitTestApp(t)
+	a.initGoroutines()
+
+	started := make(chan struct{})
+	state := 0
+	p := &racyStopPlugin{name: "worker", started: started, state: &state}
+	inst := mustInstance(t, a, p, "worker", "default")
+	insts := []*instance{inst}
+	require.NoError(t, a.initAll(insts))
+	a.order = insts
+
+	<-started // the managed goroutine is running and blocked on ctx.Done()
+	a.shutdown("test")
+
+	assert.Equal(t, 2001, state,
+		"wg.Wait() 必须等托管 goroutine 的收尾循环写完 2000 次，Stop 才能再写最后一次；"+
+			"顺序一旦被打破，-race 下这两处写同一个 int 会被判定为真实数据竞争")
+}
+
 func TestInFlightRequestIsDrainedBeforeShutdownCompletes(t *testing.T) {
 	release := make(chan struct{})
 	reached := make(chan struct{})
@@ -781,8 +850,8 @@ func TestServeErrorStillRunsShutdown(t *testing.T) {
 // SIGTERM, or for no signal at all -- it cannot prove signal.Notify is wired
 // to the signal production actually needs to catch. <-a.ready only unblocks
 // after signal.Notify has already registered (see serve()'s own doc
-// comment), so this signal cannot race the registration and fall through to
-// the process's default disposition.
+// comment), so this signal cannot race the registration and be caught
+// instead by the Go runtime's own pre-installed termination handler.
 //
 // This test must not run with t.Parallel(): a real signal delivered via
 // syscall.Kill is a process-wide side effect, not scoped to this test, and
