@@ -199,8 +199,12 @@ func (a *App) startRunners(insts []*instance) error {
 // serve drives stage 9: block running the HTTP server until one of three
 // signals arrives -- an OS interrupt, a GoCritical failure, or Serve's own
 // error -- then hands off to shutdown. a.listener lets tests pass a :0
-// listener and pick their own port; a.ready is closed once Serve has
-// actually started accepting, so a test never has to guess with a sleep.
+// listener and pick their own port; a.ready is closed only after
+// signal.Notify has registered, not merely once Serve has started accepting
+// -- otherwise a real OS signal sent right after ready fires could arrive
+// before Notify runs and fall through to the process's default disposition
+// (killing it outright) instead of being caught here, so a test can only
+// safely depend on ready meaning "signals are now guaranteed to be caught".
 func (a *App) serve() error {
 	if a.listener == nil {
 		ln, err := net.Listen("tcp", a.cfg.Server.Addr)
@@ -218,13 +222,13 @@ func (a *App) serve() error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- a.httpServer.Serve(a.listener) }()
 
-	if a.ready != nil {
-		close(a.ready)
-	}
-
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
+
+	if a.ready != nil {
+		close(a.ready)
+	}
 
 	select {
 	case <-sigCh:

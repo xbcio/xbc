@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -763,4 +764,49 @@ func TestServeErrorStillRunsShutdown(t *testing.T) {
 	assert.Equal(t, []string{"gorm"}, stopped,
 		"Serve 异常退出也必须走完阶段 10，把已经 Init 的插件 Stop 掉，不能绕过优雅关闭")
 	assert.Equal(t, 1, a.exitCode, "非计划内的 Serve 错误退出码必须是 1")
+}
+
+// TestSignalTriggersFullShutdownWithoutSettingExitCode completes the
+// symmetric trio for serve()'s three select arms (see
+// TestGoCriticalTriggersFullShutdownAndExitCodeOne and
+// TestServeErrorStillRunsShutdown, its two siblings): a real SIGTERM must
+// still run stage 10 to completion and stop every already-inited plugin in
+// reverse topological order -- but, unlike its two siblings, must leave
+// exitCode at its zero value, because a signal is a deliberate, expected way
+// to stop the process, not an unplanned failure.
+//
+// This delivers an actual OS signal via syscall.Kill instead of closing an
+// injectable channel standing in for sigCh: a fake channel would pass just
+// as happily if serve() had registered signal.Notify for SIGHUP instead of
+// SIGTERM, or for no signal at all -- it cannot prove signal.Notify is wired
+// to the signal production actually needs to catch. <-a.ready only unblocks
+// after signal.Notify has already registered (see serve()'s own doc
+// comment), so this signal cannot race the registration and fall through to
+// the process's default disposition.
+//
+// This test must not run with t.Parallel(): a real signal delivered via
+// syscall.Kill is a process-wide side effect, not scoped to this test, and
+// would race any other test in this package that is also blocked in
+// serve()'s select at the same moment.
+func TestSignalTriggersFullShutdownWithoutSettingExitCode(t *testing.T) {
+	var stopped []string
+	gormPlugin := &closerPlugin{name: "gorm", stopped: &stopped}
+	userPlugin := &closerPlugin{name: "user", stopped: &stopped} // sorts after gorm in insts
+	a := newAssembleTestApp(t)
+	insts := []*instance{
+		mustInstance(t, a, gormPlugin, "gorm", "default"),
+		mustInstance(t, a, userPlugin, "user", "default"),
+	}
+	a = newServeTestApp(t, a, insts)
+
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- a.serve() }()
+	<-a.ready
+
+	require.NoError(t, syscall.Kill(syscall.Getpid(), syscall.SIGTERM))
+
+	require.NoError(t, <-serveDone)
+	assert.Equal(t, []string{"user", "gorm"}, stopped,
+		"真实 SIGTERM 触发的关闭必须走完整阶段 10，按拓扑序的逆序 Stop 每个插件")
+	assert.Equal(t, 0, a.exitCode, "signal 是主动停止，不应该把退出码设为非零")
 }
