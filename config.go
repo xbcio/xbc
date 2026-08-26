@@ -41,7 +41,8 @@ type ServerConfig struct {
 
 // Unmarshal binds a config subtree into out, applying the full stage-3 chain
 // (unmarshal -> ENV -> default). It does NOT run validate -- callers that
-// need validation call conf.Validate separately (see stage_config.go, Task 9).
+// need validation call conf.Validate separately (see bindConfigs in
+// stage_config.go, which does exactly that for every plugin instance).
 func (c *Config) Unmarshal(path string, out any) error {
 	if c == nil || c.k == nil {
 		return fmt.Errorf("xbc: 配置尚未加载，无法绑定 %s", displayConfigPath(path))
@@ -90,7 +91,7 @@ func (c *Config) Get(path string) any {
 // distinction properly would require internal/conf's Leaf to also carry
 // whether a `default` tag exists and whether ENV/file actually hit it, and
 // syncBack to only write back the leaves that were actually set -- a change
-// to Task 5's exported API this task deliberately did not make.
+// to internal/conf's exported API this design deliberately did not make.
 func (c *Config) Exists(path string) bool {
 	if c == nil || c.k == nil {
 		return false
@@ -128,7 +129,7 @@ func syncBack(k *koanf.Koanf, path string, out any) error {
 	}
 
 	v := reflect.ValueOf(out)
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		v = v.Elem()
 	}
 

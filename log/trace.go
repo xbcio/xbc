@@ -150,9 +150,10 @@ func SpanID(id trace.SpanID) SpanOption {
 //
 // Pre-Init behavior: Span uses L() to obtain the logger. Before Init or
 // SetLogger has been called, L() returns Nop(), so the "span 结束" log
-// emitted by done() is silently discarded. This is by design — L()'s
-// Nop-before-init contract (Task 7) makes all logging a no-op until the
-// application explicitly initializes the backend.
+// emitted by done() is silently discarded. This is by design — see L()'s
+// own doc comment (zap.go) for its nop-before-init contract, which makes
+// all logging a no-op until the application explicitly initializes the
+// backend.
 //
 // done() should be called exactly once (via defer). Calling it more than
 // once does not panic or corrupt state, but emits a duplicate "span 结束"

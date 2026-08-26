@@ -25,8 +25,8 @@ func normInstance(s string) string {
 	return s
 }
 
-// Need declares a hard dependency on the default instance of T. Resolution
-// (Task 9) fails the whole app if no plugin provides one.
+// Need declares a hard dependency on the default instance of T. Stage 4's
+// resolve() (stage_resolve.go) fails the whole app if no plugin provides one.
 func Need[T any]() Dep {
 	return Dep{Type: typeOf[T]()}
 }

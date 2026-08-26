@@ -22,7 +22,7 @@ var osExit = os.Exit
 
 // source records which registration path a plugin arrived by. The two paths
 // carry different intent strength, so they get different enable rules (§6.4,
-// implemented in Task 8's stage_expand.go).
+// implemented in stage_expand.go).
 type source int
 
 const (
@@ -48,7 +48,7 @@ var (
 )
 
 // Register registers a plugin from a package init(). Enabled only when a
-// matching config section exists (Task 8).
+// matching config section exists (see stage_expand.go's enable-rule matrix).
 //
 // Register cannot return an error -- it exists to be called from init(),
 // which has no error channel -- so a malformed plugin (an unresolvable name,
@@ -111,7 +111,7 @@ type App struct {
 	// gin actually runs.
 	middlewareChain []mwEntry
 
-	// Managed goroutine lifecycle, see goroutine.go (Task 12).
+	// Managed goroutine lifecycle, see goroutine.go.
 	runCtx         context.Context // handed to every ctx.Go / ctx.GoCritical callback
 	cancel         context.CancelFunc
 	wg             *sync.WaitGroup
@@ -122,7 +122,7 @@ type App struct {
 	exitCode int
 
 	// registry is the (type, instance) store shared by every Context of this
-	// App -- see registry.go (Task 4).
+	// App -- see registry.go.
 	registry *registry
 
 	// cfg is the merged configuration, filled by stage 1's loadConfig and

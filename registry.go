@@ -17,10 +17,11 @@ type registryKey struct {
 // registry is the (type, instance) -> value store shared by every Context
 // that belongs to the same App. It normalizes the instance argument itself
 // (via normInstance in deps.go) at every entry point -- "" and "default" are
-// the same key here, not just at the facade layer above. Later stages (Task
-// 10's resolve, Task 13's provides check) call put/lookup directly,
-// bypassing Provide/Get/GetNamed, and a call site that forgets to normalize
-// must not silently miss a registration made through the other spelling.
+// the same key here, not just at the facade layer above. resolve()'s product
+// index (stage_resolve.go) and initAll's post-Init provides check
+// (stage_init.go) call put/lookup directly, bypassing Provide/Get/GetNamed,
+// and a call site that forgets to normalize must not silently miss a
+// registration made through the other spelling.
 type registry struct {
 	mu    sync.RWMutex
 	m     map[registryKey]any
