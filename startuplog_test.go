@@ -204,6 +204,38 @@ func TestRenderMiddlewareChainFormatsPhaseAndSoftOrder(t *testing.T) {
 	assert.Contains(t, lines[3], "after=cors")
 }
 
+// TestRenderMiddlewareChainPinsNameWidthAcrossQnameLengths closes the "third
+// instance" coverage gap the final review called out: every other
+// renderMiddlewareChain test above only uses assert.Contains, so a mutation
+// that hardcodes nameWidth to a constant (e.g. 3) still passes them all --
+// nothing ever checks the padding between the qname column and the "["
+// bracket. The two qnames here differ sharply in length (4 vs 19 characters)
+// specifically so that any hardcoded nameWidth would misalign at least one
+// of the two lines; the expected strings below are hand-computed literals
+// (see the format string "  %d. %-*s  [%s]" in renderMiddlewareChain), not
+// values produced by calling the function under test, so this actually pins
+// the column width instead of restating it.
+func TestRenderMiddlewareChainPinsNameWidthAcrossQnameLengths(t *testing.T) {
+	chain := []mwEntry{
+		{Middleware: Middleware{Name: "cors", Phase: PhaseRecover}, qname: "cors", plugin: "cors"},
+		{
+			Middleware: Middleware{Name: "request-id-injector", Phase: PhaseSecurity, After: []string{"cors"}},
+			qname:      "request-id-injector",
+			plugin:     "request-id-injector",
+		},
+	}
+	got := renderMiddlewareChain(chain)
+	lines := strings.Split(got, "\n")
+	require.Len(t, lines, 3)
+
+	assert.Equal(t, "xbc: 中间件链（2）", lines[0])
+	// nameWidth must be 19 (len("request-id-injector")), not 4 (len("cors"))
+	// and not any other hardcoded constant: "cors" is left-padded with 15
+	// trailing spaces so the "[" columns of both lines line up.
+	assert.Equal(t, "  1. cors                 [recover]", lines[1])
+	assert.Equal(t, "  2. request-id-injector  [security]  after=cors", lines[2])
+}
+
 func TestRenderSoftMissesFormat(t *testing.T) {
 	misses := []graph.Miss{{Node: "audit", Ref: "tracing", Dir: "after"}}
 	got := renderSoftMisses(misses)
