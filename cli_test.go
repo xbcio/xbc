@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -125,6 +126,37 @@ func TestRunWithMigrateFlagAlsoRunsStageSix(t *testing.T) {
 
 	assert.Equal(t, []string{"init", "migrate", "registerRoutes", "start", "stop"}, track.snapshot(),
 		"--migrate 补跑阶段 6，且仍要保持 registerRoutes 先于 start 的阶段顺序")
+}
+
+// TestRunServerAutoMigrateConfigAlsoRunsStageSix pins the config->field
+// conduction at run()'s server.auto_migrate check (xbc.go, right after
+// loadConfig): a user who writes server.auto_migrate: true in application.yml
+// and starts the binary with no flags at all -- not --migrate, not the
+// migrate subcommand -- must still get stage 6. TestRunWithMigrateFlagAlsoRunsStageSix
+// above only proves the --migrate flag path; migrateAllRunsWhenRequested in
+// stage_run_test.go only proves migrateAll's own switch once a.migrate is
+// already true by direct assignment. Neither exercises whether a real config
+// file value can flip a.migrate through run() itself, which is exactly the
+// path this test drives end-to-end via a temporary config file and a.run.
+func TestRunServerAutoMigrateConfigAlsoRunsStageSix(t *testing.T) {
+	track := &lifecycleTracker{}
+	a := newRunnableTestApp(t, newTrackedPlugin(track))
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "application.yml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("server:\n  auto_migrate: true\n"), 0o644))
+
+	done := make(chan int, 1)
+	go func() {
+		code, _ := a.run([]string{"--config", cfgPath})
+		done <- code
+	}()
+	<-a.ready
+	close(a.criticalCh)
+	<-done
+
+	assert.Equal(t, []string{"init", "migrate", "registerRoutes", "start", "stop"}, track.snapshot(),
+		"配置文件里 server.auto_migrate: true 时，即使没有传 --migrate 也没有用 migrate 子命令，也必须跑阶段 6")
 }
 
 func TestRunSubcommandsReachExpectedStagesAndExit(t *testing.T) {
