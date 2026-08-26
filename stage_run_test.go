@@ -171,6 +171,29 @@ func (p *routeInfoPlugin) RegisterRoutes(r *Router) {
 	})
 }
 
+// groupBaseRoutePlugin registers a route directly at a sub-group's own base
+// path via Group(relativePath).GET(""). See
+// TestGroupBaseRouteRegistersAtGroupBasePathExactly, which pins joinPaths'
+// relativePath == "" branch (ruling G1): Group("/api/users").GET("") is
+// ordinary, spec-example usage -- e.g. a REST resource's collection
+// endpoint -- not an edge case, and the route it produces must be exactly
+// "/api/users", with no extra trailing slash tacked on by a generic
+// path.Join-style join.
+type groupBaseRoutePlugin struct {
+	Base
+	route *RouteInfo
+}
+
+func (p *groupBaseRoutePlugin) Name() string { return "users" }
+func (p *groupBaseRoutePlugin) RegisterRoutes(r *Router) {
+	ctx := p.Ctx()
+	g := r.Group("/api/users")
+	g.GET("", func(c *gin.Context) {
+		p.route = ctx.Route(c)
+		c.Status(http.StatusOK)
+	})
+}
+
 type runnerPlugin struct {
 	Base
 	name     string
@@ -432,6 +455,35 @@ func TestContextRouteMatchesTrailingSlashRoutes(t *testing.T) {
 	assert.Equal(t, "/status", withoutSlash.Path)
 }
 
+// TestGroupBaseRouteRegistersAtGroupBasePathExactly pins ruling G1:
+// Group("/api/users").GET("") must register exactly "/api/users", not
+// "/api/users/" or "/api/users/" -- joinPaths' relativePath == "" early
+// return exists precisely so an empty relativePath returns the group's own
+// base path untouched, mirroring gin's own joinPaths instead of a bare
+// path.Join(absolutePath, "") (which would happen to produce the same
+// string here, but only by coincidence, not by contract). Both the recorded
+// RouteInfo.Path and a real HTTP request resolving through ctx.Route(gc)
+// are checked, so a mutation that breaks either the route table entry or
+// gin's own request-time routing turns this red.
+func TestGroupBaseRouteRegistersAtGroupBasePathExactly(t *testing.T) {
+	a := newAssembleTestApp(t)
+	p := &groupBaseRoutePlugin{}
+	insts := []*instance{mustInstance(t, a, p, "users", "default")}
+	require.NoError(t, a.assembleHTTP(insts))
+
+	require.Len(t, *a.router.routes, 1, "Group(...).GET(\"\") 必须恰好注册一条路由")
+	assert.Equal(t, "/api/users", (*a.router.routes)[0].Path,
+		"Group(\"/api/users\").GET(\"\") 必须直接落在组的 base path 上，不能多拼一段路径或加尾斜杠")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/users", nil)
+	rec := httptest.NewRecorder()
+	a.router.engine.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code, "真实请求必须命中 Group(\"/api/users\").GET(\"\") 注册的路由")
+	require.NotNil(t, p.route, "ctx.Route(gc) 不能返回 nil")
+	assert.Equal(t, "/api/users", p.route.Path)
+}
+
 // TestAssembleHTTPAccumulatesSoftMissesInsteadOfOverwriting pins the "="
 // vs "= append(...)" distinction on a.softMisses: stage 4's plugin sort may
 // already have contributed entries before assembleHTTP ever runs, and stage
@@ -530,7 +582,7 @@ func TestShutdownStopsInReverseTopologicalOrder(t *testing.T) {
 	require.NoError(t, a.initAll(insts))
 	a.order = insts
 
-	require.NoError(t, a.shutdown("test"))
+	a.shutdown("test")
 	assert.Equal(t, []string{"user", "gorm"}, stopped, "user 依赖 gorm，关闭必须先停 user 再停 gorm")
 	assert.Equal(t, 0, a.exitCode, "非 critical 原因触发的关闭不能把退出码设为 1")
 }
@@ -560,8 +612,8 @@ func TestInFlightRequestIsDrainedBeforeShutdownCompletes(t *testing.T) {
 	}()
 	<-reached // the request has already entered the handler and is stuck there
 
-	shutdownDone := make(chan error, 1)
-	go func() { shutdownDone <- a.shutdown("test") }()
+	shutdownDone := make(chan struct{})
+	go func() { a.shutdown("test"); close(shutdownDone) }()
 
 	// Instead of sleeping to wait for "shutdown should be waiting on the
 	// in-flight request", release the handler directly and let channel ordering
@@ -570,7 +622,7 @@ func TestInFlightRequestIsDrainedBeforeShutdownCompletes(t *testing.T) {
 	close(release)
 
 	assert.Equal(t, http.StatusOK, <-reqDone, "in-flight 请求必须正常跑完，不能被 shutdown 打断")
-	require.NoError(t, <-shutdownDone)
+	<-shutdownDone
 	require.NoError(t, <-serveDone)
 }
 
@@ -594,12 +646,11 @@ func TestShutdownTimeoutForceKillsStuckConnection(t *testing.T) {
 	go func() { _, _ = http.Get("http://" + addr + "/ping") }()
 	<-reached
 
-	shutdownErr := make(chan error, 1)
-	go func() { shutdownErr <- a.shutdown("test") }()
+	shutdownDone := make(chan struct{})
+	go func() { a.shutdown("test"); close(shutdownDone) }()
 
 	select {
-	case err := <-shutdownErr:
-		assert.NoError(t, err, "超时后应该强杀退出，不能无限期等一个不肯放手的连接")
+	case <-shutdownDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("shutdown 应该在 shutdown_timeout 后强杀，不应该卡住")
 	}
@@ -650,8 +701,8 @@ func TestShutdownStopsHTTPServerBeforePlugins(t *testing.T) {
 	}()
 	<-reached
 
-	shutdownDone := make(chan error, 1)
-	go func() { shutdownDone <- a.shutdown("test") }()
+	shutdownDone := make(chan struct{})
+	go func() { a.shutdown("test"); close(shutdownDone) }()
 
 	select {
 	case <-stopCalled:
@@ -663,7 +714,7 @@ func TestShutdownStopsHTTPServerBeforePlugins(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, <-reqDone, "in-flight 请求必须正常跑完，不能被 shutdown 打断")
 	mustClosed(t, stopCalled, "HTTP 服务器排干后插件必须被 Stop")
-	require.NoError(t, <-shutdownDone)
+	<-shutdownDone
 	require.NoError(t, <-serveDone)
 }
 

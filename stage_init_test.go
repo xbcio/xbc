@@ -489,3 +489,37 @@ func TestRollbackIsIdempotentAcrossRepeatedCalls(t *testing.T) {
 		"第二次 rollback 必须是 no-op：第一次已经把 inited 置回 false")
 	assert.False(t, inst.inited, "rollback 成功 Stop 之后必须把 inited 清回 false")
 }
+
+// TestRollbackIsIdempotentAcrossRepeatedCallsOnFailurePaths pins ruling
+// G5: inst.inited must be cleared back to false unconditionally, even when
+// Stop itself returned an error or panicked -- not only on the success path
+// TestRollbackIsIdempotentAcrossRepeatedCalls already covers. A plugin whose
+// Stop already failed/panicked is in an undefined state; retrying it on a
+// second rollback call is more likely to make things worse, not better, the
+// same "log and swallow, never retry" philosophy stopInstanceSafely already
+// follows for a single call. Both plugins below must therefore see exactly
+// one Stop call total across two rollback invocations.
+func TestRollbackIsIdempotentAcrossRepeatedCallsOnFailurePaths(t *testing.T) {
+	a := newInitTestApp(t)
+	var erroredStops, panickedStops []string
+
+	errPlugin := &stoppablePlugin{name: "gorm-err", stopped: &erroredStops, stopErr: errors.New("模拟 Stop 失败")}
+	errInst := mustInstance(t, a, errPlugin, "gorm-err", "default")
+	errInst.inited = true
+
+	panicPlugin := &stoppablePlugin{name: "gorm-panic", stopped: &panickedStops, stopPanic: true}
+	panicInst := mustInstance(t, a, panicPlugin, "gorm-panic", "default")
+	panicInst.inited = true
+
+	a.rollback([]*instance{errInst})
+	a.rollback([]*instance{errInst})
+	a.rollback([]*instance{panicInst})
+	a.rollback([]*instance{panicInst})
+
+	assert.Equal(t, []string{"gorm-err"}, erroredStops,
+		"Stop 返回 error 之后，第二次 rollback 也必须是 no-op，不能重试")
+	assert.False(t, errInst.inited)
+	assert.Equal(t, []string{"gorm-panic"}, panickedStops,
+		"Stop panic 之后，第二次 rollback 也必须是 no-op，不能重试")
+	assert.False(t, panicInst.inited)
+}
