@@ -228,9 +228,11 @@ func (a *App) serve() error {
 
 	select {
 	case <-sigCh:
-		return a.shutdown("signal")
+		a.shutdown("signal")
+		return nil
 	case <-a.criticalCh:
-		return a.shutdown("critical")
+		a.shutdown("critical")
+		return nil
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			// Serve returning on its own -- for any reason other than the
@@ -242,12 +244,9 @@ func (a *App) serve() error {
 			// reverse order) cannot have a silent exception carved out of
 			// it just because the failure originated here instead of in a
 			// GoCritical goroutine. The original error is what the caller
-			// actually needs to see, so it is returned unchanged; a
-			// failure from shutdown itself is only logged, never allowed
-			// to replace it.
-			if shutdownErr := a.shutdown("serve-error"); shutdownErr != nil {
-				log.L().Error("xbc: Serve 异常退出后的关闭失败", "error", shutdownErr)
-			}
+			// actually needs to see, so it is returned unchanged; shutdown
+			// itself never fails outward (see shutdown's own doc comment).
+			a.shutdown("serve-error")
 			return err
 		}
 		return nil
@@ -261,7 +260,14 @@ func (a *App) serve() error {
 // stuck past shutdown_timeout. reason distinguishes a clean signal-triggered
 // shutdown from a GoCritical-triggered one, which additionally sets the
 // process exit code to 1.
-func (a *App) shutdown(reason string) error {
+//
+// shutdown never returns an error: httpServer.Shutdown's own error is only
+// logged (a.httpServer.Close() is the fallback, not a second failure mode
+// the caller needs to react to), and rollback already swallows every Stop
+// error/panic internally. There is no reachable path that could ever
+// surface a failure here, so the signature reflects that instead of
+// carrying a return value every caller can only ever observe as nil.
+func (a *App) shutdown(reason string) {
 	log.L().Info("xbc: 开始关闭", "reason", reason)
 
 	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.Server.ShutdownTimeout)
@@ -291,5 +297,4 @@ func (a *App) shutdown(reason string) error {
 	if reason == "critical" || reason == "serve-error" {
 		a.exitCode = 1
 	}
-	return nil
 }
