@@ -14,8 +14,9 @@ import (
 // It's a package-level variable, so setNow's replacement is not atomic:
 // tests that use it must not call t.Parallel(). There is currently no
 // t.Parallel() anywhere in log/, so this is safe today — but it's an
-// implicit precondition. If a future test (including Task 8's reuse of
-// setNow) introduces parallelism, it becomes a data race.
+// implicit precondition. trace_test.go already reuses this same setNow
+// helper (it is not scoped to rotate_test.go); if a future test introduces
+// parallelism, it becomes a data race.
 var nowFunc = time.Now
 
 // dailyRotator adds day-based rotation on top of lumberjack.
@@ -78,7 +79,7 @@ func newDailyRotator(lj *lumberjack.Logger) *dailyRotator {
 	// local users — content itself is unaffected, see the tightening of
 	// lj.Filename itself below. This is a deployment precondition: ops
 	// must ensure the log directory itself is created with 0750 or
-	// stricter (Task 10 will add a note to the README).
+	// stricter (see README.md's "部署前提：日志目录权限" section).
 	_ = os.MkdirAll(filepath.Dir(lj.Filename), 0o750)
 
 	// [SEC-INFO] lumberjack's openNew() creates a brand-new file with

@@ -27,8 +27,7 @@ const (
 )
 
 // Middleware is one entry a plugin contributes to the HTTP middleware chain.
-// Task 11 (mwchain.go) adds the sorter that consumes this; this task only
-// needs the shape to exist so MiddlewareProvider compiles.
+// mwchain.go's orderMiddlewares is the sorter that consumes this.
 type Middleware struct {
 	Name    string // unique identifier other middleware can reference in After/Before
 	Phase   Phase

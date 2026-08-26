@@ -3,8 +3,8 @@
 // This package deliberately does not import, mention, or know about any xbc
 // type: nodes and edges are plain strings, nothing more. The same sorter is
 // reused for at least three unrelated orderings inside xbc -- plugin
-// initialization (Task 9's resolve stage), middleware placement within a
-// Phase (Task 11's orderMiddlewares), and Stop() ordering during graceful
+// initialization (xbc's resolve stage), middleware placement within a
+// Phase (xbc's orderMiddlewares), and Stop() ordering during graceful
 // shutdown (the reverse of the same order) -- and none of those callers
 // agree on what a "node" even is (a plugin instance id, a qualified
 // middleware name, ...). Teaching this package about Dep, Ref, or Plugin

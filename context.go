@@ -10,8 +10,8 @@ import (
 
 // Context is the per-instance handle a plugin receives from Init onward. It
 // carries just enough identity (name/instance) to pre-bind the logger; the
-// registry accessor, config accessor and managed-goroutine methods land in
-// later tasks (Task 4, Task 6, Task 12 respectively).
+// registry accessor and managed-goroutine methods live further down in this
+// file.
 type Context struct {
 	app      *App
 	name     string // plugin name
@@ -19,10 +19,11 @@ type Context struct {
 	logger   log.Logger
 }
 
-// Log returns a Logger pre-bound with this instance's identity. Task 4 wires
-// up the actual field-binding (plugin=/instance=); for now it just hands back
-// whatever logger the instance carries, falling back to the global logger so
-// a Context built without one (e.g. in a unit test) never panics.
+// Log returns a Logger pre-bound with this instance's identity. newInstance
+// (stage_expand.go) wires up the actual field-binding (plugin=/instance=);
+// for now it just hands back whatever logger the instance carries, falling
+// back to the global logger so a Context built without one (e.g. in a unit
+// test) never panics.
 func (c *Context) Log() log.Logger {
 	if c.logger == nil {
 		return log.L()
