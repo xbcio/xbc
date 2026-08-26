@@ -108,7 +108,7 @@ func (a *App) assembleHTTP(insts []*instance) error {
 		return err
 	}
 	a.softMisses = append(a.softMisses, misses...)
-	a.middlewareChain = ordered // Task 15's startup log renders this section directly
+	a.middlewareChain = ordered // renderMiddlewareChain (startuplog.go) renders this section directly
 	for _, e := range ordered {
 		engine.Use(e.Handler)
 	}
@@ -136,8 +136,8 @@ func (a *App) assembleHTTP(insts []*instance) error {
 		rp.RegisterRoutes(router)
 		// RouteInfo carries no owner field (Plan 2's minimal form, §11), so a
 		// per-plugin route count can only be recovered by diffing the frozen
-		// table's length around the one call that plugin makes -- Task 15's
-		// startup log needs this count for the "routes(N)" capability tag.
+		// table's length around the one call that plugin makes -- the startup
+		// log (startuplog.go) needs this count for the "routes(N)" capability tag.
 		a.routeCounts[inst.id()] = len(*router.routes) - before
 	}
 
@@ -202,9 +202,13 @@ func (a *App) startRunners(insts []*instance) error {
 // listener and pick their own port; a.ready is closed only after
 // signal.Notify has registered, not merely once Serve has started accepting
 // -- otherwise a real OS signal sent right after ready fires could arrive
-// before Notify runs and fall through to the process's default disposition
-// (killing it outright) instead of being caught here, so a test can only
-// safely depend on ready meaning "signals are now guaranteed to be caught".
+// before Notify runs. Before signal.Notify registers, the Go runtime itself
+// (not the OS kernel) has already pre-installed a handler for SIGINT/SIGTERM
+// that terminates the process as if Notify had never been called (see the
+// os/signal package doc), so such a signal would still kill the process
+// outright instead of being caught by the select below, and a test can only
+// safely depend on ready meaning "signals are now guaranteed to be caught
+// here".
 func (a *App) serve() error {
 	if a.listener == nil {
 		ln, err := net.Listen("tcp", a.cfg.Server.Addr)
