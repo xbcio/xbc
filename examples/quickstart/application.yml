@@ -1,0 +1,35 @@
+# quickstart 的配置文件。
+#
+# 文件名不是随便取的：框架按固定顺序查找 `application.yml`，然后是
+# `configs/application.yml`。叫 `config.yaml` 的文件不会被加载——不会报错，
+# 只是这里写的每一行都变成死字，症状是「配置看起来写了却没生效」。
+#
+# 三个配置节各自归属明确，这也是框架分层的直接体现：
+#   xbc.*        —— 核心自己的设置，与任何协议无关
+#   log.*        —— 日志模块
+#   plugins.<key> —— 每个插件自己的配置节，节名就是 Definition.Key
+#
+# YAML 值不会展开 ${VAR}。需要用环境变量覆盖时，名称由完整绑定路径生成，
+# 例如 XBC_XBC_SHUTDOWN_TIMEOUT、XBC_LOG_LEVEL、XBC_PLUGINS_WEB_ADDR；
+# 路径中的点会转换为下划线。
+#
+# 没有全局的 "server" 节：HTTP 监听地址属于 web 插件，写在 plugins.web 下面。
+# 一个不启用 web 的应用（比如纯消息消费者）根本不会出现这个节。
+
+xbc:
+  # 这个进程从收到停止信号到必须消失的总预算，不是「HTTP 连接 drain 多久」。
+  # 整轮关机共用这一份预算，所以它不随插件数量变化。
+  shutdown_timeout: 15s
+
+log:
+  level: info
+  console:
+    enabled: true
+    format: console
+
+plugins:
+  web:
+    addr: ":8080"
+    # greeter 注册的是 "/hello"，加上这个前缀后实际路径是 "/api/v1/hello"。
+    # 启动日志打印的路由表用的是最终路径，可以直接对照。
+    base_path: "/api/v1"

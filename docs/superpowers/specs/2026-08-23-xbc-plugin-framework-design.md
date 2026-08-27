@@ -3,7 +3,14 @@
 - **日期**：2026-08-23（2026-08-24 设计审阅修订 + 日志体系补全）
 - **仓库**：`git@github.com:xbcio/xbc.git`
 - **Module**：`github.com/xbcio/xbc`
-- **状态**：设计定稿，待实现
+- **状态**：部分结论已被后续架构设计取代
+
+> **架构修订（2026-08-26）**
+>
+> xbc 的定位已从“基于 Gin 的 Web 框架”扩展为“通过插件构建 Web、RPC/gRPC、分布式与微服务应用的协议无关运行时”。涉及**产品定位、应用组合入口、通用生命周期、HTTP 与 health 能力归属、包和 Go module 边界**时，以 [`2026-08-26-xbc-package-layout-design.md`](./2026-08-26-xbc-package-layout-design.md) 为准。本文其余插件依赖、配置绑定、日志等细节仍可作为输入，但实现前必须按新边界复核，不能继续让根包依赖 Gin；旧的 `App.Register`、全局 live instance、双启用路径及 `ginserver`/`grpcserver` 命名均不是目标 API。目标入口为受冻结 Catalog 驱动的 `xbc.Run()`；blank import 只负责让无副作用 Definition 链接进二进制。
+> **本文 §10 的目录树及 `application.example.yml` 等文件名仅是历史提案，不描述当前仓库。当前布局以权威文档 §3 为准：根生产源码只有 `app.go` / `doc.go` / `run.go`，运行时实现位于 `internal/runtime`，可执行配置样例位于 `examples/quickstart/application.yml`。**
+>
+> 目标替换关系：`ginserver` → `web`，`grpcserver` → `grpc`，`app.Register(...)` → import 插件后调用零参数 `xbc.Run()`。只有无副作用的 Definition 可以在包初始化期声明；live instance、连接和任务始终属于单个 App。
 
 > **修订说明（2026-08-24）**
 >

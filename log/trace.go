@@ -198,3 +198,26 @@ func SpanWith(ctx context.Context, name string, opts ...SpanOption) (context.Con
 			float64(nowFunc().Sub(start).Microseconds())/1000)
 	}
 }
+
+// traceKV unrolls a trace into a KV sequence. Zero-value fields are omitted.
+//
+// This lives beside Trace rather than in zap.go, where it used to sit: it
+// touches nothing but Trace and []any, and all three of its callers -- Ctx,
+// SpanWith and the propagation helpers -- consume it as a property of the
+// trace, not of the backend. A zap-free backend would still need it verbatim.
+func traceKV(t Trace) []any {
+	kv := make([]any, 0, 8)
+	if t.TraceID().IsValid() {
+		kv = append(kv, "trace_id", t.TraceID().String())
+	}
+	if t.SpanID().IsValid() {
+		kv = append(kv, "span_id", t.SpanID().String())
+	}
+	if t.SpanName != "" {
+		kv = append(kv, "span_name", t.SpanName)
+	}
+	if t.RequestID != "" {
+		kv = append(kv, "request_id", t.RequestID)
+	}
+	return kv
+}
