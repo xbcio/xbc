@@ -233,24 +233,6 @@ func Ctx(ctx context.Context) Logger {
 	return L()
 }
 
-// traceKV unrolls a trace into a KV sequence. Zero-value fields are omitted.
-func traceKV(t Trace) []any {
-	kv := make([]any, 0, 8)
-	if t.TraceID().IsValid() {
-		kv = append(kv, "trace_id", t.TraceID().String())
-	}
-	if t.SpanID().IsValid() {
-		kv = append(kv, "span_id", t.SpanID().String())
-	}
-	if t.SpanName != "" {
-		kv = append(kv, "span_name", t.SpanName)
-	}
-	if t.RequestID != "" {
-		kv = append(kv, "request_id", t.RequestID)
-	}
-	return kv
-}
-
 // Zap returns the underlying *zap.Logger for zap-specific operations. ok is
 // false when the backend isn't zap.
 //

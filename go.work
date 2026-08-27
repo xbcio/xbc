@@ -1,0 +1,17 @@
+go 1.25.0
+
+// go.work is committed on purpose. The three modules in this repository
+// depend on each other (web -> core, examples -> web -> core) and none of
+// them is published yet, so without a workspace neither web nor examples can
+// resolve the core module at all -- `go build ./...` in web fails outright.
+// The alternative, a local `replace` in each sub-module, is exactly what must
+// not happen: a replace directive travels with the published module and would
+// break every downstream consumer, and it would also hide the one property
+// these modules have to keep proving, that they resolve as ordinary tagged
+// dependencies. Once core and web are tagged this file stops being load-
+// bearing and becomes a convenience for local development.
+use (
+	.
+	./examples
+	./web
+)

@@ -10,13 +10,20 @@
 *.test
 *.out
 vendor/
-go.work
-go.work.sum
+
+# go.work 本身必须入库：仓库内的 web/examples 是独立 module，且按设计禁止本地
+# replace，core 打出第一个 tag 之前它们只能靠 go.work 解析到 core。忽略它等于
+# 让新克隆的仓库连 web 都编译不了，CI 同理。
 
 # 本地配置（含凭据，绝不入库）
+/application.yml
+/configs/application.yml
 application-local.yml
 *.local.yml
 .env
+
+# 运行时产物
+**/logs/
 
 # 工具的本地暂存目录
 .superpowers/

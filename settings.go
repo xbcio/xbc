@@ -1,0 +1,71 @@
+// settings.go
+package xbc
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/xbcio/xbc/config"
+)
+
+// settingsSection is the top-level config key the framework's own knobs live
+// under.
+//
+// It is deliberately "xbc" rather than the old "server". The core no longer
+// owns a server at all -- addr / base_path / read_timeout / write_timeout
+// moved out to the web module together with the thing they configure -- so
+// keeping "server" would advertise a section whose two surviving members
+// (shutdown timeout, auto-migrate) have nothing to do with serving anything.
+// "server.*" is intentionally NOT read as a compatibility alias either: a key
+// that silently keeps working while its meaning has changed underneath is
+// worse than one that visibly stops being read, and the orphan-section check
+// (ruling R6) already turns a stale "server:" block into a startup failure
+// that names the problem outright.
+const settingsSection = "xbc"
+
+// settings is the core's own configuration section -- the only section the
+// runtime binds for itself. Every other reserved top-level key belongs
+// to somebody else: "log" to the log package, "plugins" to the container,
+// "app" to the application author.
+//
+// Both members live here rather than in any plugin because both are
+// decisions only the process-level driver can make. A plugin cannot know how
+// long the whole shutdown may take (its own Stop is one of many sharing that
+// budget), and a plugin cannot decide whether this particular boot is allowed
+// to write to a schema.
+type settings struct {
+	// ShutdownTimeout is the total budget for one unwind: draining managed
+	// tasks and stopping every initialized plugin, together. It is a
+	// whole-shutdown budget, not a per-plugin one -- see unwind (shutdown.go)
+	// for why a per-plugin budget would make the worst case scale with the
+	// number of plugins instead of staying bounded.
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" default:"30s"`
+
+	// AutoMigrate makes every boot run the migration stage, as if --migrate
+	// had been passed. Off by default: migration is a side-effecting write,
+	// and binding it to every boot means every rolling restart silently
+	// touches the schema.
+	AutoMigrate bool `yaml:"auto_migrate"`
+}
+
+// loadSettings binds the "xbc" section onto a zero settings and validates it.
+//
+// Environment.Bind applies the whole file/ENV/default chain and syncs the
+// result back into the underlying koanf tree, so settings' `default` tags are
+// visible to Config().Get("xbc.shutdown_timeout") afterwards, not just on the
+// struct field.
+func loadSettings(env *config.Environment) (settings, error) {
+	var s settings
+	if err := env.Bind(settingsSection, &s); err != nil {
+		return s, fmt.Errorf("xbc: 绑定 %s 配置失败：%w", settingsSection, err)
+	}
+	if err := config.Validate(&s, settingsSection); err != nil {
+		return s, err
+	}
+	if s.ShutdownTimeout <= 0 {
+		return s, fmt.Errorf(
+			"xbc: %s.shutdown_timeout 必须为正数，当前为 %s\n  → 这是整个关闭流程的总预算，非正数会让关闭立刻超时，等于没有优雅关闭",
+			settingsSection, s.ShutdownTimeout)
+	}
+	return s, nil
+}
