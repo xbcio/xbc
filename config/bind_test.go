@@ -62,7 +62,7 @@ func TestBindOverlaysEnvForMultiWordKey(t *testing.T) {
 	require.NoError(t, bind(k, "plugins.gorm.default", &cfg, "XBC_"))
 
 	require.Equal(t, 42, cfg.MaxOpenConn,
-		"多词 key max_open_conn 必须靠 schema 反查命中，字面 _ -> . 替换会把它错译成 max.open.conn")
+		"multi-word key max_open_conn must be hit via schema reverse lookup, literal _ -> . replacement would translate it into max.open.conn")
 }
 
 func TestBindOverlaysEnvForDuration(t *testing.T) {
@@ -84,7 +84,7 @@ func TestBindFillsDefaultsForUnsetleaves(t *testing.T) {
 	var cfg gormLikeConfig
 	require.NoError(t, bind(k, "plugins.gorm.default", &cfg, "XBC_"))
 
-	require.Equal(t, 10, cfg.MaxOpenConn, "文件和 ENV 都没设，应当落到 default tag")
+	require.Equal(t, 10, cfg.MaxOpenConn, "Neither file nor ENV is set, should fall back to default tag")
 	require.Equal(t, 5*time.Second, cfg.ConnTimeout)
 	require.True(t, cfg.Enabled)
 }
@@ -101,14 +101,14 @@ func TestBindExplicitFalseIsNotOverriddenByDefaultTrue(t *testing.T) {
 	require.NoError(t, bind(k, "plugins.gorm.default", &cfg, "XBC_"))
 
 	require.False(t, cfg.Enabled,
-		"yml 里显式写的 enabled: false 不能被 default:\"true\" 悄悄改掉——补 default 必须判 key 是否出现过，不能判字段是否为零值")
+		"explicitly written enabled: false in yml cannot be quietly changed by default:\"true\" — default must check if key has appeared, not whether field is zero value")
 }
 
 func TestBindDefaultParseFailureIsError(t *testing.T) {
 	k := koanf.New(".")
 	var cfg badDefaultConfig
 	err := bind(k, "", &cfg, "XBC_")
-	require.Error(t, err, "default tag 本身写错了，必须在绑定阶段就暴露，不能拖到运行期才炸")
+	require.Error(t, err, "default tag itself is wrong, must expose it during binding phase, cannot delay to runtime crash")
 }
 
 func TestLeavesWalksNestedStruct(t *testing.T) {
@@ -133,7 +133,7 @@ func TestSetScalarParsesDurationNotAsInt(t *testing.T) {
 	v := reflect.ValueOf(&d).Elem()
 	require.NoError(t, setScalar(v, v.Type(), "1h"))
 	require.Equal(t, time.Hour, d,
-		"time.Duration 底层是 int64，判断顺序反了会把 1h 当整数解析失败")
+		"time.Duration underlying is int64, reversed judgment order would parse 1h as integer and fail")
 }
 
 func TestSetScalarStringSliceSplitsOnComma(t *testing.T) {
@@ -155,7 +155,7 @@ func TestSetScalarStringSliceTrimsSurroundingSpaces(t *testing.T) {
 	v := reflect.ValueOf(&ss).Elem()
 	require.NoError(t, setScalar(v, v.Type(), " a , b "))
 	require.Equal(t, []string{"a", "b"}, ss,
-		"实现对每个逗号分隔的元素都做了 strings.TrimSpace，前后空格应被去掉")
+		"Implementation trims whitespace for each comma-separated element, leading and trailing spaces should be removed")
 }
 
 func TestSetScalarStringSliceEmptyStringYieldsEmptySlice(t *testing.T) {
@@ -163,7 +163,7 @@ func TestSetScalarStringSliceEmptyStringYieldsEmptySlice(t *testing.T) {
 	v := reflect.ValueOf(&ss).Elem()
 	require.NoError(t, setScalar(v, v.Type(), ""))
 	require.Equal(t, []string{}, ss,
-		"空串是显式清空列表的意图，必须短路成空切片，不能是 strings.Split(\"\", \",\") 的单元素 [\"\"]")
+		"Empty string is an explicit intent to clear list, must short-circuit into empty slice, not strings.Split(\"\", \",\") single-element [\"\"]")
 	require.Len(t, ss, 0)
 }
 
@@ -180,9 +180,9 @@ func TestPriorityChainDefaultFileProfileEnvOverrides(t *testing.T) {
 	var cfg gormLikeConfig
 	require.NoError(t, bind(k, "plugins.gorm.default", &cfg, "XBC_"))
 
-	require.Equal(t, "from-file", cfg.DSN, "文件设置的字段应该生效")
-	require.Equal(t, 99, cfg.MaxOpenConn, "ENV 设置的字段应该覆盖 default")
-	require.Equal(t, 5*time.Second, cfg.ConnTimeout, "两者都没设的字段落到 default")
+	require.Equal(t, "from-file", cfg.DSN, "Fields set in file should take effect")
+	require.Equal(t, 99, cfg.MaxOpenConn, "Fields set in ENV should override default")
+	require.Equal(t, 5*time.Second, cfg.ConnTimeout, "Fields not set in either fall back to default")
 }
 
 func TestBindEnvEmptyStringClearsDefaultStringSlice(t *testing.T) {
@@ -198,7 +198,7 @@ func TestBindEnvEmptyStringClearsDefaultStringSlice(t *testing.T) {
 	require.NoError(t, bind(k, "", &cfg, "XBC_"))
 
 	require.Equal(t, []string{}, cfg.Tags,
-		"ENV 显式设为空串是清空列表的意图，绑定结果应是空切片，而不是落回 default:\"a,b,c\"")
+		"Explicit empty string in ENV is intent to clear list, binding result should be empty slice, not fall back to default:\"a,b,c\"")
 }
 
 func TestBindEnvBeatsOverridesOnSameKeyKnownLimitation(t *testing.T) {
@@ -219,5 +219,5 @@ func TestBindEnvBeatsOverridesOnSameKeyKnownLimitation(t *testing.T) {
 
 	var cfg gormLikeConfig
 	require.NoError(t, bind(k, "plugins.gorm.default", &cfg, "XBC_"))
-	require.Equal(t, 77, cfg.MaxOpenConn, "已知限制：ENV 与 flag Overrides 撞在同一个 key 上时，ENV 赢")
+	require.Equal(t, 77, cfg.MaxOpenConn, "Known limitation: When ENV and flag overrides collide on the same key, ENV wins")
 }

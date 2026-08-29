@@ -67,7 +67,7 @@ func (p *shutdownDownstream) Stop(context.Context) error {
 	return nil
 }
 
-// TestShutdownStopsInReverseDependencyOrder pins §5.3's "逆拓扑序" clause: the
+// TestShutdownStopsInReverseDependencyOrder pins §5.3's "inverse topological order" clause: the
 // plugin that depends on another must be Stopped first, so that by the time
 // the dependency itself is Stopped, nothing still using it is left running.
 func TestShutdownStopsInReverseDependencyOrder(t *testing.T) {
@@ -94,7 +94,7 @@ func TestShutdownStopsInReverseDependencyOrder(t *testing.T) {
 	app.requestStop(stopReasonSignal)
 	res := awaitResult(t, done)
 
-	require.NoError(t, res.err, "两个 Stop 都成功返回，unwind 不应报告任何错误")
+	require.NoError(t, res.err, "Both Stop calls return successfully; unwind should not report any errors")
 	assert.Equal(t, 0, res.code)
 	// Asserting the exact slice, not merely that both names appear, is what
 	// gives this test discriminating power: an implementation that walked
@@ -102,7 +102,7 @@ func TestShutdownStopsInReverseDependencyOrder(t *testing.T) {
 	// still produce a slice containing both names, just in the wrong order,
 	// and a weaker assertion would not catch it.
 	assert.Equal(t, []string{"downstream", "upstream"}, order,
-		"downstream 依赖 upstream，必须先于 upstream 被 Stop")
+		"Downstream depends on upstream; downstream must be stopped before upstream")
 }
 
 // --- §5.3 the interleaving pin: Stop before that plugin's own cancel -----
@@ -178,15 +178,15 @@ func TestShutdownStopRunsBeforeItsOwnTaskContextIsCancelled(t *testing.T) {
 	require.NoError(t, res.err)
 	assert.Equal(t, 0, res.code)
 	require.NoError(t, inst.ctxErrObservedInStop,
-		"Stop 被调用的那一刻，该插件自己的任务 context 必须尚未被 cancel；"+
-			"如果框架改成先全局 cancel 所有任务再 Stop，这里会观察到 context.Canceled")
+		"At the moment Stop is called, the plugin's own task context must not yet be canceled;"+
+			"If the framework changes to first globally cancel all tasks before Stop, this will observe context.Canceled")
 	// Cancellation still has to happen -- just after Stop returns, not
 	// before -- so once the whole run has finished the task context must be
 	// done. Without this second assertion, a framework that simply never
 	// cancelled per-plugin task contexts at all would also pass the check
 	// above.
 	assert.Error(t, inst.taskCtx.Err(),
-		"Stop 返回之后框架必须 cancel 该插件的任务 context，否则托管任务永远不会被回收")
+		"After Stop returns, the framework must cancel the plugin's task context, otherwise the managed task will never be reclaimed")
 }
 
 // --- §5.3 bounded unwind: a Stop that never returns -----------------------
@@ -248,17 +248,17 @@ func TestShutdownBoundedWhenStopNeverReturns(t *testing.T) {
 	// turns that failure mode into a reported test failure.
 	res := awaitResult(t, done)
 
-	assert.NotEqual(t, 0, res.code, "有插件的 Stop 未在预算内返回，退出码必须非零")
+	assert.NotEqual(t, 0, res.code, "If the plugin's Stop does not return within the budget, the exit code must be non-zero")
 	require.Error(t, res.err)
 	assert.Contains(t, res.err.Error(), "hanger",
-		"错误必须点名卡住的插件，而不是笼统地报告一次关闭失败")
+		"The error must name the stalled plugin, not generically report a single shutdown failure")
 
 	select {
 	case <-dep.stopped:
-		// dependency 的 Stop 仍被调用过，即便共享预算已经被 hanger 耗尽 --
-		// 这正是 §5.3「预算耗尽后降级为继续调用但不等待」的可观察结果。
+		// dependency's Stop is still called, even if the shared budget has been exhausted by hanger --
+		// This is exactly the observable result of §5.3 ``degrading to continue calling but not waiting after budget exhaustion''
 	case <-time.After(testTimeout):
-		t.Fatal("hanger 耗尽共享预算后，依赖链上更靠后的插件的 Stop 也必须被调用过一次")
+		t.Fatal("After the hanger exhausts the shared budget, the Stop of plugins further down the dependency chain must also be called once")
 	}
 }
 
@@ -286,10 +286,10 @@ func TestShutdownBoundedWhenManagedTaskIgnoresContext(t *testing.T) {
 	app.requestStop(stopReasonSignal)
 	res := awaitResult(t, done)
 
-	assert.NotEqual(t, 0, res.code, "托管任务永远不会退出，run 仍必须返回，且退出码必须非零")
+	assert.NotEqual(t, 0, res.code, "The managed task will never exit, run must still return, and the exit code must be non-zero")
 	require.Error(t, res.err)
 	assert.Contains(t, res.err.Error(), "ignorer",
-		"托管任务未按时退出时，错误必须点名任务所属的插件")
+		"When the managed task does not exit on time, the error must name the plugin to which the task belongs")
 }
 
 // --- panic recovery ---------------------------------------------------------
@@ -323,7 +323,7 @@ func (p *shutdownPanickingConsumer) Dependencies() plugin.Deps {
 }
 
 func (p *shutdownPanickingConsumer) Stop(context.Context) error {
-	panic("shutdown_test: 故意 panic，用于验证 Stop 的 panic 会被 recover")
+	panic("shutdown_test: Intentionally panic, used to verify that the panic from Stop will be recovered")
 }
 
 func TestShutdownStopPanicIsRecoveredAndDoesNotBlockOtherPlugins(t *testing.T) {
@@ -348,12 +348,12 @@ func TestShutdownStopPanicIsRecoveredAndDoesNotBlockOtherPlugins(t *testing.T) {
 	assert.NotEqual(t, 0, res.code)
 	require.Error(t, res.err)
 	assert.Contains(t, res.err.Error(), "panicker",
-		"聚合错误必须点名 panic 所在的插件")
+		"The aggregated error must name the plugin where the panic occurred")
 
 	select {
 	case <-dep.stopped:
 	case <-time.After(testTimeout):
-		t.Fatal("panicker 的 Stop panic 之后，它依赖的插件仍必须被 Stop")
+		t.Fatal("After the panic from the panicker's Stop, its dependent plugins must still be stopped")
 	}
 }
 
@@ -363,8 +363,8 @@ func TestShutdownStopPanicIsRecoveredAndDoesNotBlockOtherPlugins(t *testing.T) {
 // aggregation test below can use errors.Is to prove *both* survive into the
 // final error, rather than merely that *some* error came back.
 var (
-	shutdownErrStopA = errors.New("shutdown_test: 插件 a 的 Stop 失败")
-	shutdownErrStopB = errors.New("shutdown_test: 插件 b 的 Stop 失败")
+	shutdownErrStopA = errors.New("shutdown_test: Plugin a's Stop failed")
+	shutdownErrStopB = errors.New("shutdown_test: Plugin b's Stop failed")
 )
 
 type shutdownFailsWith struct {
@@ -396,8 +396,8 @@ func TestShutdownAggregatesMultipleStopErrors(t *testing.T) {
 	// doUnwind runs on top of it. A weaker "err != nil" assertion would still
 	// pass an implementation that kept only the last plugin's failure and
 	// silently dropped the first one.
-	assert.True(t, errors.Is(res.err, shutdownErrStopA), "两个插件的 Stop 错误都必须出现在聚合错误里（缺了 a）")
-	assert.True(t, errors.Is(res.err, shutdownErrStopB), "两个插件的 Stop 错误都必须出现在聚合错误里（缺了 b）")
+	assert.True(t, errors.Is(res.err, shutdownErrStopA), "Both plugins' Stop errors must appear in the aggregated error (missing a)")
+	assert.True(t, errors.Is(res.err, shutdownErrStopB), "Both plugins' Stop errors must appear in the aggregated error (missing b)")
 }
 
 // --- §5.5 the global, not per-plugin, "was this critical return requested" flag ---
@@ -450,13 +450,13 @@ func TestShutdownCriticalTaskReturningFromOwnStopIsNotAFailure(t *testing.T) {
 
 	require.NoError(t, res.err)
 	assert.Equal(t, 0, res.code,
-		"GoCritical 任务在自己插件的 Stop 内被主动放行退出，这是预期中的优雅停止，退出码必须是 0")
+		"A GoCritical task actively allows itself to exit during its own plugin's Stop, this is an expected graceful shutdown, exit code must be 0")
 	// Asserting against the actual log output, not against a.stopReason,
 	// is what makes this a real observable-behaviour test rather than a
 	// tautology about the variable the log line is derived from.
-	assert.False(t, cap.containsMessage(t, "收到 critical 信号"),
-		"这次关闭不应被判定成 critical failure：判据必须是应用级「关机已开始」标志，"+
-			"不能是该插件自己的任务 context 是否已被 cancel")
+	assert.False(t, cap.containsMessage(t, "received critical signal"),
+		"This shutdown should not be considered a critical failure: the criterion must be the application-level ``shutdown has started'' flag,"+
+			"Not whether the plugin's own task context has been canceled")
 }
 
 // --- Closer.Stop is called at most once, even under a race --------------
@@ -503,7 +503,7 @@ func TestShutdownUnwindIdempotentUnderConcurrentSignalAndCritical(t *testing.T) 
 	close(inst.release)
 
 	res := awaitResult(t, done)
-	require.NoError(t, res.err, "该插件的 Stop 从不返回错误，unwind 不应报告失败")
+	require.NoError(t, res.err, "The plugin's Stop never returns an error, unwind should not report a failure")
 	assert.Equal(t, int32(1), inst.stopCalls.Load(),
-		"无论 signal 与 critical 谁先到达，Closer.Stop 都只能被调用一次")
+		"Regardless of which arrives first, signal or critical, Closer.Stop can only be called once")
 }

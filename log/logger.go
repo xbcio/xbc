@@ -66,7 +66,7 @@ func ParseLevel(s string) (Level, error) {
 	case "fatal":
 		return FatalLevel, nil
 	default:
-		return InfoLevel, fmt.Errorf("log: 未知日志级别 %q，可选 debug/info/warn/error/fatal", s)
+		return InfoLevel, fmt.Errorf("log: unknown log level %q, valid values: debug/info/warn/error/fatal", s)
 	}
 }
 

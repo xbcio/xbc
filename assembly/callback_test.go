@@ -109,7 +109,7 @@ func TestConfigPtrRejectsInvalidReturnShapesBeforeBinding(t *testing.T) {
 			assert.Contains(t, err.Error(), "bad-config")
 			assert.Contains(t, err.Error(), "default")
 			assert.Contains(t, err.Error(), "ConfigPtr()")
-			assert.Contains(t, err.Error(), "非 nil 的 struct 指针")
+			assert.Contains(t, err.Error(), "non-nil struct pointer")
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}

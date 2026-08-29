@@ -97,7 +97,7 @@ func (l *zapLogger) Fatal(msg string, kv ...any) {
 	if err := l.raw.Sync(); err != nil && !isBenignSyncError(err) {
 		// The process is about to die, so stderr is the only channel left --
 		// silently dropping this would hide a lost final entry.
-		fmt.Fprintf(os.Stderr, "log: Fatal 落盘失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "log: failed to flush Fatal entry to disk: %v\n", err)
 	}
 	exitFunc(1)
 }
@@ -140,7 +140,7 @@ func (l *zapLogger) WithCallerSkip(n int) Logger {
 //
 // Produces a !BADKEY field when the key isn't a string or an argument is
 // left dangling, without panicking or silently swallowing it.
-// A call migrated from gfa's Sprintln semantics (TInfo(ctx, "支付", id, amt),
+// A call migrated from gfa's Sprintln semantics (TInfo(ctx, "payment", id, amt),
 // where id is an int) turns into two !BADKEY fields here, immediately
 // visible.
 func toFields(kv []any) []zap.Field {
@@ -199,8 +199,8 @@ func SetLogger(l Logger) {
 		// The default binding, or explicitly disabling logging, needs no warning
 	default:
 		fmt.Fprintln(os.Stderr,
-			"xbc/log: 已替换默认日志后端，内置敏感字段脱敏随之失效 —— "+
-				"请确认新后端自行实现了脱敏，否则 password/token 等字段会明文落盘")
+			"xbc/log: default logging backend has been replaced, built-in sensitive field masking is therefore disabled — "+
+				"please ensure the new backend implements masking itself, otherwise password/token fields will be logged in plain text")
 	}
 }
 
@@ -370,7 +370,7 @@ func buildFileWriter(cfg FileConfig, path string) (zapcore.WriteSyncer, func() e
 		// existing directory returns nil without touching permissions
 		// (measured), so the second call is a no-op.
 		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return nil, nil, fmt.Errorf("log: 创建日志目录 %s 失败: %w", dir, err)
+			return nil, nil, fmt.Errorf("log: failed to create log directory %s: %w", dir, err)
 		}
 	}
 	lj := &lumberjack.Logger{

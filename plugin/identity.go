@@ -12,7 +12,7 @@ type Key string
 func (k Key) String() string { return string(k) }
 
 // Validate reports whether k is a legal plugin key.
-func (k Key) Validate() error { return validateIdentifier("插件 key", string(k)) }
+func (k Key) Validate() error { return validateIdentifier("plugin key", string(k)) }
 
 // Ref returns a hard dependency reference to k.
 func (k Key) Ref() Ref { return Ref{key: k} }
@@ -46,7 +46,7 @@ func (i Identity) String() string {
 
 func validateIdentifier(kind, s string) error {
 	if s == "" {
-		return fmt.Errorf("xbc: %s不能为空", kind)
+		return fmt.Errorf("xbc: %s cannot be empty", kind)
 	}
 	for _, r := range s {
 		switch {
@@ -54,7 +54,7 @@ func validateIdentifier(kind, s string) error {
 		case r >= '0' && r <= '9':
 		case r == '_' || r == '-':
 		default:
-			return fmt.Errorf("xbc: %s %q 含非法字符 %q，只允许小写字母、数字、下划线、连字符", kind, s, r)
+			return fmt.Errorf("xbc: %s %q contains invalid character %q, only lowercase letters, digits, underscores, and hyphens are allowed", kind, s, r)
 		}
 	}
 	return nil
@@ -65,4 +65,4 @@ func validateIdentifier(kind, s string) error {
 func ValidateName(s string) error { return Key(s).Validate() }
 
 // ValidateInstanceName validates a configured instance name.
-func ValidateInstanceName(s string) error { return validateIdentifier("实例名", s) }
+func ValidateInstanceName(s string) error { return validateIdentifier("instance name", s) }

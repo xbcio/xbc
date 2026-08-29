@@ -16,11 +16,11 @@ func TestContextGoForwardsIdentityAndNonCriticalFlag(t *testing.T) {
 	var ran bool
 	ctx.Go(func(context.Context) { ran = true })
 
-	require.True(t, ran, "Go 必须实际调用 fn")
+	require.True(t, ran, "Go must actually call fn")
 	calls := host.calls()
 	require.Len(t, calls, 1)
 	assert.Equal(t, Identity{Plugin: "consumer", Instance: "readonly"}, calls[0].id)
-	assert.False(t, calls[0].critical, "Go 提交的任务必须带 critical=false")
+	assert.False(t, calls[0].critical, "Go submitted tasks must have critical=false")
 }
 
 func TestContextGoCriticalForwardsCriticalTrue(t *testing.T) {
@@ -32,7 +32,7 @@ func TestContextGoCriticalForwardsCriticalTrue(t *testing.T) {
 	calls := host.calls()
 	require.Len(t, calls, 1)
 	assert.Equal(t, Key("consumer"), calls[0].id.Plugin)
-	assert.True(t, calls[0].critical, "GoCritical 提交的任务必须带 critical=true")
+	assert.True(t, calls[0].critical, "GoCritical submitted tasks must have critical=true")
 }
 
 // TestContextTasksAcceptedTrueWhenHostHasNoReporter pins the fallback
@@ -48,7 +48,7 @@ func TestContextTasksAcceptedTrueWhenHostHasNoReporter(t *testing.T) {
 func TestContextTasksAcceptedReflectsReporterFalse(t *testing.T) {
 	host := &admissionHost{fakeHost: newFakeHost(), accepted: false}
 	ctx := NewRuntimeContext(host, Identity{Plugin: "p"}, nil, nil)
-	assert.False(t, ctx.TasksAccepted(), "宿主明确报告已关闭准入时必须反映为 false")
+	assert.False(t, ctx.TasksAccepted(), "when the host explicitly reports that admission is closed, it must reflect as false")
 }
 
 func TestContextTasksAcceptedReflectsReporterTrue(t *testing.T) {
@@ -83,7 +83,7 @@ func TestContextLogFallsBackToGlobalLoggerWhenNil(t *testing.T) {
 func TestContextConfigReturnsWhatWasPassedIn(t *testing.T) {
 	host := newFakeHost()
 	ctx := NewRuntimeContext(host, Identity{Plugin: "p"}, nil, nil)
-	assert.Nil(t, ctx.Config(), "未传入 env 时 Config() 原样返回 nil，不擅自构造一个空环境")
+	assert.Nil(t, ctx.Config(), "Config() returns nil as-is when env is not provided, without constructing an empty environment")
 }
 
 func TestContextImplementsStandardContextAndForwardsExecutionScope(t *testing.T) {
@@ -108,7 +108,7 @@ func TestContextImplementsStandardContextAndForwardsExecutionScope(t *testing.T)
 	select {
 	case <-standard.Done():
 	case <-time.After(time.Second):
-		t.Fatal("父 execution context 取消后，plugin.Context.Done 未关闭")
+		t.Fatal("plugin.Context.Done is not closed after the parent execution context is canceled")
 	}
 	assert.ErrorIs(t, standard.Err(), context.Canceled)
 }
@@ -123,6 +123,6 @@ func TestNewRuntimeContextDoesNotReuseCancelledLifecycleState(t *testing.T) {
 	require.ErrorIs(t, cancelled.Err(), context.Canceled)
 
 	fresh := NewRuntimeContext(host, Identity{Plugin: "second"}, nil, nil)
-	assert.NoError(t, fresh.Err(), "新建 Context 不能继承另一个 Context 的取消状态")
-	assert.Nil(t, fresh.Done(), "未绑定 execution context 的新 Context 应保持 Background 语义")
+	assert.NoError(t, fresh.Err(), "new Context cannot inherit the cancellation state of another Context")
+	assert.Nil(t, fresh.Done(), "new Context not bound to execution context should maintain Background semantics")
 }

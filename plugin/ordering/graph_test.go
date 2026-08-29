@@ -46,7 +46,7 @@ func TestSortSameLayerStability(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, misses)
 		assert.Equal(t, []string{"z", "m", "a"}, order,
-			"三个互不相关的节点必须严格按插入顺序排出，第 %d 次", i)
+			"Three unrelated nodes must be strictly ordered by insertion, the %d-th time", i)
 	}
 }
 
@@ -116,7 +116,7 @@ func TestSortDetectsThreeNodeCycleWithExactPath(t *testing.T) {
 	var cycleErr *CycleError
 	require.ErrorAs(t, err, &cycleErr)
 	assert.Equal(t, []string{"user", "order", "payment", "user"}, cycleErr.Path)
-	assert.Equal(t, "graph: 存在环 user → order → payment → user", cycleErr.Error())
+	assert.Equal(t, "graph: cycle detected user → order → payment → user", cycleErr.Error())
 }
 
 func TestSortReportsSoftMissWithoutError(t *testing.T) {
@@ -157,7 +157,7 @@ func TestSortReturnsMissingNodeErrorForHardEdge(t *testing.T) {
 	require.ErrorAs(t, err, &missingErr)
 	assert.Equal(t, "a", missingErr.From)
 	assert.Equal(t, "ghost", missingErr.To)
-	assert.Equal(t, "graph: 硬依赖引用了不存在的节点：a → ghost", missingErr.Error())
+	assert.Equal(t, "graph: hard dependency references non-existent node: a → ghost", missingErr.Error())
 }
 
 func TestAddNodeIsIdempotent(t *testing.T) {
@@ -170,7 +170,7 @@ func TestAddNodeIsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, misses)
 	assert.Equal(t, []string{"a", "b"}, order,
-		"重复 AddNode 不能改变节点的插入序")
+		"Repeated AddNode cannot change the insertion order of the node")
 }
 
 // TestOrderingOnlyDependsOnStdlib is the automated guard for ordering's
@@ -185,13 +185,13 @@ func TestAddNodeIsIdempotent(t *testing.T) {
 // mention a package name in a comment or string.
 func TestOrderingOnlyDependsOnStdlib(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过依赖方向检查")
+		t.Skip("go command is unavailable, skip dependency direction check")
 	}
 
 	const pkg = "github.com/xbcio/xbc/plugin/ordering"
 
 	out, err := exec.Command("go", "list", "-deps", pkg).Output()
-	require.NoError(t, err, "go list -deps %s 失败", pkg)
+	require.NoError(t, err, "go list -deps %s failed", pkg)
 
 	for _, line := range strings.Split(string(out), "\n") {
 		dep := strings.TrimSpace(line)
@@ -199,8 +199,8 @@ func TestOrderingOnlyDependsOnStdlib(t *testing.T) {
 			continue
 		}
 		assert.False(t, strings.HasPrefix(dep, "github.com/"),
-			"plugin/ordering 是稳定的共享叶子包，不得依赖仓库内任何其它包，发现：%s", dep)
+			"plugin/ordering is a stable shared leaf package, must not depend on any other package inside the repository, found: %s", dep)
 		assert.False(t, strings.HasPrefix(dep, "golang.org/x/"),
-			"plugin/ordering 不得引入第三方依赖，发现：%s", dep)
+			"plugin/ordering must not introduce third-party dependencies, found: %s", dep)
 	}
 }

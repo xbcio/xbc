@@ -18,7 +18,7 @@ func mergeDeps(inst *Instance) (plugin.Deps, error) {
 		}
 		dep := plugin.Dep{Type: field.Type, Instance: field.Instance, Optional: field.Optional}
 		if err := validateConsumerDep(dep); err != nil {
-			return plugin.Deps{}, fmt.Errorf("xbc: 插件 %s 的 xbc tag 字段 %s 声明无效：%w",
+			return plugin.Deps{}, fmt.Errorf("xbc: plugin %s has an invalid declaration for xbc-tagged field %s: %w",
 				inst.Label(), field.Name, err)
 		}
 		out.Types = append(out.Types, dep)
@@ -100,11 +100,11 @@ func validateDependencies(inst *Instance, deps plugin.Deps) error {
 
 func validateConsumerDep(dep plugin.Dep) error {
 	if dep.Type == nil {
-		return fmt.Errorf("Type 不能为空")
+		return fmt.Errorf("Type cannot be empty")
 	}
 	if dep.Instance != "" {
 		if err := plugin.ValidateInstanceName(dep.Instance); err != nil {
-			return fmt.Errorf("Instance %q 无效：%w", dep.Instance, err)
+			return fmt.Errorf("Instance %q is invalid: %w", dep.Instance, err)
 		}
 	}
 	return nil
@@ -115,19 +115,19 @@ func validateProvides(inst *Instance, deps []plugin.Dep) error {
 		field := fmt.Sprintf("[%d]", index)
 		switch {
 		case dep.Type == nil:
-			return invalidCallbackResult(inst, "Provides()", field+".Type", fmt.Errorf("Type 不能为空"))
+			return invalidCallbackResult(inst, "Provides()", field+".Type", fmt.Errorf("Type cannot be empty"))
 		case dep.Instance != "":
 			return invalidCallbackResult(inst, "Provides()", field+".Instance",
-				fmt.Errorf("Instance 不受支持；产物实例由当前插件实例决定"))
+				fmt.Errorf("Instance is not supported; provided values are scoped to the current plugin instance"))
 		case dep.Optional:
 			return invalidCallbackResult(inst, "Provides()", field+".Optional",
-				fmt.Errorf("Optional 不受支持；产出声明不能标记为可选"))
+				fmt.Errorf("Optional is not supported; provided-value declarations cannot be optional"))
 		}
 	}
 	return nil
 }
 
 func invalidCallbackResult(inst *Instance, callback, field string, err error) error {
-	return fmt.Errorf("xbc: %s 的 %s 返回值 %s 无效：%w",
+	return fmt.Errorf("xbc: %s has an invalid %s return value at %s: %w",
 		callbackSubject(inst.key, inst.instance), callback, field, err)
 }

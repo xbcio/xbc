@@ -38,13 +38,13 @@ func forbiddenDirectImport(dep string) string {
 		prefix string
 		reason string
 	}{
-		{"github.com/xbcio/xbc/runtime", "示例应通过根门面启动，不得直接编排 runtime"},
-		{"github.com/xbcio/xbc/assembly", "示例应通过根门面启动，不得直接依赖 assembly"},
-		{"github.com/xbcio/xbc/cli", "示例应通过根门面启动，不得直接调用 cli"},
-		{"github.com/xbcio/xbc/internal", "示例只能使用公开 API，不得直接 import core internal/*"},
+		{"github.com/xbcio/xbc/runtime", "Example should start through the root facade, and must not directly orchestrate runtime"},
+		{"github.com/xbcio/xbc/assembly", "Example should start through the root facade, and must not directly depend on assembly"},
+		{"github.com/xbcio/xbc/cli", "Example should start through the root facade, and must not directly call cli"},
+		{"github.com/xbcio/xbc/internal", "Example can only use public API, and must not directly import core internal/*"},
 	} {
 		if dep == forbidden.prefix || strings.HasPrefix(dep, forbidden.prefix+"/") {
-			return forbidden.reason + "（design §9 guard #10）"
+			return forbidden.reason + " (design §9 guard #10)"
 		}
 	}
 	return ""
@@ -61,12 +61,12 @@ func forbiddenDirectImport(dep string) string {
 // this file.
 func TestExamplesDoNotDirectlyImportCoreImplementationPackages(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过依赖方向检查")
+		t.Skip("Go command is unavailable, skip dependency direction check")
 	}
 
 	out, err := exec.Command("go", "list", "-json", "./...").Output()
 	if err != nil {
-		t.Fatalf("go list -json ./... 失败：%v", err)
+		t.Fatalf("go list -json ./... failed: %v", err)
 	}
 
 	dec := json.NewDecoder(strings.NewReader(string(out)))
@@ -74,7 +74,7 @@ func TestExamplesDoNotDirectlyImportCoreImplementationPackages(t *testing.T) {
 	for dec.More() {
 		var pkg packageJSON
 		if err := dec.Decode(&pkg); err != nil {
-			t.Fatalf("解析 go list -json 输出失败：%v", err)
+			t.Fatalf("Parsing go list -json output failed: %v", err)
 		}
 		checked++
 
@@ -82,13 +82,13 @@ func TestExamplesDoNotDirectlyImportCoreImplementationPackages(t *testing.T) {
 			label   string
 			imports []string
 		}{
-			{"生产代码 import", pkg.Imports},
-			{"包内 _test.go import", pkg.TestImports},
-			{"外部测试包 import", pkg.XTestImports},
+			{"Production code import", pkg.Imports},
+			{"Package internal _test.go import", pkg.TestImports},
+			{"External test package import", pkg.XTestImports},
 		} {
 			for _, dep := range c.imports {
 				if reason := forbiddenDirectImport(dep); reason != "" {
-					t.Errorf("%s 的%s中出现了 %q：%s", pkg.ImportPath, c.label, dep, reason)
+					t.Errorf("%s's %s contains %q: %s", pkg.ImportPath, c.label, dep, reason)
 				}
 			}
 		}
@@ -98,6 +98,6 @@ func TestExamplesDoNotDirectlyImportCoreImplementationPackages(t *testing.T) {
 	// failure, a bad working directory -- would leave the loop body unentered
 	// and the test passing while having checked no imports at all.
 	if checked == 0 {
-		t.Fatal("go list 没有返回任何包，依赖方向检查实际未生效")
+		t.Fatal("go list returned no packages, dependency direction check actually did not take effect")
 	}
 }

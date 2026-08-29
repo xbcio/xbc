@@ -72,7 +72,7 @@ func TestStructValueMarkerStillParticipatesInDependencyResolution(t *testing.T) 
 
 	require.NoError(t, c.Assemble())
 	assert.Equal(t, []string{"target", "consumer"}, idsOf(c.Order()),
-		"marker 的动态值形状不应妨碍其 Dependencies 回调参与建图")
+		"Dynamic value shape of marker should not hinder Dependencies callback from participating in graph building")
 }
 
 type taggedStructValueMarker struct {
@@ -90,7 +90,7 @@ func TestAssembleRejectsTaggedStructValueInsteadOfSilentlyIgnoringDeclaration(t 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tagged-value")
 	assert.Contains(t, err.Error(), "xbc tag")
-	assert.Contains(t, err.Error(), "struct 指针")
+	assert.Contains(t, err.Error(), "struct pointer")
 }
 
 type valueInitializerMarker struct {
@@ -112,5 +112,5 @@ func TestStructValueMarkerCanRunValueReceiverLifecycle(t *testing.T) {
 
 	require.NoError(t, c.Assemble())
 	require.NoError(t, runLifecycle(c, c.Order()))
-	assert.True(t, called, "非指针 marker 的 value-receiver 生命周期接口必须正常执行")
+	assert.True(t, called, "Non-pointer marker's value-receiver lifecycle interface must execute normally")
 }

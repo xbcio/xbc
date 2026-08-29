@@ -33,7 +33,7 @@ func scanPluginFields(value plugin.Plugin) ([]inject.FieldSpec, error) {
 	}
 
 	if rv.Kind() == reflect.Struct && hasActionableXBCTag(rv.Type()) {
-		return nil, fmt.Errorf("inject: 带 xbc tag 的插件必须是非 nil 的 struct 指针，收到 %T", value)
+		return nil, fmt.Errorf("inject: plugin with xbc tag must be a non-nil struct pointer, received %T", value)
 	}
 
 	return nil, nil

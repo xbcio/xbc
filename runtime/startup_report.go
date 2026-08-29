@@ -134,7 +134,7 @@ func renderInstanceTable(order []*assembly.Instance) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "xbc: 装配完成，%d 个插件实例", len(order))
+	fmt.Fprintf(&b, "xbc: assembly complete, %d plugin instances", len(order))
 	for _, r := range rows {
 		b.WriteString("\n")
 		b.WriteString(strings.TrimRight(
@@ -148,7 +148,7 @@ func renderInstanceTable(order []*assembly.Instance) string {
 // is otherwise indistinguishable from "I blank-imported it and it silently
 // failed", and this line is what separates the two.
 func renderDisabled(disabled []string) string {
-	return fmt.Sprintf("xbc: 未启用的插件（%d）：%s\n  → 未启用不是错误；如果其中有你期望启用的，检查对应的 plugins.* 配置节",
+	return fmt.Sprintf("xbc: disabled plugins (%d): %s\n  → Being disabled is not an error; if any should be enabled, check the corresponding plugins.* configuration section",
 		len(disabled), strings.Join(disabled, ", "))
 }
 
@@ -160,13 +160,13 @@ func renderDisabled(disabled []string) string {
 // and much further away.
 func renderSoftMisses(misses []ordering.Miss) string {
 	var b strings.Builder
-	b.WriteString("xbc: 软约束未命中（不影响启动）")
+	b.WriteString("xbc: unmatched soft constraints (startup unaffected)")
 	for _, m := range misses {
 		dir := "After"
 		if m.Dir == ordering.Before {
 			dir = "Before"
 		}
-		fmt.Fprintf(&b, "\n  %s.%s = %q —— 无此插件，忽略\n    → 拼写错误？还是忘了启用 plugins.%s？",
+		fmt.Fprintf(&b, "\n  %s.%s = %q — no such plugin, ignored\n    → typo? or forgot to enable plugins.%s?",
 			m.Node, dir, m.Ref, m.Ref)
 	}
 	return b.String()
@@ -192,5 +192,5 @@ func renderMigrationNotice(order []*assembly.Instance, migrate bool) string {
 	if n == 0 {
 		return ""
 	}
-	return fmt.Sprintf("xbc: 迁移未执行（%d 个插件声明了 Migrate，待检查）\n  → 需要迁移请使用 ./myapp migrate 或 --migrate", n)
+	return fmt.Sprintf("xbc: migration not run (%d plugins declare Migrate)\n  → Use ./myapp migrate or --migrate to run migrations", n)
 }

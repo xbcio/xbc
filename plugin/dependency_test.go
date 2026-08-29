@@ -17,31 +17,31 @@ func TestTypeOfDiffersFromNaiveReflectTypeOf(t *testing.T) {
 	var r io.Reader = bytes.NewBufferString("x")
 	naive := reflect.TypeOf(r)
 	assert.NotEqual(t, reflect.Interface, naive.Kind(),
-		"对接口值直接调用 reflect.TypeOf 拿到的是背后的具体类型，不是接口类型本身")
+		"calling reflect.TypeOf on interface values directly returns the underlying concrete type, not the interface type itself")
 	assert.Equal(t, reflect.Interface, typeOf[io.Reader]().Kind(),
-		"typeOf 绕开这个陷阱，稳定拿到接口类型")
+		"typeOf bypasses this trap, reliably getting the interface type")
 }
 
 func TestTypeOfCapturesInterfaceType(t *testing.T) {
 	got := typeOf[io.Reader]()
-	assert.Equal(t, reflect.Interface, got.Kind(), "io.Reader 是接口类型")
+	assert.Equal(t, reflect.Interface, got.Kind(), "io.Reader is an interface type")
 	assert.Equal(t, "io.Reader", got.String())
 }
 
 func TestTypeOfCapturesAnotherInterfaceType(t *testing.T) {
 	got := typeOf[fmt.Stringer]()
-	assert.Equal(t, reflect.Interface, got.Kind(), "fmt.Stringer 是接口类型")
+	assert.Equal(t, reflect.Interface, got.Kind(), "fmt.Stringer is an interface type")
 	assert.Equal(t, "fmt.Stringer", got.String())
 }
 
 func TestTypeOfCapturesConcretePointerType(t *testing.T) {
 	got := typeOf[*bytes.Buffer]()
-	assert.Equal(t, reflect.Pointer, got.Kind(), "*bytes.Buffer 是具体类型")
+	assert.Equal(t, reflect.Pointer, got.Kind(), "*bytes.Buffer is a concrete type")
 	assert.Equal(t, "*bytes.Buffer", got.String())
 }
 
 func TestNormalizeInstanceMapsEmptyToDefault(t *testing.T) {
-	assert.Equal(t, "default", NormalizeInstance(""), `空串归一为 "default"`)
+	assert.Equal(t, "default", NormalizeInstance(""), `empty string is normalized to "default"`)
 }
 
 func TestNormalizeInstanceLeavesDefaultUnchanged(t *testing.T) {
@@ -56,7 +56,7 @@ func TestNeedProducesDefaultInstanceHardDep(t *testing.T) {
 	d := Need[io.Reader]()
 	assert.Equal(t, typeOf[io.Reader](), d.Type)
 	assert.Equal(t, "", d.Instance)
-	assert.False(t, d.Optional, "Need 产生的依赖不是可选的")
+	assert.False(t, d.Optional, "Dependency produced by Need is not optional")
 }
 
 func TestNeedNamedSetsInstance(t *testing.T) {
@@ -69,13 +69,13 @@ func TestNeedNamedSetsInstance(t *testing.T) {
 func TestOptSetsOptionalTrue(t *testing.T) {
 	d := Opt[io.Reader]()
 	assert.Equal(t, "", d.Instance)
-	assert.True(t, d.Optional, "Opt 产生的依赖必须是可选的")
+	assert.True(t, d.Optional, "Dependency produced by Opt must be optional")
 }
 
 func TestOfferProducesNonOptionalDep(t *testing.T) {
 	d := Offer[fmt.Stringer]()
 	assert.Equal(t, typeOf[fmt.Stringer](), d.Type)
-	assert.False(t, d.Optional, "Offer 描述的是产出，不存在可选一说")
+	assert.False(t, d.Optional, "Offer describes output, there is no concept of optional")
 }
 
 func TestDepStringWithoutInstance(t *testing.T) {
@@ -91,7 +91,7 @@ func TestDepStringWithNamedInstance(t *testing.T) {
 func TestDepStringTreatsExplicitDefaultAsUnqualified(t *testing.T) {
 	d := NeedNamed[*bytes.Buffer]("default")
 	assert.Equal(t, "*bytes.Buffer", d.String(),
-		`显式写 "default" 与不写等价，字符串表示不应带方括号`)
+		`Explicitly writing "default" is equivalent to omitting it, string representation should not include brackets`)
 }
 
 func TestDepStringHandlesNilTypeWithoutPanicking(t *testing.T) {
@@ -101,7 +101,7 @@ func TestDepStringHandlesNilTypeWithoutPanicking(t *testing.T) {
 func TestRefToCapturesStableKey(t *testing.T) {
 	r := RefTo("cache")
 	assert.Equal(t, Key("cache"), r.Key())
-	assert.Equal(t, "", r.InstanceName(), `未调用 Instance 时表示依赖该 Definition 的全部启用实例`)
+	assert.Equal(t, "", r.InstanceName(), `When Instance is not called, all enabled instances depending on this Definition are considered`)
 }
 
 func TestKeyRefIsEquivalentToRefTo(t *testing.T) {
@@ -122,7 +122,7 @@ func TestRefStringWithInstance(t *testing.T) {
 }
 
 func TestRefInstanceNameDefaultsToEmptyMeaningAllEnabledInstances(t *testing.T) {
-	assert.Equal(t, "", RefTo("cache").InstanceName(), `未调用 Instance 时 InstanceName 必须是空串，表示全部启用实例`)
+	assert.Equal(t, "", RefTo("cache").InstanceName(), `When Instance is not called, InstanceName must be empty string, representing all enabled instances`)
 }
 
 func TestRefInstanceNameReflectsNarrowing(t *testing.T) {

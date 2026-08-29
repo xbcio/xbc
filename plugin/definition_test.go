@@ -9,11 +9,11 @@ import (
 
 func TestActivationZeroValueBehavesLikeAlways(t *testing.T) {
 	var zero Activation
-	assert.Equal(t, Always.String(), zero.String(), "零值 Activation 必须与 Always 语义等价")
+	assert.Equal(t, Always.String(), zero.String(), "zero value Activation must be equivalent to Always semantics")
 
 	path, required := zero.RequiresConfigSection()
 	assert.Equal(t, "", path)
-	assert.False(t, required, "Always（零值）不要求任何配置节")
+	assert.False(t, required, "Always (zero value) requires no configuration section")
 }
 
 func TestConfiguredRequiresConfigSectionReportsPathAndRequired(t *testing.T) {
@@ -45,7 +45,7 @@ func TestDefinitionValidateRejectsEmptyKey(t *testing.T) {
 
 func TestDefinitionValidateRejectsMalformedKey(t *testing.T) {
 	d := Definition{Key: "Gorm.DB", Factory: definitionFixturePlugin}
-	assert.Error(t, d.Validate(), "插件 key 含大写/点号等保留字符必须被拒绝")
+	assert.Error(t, d.Validate(), "plugin key containing uppercase letters or dot characters and other reserved characters must be rejected")
 }
 
 func TestDefinitionValidateRejectsNilFactory(t *testing.T) {

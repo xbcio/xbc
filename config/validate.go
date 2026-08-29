@@ -18,7 +18,7 @@ type ValidationError struct {
 
 func (e *ValidationError) Error() string {
 	if len(e.Lines) == 0 {
-		return "xbc: 配置错误"
+		return "xbc: configuration error"
 	}
 
 	paths := make([]string, len(e.Lines))
@@ -36,7 +36,7 @@ func (e *ValidationError) Error() string {
 	}
 
 	var b strings.Builder
-	b.WriteString("xbc: 配置错误")
+	b.WriteString("xbc: configuration error")
 	for i := range paths {
 		pad := width - len([]rune(paths[i])) + 2
 		b.WriteString("\n  ")
@@ -73,7 +73,7 @@ func Validate(out any, path string) error {
 
 	verrs, ok := err.(validator.ValidationErrors)
 	if !ok {
-		return fmt.Errorf("xbc: 配置校验失败：%w", err)
+		return fmt.Errorf("xbc: configuration validation failed: %w", err)
 	}
 
 	ve := &ValidationError{}
@@ -93,7 +93,7 @@ func validateStruct(v *validator.Validate, out any, schema *configSchema, path s
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			err = fmt.Errorf(
-				"xbc: 配置 schema %s 在配置节 %s 的 validate tag 无效：%v",
+				"xbc: configuration schema %s in section %s has an invalid validate tag: %v",
 				schema.Root,
 				displayPath(path),
 				recovered,
@@ -161,17 +161,17 @@ func splitNamespaceSegment(segment string) (name, suffix string) {
 func renderViolation(fe validator.FieldError) string {
 	switch fe.Tag() {
 	case "required":
-		return "必填项缺失"
+		return "required field missing"
 	case "min":
-		return fmt.Sprintf("不能小于 %s，得到 %s", fe.Param(), quoteValue(fe.Value()))
+		return fmt.Sprintf("cannot be less than %s, got %s", fe.Param(), quoteValue(fe.Value()))
 	case "max":
-		return fmt.Sprintf("不能大于 %s，得到 %s", fe.Param(), quoteValue(fe.Value()))
+		return fmt.Sprintf("cannot be greater than %s, got %s", fe.Param(), quoteValue(fe.Value()))
 	case "hostname_port":
-		return fmt.Sprintf("不是合法的 host:port —— 得到 %s", quoteValue(fe.Value()))
+		return fmt.Sprintf("not a valid host:port — got %s", quoteValue(fe.Value()))
 	case "oneof":
-		return fmt.Sprintf("必须是 %s 之一，得到 %s", fe.Param(), quoteValue(fe.Value()))
+		return fmt.Sprintf("must be one of %s, got %s", fe.Param(), quoteValue(fe.Value()))
 	default:
-		return fmt.Sprintf("未通过校验规则 %q，得到 %s", fe.Tag(), quoteValue(fe.Value()))
+		return fmt.Sprintf("failed validation rule %q, got %s", fe.Tag(), quoteValue(fe.Value()))
 	}
 }
 

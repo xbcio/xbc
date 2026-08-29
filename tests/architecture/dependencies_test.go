@@ -63,21 +63,21 @@ func archGoCommand(t *testing.T, args ...string) *exec.Cmd {
 func archGoList(t *testing.T, pattern string) []archPackageJSON {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过依赖方向检查")
+		t.Skip("go command unavailable, skipping dependency direction check")
 	}
 
 	out, err := archGoCommand(t, "list", "-json", pattern).Output()
-	require.NoError(t, err, "go list -json %s 失败", pattern)
+	require.NoError(t, err, "go list -json %s failed", pattern)
 
 	dec := json.NewDecoder(strings.NewReader(string(out)))
 	var pkgs []archPackageJSON
 	for dec.More() {
 		var pkg archPackageJSON
-		require.NoError(t, dec.Decode(&pkg), "解析 go list -json %s 输出失败", pattern)
+		require.NoError(t, dec.Decode(&pkg), "Parsing go list -json %s output failed", pattern)
 		pkgs = append(pkgs, pkg)
 	}
 	if len(pkgs) == 0 {
-		t.Fatalf("go list -json %s 没有返回任何包，依赖方向检查实际未生效", pattern)
+		t.Fatalf("go list -json %s returned no packages, dependency direction check actually did not take effect", pattern)
 	}
 	return pkgs
 }
@@ -120,7 +120,7 @@ func TestArchCorePackagesDoNotImportGinDirectly(t *testing.T) {
 	for _, pkg := range pkgs {
 		for _, dep := range archDirectImports(pkg) {
 			if archPathAtOrBelow(dep, "github.com/gin-gonic/gin") {
-				t.Errorf("%s 中直接 import 了 %q：core 是协议无关运行时，Gin 只能存在于独立的 transport/web module 里", pkg.ImportPath, dep)
+				t.Errorf("%s directly imported %q: core is protocol-agnostic runtime, Gin can only exist in standalone transport/web module", pkg.ImportPath, dep)
 			}
 		}
 	}
@@ -145,7 +145,7 @@ func TestArchCoreGoModDoesNotRequireOptionalStacks(t *testing.T) {
 			"github.com/xbcio/xbc/integration",
 		} {
 			if archPathAtOrBelow(req.Path, forbidden) {
-				t.Errorf("core 的 go.mod 不得 require 可选运行栈或实现 module %q；这些依赖只能由独立 module 拥有", req.Path)
+				t.Errorf("core's go.mod must not require optional runtime stack or implementation module %q; these dependencies can only be owned by standalone module", req.Path)
 			}
 		}
 	}
@@ -167,7 +167,7 @@ func TestArchCorePackagesDoNotImportTransportStacks(t *testing.T) {
 	for _, pkg := range pkgs {
 		for _, dep := range archDirectImports(pkg) {
 			if archPathAtOrBelow(dep, "github.com/xbcio/xbc/transport") {
-				t.Errorf("%s 中出现了对 %q 的直接 import：transport/* 是独立 module，依赖方向必须是 transport → core，不能反过来", pkg.ImportPath, dep)
+				t.Errorf("%s contains direct import of %q: transport/* is standalone module, dependency direction must be transport → core, cannot be reversed", pkg.ImportPath, dep)
 			}
 		}
 	}
@@ -176,11 +176,11 @@ func TestArchCorePackagesDoNotImportTransportStacks(t *testing.T) {
 // ── guard 3: the root package must never directly import examples ────────
 
 // TestArchRootPackageDoesNotImportExamples is the package-layout design §4
-// guard for the examples module ("examples 明确不负责：被 core 或 transport/web 反向依赖"):
+// guard for the examples module ("examples clearly does not take responsibility: being reverse depended by core or transport/web"):
 // the root package is what an example imports, never the other way round.
 //
 // Scoped to pattern "." (the root package alone), matching the task's own
-// framing of this rule ("根包不得 import examples") -- unlike guard 2 above,
+// framing of this rule ("root package must not import examples") -- unlike guard 2 above,
 // this is not a "reachable from anywhere in core" invariant, it is
 // specifically about the one package an example's main() actually imports.
 func TestArchRootPackageDoesNotImportExamples(t *testing.T) {
@@ -188,7 +188,7 @@ func TestArchRootPackageDoesNotImportExamples(t *testing.T) {
 	for _, pkg := range pkgs {
 		for _, dep := range archDirectImports(pkg) {
 			if dep == "github.com/xbcio/xbc/examples" || strings.HasPrefix(dep, "github.com/xbcio/xbc/examples/") {
-				t.Errorf("根包中出现了对 %q 的直接 import：examples 是消费 xbc.Run() 的示例 module，不能被核心反向依赖", dep)
+				t.Errorf("root package contains direct import of %q: examples is an example module consuming xbc.Run(), cannot be reverse depended by core", dep)
 			}
 		}
 	}
@@ -212,7 +212,7 @@ func TestArchPluginPackagesDoNotImportHigherLevelOwners(t *testing.T) {
 	for _, pkg := range pkgs {
 		for _, dep := range archDirectImports(pkg) {
 			if dep == "github.com/xbcio/xbc" {
-				t.Errorf("%s 中出现了对根门面包的直接 import：plugin 是协议无关 SPI，不得反向依赖应用入口", pkg.ImportPath)
+				t.Errorf("%s contains direct import of root package: plugin is protocol-agnostic SPI, must not be reverse depended by application entry", pkg.ImportPath)
 			}
 			for _, forbidden := range []string{
 				"github.com/xbcio/xbc/runtime",
@@ -221,7 +221,7 @@ func TestArchPluginPackagesDoNotImportHigherLevelOwners(t *testing.T) {
 				"github.com/xbcio/xbc/internal",
 			} {
 				if archPathAtOrBelow(dep, forbidden) {
-					t.Errorf("%s 中出现了对 %q 的直接 import：plugin 必须位于 runtime/assembly/cli 之下，不得反向依赖上层能力 owner", pkg.ImportPath, dep)
+					t.Errorf("%s contains direct import of %q: plugin must be located under runtime/assembly/cli, must not be reverse depended by upper layer capability owner", pkg.ImportPath, dep)
 				}
 			}
 		}
@@ -231,7 +231,7 @@ func TestArchPluginPackagesDoNotImportHigherLevelOwners(t *testing.T) {
 // ── guard 6: config/log must never import the root package ───────────────
 
 // TestArchConfigAndLogDoNotImportRootPackage is the package-layout design
-// §6 rule 3 guard ("config 与 log 彼此独立，且都不得 import 根包").
+// §6 rule 3 guard ("config and log are independent, and both must not import root package").
 // plugin/ordering is covered by the broader plugin subtree direction guard
 // above, so it does not need a duplicate direct-import assertion here.
 func TestArchConfigAndLogDoNotImportRootPackage(t *testing.T) {
@@ -240,7 +240,7 @@ func TestArchConfigAndLogDoNotImportRootPackage(t *testing.T) {
 		for _, pkg := range pkgs {
 			for _, dep := range archDirectImports(pkg) {
 				assert.NotEqual(t, "github.com/xbcio/xbc", dep,
-					"%s 中出现了对根包的直接 import：这些包都在根包的依赖闭包之下，反向 import 根包会直接形成编译期循环", pkg.ImportPath)
+					"%s contains direct import of root package: these packages are within the root package's dependency closure, reverse importing root package will directly form a compile-time cycle", pkg.ImportPath)
 			}
 		}
 	}
@@ -267,11 +267,11 @@ func TestArchConfigAndLogDoNotImportRootPackage(t *testing.T) {
 func archDeps(t *testing.T, pattern string) []string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过依赖闭包检查")
+		t.Skip("go command unavailable, skipping dependency closure check")
 	}
 
 	out, err := archGoCommand(t, "list", "-deps", pattern).Output()
-	require.NoError(t, err, "go list -deps %s 失败", pattern)
+	require.NoError(t, err, "go list -deps %s failed", pattern)
 
 	var deps []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -280,7 +280,7 @@ func archDeps(t *testing.T, pattern string) []string {
 		}
 	}
 	if len(deps) == 0 {
-		t.Fatalf("go list -deps %s 没有返回任何依赖，闭包检查实际未生效", pattern)
+		t.Fatalf("go list -deps %s returned no dependencies, closure check actually did not take effect", pattern)
 	}
 	return deps
 }
@@ -311,7 +311,7 @@ func TestArchCoreDependencyClosureExcludesOptionalStacks(t *testing.T) {
 			"github.com/xbcio/xbc/integration",
 		} {
 			if archPathAtOrBelow(dep, forbidden) {
-				t.Errorf("core 的生产依赖闭包包含可选运行栈 %q；协议实现必须留在独立 module", dep)
+				t.Errorf("core's production dependency closure contains optional runtime stack %q; protocol implementation must remain in standalone module", dep)
 			}
 		}
 	}
@@ -338,8 +338,8 @@ func TestArchLeafPackagesDependOnStdlibOnly(t *testing.T) {
 			if archIsStdlib(dep) || archPathAtOrBelow(dep, tc.owner) {
 				continue
 			}
-			assert.Fail(t, "叶子包引入了非标准库依赖",
-				"%s 的生产依赖闭包里出现了 %q；该包必须保持 stdlib-only", tc.owner, dep)
+			assert.Fail(t, "leaf package introduced non-standard library dependency",
+				"%s's production dependency closure contains %q; this package must remain stdlib-only", tc.owner, dep)
 		}
 	}
 }
@@ -360,9 +360,9 @@ func TestArchLeafPackagesDependOnStdlibOnly(t *testing.T) {
 // compile in the package it did not ask for.
 func TestArchConfigAndLogAreMutuallyIndependent(t *testing.T) {
 	assert.NotContains(t, archDeps(t, "./config/..."), "github.com/xbcio/xbc/log",
-		"config 的依赖闭包里不能出现 log：两个包必须能各自独立使用")
+		"config's dependency closure cannot contain log: both packages must be able to be used independently")
 	assert.NotContains(t, archDeps(t, "./log/..."), "github.com/xbcio/xbc/config",
-		"log 的依赖闭包里不能出现 config：从 logger 里去读配置是这条规则更容易被违反的方向")
+		"log's dependency closure cannot contain config: reading configuration from logger is the direction more likely to violate this rule")
 }
 
 // ── guard 9: assembly must not read the process-wide default catalog ─
@@ -382,13 +382,13 @@ func TestArchAssemblyDoesNotReadDefaultCatalog(t *testing.T) {
 	for _, name := range archProductionGoFilesInDir(t, assemblyDir) {
 		filePath := filepath.Join(assemblyDir, name)
 		file, err := parser.ParseFile(fset, filePath, nil, parser.SkipObjectResolution)
-		require.NoError(t, err, "解析 %s 失败", filePath)
+		require.NoError(t, err, "Parsing %s failed", filePath)
 		checked++
 
 		catalogAliases := make(map[string]bool)
 		for _, spec := range file.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
-			require.NoError(t, err, "解析 %s 的 import path 失败", filePath)
+			require.NoError(t, err, "Parsing %s's import path failed", filePath)
 			if importPath != "github.com/xbcio/xbc/plugin/catalog" {
 				continue
 			}
@@ -397,8 +397,8 @@ func TestArchAssemblyDoesNotReadDefaultCatalog(t *testing.T) {
 				alias = spec.Name.Name
 			}
 			if alias == "." {
-				assert.Fail(t, "assembly 不得 dot-import catalog",
-					"%s dot-import 了 plugin/catalog，默认 Catalog 守卫无法可靠识别调用", filePath)
+				assert.Fail(t, "assembly must not dot-import catalog",
+					"%s dot-imported plugin/catalog, default Catalog guard cannot reliably identify caller", filePath)
 				continue
 			}
 			if alias != "_" {
@@ -419,11 +419,11 @@ func TestArchAssemblyDoesNotReadDefaultCatalog(t *testing.T) {
 			if !ok || !catalogAliases[ident.Name] || !forbidden[sel.Sel.Name] {
 				return true
 			}
-			assert.Fail(t, "装配层读取了进程级默认 catalog",
-				"%s 第 %d 行调用了 %s.%s：assembly 只能装配调用方交给它的冻结 Snapshot",
+			assert.Fail(t, "assembly layer read process-level default catalog",
+				"%s line %d called %s.%s: assembly can only assemble calls made to its frozen Snapshot",
 				filePath, fset.Position(call.Pos()).Line, ident.Name, sel.Sel.Name)
 			return true
 		})
 	}
-	require.NotZero(t, checked, "assembly/ 没有扫描到生产 Go 文件，默认 Catalog 守卫实际未生效")
+	require.NotZero(t, checked, "assembly/ did not scan production Go files, default Catalog guard actually did not take effect")
 }

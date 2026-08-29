@@ -48,7 +48,7 @@ func (c *Catalog) Declare(d plugin.Definition) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.frozen {
-		panic("xbc: 插件目录已冻结，init() 之后不能再声明插件")
+		panic("xbc: plugin directory is frozen, no more plugins can be declared after init()")
 	}
 	c.defs = append(c.defs, d)
 }
@@ -106,7 +106,7 @@ func freeze(defs []plugin.Definition) (Snapshot, error) {
 		}
 		if prev, dup := seen[d.Key]; dup {
 			problems = append(problems, fmt.Sprintf(
-				"插件 key %q 被重复声明：%s 与 %s 冲突",
+				"plugin key %q is declared more than once: %s conflicts with %s",
 				d.Key, describeDefinition(prev), describeDefinition(d)))
 			continue
 		}
@@ -115,7 +115,7 @@ func freeze(defs []plugin.Definition) (Snapshot, error) {
 	}
 
 	if len(problems) > 0 {
-		return Snapshot{}, fmt.Errorf("xbc: 插件目录冻结失败，共 %d 个问题：\n  → %s",
+		return Snapshot{}, fmt.Errorf("xbc: failed to freeze plugin directory, found %d issues:\n  → %s",
 			len(problems), strings.Join(problems, "\n  → "))
 	}
 	return Snapshot{defs: ordered}, nil
@@ -129,14 +129,14 @@ func freeze(defs []plugin.Definition) (Snapshot, error) {
 // it points them straight at the two init() call sites that collided.
 func describeDefinition(d plugin.Definition) string {
 	if d.Factory == nil {
-		return fmt.Sprintf("%s（Factory 为 nil）", d.Key)
+		return fmt.Sprintf("%s (Factory is nil)", d.Key)
 	}
 	fn := runtime.FuncForPC(reflect.ValueOf(d.Factory).Pointer())
 	if fn == nil {
 		return d.Key.String()
 	}
 	file, line := fn.FileLine(fn.Entry())
-	return fmt.Sprintf("%s（工厂定义于 %s:%d）", d.Key, file, line)
+	return fmt.Sprintf("%s (factory defined at %s:%d)", d.Key, file, line)
 }
 
 // Snapshot is an immutable, deterministically ordered set of definitions.

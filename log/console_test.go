@@ -30,7 +30,7 @@ func sampleEntry() zapcore.Entry {
 	return zapcore.Entry{
 		Level:   zapcore.InfoLevel,
 		Time:    time.Date(2026, 8, 24, 10, 23, 45, 123_000_000, time.Local),
-		Message: "校验通过",
+		Message: "Validation passed",
 		Caller: zapcore.EntryCaller{
 			Defined: true,
 			File:    "/home/u/proj/order/service.go",
@@ -46,18 +46,18 @@ func TestConsoleLayout(t *testing.T) {
 		zap.Int("amount", 99),
 	})
 
-	assert.True(t, strings.HasSuffix(out, "\n"), "必须以换行结尾")
+	assert.True(t, strings.HasSuffix(out, "\n"), "Must end with newline")
 	line := strings.TrimSuffix(out, "\n")
 
-	assert.True(t, strings.HasPrefix(line, "10:23:45.123 "), "时间段：%q", line)
-	assert.Contains(t, line, "INFO  ", "level 左对齐补到 6 宽（widthLevel）")
-	assert.Contains(t, line, "01926f7e", "trace 列取 trace_id 前 8 位")
-	assert.NotContains(t, line, "01926f7e1a2b", "console 不打完整 trace_id")
+	assert.True(t, strings.HasPrefix(line, "10:23:45.123 "), "Time range: %q", line)
+	assert.Contains(t, line, "INFO  ", "level left-aligned padded to 6 width (widthLevel)")
+	assert.Contains(t, line, "01926f7e", "trace column takes first 8 digits of trace_id")
+	assert.NotContains(t, line, "01926f7e1a2b", "console does not print full trace_id")
 	assert.Contains(t, line, "order/service.go:42")
-	assert.Contains(t, line, "校验通过")
+	assert.Contains(t, line, "Validation passed")
 	assert.Contains(t, line, "amount=99")
 	assert.Contains(t, line, "order_id=1001")
-	assert.NotContains(t, line, "trace_id=", "trace_id 已占固定列，不再进 KV 区")
+	assert.NotContains(t, line, "trace_id=", "trace_id occupies fixed column, no longer enters KV area")
 }
 
 func TestConsoleFieldsSortedByKey(t *testing.T) {
@@ -74,7 +74,7 @@ func TestConsoleWithFieldsComeBeforeCallFields(t *testing.T) {
 		[]zapcore.Field{zap.Int("amount", 99)},
 	)
 	assert.Less(t, strings.Index(out, "service=order"), strings.Index(out, "amount=99"),
-		"With 的上下文字段排在本次调用的字段之前")
+		"With context fields appear before current call fields")
 }
 
 // Note: an overly long TrimmedPath cannot be produced by adding more path
@@ -91,8 +91,8 @@ func TestConsoleCallerTruncatedFromLeft(t *testing.T) {
 	ent.Caller.Line = 1234
 
 	out := encodeOne(t, false, ent, nil, nil)
-	assert.Contains(t, out, "…", "超长 caller 从左侧截断")
-	assert.Contains(t, out, ".go:1234", "行号一侧必须完整保留")
+	assert.Contains(t, out, "…", "Long caller truncates from the left")
+	assert.Contains(t, out, ".go:1234", "Line number side must be fully preserved")
 }
 
 // Asserts that the caller segment's actual rendered width equals exactly
@@ -118,11 +118,11 @@ func TestConsoleShortCallerRightAligned(t *testing.T) {
 	// is where the caller segment starts; the caller segment itself is widthCaller wide.
 	callerStart := len("10:23:45.123") + 1 + widthLevel + 1 + widthTrace + 1
 	seg := out[callerStart : callerStart+widthCaller]
-	assert.Equal(t, widthCaller, len(seg), "caller 段必须恰好占 widthCaller 宽")
-	assert.Equal(t, "a/b.go:7", strings.TrimLeft(seg, " "), "短 caller 的内容")
+	assert.Equal(t, widthCaller, len(seg), "caller segment must be exactly widthCaller wide")
+	assert.Equal(t, "a/b.go:7", strings.TrimLeft(seg, " "), "Content of short caller")
 	assert.Equal(t, strings.Repeat(" ", widthCaller-len("a/b.go:7"))+"a/b.go:7", seg,
-		"短 caller 右对齐补空格，宽度必须恰好等于 widthCaller")
-	assert.Equal(t, 24, widthCaller, "widthCaller 依据是 spec §8.7 表格，改动需要重新过评审")
+		"Short caller right-aligned padded with spaces, width must exactly equal widthCaller")
+	assert.Equal(t, 24, widthCaller, "widthCaller is based on spec §8.7 table, changes require re-review")
 }
 
 // The spec §8.7 table's example line "payment/client.go:33" is exactly 20
@@ -140,15 +140,15 @@ func TestConsoleCallerAtSpecWidthNotTruncated(t *testing.T) {
 	ent.Caller.Line = 33
 
 	out := encodeOne(t, false, ent, nil, nil)
-	assert.Contains(t, out, "    payment/client.go:33", "20 字符的 spec 示例行右对齐补 4 个空格，不截断")
-	assert.NotContains(t, out, "…", "widthCaller 若被改回 19，这条 20 字符的路径就会被截断")
+	assert.Contains(t, out, "    payment/client.go:33", "20-character spec example line right-aligned padded with 4 spaces, no truncation")
+	assert.NotContains(t, out, "…", "If widthCaller is reverted to 19, this 20-character path will be truncated")
 }
 
 func TestConsoleNoCallerWhenUndefined(t *testing.T) {
 	ent := sampleEntry()
 	ent.Caller = zapcore.EntryCaller{}
 	out := encodeOne(t, false, ent, nil, nil)
-	assert.Contains(t, out, "校验通过")
+	assert.Contains(t, out, "Validation passed")
 	assert.NotContains(t, out, "undefined")
 }
 
@@ -159,17 +159,16 @@ func TestConsoleQuotesValuesWithSpaces(t *testing.T) {
 		zap.String("empty", ""),
 	})
 	assert.Contains(t, out, `error="connection refused"`)
-	assert.Contains(t, out, "plain=ok", "不含空格的值不加引号")
+	assert.Contains(t, out, "plain=ok", "Values without space do not need quotes")
 	assert.Contains(t, out, `empty=""`)
 }
 
-// Chinese text must not be escaped into \uXXXX -- this is exactly why
-// strconv.Quote cannot be used.
-func TestConsoleKeepsCJKLiteral(t *testing.T) {
+// Non-ASCII text must remain literal rather than being escaped as \uXXXX.
+func TestConsoleKeepsUTF8Literal(t *testing.T) {
 	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{
-		zap.String("reason", "余额 不足"),
+		zap.String("reason", "café balance"),
 	})
-	assert.Contains(t, out, `reason="余额 不足"`)
+	assert.Contains(t, out, `reason="café balance"`)
 	assert.NotContains(t, out, `\u`)
 }
 
@@ -178,7 +177,7 @@ func TestConsoleEscapesQuotesAndNewlines(t *testing.T) {
 		zap.String("raw", "he said \"hi\"\nbye"),
 	})
 	assert.Contains(t, out, `raw="he said \"hi\"\nbye"`)
-	assert.Equal(t, 1, strings.Count(out, "\n"), "值里的换行必须转义，一条日志只占一行")
+	assert.Equal(t, 1, strings.Count(out, "\n"), "Newlines in values must be escaped, one log line per line")
 }
 
 // writeConsoleValue's backslash-escaping branch previously had no test
@@ -189,17 +188,17 @@ func TestConsoleEscapesBackslash(t *testing.T) {
 	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{
 		zap.String("path", `C:\temp file`),
 	})
-	assert.Contains(t, out, `path="C:\\temp file"`, "反斜杠必须转义成两个字符")
+	assert.Contains(t, out, `path="C:\\temp file"`, "Backslash must be escaped into two characters")
 }
 
 func TestConsoleColoring(t *testing.T) {
 	out := encodeOne(t, true, sampleEntry(), nil, []zapcore.Field{
 		zap.Error(errors.New("boom")),
 	})
-	assert.Contains(t, out, ansiGreen+"INFO  "+ansiReset, "INFO 用绿色")
-	assert.Contains(t, out, ansiRed, "err 字段的值用红色")
-	assert.Contains(t, out, ansiCyan, "key 用青色")
-	assert.Contains(t, out, ansiDim, "时间/trace/caller 用暗灰")
+	assert.Contains(t, out, ansiGreen+"INFO  "+ansiReset, "INFO in green")
+	assert.Contains(t, out, ansiRed, "err field value in red")
+	assert.Contains(t, out, ansiCyan, "key in cyan")
+	assert.Contains(t, out, ansiDim, "Time/trace/caller in dark gray")
 }
 
 func TestConsoleLevelColors(t *testing.T) {
@@ -214,7 +213,7 @@ func TestConsoleLevelColors(t *testing.T) {
 		ent := sampleEntry()
 		ent.Level = lv
 		out := encodeOne(t, true, ent, nil, nil)
-		assert.Contains(t, out, want+padRightRef(lv.CapitalString(), widthLevel)+ansiReset, "级别 %s", lv)
+		assert.Contains(t, out, want+padRightRef(lv.CapitalString(), widthLevel)+ansiReset, "Level %s", lv)
 	}
 }
 
@@ -233,9 +232,9 @@ func TestConsoleLevelColumnWidthIsUniform(t *testing.T) {
 		// time segment fixed at 12 wide + 1 space, followed by widthLevel
 		// wide, i.e. the level segment
 		seg := out[13 : 13+widthLevel]
-		assert.Equal(t, lv.CapitalString(), strings.TrimRight(seg, " "), "级别 %s 的文本", lv)
-		assert.Equal(t, widthLevel, len(seg), "级别 %s 的列宽", lv)
-		assert.Equal(t, byte(' '), out[13+widthLevel], "级别 %s 后必须紧跟分隔空格", lv)
+		assert.Equal(t, lv.CapitalString(), strings.TrimRight(seg, " "), "Text of level %s", lv)
+		assert.Equal(t, widthLevel, len(seg), "Width of level %s column", lv)
+		assert.Equal(t, byte(' '), out[13+widthLevel], "After level %s, must be immediately followed by separator space", lv)
 	}
 }
 
@@ -263,7 +262,7 @@ func TestConsoleFlattensNamespace(t *testing.T) {
 	assert.Contains(t, out, "db.host=10.0.0.1")
 	assert.Contains(t, out, "db.port=5432")
 	assert.Contains(t, out, "svc=order")
-	assert.NotContains(t, out, "map[", "不能落 Go 的 map 字面量")
+	assert.NotContains(t, out, "map[", "Cannot fall into Go's map literal")
 }
 
 // After flattening, consoleHiddenFields uses the full path for the check:
@@ -276,7 +275,7 @@ func TestConsoleHiddenFieldsUseFullPath(t *testing.T) {
 		zap.Namespace("upstream"),
 		zap.String("trace_id", "ffffffffffffffff"),
 	})
-	assert.NotContains(t, out, "trace_id=0192abcd0192abcd", "顶层 trace_id 已占固定列，不进 KV 区")
+	assert.NotContains(t, out, "trace_id=0192abcd0192abcd", "Top-level trace_id occupies fixed column, no entry into KV area")
 	assert.Contains(t, out, "upstream.trace_id=ffffffffffffffff")
 }
 
@@ -308,14 +307,14 @@ func TestConsoleNestedDepthIsBounded(t *testing.T) {
 		// must actually turn red rather than self-adjusting along with it.
 		atLimit := "m.self.self.self.self.self.self.self.self"
 		assert.Contains(t, out, atLimit+"=<depth-limit>",
-			"触顶后必须打印占位符，而不是悄悄丢弃或继续展开")
+			"After reaching limit, must print placeholder, not silently discard or continue expanding")
 
 		// Must not go one level deeper than this -- one more ".self" would
 		// mean the depth limit did not take effect.
 		assert.NotContains(t, out, atLimit+".self",
-			"不能超过 8 层继续展开")
+			"Cannot expand beyond 8 layers")
 	case <-time.After(5 * time.Second):
-		t.Fatal("展平递归没有停下来")
+		t.Fatal("Flattening recursion without stopping")
 	}
 }
 
@@ -344,18 +343,18 @@ func TestConsoleRendersBinaryAsText(t *testing.T) {
 	assert.NotContains(t, out, "[104 105]")
 }
 
-// A caller path containing Chinese characters must not get sliced into
+// A caller path containing multibyte UTF-8 must not get sliced into
 // U+FFFD, nor misaligned from counting by byte.
 func TestConsoleCallerHandlesMultibyte(t *testing.T) {
 	ent := sampleEntry()
 	ent.Caller = zapcore.EntryCaller{
 		Defined: true,
-		File:    "/src/中文目录名很长很长很长/service/order.go",
+		File:    "/src/éééééééé/service/orders.go",
 		Line:    42,
 	}
 	out := encodeOne(t, false, ent, nil, nil)
-	assert.True(t, utf8.ValidString(out), "输出必须是合法 UTF-8")
-	assert.NotContains(t, out, "�", "不能切出替换字符")
+	assert.True(t, utf8.ValidString(out), "Output must be valid UTF-8")
+	assert.NotContains(t, out, "�", "Cannot slice out replacement character")
 }
 
 func stripANSI(s string) string {
@@ -390,10 +389,10 @@ func TestConsoleNamespacePreservedAcrossWith(t *testing.T) {
 	l := zap.New(core).
 		With(zap.Namespace("db")).
 		With(zap.String("host", "10.0.0.1"))
-	l.Info("连接建立")
+	l.Info("Connection established")
 
-	assert.Contains(t, buf.String(), "db.host=10.0.0.1", "跨 With 的字段必须留在 db 命名空间里")
-	assert.NotContains(t, buf.String(), " host=10.0.0.1", "不能掉回顶层")
+	assert.Contains(t, buf.String(), "db.host=10.0.0.1", "Fields across With must remain in db namespace")
+	assert.NotContains(t, buf.String(), " host=10.0.0.1", "Cannot fall back to top level")
 }
 
 // Multi-level nesting: With(Namespace("a")) -> With(Namespace("b")) ->
@@ -431,7 +430,7 @@ func TestConsoleCloneNamespaceIsolation(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, baseOut.String(), "db.host=10.0.0.1")
-	assert.NotContains(t, baseOut.String(), "db.port=5432", "clone 加的字段不能串回父 encoder")
+	assert.NotContains(t, baseOut.String(), "db.port=5432", "Fields added by clone cannot leak back to parent encoder")
 	assert.Contains(t, cloneOut.String(), "db.host=10.0.0.1")
 	assert.Contains(t, cloneOut.String(), "db.port=5432")
 }
@@ -474,9 +473,9 @@ func TestConsoleCloneDeepCopiesNestedMap(t *testing.T) {
 	cloneOut, err := clone.EncodeEntry(sampleEntry(), nil)
 	require.NoError(t, err)
 
-	assert.Contains(t, baseOut.String(), "m.leaked=yes", "base 自己持有的就是 shared，改了会看见很正常")
+	assert.Contains(t, baseOut.String(), "m.leaked=yes", "base holds its own shared, modifying it is normal to see")
 	assert.NotContains(t, cloneOut.String(), "m.leaked=yes",
-		"clone 必须在 Clone() 那一刻就拿到独立副本，Clone 之后再改 shared 不能泄露进 clone")
+		"clone must obtain an independent copy at the moment of Clone(), modifying shared after Clone() must not leak into clone")
 }
 
 func TestConsoleCloneIsolatesFields(t *testing.T) {
@@ -492,7 +491,7 @@ func TestConsoleCloneIsolatesFields(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, baseOut.String(), "shared=yes")
-	assert.NotContains(t, baseOut.String(), "only_in_clone", "Clone 之后写子实例不能污染父实例")
+	assert.NotContains(t, baseOut.String(), "only_in_clone", "Writing to child instance after Clone must not pollute parent instance")
 	assert.Contains(t, cloneOut.String(), "shared=yes")
 	assert.Contains(t, cloneOut.String(), "only_in_clone=1")
 }
@@ -509,13 +508,13 @@ func TestConsoleStacktraceAppended(t *testing.T) {
 func TestWantColor(t *testing.T) {
 	var buf bytes.Buffer // not a *os.File, cannot be a TTY
 
-	assert.True(t, wantColor(ColorAlways, &buf), "always 无条件开")
-	assert.False(t, wantColor(ColorNever, &buf), "never 无条件关")
-	assert.False(t, wantColor(ColorAuto, &buf), "auto 下非 TTY 关")
+	assert.True(t, wantColor(ColorAlways, &buf), "always must be enabled unconditionally")
+	assert.False(t, wantColor(ColorNever, &buf), "never must be disabled unconditionally")
+	assert.False(t, wantColor(ColorAuto, &buf), "auto is off when not TTY")
 
 	t.Setenv("NO_COLOR", "1")
 	assert.False(t, wantColor(ColorAuto, &buf))
-	assert.True(t, wantColor(ColorAlways, &buf), "显式 always 压过 NO_COLOR")
+	assert.True(t, wantColor(ColorAlways, &buf), "explicit always overrides NO_COLOR")
 }
 
 func TestWantColorRespectsDumbTerm(t *testing.T) {
@@ -537,7 +536,7 @@ func TestWantColorRespectsDumbTerm(t *testing.T) {
 // providing no guard at all.
 func TestConsoleDemo(t *testing.T) {
 	if testing.Short() {
-		t.Skip("演示用例，-short 下跳过")
+		t.Skip("demo case, skipped under -short")
 	}
 	// Write to both stdout (for humans) and buf (for assertions)
 	var buf bytes.Buffer
@@ -547,18 +546,18 @@ func TestConsoleDemo(t *testing.T) {
 	l := zap.New(core, zap.AddCaller()).
 		With(zap.String("trace_id", "01926f7e1a2b3c4d5e6f708192a3b4c5"))
 
-	l.Debug("连接池已就绪", zap.Int("size", 10))
-	l.Info("校验通过", zap.Int("order_id", 1001), zap.Float64("amount", 99.5))
-	l.Warn("重试", zap.Int("attempt", 2), zap.Duration("backoff", 300*time.Millisecond))
-	l.Error("支付失败", zap.Error(errors.New("connection refused")))
-	l.Info("值里有空格", zap.String("reason", "余额 不足"))
+	l.Debug("Connection pool is ready", zap.Int("size", 10))
+	l.Info("Validation passed", zap.Int("order_id", 1001), zap.Float64("amount", 99.5))
+	l.Warn("Retry", zap.Int("attempt", 2), zap.Duration("backoff", 300*time.Millisecond))
+	l.Error("Payment failed", zap.Error(errors.New("connection refused")))
+	l.Info("Value contains space", zap.String("reason", "café balance"))
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	require.Len(t, lines, 5, "五次调用要产出恰好五行")
+	require.Len(t, lines, 5, "Five calls must produce exactly five lines")
 	for i, ln := range lines {
-		assert.NotEmpty(t, strings.TrimSpace(stripANSI(ln)), "第 %d 行不能是空的", i+1)
+		assert.NotEmpty(t, strings.TrimSpace(stripANSI(ln)), "Line %d cannot be empty", i+1)
 	}
-	assert.Contains(t, buf.String(), "余额 不足", "中文原样保留")
-	assert.Contains(t, buf.String(), `reason="余额 不足"`, "含空格的值要被引号包住")
-	assert.NotContains(t, buf.String(), "trace_id=", "trace_id 已占固定列，不该再进 KV 区")
+	assert.Contains(t, buf.String(), "café balance", "multibyte text must be preserved unchanged")
+	assert.Contains(t, buf.String(), `reason="café balance"`, "Values with space must be quoted")
+	assert.NotContains(t, buf.String(), "trace_id=", "trace_id occupies a fixed column, should not enter KV area")
 }

@@ -22,7 +22,7 @@ type product struct {
 // resolve owns dependency resolution. It merges both ends of the dependency
 // graph, builds the product index, wires every hard and soft edge, and returns the
 // topological order. Every problem that would block startup is collected
-// and reported together as one "xbc: 依赖检查失败" batch -- fixing the first
+// and reported together as one "xbc: dependency check failed" batch -- fixing the first
 // line reported should not just uncover a second one on the next run.
 func (c *Container) resolve(insts []*Instance) ([]*Instance, []ordering.Miss, error) {
 	g := ordering.New()
@@ -39,7 +39,7 @@ func (c *Container) resolve(insts []*Instance) ([]*Instance, []ordering.Miss, er
 	for _, inst := range insts {
 		fs, err := scanPluginFields(inst.plugin)
 		if err != nil {
-			return nil, nil, fmt.Errorf("xbc: 插件 %s 的 xbc tag 有误：%w", inst.Label(), err)
+			return nil, nil, fmt.Errorf("xbc: plugin %s has an invalid xbc tag: %w", inst.Label(), err)
 		}
 		inst.fields = fs
 	}
@@ -79,7 +79,7 @@ func (c *Container) resolve(insts []*Instance) ([]*Instance, []ordering.Miss, er
 					continue
 				}
 				errLines = append(errLines, fmt.Sprintf(
-					"  插件 %s 与插件 %s 都声明产出 %s\n    → 产出同一类型、同一实例名的插件只能有一个",
+					"  plugin %s and plugin %s both declare producing %s\n    → only one plugin can produce the same type with the same instance name",
 					other.Label(), inst.Label(), dep.String()))
 				continue
 			}
@@ -110,7 +110,7 @@ func (c *Container) resolve(insts []*Instance) ([]*Instance, []ordering.Miss, er
 	}
 
 	if len(errLines) > 0 {
-		return nil, nil, fmt.Errorf("xbc: 依赖检查失败\n%s", strings.Join(errLines, "\n"))
+		return nil, nil, fmt.Errorf("xbc: dependency check failed\n%s", strings.Join(errLines, "\n"))
 	}
 
 	// Pass 5: only once every hard requirement is satisfiable do we wire the
@@ -143,7 +143,7 @@ func (c *Container) resolve(insts []*Instance) ([]*Instance, []ordering.Miss, er
 	if err != nil {
 		var cycle *ordering.CycleError
 		if errors.As(err, &cycle) {
-			return nil, nil, fmt.Errorf("xbc: 依赖成环\n  %s", strings.Join(cycle.Path, " → "))
+			return nil, nil, fmt.Errorf("xbc: dependency cycle\n  %s", strings.Join(cycle.Path, " → "))
 		}
 		// Every hard edge added above only ever names an endpoint already
 		// confirmed to exist, so a *ordering.MissingNodeError here would mean
@@ -178,18 +178,18 @@ func resolveTypeDep(g *ordering.Graph, inst *Instance, dep plugin.Dep, produced 
 			}
 			closest, missing := closestProductMatch(allProducts, dep.Type)
 			if closest == nil {
-				return fmt.Sprintf("  插件 %s 需要 %s，无任何插件提供\n    → 是否忘了 import 提供该类型的插件包",
+				return fmt.Sprintf("  plugin %s requires %s, but no plugin provides it\n    → Did you forget to import the plugin package that provides this type?",
 					inst.Label(), dep.Type.String())
 			}
-			return fmt.Sprintf("  插件 %s 需要 %s，无任何插件提供\n    最接近的是 %s，缺少方法：%s",
-				inst.Label(), dep.Type.String(), closest.String(), strings.Join(missing, "、"))
+			return fmt.Sprintf("  plugin %s requires %s, but no plugin provides it\n    closest match is %s, missing methods: %s",
+				inst.Label(), dep.Type.String(), closest.String(), strings.Join(missing, ", "))
 		default:
 			var b strings.Builder
-			fmt.Fprintf(&b, "  插件 %s 需要 %s，有 %d 个候选\n", inst.Label(), dep.Type.String(), len(candidates))
+			fmt.Fprintf(&b, "  plugin %s requires %s and has %d candidates\n", inst.Label(), dep.Type.String(), len(candidates))
 			for _, c := range candidates {
 				fmt.Fprintf(&b, "    %s[%s]\n", c.typ.String(), instName)
 			}
-			b.WriteString(`    → 用 xbc:"inject,name=xxx" 指定实例消歧`)
+			b.WriteString(`    → use xbc:"inject,name=xxx" to resolve ambiguity`)
 			return b.String()
 		}
 	}
@@ -213,11 +213,11 @@ func resolveTypeDep(g *ordering.Graph, inst *Instance, dep plugin.Dep, produced 
 		}
 	}
 	if len(alt) == 0 {
-		return fmt.Sprintf("  插件 %s 需要 %s，无任何插件提供\n    → 是否忘了 import 对应的 provider/autoload 包",
+		return fmt.Sprintf("  plugin %s requires %s, but no plugin provides it\n    → Did you forget to import the corresponding provider/autoload package?",
 			inst.Label(), dep.Type.String())
 	}
-	return fmt.Sprintf("  插件 %s 依赖 %s[%s]，当前只有 %s\n    → 在 plugins.%s 下添加 %s 实例",
-		inst.Label(), pkgName(dep.Type), instName, strings.Join(alt, "、"), pkgName(dep.Type), instName)
+	return fmt.Sprintf("  plugin %s depends on %s[%s], but only %s currently exist\n    → add instance %s under plugins.%s",
+		inst.Label(), pkgName(dep.Type), instName, strings.Join(alt, ", "), pkgName(dep.Type), instName)
 }
 
 // resolveRef resolves one Ref by the stable Definition key. An unspecified
@@ -246,7 +246,7 @@ func resolveRef(g *ordering.Graph, inst *Instance, ref plugin.Ref, byKey map[plu
 
 	name := wantKey.String()
 	if wantInstance == "" || len(all) == 0 {
-		return fmt.Sprintf("  插件 %s 依赖插件 %s，但 %s 未启用\n    → 在 application.yml 中添加 plugins.%s 配置节",
+		return fmt.Sprintf("  plugin %s depends on plugin %s, but %s is not enabled\n    → add plugins.%s configuration section in application.yml",
 			inst.Label(), name, name, name)
 	}
 
@@ -254,8 +254,8 @@ func resolveRef(g *ordering.Graph, inst *Instance, ref plugin.Ref, byKey map[plu
 	for _, other := range all {
 		alt = append(alt, fmt.Sprintf("%s[%s]", name, plugin.NormalizeInstance(other.instance)))
 	}
-	return fmt.Sprintf("  插件 %s 依赖插件 %s[%s]，当前只有 %s\n    → 在 plugins.%s 下添加 %s 实例",
-		inst.Label(), name, plugin.NormalizeInstance(wantInstance), strings.Join(alt, "、"), name, plugin.NormalizeInstance(wantInstance))
+	return fmt.Sprintf("  plugin %s depends on plugin %s[%s], but only %s currently exist\n    → add instance %s under plugins.%s",
+		inst.Label(), name, plugin.NormalizeInstance(wantInstance), strings.Join(alt, ", "), name, plugin.NormalizeInstance(wantInstance))
 }
 
 // matchInterface scans products already scoped to one instance name and

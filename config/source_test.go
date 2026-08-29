@@ -50,7 +50,7 @@ func TestLoadExplicitFileMissingIsError(t *testing.T) {
 	t.Chdir(dir)
 
 	_, err := loadKoanf(Options{File: filepath.Join(dir, "not-there.yml")})
-	require.Error(t, err, "显式指定的 --config 路径不存在必须报错（裁决 R8），不能静默按空配置跑")
+	require.Error(t, err, "Explicitly specified --config path not existing must error (ruling R8), cannot silently run with empty config")
 }
 
 func TestLoadWithNoFileAnywhereIsNotAnError(t *testing.T) {
@@ -58,7 +58,7 @@ func TestLoadWithNoFileAnywhereIsNotAnError(t *testing.T) {
 	t.Chdir(dir)
 
 	k, err := loadKoanf(Options{})
-	require.NoError(t, err, "三个位置都没有配置文件时，按空配置继续是合法的（裁决 R8）")
+	require.NoError(t, err, "It is valid to proceed with an empty configuration when no configuration files are present in three locations (ruling R8)")
 	require.False(t, k.Exists("server.addr"))
 }
 
@@ -70,8 +70,8 @@ func TestLoadMergesProfileOverlay(t *testing.T) {
 
 	k, err := loadKoanf(Options{Profile: "prod"})
 	require.NoError(t, err)
-	require.Equal(t, ":80", k.String("server.addr"), "profile 里同 key 应当覆盖主文件")
-	require.Equal(t, "/", k.String("server.base_path"), "profile 没提到的 key 应当保留主文件的值")
+	require.Equal(t, ":80", k.String("server.addr"), "Same key in profile should override the main file")
+	require.Equal(t, "/", k.String("server.base_path"), "Key not mentioned in profile should retain the value from the main file")
 }
 
 func TestLoadProfileMissingSiblingIsSilentlySkipped(t *testing.T) {
@@ -80,7 +80,7 @@ func TestLoadProfileMissingSiblingIsSilentlySkipped(t *testing.T) {
 	writeYAML(t, filepath.Join(dir, "application.yml"), "server:\n  addr: \":8080\"\n")
 
 	k, err := loadKoanf(Options{Profile: "does-not-exist"})
-	require.NoError(t, err, "profile 叠加文件缺失不是错误，只有主文件的显式路径缺失才是错误")
+	require.NoError(t, err, "Missing profile overlay file is not an error, only the explicit absence of the main file path is an error")
 	require.Equal(t, ":8080", k.String("server.addr"))
 }
 
@@ -95,5 +95,5 @@ func TestLoadOverridesWinOverEverything(t *testing.T) {
 		Overrides: map[string]any{"server.addr": ":9999"},
 	})
 	require.NoError(t, err)
-	require.Equal(t, ":9999", k.String("server.addr"), "flag 覆盖必须是最高优先级")
+	require.Equal(t, ":9999", k.String("server.addr"), "Flag override must have the highest priority")
 }

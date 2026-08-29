@@ -45,7 +45,7 @@ func NewEnvironment(values map[string]any, envPrefix string) (*Environment, erro
 	k := koanf.New(".")
 	if len(values) > 0 {
 		if err := k.Load(confmap.Provider(values, "."), nil); err != nil {
-			return nil, fmt.Errorf("xbc: 构造内存配置环境失败：%w", err)
+			return nil, fmt.Errorf("xbc: failed to construct in-memory configuration environment: %w", err)
 		}
 	}
 	return &Environment{k: k, envPrefix: envPrefix}, nil
@@ -177,7 +177,7 @@ type BindOptions struct {
 // Callers should prefer Bind unless their section genuinely mixes schemas.
 func (e *Environment) BindWithOptions(path string, out any, options BindOptions) error {
 	if e == nil || e.k == nil {
-		return fmt.Errorf("xbc: 配置尚未加载，无法绑定 %s", displayPath(path))
+		return fmt.Errorf("xbc: configuration not loaded, cannot bind %s", displayPath(path))
 	}
 	if err := bind(e.k, path, out, e.envPrefix, options.AllowedKeys...); err != nil {
 		return err

@@ -45,14 +45,14 @@ type FieldSpec struct {
 func Scan(v any) ([]FieldSpec, error) {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Pointer {
-		return nil, fmt.Errorf("inject: Scan 需要指向结构体的指针，收到 %T", v)
+		return nil, fmt.Errorf("inject: Scan needs a pointer to a struct, received %T", v)
 	}
 	if rv.IsNil() {
-		return nil, fmt.Errorf("inject: Scan 收到 nil 指针")
+		return nil, fmt.Errorf("inject: Scan received nil pointer")
 	}
 	elem := rv.Elem()
 	if elem.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("inject: Scan 需要指向结构体的指针，收到指向 %s 的指针", elem.Kind())
+		return nil, fmt.Errorf("inject: Scan needs a pointer to a struct, received pointer to %s", elem.Kind())
 	}
 
 	t := elem.Type()
@@ -71,7 +71,7 @@ func Scan(v any) ([]FieldSpec, error) {
 			// never Set an unexported field. Skipping silently here would
 			// mean the tag is a lie the author never finds out about until
 			// something downstream sees an unexplained nil.
-			return nil, fmt.Errorf("inject: 字段 %s 未导出但带有 xbc tag，反射无法为它赋值", f.Name)
+			return nil, fmt.Errorf("inject: field %s is unexported but has xbc tag, reflection cannot assign to it", f.Name)
 		}
 		if tagVal == "-" {
 			continue
@@ -100,7 +100,7 @@ func parseTag(f reflect.StructField, tag string) (FieldSpec, error) {
 		spec.Kind = KindProvide
 	default:
 		return FieldSpec{}, fmt.Errorf(
-			"inject: 字段 %s 的 xbc tag 动作 %q 未知，合法取值：inject、provide、-", f.Name, action)
+			"inject: field %s has unknown xbc tag action %q; valid values: inject, provide, -", f.Name, action)
 	}
 
 	for _, opt := range parts[1:] {
@@ -109,26 +109,26 @@ func parseTag(f reflect.StructField, tag string) (FieldSpec, error) {
 		case "name":
 			if !hasVal {
 				return FieldSpec{}, fmt.Errorf(
-					"inject: 字段 %s 的 xbc tag 选项 %q 缺少值，期望 name=<实例名>", f.Name, opt)
+					"inject: field %s has no value for xbc tag option %q; expected name=<instance>", f.Name, opt)
 			}
 			if spec.Kind == KindProvide {
 				return FieldSpec{}, fmt.Errorf(
-					"inject: 字段 %s 是 provide，不能指定 name —— 产物实例名来自插件自己，不能由 tag 指定", f.Name)
+					"inject: field %s uses provide and cannot specify name; provided values are scoped to the plugin's own instance", f.Name)
 			}
 			spec.Instance = val
 		case "optional":
 			if hasVal {
 				return FieldSpec{}, fmt.Errorf(
-					"inject: 字段 %s 的 xbc tag 选项 %q 不接受值", f.Name, opt)
+					"inject: field %s has a value for xbc tag option %q, which accepts no value", f.Name, opt)
 			}
 			if spec.Kind == KindProvide {
 				return FieldSpec{}, fmt.Errorf(
-					"inject: 字段 %s 是 provide，产物没有可选一说，optional 无意义", f.Name)
+					"inject: field %s uses provide and cannot be optional", f.Name)
 			}
 			spec.Optional = true
 		default:
 			return FieldSpec{}, fmt.Errorf(
-				"inject: 字段 %s 的 xbc tag 选项 %q 未知，合法取值：name、optional", f.Name, key)
+				"inject: field %s has unknown xbc tag option %q; valid values: name, optional", f.Name, key)
 		}
 	}
 	return spec, nil
@@ -146,7 +146,7 @@ func Set(v any, spec FieldSpec, val any) error {
 		return err
 	}
 	if !fv.CanSet() {
-		return fmt.Errorf("inject: 字段 %s 不可设置", spec.Name)
+		return fmt.Errorf("inject: field %s is not settable", spec.Name)
 	}
 
 	rv := reflect.ValueOf(val)
@@ -157,11 +157,11 @@ func Set(v any, spec FieldSpec, val any) error {
 			fv.Set(reflect.Zero(spec.Type))
 			return nil
 		default:
-			return fmt.Errorf("inject: 字段 %s 类型 %s 不能被赋值为 nil", spec.Name, spec.Type)
+			return fmt.Errorf("inject: field %s type %s cannot be set to nil", spec.Name, spec.Type)
 		}
 	}
 	if !rv.Type().AssignableTo(spec.Type) {
-		return fmt.Errorf("inject: 字段 %s 类型不匹配：期望 %s，得到 %s", spec.Name, spec.Type, rv.Type())
+		return fmt.Errorf("inject: field %s type mismatch: expected %s, got %s", spec.Name, spec.Type, rv.Type())
 	}
 	fv.Set(rv)
 	return nil
@@ -192,14 +192,14 @@ func Value(v any, spec FieldSpec) (any, error) {
 func fieldValue(v any, spec FieldSpec) (reflect.Value, error) {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return reflect.Value{}, fmt.Errorf("inject: 需要指向结构体的指针，收到 %T", v)
+		return reflect.Value{}, fmt.Errorf("inject: need a pointer to a struct, received %T", v)
 	}
 	elem := rv.Elem()
 	if elem.Kind() != reflect.Struct {
-		return reflect.Value{}, fmt.Errorf("inject: 需要指向结构体的指针，收到指向 %s 的指针", elem.Kind())
+		return reflect.Value{}, fmt.Errorf("inject: need a pointer to a struct, received a pointer to %s", elem.Kind())
 	}
 	if spec.Index < 0 || spec.Index >= elem.NumField() {
-		return reflect.Value{}, fmt.Errorf("inject: 字段索引 %d 超出范围", spec.Index)
+		return reflect.Value{}, fmt.Errorf("inject: field index %d out of range", spec.Index)
 	}
 	return elem.Field(spec.Index), nil
 }

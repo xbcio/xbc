@@ -18,7 +18,7 @@ func TestParseArgsNoArguments(t *testing.T) {
 
 	cmd, err := ParseArgs(nil)
 	require.NoError(t, err)
-	assert.Equal(t, Command{}, cmd, "无参数时应得到全零值的 Command")
+	assert.Equal(t, Command{}, cmd, "Command should get zero value when no parameters")
 }
 
 // TestParseArgsConfigFlag pins --config.
@@ -36,7 +36,7 @@ func TestParseArgsProfileFlagOverridesEnv(t *testing.T) {
 
 	cmd, err := ParseArgs([]string{"--profile", "prod"})
 	require.NoError(t, err)
-	assert.Equal(t, "prod", cmd.Profile, "显式 --profile 必须覆盖环境变量")
+	assert.Equal(t, "prod", cmd.Profile, "Explicit --profile must override environment variable")
 }
 
 // TestParseArgsProfileFallsBackToEnv pins the other half: with no --profile
@@ -46,7 +46,7 @@ func TestParseArgsProfileFallsBackToEnv(t *testing.T) {
 
 	cmd, err := ParseArgs(nil)
 	require.NoError(t, err)
-	assert.Equal(t, "staging", cmd.Profile, "未传 --profile 时必须回退读取 XBC_PROFILE")
+	assert.Equal(t, "staging", cmd.Profile, "Must fallback to read XBC_PROFILE when --profile is not passed")
 }
 
 // TestParseArgsMigrateFlag pins --migrate as a bare boolean flag, distinct
@@ -55,7 +55,7 @@ func TestParseArgsMigrateFlag(t *testing.T) {
 	cmd, err := ParseArgs([]string{"--migrate"})
 	require.NoError(t, err)
 	assert.True(t, cmd.Migrate)
-	assert.Empty(t, cmd.Subcommand, "--migrate 是一个标志，不应被当成子命令")
+	assert.Empty(t, cmd.Subcommand, "--migrate is a flag, should not be treated as a subcommand")
 }
 
 // TestParseArgsDoctorSubcommand pins the "doctor" subcommand.
@@ -72,7 +72,7 @@ func TestParseArgsMigrateSubcommand(t *testing.T) {
 	cmd, err := ParseArgs([]string{"migrate", "--config", "/tmp/command-y.yaml"})
 	require.NoError(t, err)
 	assert.Equal(t, "migrate", cmd.Subcommand)
-	assert.Equal(t, "/tmp/command-y.yaml", cmd.Config, "子命令之后的 flag 仍必须被解析")
+	assert.Equal(t, "/tmp/command-y.yaml", cmd.Config, "Flags after subcommand must still be parsed")
 }
 
 // TestParseArgsIllegalFlagReturnsError pins that an undeclared flag is
@@ -89,7 +89,7 @@ func TestParseArgsIllegalFlagReturnsError(t *testing.T) {
 func TestParseArgsUnknownSubcommandReturnsError(t *testing.T) {
 	_, err := ParseArgs([]string{"frobnicate"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "未知子命令")
+	assert.Contains(t, err.Error(), "unknown subcommand")
 }
 
 // TestParseArgsRejectsTrailingPositionalArgs pins that leftover positional
@@ -99,7 +99,7 @@ func TestParseArgsUnknownSubcommandReturnsError(t *testing.T) {
 func TestParseArgsRejectsTrailingPositionalArgs(t *testing.T) {
 	_, err := ParseArgs([]string{"--config", "/tmp/command-z.yaml", "extra"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "未知参数")
+	assert.Contains(t, err.Error(), "unknown argument")
 }
 
 // --- WantsMigration -----------------------------------------------------
@@ -118,19 +118,19 @@ func TestWantsMigrationTruthTable(t *testing.T) {
 		autoMigrate bool
 		want        bool
 	}{
-		{"仅 --migrate 为真", Command{Migrate: true}, false, true},
-		{"仅 migrate 子命令为真", Command{Subcommand: "migrate"}, false, true},
-		{"仅 auto_migrate 为真", Command{}, true, true},
-		{"--migrate 与 auto_migrate 同时为真仍然是真", Command{Migrate: true}, true, true},
-		{"doctor 子命令本身不触发迁移", Command{Subcommand: "doctor"}, false, false},
-		{"三者都为假时为假", Command{}, false, false},
+		{"Only --migrate is true", Command{Migrate: true}, false, true},
+		{"Only migrate subcommand is true", Command{Subcommand: "migrate"}, false, true},
+		{"Only auto_migrate is true", Command{}, true, true},
+		{"--migrate and auto_migrate both being true is still true", Command{Migrate: true}, true, true},
+		{"doctor subcommand itself does not trigger migration", Command{Subcommand: "doctor"}, false, false},
+		{"False when all three are false", Command{}, false, false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tc.cmd.WantsMigration(tc.autoMigrate)
 			assert.Equal(t, tc.want, got,
-				"WantsMigration 必须是 --migrate、migrate 子命令、xbc.auto_migrate 三者的逻辑或")
+				"WantsMigration must be logical OR of --migrate, migrate subcommand, and xbc.auto_migrate")
 		})
 	}
 }

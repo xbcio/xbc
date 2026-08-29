@@ -165,7 +165,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	}
 	for _, ext := range consumerExtensions {
 		if err := ext.Value.RoutesReady(catalog); err != nil {
-			return fmt.Errorf("xbc: 插件 %s 的 RoutesReady 失败: %w", ext.Identity, err)
+			return fmt.Errorf("xbc: plugin %s's RoutesReady failed: %w", ext.Identity, err)
 		}
 	}
 
@@ -181,7 +181,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	if ln == nil {
 		ln, err = net.Listen("tcp", s.cfg.Addr)
 		if err != nil {
-			return fmt.Errorf("xbc: 监听 %s 失败: %w", s.cfg.Addr, err)
+			return fmt.Errorf("xbc: failed to listen on %s: %w", s.cfg.Addr, err)
 		}
 	}
 
@@ -214,7 +214,7 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 	ln := s.ln
 	if srv == nil || ln == nil {
 		s.mu.Unlock()
-		return fmt.Errorf("xbc: web.Server 尚未成功 Start，无法开放流量")
+		return fmt.Errorf("xbc: web.Server has not started successfully; cannot open traffic")
 	}
 	s.served = true
 	s.mu.Unlock()
@@ -222,7 +222,7 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 	logger := ctx.Log()
 	ctx.GoCritical(func(context.Context) {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("xbc: HTTP 服务异常终止", "error", err)
+			logger.Error("xbc: HTTP service terminated abnormally", "error", err)
 		}
 	})
 	return nil
@@ -262,7 +262,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 		if err := srv.Shutdown(ctx); err != nil {
 			if cerr := srv.Close(); cerr != nil {
-				return fmt.Errorf("xbc: 优雅关闭超时，强制关闭也失败: %w", cerr)
+				return fmt.Errorf("xbc: graceful shutdown timed out and forced shutdown also failed: %w", cerr)
 			}
 		}
 		return nil
@@ -270,7 +270,7 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	if ln != nil {
 		if err := ln.Close(); err != nil {
-			return fmt.Errorf("xbc: 关闭未开放流量的监听器失败: %w", err)
+			return fmt.Errorf("xbc: failed to close listener before traffic was opened: %w", err)
 		}
 	}
 	return nil

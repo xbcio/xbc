@@ -51,9 +51,9 @@ func TestTopologicalOrderStableAcrossRepeatedAssembly(t *testing.T) {
 	}
 	for i := 1; i < len(orders); i++ {
 		assert.Equal(t, orders[0], orders[i],
-			"同一个依赖图的拓扑序必须在多次独立装配之间保持稳定，且与 Declare 顺序无关")
+			"the topological order of the same dependency graph must remain stable across multiple independent assemblies and be independent of Declare order")
 	}
-	assert.Equal(t, []string{"b", "a"}, orders[0], "b 是 a 的硬依赖，必须排在 a 前面")
+	assert.Equal(t, []string{"b", "a"}, orders[0], "b is a hard dependency of a and must come before a")
 }
 
 // fakeIndependentValue is what independenceProducer's Init produces, tagged
@@ -93,16 +93,16 @@ func TestNewContainersFromSameSnapshotAreIndependent(t *testing.T) {
 
 	p1 := c1.Order()[0].Plugin().(*independenceProducer)
 	p2 := c2.Order()[0].Plugin().(*independenceProducer)
-	assert.NotSame(t, p1, p2, "两个 Container 各自 expand 出来的插件实例必须是不同对象")
-	assert.NotSame(t, p1.Val, p2.Val, "两个 Container 各自 Init 产出的值也必须是不同对象")
+	assert.NotSame(t, p1, p2, "the plugin instances expanded by each Container must be different objects")
+	assert.NotSame(t, p1.Val, p2.Val, "the values produced by each Container's Init must also be different objects")
 	assert.NotSame(t, c1.Order()[0].Context(), c2.Order()[0].Context(),
-		"两个 Container 里同名实例的 Context 必须是不同对象")
+		"the Context of same-named instances in two Containers must be different objects")
 
 	// Registry independence: a value provided into c1 must never leak into c2.
 	type marker struct{}
 	c1.ProvideValue(reflect.TypeOf(&marker{}), "default", &marker{})
 	_, err := c2.LookupValue(reflect.TypeOf(&marker{}), "default")
-	require.Error(t, err, "c1 登记的值绝不能在 c2 的注册表里查到")
+	require.Error(t, err, "the value registered by c1 must never be found in c2's registry")
 }
 
 // TestInitializedPluginsErrorsBeforeSealAndReturnsOrderedCopyAfter pins down
@@ -119,8 +119,8 @@ func TestInitializedPluginsErrorsBeforeSealAndReturnsOrderedCopyAfter(t *testing
 	require.NoError(t, c.Assemble())
 
 	_, err := c.InitializedPlugins()
-	require.Error(t, err, "SealInitialization 之前查询必须报错，不能返回一个看似完整的部分快照")
-	assert.Contains(t, err.Error(), "尚未完成全部插件初始化")
+	require.Error(t, err, "queries must return an error before SealInitialization, cannot return a seemingly complete partial snapshot")
+	assert.Contains(t, err.Error(), "not all plugins initialized yet")
 
 	for _, inst := range c.Order() {
 		require.NoError(t, runLifecycle(c, []*Instance{inst}))
@@ -142,7 +142,7 @@ func TestInitializedPluginsErrorsBeforeSealAndReturnsOrderedCopyAfter(t *testing
 	again, err := c.InitializedPlugins()
 	require.NoError(t, err)
 	assert.Equal(t, plugin.Key("b"), again[0].Identity.Plugin,
-		"InitializedPlugins 必须每次返回全新的切片，不能让调用方对上一次结果的修改影响下一次调用")
+		"InitializedPlugins must return a new slice each time, preventing modifications to previous results from affecting future calls")
 }
 
 // TestAssembleActivationConfiguredEnableMatrix exercises the full
@@ -157,17 +157,17 @@ func TestAssembleActivationConfiguredEnableMatrix(t *testing.T) {
 		wantEnabled bool
 	}{
 		{
-			"Configured 路径存在 → 启用",
+			"Configured path exists → enabled",
 			plugin.Configured("plugins.cache"),
 			map[string]any{"plugins": map[string]any{"cache": map[string]any{}}},
 			true,
 		},
 		{
-			"Configured 路径缺失 → 关闭",
+			"Configured path missing → disabled",
 			plugin.Configured("plugins.cache"), nil, false,
 		},
 		{
-			"Configured 路径存在但 enabled:false → 关闭",
+			"Configured path exists but enabled:false → disabled",
 			plugin.Configured("plugins.cache"),
 			map[string]any{"plugins": map[string]any{"cache": map[string]any{"enabled": false}}},
 			false,

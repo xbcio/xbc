@@ -48,31 +48,31 @@ func TestPhaseStringKnownAndOutOfRange(t *testing.T) {
 		{Phase(150), "phase(150)"},
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, c.phase.String(), "Phase(%d) 的字符串形式", int(c.phase))
+		assert.Equal(t, c.want, c.phase.String(), "String form of Phase(%d)", int(c.phase))
 	}
 }
 
-// spec §4.4 的启动日志里，cors 插件的 cors 中间件、ratelimit 插件的 ratelimit
-// 中间件都渲染成不带前缀的裸名字——这是"同名不加前缀"规则的两个真实例子。
+// spec §4.4's startup log, cors plugin's cors middleware, ratelimit plugin's ratelimit
+// Middleware are rendered as bare names without prefixes — these are two real examples of the "no prefix for same name" rule.
 func TestQualifySameNameAsPluginIsNotPrefixed(t *testing.T) {
 	assert.Equal(t, "cors", qualify("cors", "cors"),
-		"spec §4.4 例子：cors 插件的 cors 中间件不应显示成 cors.cors")
+		"spec §4.4 Example: the cors middleware of the cors plugin should not be displayed as cors.cors")
 	assert.Equal(t, "ratelimit", qualify("ratelimit", "ratelimit"),
-		"spec §4.4 例子：ratelimit 插件的 ratelimit 中间件同理")
+		"spec §4.4 Example: the ratelimit middleware of the ratelimit plugin follows the same rule")
 }
 
-// spec §4.4 的启动日志里，jwt 插件的 auth 中间件渲染成 jwt.auth——这是"不同名
-// 加插件前缀"规则的真实例子。
+// In the spec §4.4 startup log, the jwt plugin's auth middleware is rendered as jwt.auth—this is a real
+// example of the "prefix a different name with the plugin key" rule.
 func TestQualifyDifferentNameGetsPluginPrefix(t *testing.T) {
 	assert.Equal(t, "jwt.auth", qualify("jwt", "auth"),
-		"spec §4.4 例子：jwt 插件的 auth 中间件应显示为 jwt.auth")
+		"spec §4.4 Example: the auth middleware of the jwt plugin should be displayed as jwt.auth")
 }
 
-// spec 没有给"名字已经带点号"的真实例子，用一个合成用例验证：一个名字一旦已
-// 经被限定过（不管是谁限定的），qualify 必须原样传回，绝不能再套一层插件 key 前缀。
+// The spec gives no real example of a name that already contains a dot, so this synthetic case verifies
+// that qualify returns an already qualified name unchanged and never adds another plugin-key prefix.
 func TestQualifyDottedNamePassesThroughUnchanged(t *testing.T) {
 	assert.Equal(t, "jwt.auth", qualify("audit", "jwt.auth"),
-		"名字里已经带点号，说明调用方已经完成过一次限定，不能被再套一层插件 key 前缀")
+		"A name that already contains a dot indicates that the caller has already qualified it once, and it cannot be wrapped with another plugin key prefix")
 }
 
 func TestOrderMiddlewaresGroupsByPhaseAscendingRegardlessOfRegistrationOrder(t *testing.T) {
@@ -88,7 +88,7 @@ func TestOrderMiddlewaresGroupsByPhaseAscendingRegardlessOfRegistrationOrder(t *
 	require.NoError(t, err)
 	assert.Empty(t, misses)
 	assert.Equal(t, []string{"recover", "observe", "security", "auth", "business"}, qnames(ordered),
-		"Phase 是硬边界，最终顺序必须按 Phase 升序排列，与注册顺序无关")
+		"Phase is a hard boundary; the final order must be sorted in ascending Phase order, regardless of registration order")
 }
 
 func TestOrderMiddlewaresWithinGroupRegistrationOrderIsStableAcrossManyRuns(t *testing.T) {
@@ -104,13 +104,13 @@ func TestOrderMiddlewaresWithinGroupRegistrationOrderIsStableAcrossManyRuns(t *t
 		ordered, misses, err := orderMiddlewares(build())
 		require.NoError(t, err)
 		assert.Empty(t, misses)
-		assert.Equal(t, want, qnames(ordered), "第 %d 次运行：组内无约束的中间件必须按注册顺序稳定排列", i)
+		assert.Equal(t, want, qnames(ordered), "The %d-th run: middleware without constraints within the group must be stably ordered in the registration order", i)
 	}
 }
 
 func TestOrderMiddlewaresWithinGroupAfterConstraintTakesEffect(t *testing.T) {
-	// 注册顺序是 ratelimit 先、cors 后；如果 After 没有作用，稳定排序会保持这个
-	// 注册顺序。一旦 ratelimit 声明 After=cors，结果必须反过来。
+	// Registration order is ratelimit first, cors later; if After has no effect, stable sorting will maintain this
+	// Registration order. Once ratelimit declares After=cors, the result must reverse.
 	entries := []mwEntry{
 		newFixtureEntry("ratelimit", "ratelimit", PhaseSecurity, []string{"cors"}, nil),
 		newFixtureEntry("cors", "cors", PhaseSecurity, nil, nil),
@@ -119,12 +119,12 @@ func TestOrderMiddlewaresWithinGroupAfterConstraintTakesEffect(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, misses)
 	assert.Equal(t, []string{"cors", "ratelimit"}, qnames(ordered),
-		"ratelimit 声明 After=cors，即便注册顺序是 ratelimit 在前，排序结果也必须把 cors 排到前面")
+		"ratelimit declares After=cors, even if registration order is ratelimit first, the sorted result must place cors first")
 }
 
 func TestOrderMiddlewaresWithinGroupBeforeConstraintTakesEffect(t *testing.T) {
-	// 注册顺序是 ratelimit 先、cors 后；cors 声明 Before=ratelimit，结果必须把
-	// cors 挪到 ratelimit 前面，与注册顺序相反。
+	// Registration order is ratelimit first, cors later; cors declares Before=ratelimit, the result must move
+	// cors to before ratelimit, opposite to registration order.
 	entries := []mwEntry{
 		newFixtureEntry("ratelimit", "ratelimit", PhaseSecurity, nil, nil),
 		newFixtureEntry("cors", "cors", PhaseSecurity, nil, []string{"ratelimit"}),
@@ -133,74 +133,74 @@ func TestOrderMiddlewaresWithinGroupBeforeConstraintTakesEffect(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, misses)
 	assert.Equal(t, []string{"cors", "ratelimit"}, qnames(ordered),
-		"cors 声明 Before=ratelimit，即便注册顺序是 ratelimit 在前，排序结果也必须把 cors 排到前面")
+		"cors declares Before=ratelimit, even if registration order is ratelimit first, the sorted result must place cors first")
 }
 
-// spec §5.8 的 audit 例子：audit（PhaseBusiness）声明 After: "jwt.auth"
-// （PhaseAuth）。300 < 400，jwt.auth 本来就排在 audit 前面，这条跨阶段约束与
-// Phase 顺序一致，属于冗余声明，必须被静默忽略——既不报错，也不进 misses。
+// spec §5.8's audit example: audit (PhaseBusiness) declares After: "jwt.auth"
+// (PhaseAuth). 300 < 400, jwt.auth is already before audit, this cross-phase constraint is consistent with
+// Phase order, it is a redundant declaration and must be silently ignored—neither error nor miss.
 func TestOrderMiddlewaresCrossPhaseConsistentConstraintIsRedundantAndIgnored(t *testing.T) {
 	entries := []mwEntry{
 		newFixtureEntry("audit", "audit", PhaseBusiness, []string{"jwt.auth"}, nil),
 		newFixtureEntry("jwt", "auth", PhaseAuth, nil, nil),
 	}
 	ordered, misses, err := orderMiddlewares(entries)
-	require.NoError(t, err, "audit(business) After jwt.auth(auth) 与 Phase 顺序一致，是冗余约束，不应中止启动")
+	require.NoError(t, err, "audit(business) After jwt.auth(auth) aligns with Phase order, it is a redundant constraint and should not abort startup")
 	assert.Empty(t, misses)
 	assert.Equal(t, []string{"jwt.auth", "audit"}, qnames(ordered))
 }
 
-// 反过来的情形：一个 PhaseSecurity 中间件声明 After: "jwt.auth"（PhaseAuth）。
-// security(200) 本来排在 auth(300) 前面，但 After 要求 jwt.auth 排在它前面——
-// 方向与 Phase 顺序矛盾，必须中止启动，且错误要带上两个中间件名和两个 Phase 名。
+// The reverse scenario: a PhaseSecurity middleware declares After: "jwt.auth" (PhaseAuth).
+// security(200) is originally before auth(300), but After requires jwt.auth to come before it—
+// the direction conflicts with Phase order, startup must be aborted, and the error must include both middleware names and their Phase names.
 func TestOrderMiddlewaresCrossPhaseReversedConstraintAbortsWithPhaseConflictError(t *testing.T) {
 	entries := []mwEntry{
 		newFixtureEntry("early", "check", PhaseSecurity, []string{"jwt.auth"}, nil),
 		newFixtureEntry("jwt", "auth", PhaseAuth, nil, nil),
 	}
 	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "early.check(security) After jwt.auth(auth) 与 Phase 顺序相反，必须中止启动")
+	require.Error(t, err, "early.check(security) After jwt.auth(auth) contradicts Phase order, startup must be aborted")
 
 	var conflict *PhaseConflictError
-	require.ErrorAs(t, err, &conflict, "冲突必须能还原成 *PhaseConflictError，供上层区分于其他失败原因")
+	require.ErrorAs(t, err, &conflict, "Conflict must be convertible into *PhaseConflictError, allowing upper layers to distinguish from other failure causes")
 	assert.Equal(t, "early.check", conflict.From)
 	assert.Equal(t, "jwt.auth", conflict.To)
 	assert.Equal(t, PhaseSecurity, conflict.FromPhase)
 	assert.Equal(t, PhaseAuth, conflict.ToPhase)
-	assert.Contains(t, err.Error(), "early.check", "错误信息必须包含声明约束的中间件名")
-	assert.Contains(t, err.Error(), "jwt.auth", "错误信息必须包含被引用的中间件名")
-	assert.Contains(t, err.Error(), "security", "错误信息必须包含声明方的 Phase 名")
-	assert.Contains(t, err.Error(), "auth", "错误信息必须包含被引用方的 Phase 名")
+	assert.Contains(t, err.Error(), "early.check", "Error message must include the middleware name declaring the constraint")
+	assert.Contains(t, err.Error(), "jwt.auth", "Error message must include the referenced middleware name")
+	assert.Contains(t, err.Error(), "security", "Error message must include the declared Phase name")
+	assert.Contains(t, err.Error(), "auth", "Error message must include the referenced Phase name")
 }
 
-// 原始用例只覆盖了 After 分支的一致性检查。Before 分支（orderMiddlewares 第二
-// 个循环）有独立的比较逻辑，需要单独的一致性夹具：一个 PhaseSecurity 中间件声
-// 明 Before 一个 PhaseAuth 中间件。security(200) 本来就排在 auth(300) 前面，与
-// Phase 顺序一致，必须被静默丢弃，路径与上面的 After 用例相同但走的是另一半代码。
+// The original test covered only the After branch's consistency check. The Before branch (the second
+// loop in orderMiddlewares) has separate comparison logic and needs its own fixture: a PhaseSecurity middleware
+// declares Before a PhaseAuth middleware. security(200) already precedes auth(300), matching
+// Phase order, so the redundant constraint must be ignored through the other half of the code.
 func TestOrderMiddlewaresCrossPhaseConsistentBeforeConstraintIsRedundantAndIgnored(t *testing.T) {
 	entries := []mwEntry{
 		newFixtureEntry("security", "check", PhaseSecurity, nil, []string{"jwt.auth"}),
 		newFixtureEntry("jwt", "auth", PhaseAuth, nil, nil),
 	}
 	ordered, misses, err := orderMiddlewares(entries)
-	require.NoError(t, err, "security.check(security) Before jwt.auth(auth) 与 Phase 顺序一致，是冗余约束，不应中止启动")
+	require.NoError(t, err, "security.check(security) Before jwt.auth(auth) aligns with Phase order, is a redundant constraint, and should not abort startup")
 	assert.Empty(t, misses)
 	assert.Equal(t, []string{"security.check", "jwt.auth"}, qnames(ordered))
 }
 
-// 上面用例的反向版本：一个 PhaseAuth 中间件声明 Before 一个 PhaseSecurity 中间
-// 件。auth(300) 本来就排在 security(200) 后面，要求排到它前面与 Phase 顺序矛
-// 盾，必须中止启动，镜像 After 的反向用例，但走的是 Before 分支。
+// Reverse case: a PhaseAuth middleware declares Before a PhaseSecurity middleware.
+// auth(300) naturally follows security(200), so moving it ahead would conflict with Phase
+// order and must abort startup, mirroring the reverse After case through the Before branch.
 func TestOrderMiddlewaresCrossPhaseReversedBeforeConstraintAbortsWithPhaseConflictError(t *testing.T) {
 	entries := []mwEntry{
 		newFixtureEntry("jwt", "audit", PhaseAuth, nil, []string{"security.gate"}),
 		newFixtureEntry("security", "gate", PhaseSecurity, nil, nil),
 	}
 	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "jwt.audit(auth) Before security.gate(security) 与 Phase 顺序相反，必须中止启动")
+	require.Error(t, err, "jwt.audit(auth) Before security.gate(security) contradicts Phase order and must abort startup")
 
 	var conflict *PhaseConflictError
-	require.ErrorAs(t, err, &conflict, "冲突必须能还原成 *PhaseConflictError")
+	require.ErrorAs(t, err, &conflict, "Conflict must be recoverable as *PhaseConflictError")
 	assert.Equal(t, "jwt.audit", conflict.From)
 	assert.Equal(t, "security.gate", conflict.To)
 	assert.Equal(t, PhaseAuth, conflict.FromPhase)
@@ -212,12 +212,12 @@ func TestOrderMiddlewaresCrossPhaseReversedBeforeConstraintAbortsWithPhaseConfli
 	assert.Contains(t, err.Error(), "security")
 }
 
-// 防止一种实现方式：把 Phase 顺序和 After/Before 合并成一个图，只在相邻 Phase
-// 分组的"首/尾节点"之间检查边界。这里每个 Phase 放两个条目，反向约束指向后一
-// 组的第二个（内部）节点 auth.a2，而不是组内第一个节点——只检查边界的实现可能
-// 看不出任何矛盾，静默让 auth.a2 排到 sec.s2 前面而不中止。正确的按 Phase 分组
-// 实现应该按 Phase 值本身检查每一条跨阶段引用，与组内位置无关，所以这里仍必须
-// 中止。
+// Guard against merging Phase order and After/Before into one graph that checks boundaries only between
+// adjacent Phase groups. Each Phase has two entries here, and the reverse constraint targets the second
+// (interior) node auth.a2 of the later group rather than its first node. A boundary-only implementation
+// might miss the conflict and silently move auth.a2 before sec.s2. The correct Phase-grouped
+// implementation checks every cross-phase reference by Phase value, regardless of position within
+// the group, so startup must still abort.
 func TestOrderMiddlewaresCrossPhaseReversedConstraintOnInteriorNodeAbortsEvenWithMultipleEntriesPerPhase(t *testing.T) {
 	entries := []mwEntry{
 		newFixtureEntry("sec", "s1", PhaseSecurity, nil, nil),
@@ -226,7 +226,7 @@ func TestOrderMiddlewaresCrossPhaseReversedConstraintOnInteriorNodeAbortsEvenWit
 		newFixtureEntry("auth", "a2", PhaseAuth, nil, nil),
 	}
 	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "sec.s2(security) After auth.a2(auth) 试图把后一个 Phase 的中间件拽到前一个 Phase 之前，即便目标不是组内第一个节点，也必须中止启动")
+	require.Error(t, err, "sec.s2(security) After auth.a2(auth) attempts to pull the middleware of a later Phase before the previous Phase, even if the target is not the first node in the group, it must still stop startup")
 
 	var conflict *PhaseConflictError
 	require.ErrorAs(t, err, &conflict)
@@ -241,20 +241,20 @@ func TestOrderMiddlewaresMissingReferenceIsRecordedAsMiss(t *testing.T) {
 		newFixtureEntry("audit", "audit", PhaseBusiness, []string{"tracing"}, nil),
 	}
 	ordered, misses, err := orderMiddlewares(entries)
-	require.NoError(t, err, "引用不存在的名字是软约束未命中，不应中止启动")
+	require.NoError(t, err, "Reference to a non-existent name is a soft constraint miss, startup should not be stopped")
 	require.Len(t, misses, 1)
 	assert.Equal(t, ordering.Miss{Node: "audit", Ref: "tracing", Dir: ordering.After}, misses[0])
 	assert.Equal(t, []string{"audit"}, qnames(ordered))
 }
 
-// 镜像上面 After 缺失引用的夹具，验证 Before 分支同样会记录成 miss——这份文件
-// 里原本没有任何用例覆盖 Before 的悬空引用。
+// Mirror the above After missing reference fixture, verifying that the Before branch is also recorded as miss—this file
+// originally had no use cases covering Before's dangling references.
 func TestOrderMiddlewaresMissingBeforeReferenceIsRecordedAsMiss(t *testing.T) {
 	entries := []mwEntry{
 		newFixtureEntry("audit", "audit", PhaseBusiness, nil, []string{"tracing"}),
 	}
 	ordered, misses, err := orderMiddlewares(entries)
-	require.NoError(t, err, "引用不存在的名字是软约束未命中，不应中止启动")
+	require.NoError(t, err, "A missing name is a soft constraint miss, should not abort startup")
 	require.Len(t, misses, 1)
 	assert.Equal(t, ordering.Miss{Node: "audit", Ref: "tracing", Dir: ordering.Before}, misses[0])
 	assert.Equal(t, []string{"audit"}, qnames(ordered))
@@ -266,7 +266,7 @@ func TestOrderMiddlewaresDuplicateQualifiedNameFails(t *testing.T) {
 		newFixtureEntry("cors", "cors", PhaseSecurity, nil, nil),
 	}
 	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "限定后重名，After/Before 靠名字引用会失去唯一性，必须报错")
+	require.Error(t, err, "Name collision after qualification, referencing After/Before by name loses uniqueness, must error")
 	assert.Contains(t, err.Error(), "cors")
 }
 
@@ -276,8 +276,8 @@ func TestOrderMiddlewaresCycleWithinGroupFails(t *testing.T) {
 		newFixtureEntry("b", "b", PhaseSecurity, []string{"a"}, nil),
 	}
 	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "a After b 且 b After a，组内出现环，必须报错")
+	require.Error(t, err, "a After b and b After a, cycle appears within group, must error")
 
 	var cycleErr *ordering.CycleError
-	assert.ErrorAs(t, err, &cycleErr, "组内成环应能还原成 ordering.CycleError")
+	assert.ErrorAs(t, err, &cycleErr, "Cyclic group should be recoverable as ordering.CycleError")
 }

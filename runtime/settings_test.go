@@ -19,7 +19,7 @@ import (
 func settingsEnv(t *testing.T, values map[string]any) *config.Environment {
 	t.Helper()
 	env, err := config.NewEnvironment(values, "XBC_SETTINGS_TEST_")
-	require.NoError(t, err, "构造内存配置环境失败")
+	require.NoError(t, err, "Failed to construct memory configuration environment")
 	return env
 }
 
@@ -30,11 +30,11 @@ func TestSettingsDefaultsWhenNoXbcSection(t *testing.T) {
 	env := settingsEnv(t, nil)
 
 	s, err := loadSettings(env)
-	require.NoError(t, err, "没有 xbc 配置节时 loadSettings 不应该报错")
+	require.NoError(t, err, "loadSettings should not error when xbc configuration section is missing")
 
 	assert.Equal(t, 30*time.Second, s.ShutdownTimeout,
-		"未配置时 ShutdownTimeout 应落到 default:\"30s\"")
-	assert.False(t, s.AutoMigrate, "未配置时 AutoMigrate 应为 false")
+		"ShutdownTimeout should fall to default:\"30s\" when not configured")
+	assert.False(t, s.AutoMigrate, "AutoMigrate should be false when not configured")
 }
 
 // TestSettingsReadsShutdownTimeoutAndAutoMigrateFromConfig pins that an
@@ -50,10 +50,10 @@ func TestSettingsReadsShutdownTimeoutAndAutoMigrateFromConfig(t *testing.T) {
 	})
 
 	s, err := loadSettings(env)
-	require.NoError(t, err, "合法的 xbc 配置节应该被正常绑定")
+	require.NoError(t, err, "Valid xbc configuration section should be properly bound")
 
-	assert.Equal(t, 5*time.Second, s.ShutdownTimeout, "shutdown_timeout 应从配置读取为 5s")
-	assert.True(t, s.AutoMigrate, "auto_migrate 应从配置读取为 true")
+	assert.Equal(t, 5*time.Second, s.ShutdownTimeout, "shutdown_timeout should be read from configuration as 5s")
+	assert.True(t, s.AutoMigrate, "auto_migrate should be read from configuration as true")
 }
 
 // TestSettingsRejectsNonPositiveShutdownTimeout pins loadSettings' explicit
@@ -79,9 +79,9 @@ func TestSettingsRejectsNonPositiveShutdownTimeout(t *testing.T) {
 			})
 
 			_, err := loadSettings(env)
-			require.Error(t, err, "shutdown_timeout=%s 必须被拒绝：非正数会让整个关闭流程立刻超时", tc.value)
-			assert.Contains(t, err.Error(), "必须为正数",
-				"错误信息应说明是正数校验失败，而不是别的原因，方便运维一眼看懂")
+			require.Error(t, err, "shutdown_timeout=%s must be rejected: non-positive value will cause the entire shutdown process to timeout immediately", tc.value)
+			assert.Contains(t, err.Error(), "must be positive",
+				"Error message should indicate it's a positive number validation failure, not another reason, to help operations understand quickly")
 		})
 	}
 }
@@ -99,9 +99,9 @@ func TestSettingsRejectsUnparsableShutdownTimeoutString(t *testing.T) {
 	})
 
 	_, err := loadSettings(env)
-	require.Error(t, err, "非法的 duration 字符串必须返回错误")
-	assert.NotContains(t, err.Error(), "必须为正数",
-		"非法字符串应该在解析阶段失败，而不是被当成解析成功后的非正数处理")
+	require.Error(t, err, "Illegal duration string must return an error")
+	assert.NotContains(t, err.Error(), "must be positive",
+		"Illegal string should fail during parsing, not be treated as non-positive after parsing succeeds")
 }
 
 // TestSettingsRejectsUnknownFieldsInXbcSection keeps framework-owned typed
@@ -116,6 +116,6 @@ func TestSettingsRejectsUnknownFieldsInXbcSection(t *testing.T) {
 	})
 
 	_, err := loadSettings(env)
-	require.Error(t, err, "xbc 配置节里的未知字段必须在启动期被拒绝")
+	require.Error(t, err, "Unknown fields in xbc configuration section must be rejected during startup")
 	assert.Contains(t, err.Error(), "xbc.totally_unknown_field")
 }

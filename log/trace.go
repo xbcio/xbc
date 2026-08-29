@@ -149,14 +149,14 @@ func SpanID(id trace.SpanID) SpanOption {
 // subsequent log.TInfo(ctx, ...) calls retrieve it with zero allocations.
 //
 // Pre-Init behavior: Span uses L() to obtain the logger. Before Init or
-// SetLogger has been called, L() returns Nop(), so the "span 结束" log
+// SetLogger has been called, L() returns Nop(), so the "span ended" log
 // emitted by done() is silently discarded. This is by design — see L()'s
 // own doc comment (zap.go) for its nop-before-init contract, which makes
 // all logging a no-op until the application explicitly initializes the
 // backend.
 //
 // done() should be called exactly once (via defer). Calling it more than
-// once does not panic or corrupt state, but emits a duplicate "span 结束"
+// once does not panic or corrupt state, but emits a duplicate "span ended"
 // log line with a different elapsed_ms — observable noise, not a
 // correctness issue. Adding sync.Once to prevent this is deliberately
 // avoided: Span is a hot path, and allocating a sync.Once per span for a
@@ -194,7 +194,7 @@ func SpanWith(ctx context.Context, name string, opts ...SpanOption) (context.Con
 		if cs, ok := done.(CallerSkipper); ok {
 			done = cs.WithCallerSkip(1)
 		}
-		done.Debug("span 结束", "elapsed_ms",
+		done.Debug("span ended", "elapsed_ms",
 			float64(nowFunc().Sub(start).Microseconds())/1000)
 	}
 }

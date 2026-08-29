@@ -35,7 +35,7 @@ func Extensions[T any](ctx *Context) ([]Extension[T], error) {
 	want := typeOf[T]()
 	if want.Kind() != reflect.Interface {
 		return nil, fmt.Errorf(
-			"xbc: Extensions 查询的是插件能力（接口类型），不是具体产物值，得到 %s；查具体类型请使用 Get[T]", want)
+			"xbc: Extensions queries plugin capabilities (interface types), not concrete provided values; got %s; use Get[T] to query a concrete type", want)
 	}
 
 	all, err := ctx.host.InitializedPlugins()

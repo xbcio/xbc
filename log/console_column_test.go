@@ -56,25 +56,24 @@ func TestConsoleColumnWritersAreAllocationFree(t *testing.T) {
 		})
 		b.Free()
 
-		assert.Zero(t, avg, "color=%v 时定宽列与时间格式化都不该分配，实测每次 %v 次", color, avg)
+		assert.Zero(t, avg, "color=%v: fixed-width columns and time formatting must allocate nothing; got %v allocations per run", color, avg)
 	}
 }
 
 // The writers replaced pure functions, so equality against those functions is
-// the whole correctness argument. CJK cases are in the table for the reason
-// spelled out above padRight's old comment: counting by byte instead of by
-// rune silently misaligns the line.
+// the whole correctness argument. Multibyte UTF-8 cases are in the table
+// because counting by byte instead of by rune silently misaligns the line.
 func TestConsolePadWritersMatchReference(t *testing.T) {
 	cases := []string{
 		"",
 		"INFO",
 		"DPANIC",                // exactly widthLevel, the "no padding" boundary
 		"01926f7e",              // exactly widthTrace
-		"中文",                    // shorter than its byte length
+		"é",                     // shorter than its byte length
 		"order/service.go:42",   // short caller, gets padded
 		"payment/client.go:33",  // spec §8.7 example, must not truncate
 		"a/b.go:7",              //
-		strings.Repeat("中", 40), // long CJK, must cut on a rune boundary
+		strings.Repeat("é", 40), // long multibyte input; must cut on a rune boundary
 		"verylongpackagename/handlerimplementation.go:1234", // long ASCII, truncates
 	}
 
@@ -90,7 +89,7 @@ func TestConsolePadWritersMatchReference(t *testing.T) {
 			e.paintPadCallerLeft(b, "", s, w)
 			got := b.String()
 			assert.Equal(t, padCallerLeftRef(s, w), got, "paintPadCallerLeft(%q, %d)", s, w)
-			assert.True(t, utf8.ValidString(got), "截断必须落在 rune 边界上: %q", got)
+			assert.True(t, utf8.ValidString(got), "Truncation must fall on rune boundary: %q", got)
 			b.Free()
 		}
 	}
@@ -111,7 +110,7 @@ func TestConsolePaintTimeMatchesFormat(t *testing.T) {
 		b.Free()
 
 		assert.Equal(t, ts.Format(consoleTimeLayout), got)
-		assert.Len(t, got, widthTime, "时间列必须恰好 widthTime 宽，否则右边所有列都会错位")
+		assert.Len(t, got, widthTime, "Time column must be exactly widthTime wide, otherwise all right columns will be misaligned")
 	}
 }
 
@@ -122,13 +121,13 @@ func TestConsoleColumnWritersWrapPaddingInColor(t *testing.T) {
 
 	b := consolePool.Get()
 	e.paintPadRight(b, ansiGreen, "INFO", widthLevel)
-	assert.Equal(t, ansiGreen+"INFO  "+ansiReset, b.String(), "补白必须在 reset 之前")
+	assert.Equal(t, ansiGreen+"INFO  "+ansiReset, b.String(), "Padding must occur before reset")
 	b.Free()
 
 	b = consolePool.Get()
 	e.paintPadCallerLeft(b, ansiDim, "a/b.go:7", widthCaller)
 	assert.Equal(t, ansiDim+strings.Repeat(" ", widthCaller-len("a/b.go:7"))+"a/b.go:7"+ansiReset,
-		b.String(), "右对齐的补白同样必须包在颜色里")
+		b.String(), "Right-aligned padding must also be enclosed in color")
 	b.Free()
 }
 

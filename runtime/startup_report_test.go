@@ -73,10 +73,10 @@ func assemble(t *testing.T, envData map[string]any, defs ...plugin.Definition) *
 		cat.Declare(d)
 	}
 	snap, err := cat.Freeze()
-	require.NoError(t, err, "冻结测试 catalog 失败")
+	require.NoError(t, err, "Freezing test catalog failed")
 
 	env, err := config.NewEnvironment(envData, "XBC_REPORT_TEST_")
-	require.NoError(t, err, "构造内存配置环境失败")
+	require.NoError(t, err, "Failed to construct in-memory configuration environment")
 
 	h := &fakeHost{}
 	c := assembly.New(assembly.Options{
@@ -87,7 +87,7 @@ func assemble(t *testing.T, envData map[string]any, defs ...plugin.Definition) *
 	})
 	h.c = c
 
-	require.NoError(t, c.Assemble(), "测试用的插件集合应当总是能装配成功")
+	require.NoError(t, c.Assemble(), "The test plugin collection should always be able to assemble successfully")
 	return c
 }
 
@@ -187,22 +187,22 @@ func TestCapabilityTokensListsInLifecycleOrder(t *testing.T) {
 			sparse = inst
 		}
 	}
-	require.NotNil(t, full, "未找到 full 实例")
-	require.NotNil(t, sparse, "未找到 sparse 实例")
+	require.NotNil(t, full, "Full instance not found")
+	require.NotNil(t, sparse, "Sparse instance not found")
 
 	assert.Equal(t, []string{"config", "init", "migrate", "runner", "traffic", "stop"},
 		capabilityTokens(full),
-		"实现了全部能力接口的实例，token 顺序必须严格按生命周期顺序排列，"+
-			"而不是源码里方法声明的顺序（fullCaps 的方法特意反着声明）")
+		"An instance implementing all capability interfaces must have token order strictly following the lifecycle order,"+
+			"not the method declaration order in the source code (fullCaps methods are intentionally declared in reverse order)")
 
 	assert.Equal(t, []string{"init", "stop"}, capabilityTokens(sparse),
-		"只实现部分能力接口时，缺失的能力不应该在 token 列表里留下空位或造成剩余 token 错位")
+		"When implementing only partial capability interfaces, missing capabilities should not leave empty slots or cause misalignment in the token list")
 }
 
 // TestRenderersNeverEmitRemovedDesignTokens pins the absence of every token
 // that belonged to a design this framework has already moved past:
 // "health"/"middleware" belong to capabilities that were split out to the web
-// module, and "routes(N)"/"↑ 显式 Register" belong to the deleted
+// module, and "routes(N)"/"↑ Explicit Register" belong to the deleted
 // dual-registration era. Any one of them reappearing in the report is a
 // regression, not a stylistic choice, so this exercises every renderer
 // together against one assembled run that also has a disabled plugin, a soft
@@ -226,10 +226,10 @@ func TestRenderersNeverEmitRemovedDesignTokens(t *testing.T) {
 		renderMigrationNotice(c.Order(), false),
 	}, "\n")
 
-	for _, removed := range []string{"health", "middleware", "routes(", "↑ 显式 Register"} {
+	for _, removed := range []string{"health", "middleware", "routes(", "↑ Explicit Register"} {
 		assert.NotContains(t, combined, removed,
-			"报告输出中出现了已删除的旧设计 token %q：health/middleware 属于已拆分给 web 模块的能力，"+
-				"routes(N) 与「↑ 显式 Register」属于双注册路径年代的产物，核心报告里重新出现任何一个都说明发生了回归",
+			"An old design token %q was found in the report output: health/middleware belongs to the split capability assigned to the web module,"+
+				"routes(N) and \"↑ Explicit Register\" belong to the dual registration era, the reappearance of either in the core report indicates a regression",
 			removed)
 	}
 }
@@ -249,7 +249,7 @@ func TestRenderInstanceTableColumnWidthAdaptsToLongestLabel(t *testing.T) {
 		def(longName, func() plugin.Plugin { return &bare{} }),
 	)
 	order := c.Order()
-	require.Len(t, order, 2, "预期正好两个实例")
+	require.Len(t, order, 2, "Expected exactly two instances")
 
 	var short, long *assembly.Instance
 	for _, inst := range order {
@@ -260,11 +260,11 @@ func TestRenderInstanceTableColumnWidthAdaptsToLongestLabel(t *testing.T) {
 			long = inst
 		}
 	}
-	require.NotNil(t, short, "未找到短名称实例 a")
-	require.NotNil(t, long, "未找到长名称实例")
+	require.NotNil(t, short, "Short name instance a not found")
+	require.NotNil(t, long, "Long name instance not found")
 
 	shortCaps := strings.Join(capabilityTokens(short), " ")
-	require.NotEmpty(t, shortCaps, "fullCaps 应至少报告一项能力，否则这个列宽钉子测试没有区分力")
+	require.NotEmpty(t, shortCaps, "fullCaps should report at least one capability, otherwise this column width pin test lacks discriminative power")
 
 	labelWidth := len(longName)
 	wantShortLine := "  a" + strings.Repeat(" ", labelWidth-len("a")) + "  " + shortCaps
@@ -272,13 +272,13 @@ func TestRenderInstanceTableColumnWidthAdaptsToLongestLabel(t *testing.T) {
 
 	table := renderInstanceTable(order)
 	lines := strings.Split(table, "\n")
-	require.Len(t, lines, 3, "应该是表头 + 两行实例，一共三行")
+	require.Len(t, lines, 3, "Should be header + two instance rows, totaling three rows")
 
 	assert.Contains(t, lines, wantShortLine,
-		"短名称行必须被填充到跟长名称一样的列宽（%d），而不是某个固定宽度——"+
-			"如果实现改成了硬编码宽度，这一行的填充长度就会和这里独立算出的期望值不一致", labelWidth)
+		"Short name row must be filled to the same column width (%d) as the long name, rather than a fixed width—"+
+			"If the implementation changes to a hard-coded width, the fill length of this row will differ from the expected value calculated here", labelWidth)
 	assert.Contains(t, lines, wantLongLine,
-		"最长名称本身就定义了列宽，它自己这一行不应该出现任何多余的填充")
+		"The longest name itself defines the column width, and this row should not have any extra padding")
 }
 
 // TestRenderDisabledListsDeclaredButNotEnabledPlugins pins renderDisabled's
@@ -295,9 +295,9 @@ func TestRenderDisabledListsDeclaredButNotEnabledPlugins(t *testing.T) {
 	)
 
 	out := renderDisabled(c.Disabled())
-	assert.Contains(t, out, "shelved", "未启用的插件列表里应包含 shelved")
-	assert.Contains(t, out, "未启用不是错误", "应该明确告诉读者未启用不是错误")
-	assert.NotContains(t, out, "always_on", "已启用的插件不应该出现在未启用列表里")
+	assert.Contains(t, out, "shelved", "The list of disabled plugins should include shelved")
+	assert.Contains(t, out, "Being disabled is not an error", "Should clearly inform the reader that disabled is not an error")
+	assert.NotContains(t, out, "always_on", "Enabled plugins should not appear in the disabled list")
 }
 
 // TestRenderSoftMissesRendersDirectionsWithHints pins renderSoftMisses' exact
@@ -312,19 +312,19 @@ func TestRenderSoftMissesRendersDirectionsWithHints(t *testing.T) {
 	)
 
 	misses := c.SoftMisses()
-	require.Len(t, misses, 2, "两个实例各声明了一个指向不存在插件的软约束")
+	require.Len(t, misses, 2, "Two instances each declare a soft constraint pointing to a non-existent plugin")
 
 	out := renderSoftMisses(misses)
 
 	assert.Contains(t, out, `after_one.After = "ghost"`,
-		"After 方向的软约束应按 Node.After = \"Ref\" 渲染，且方向词首字母大写")
-	assert.Contains(t, out, "忘了启用 plugins.ghost",
-		"After 未命中应给出「拼写错误？还是忘了启用」的提示，并点名具体的 plugins.* 路径")
+		"After-direction soft constraints should be rendered as Node.After = \"Ref\" with the direction word capitalized")
+	assert.Contains(t, out, "forgot to enable plugins.ghost",
+		"After miss should give a hint of \"Typo? Or forgot to enable\" and point to the specific plugins.* path")
 
 	assert.Contains(t, out, `before_one.Before = "phantom"`,
-		"Before 方向的软约束应按 Node.Before = \"Ref\" 渲染，且方向词首字母大写")
-	assert.Contains(t, out, "忘了启用 plugins.phantom",
-		"Before 未命中同样应给出提示，并点名具体的 plugins.* 路径")
+		"Before-direction soft constraints should be rendered as Node.Before = \"Ref\" with the direction word capitalized")
+	assert.Contains(t, out, "forgot to enable plugins.phantom",
+		"Before miss should also give a hint and point to the specific plugins.* path")
 }
 
 // TestRenderMigrationNotice pins renderMigrationNotice's three cases:
@@ -339,17 +339,17 @@ func TestRenderMigrationNotice(t *testing.T) {
 		def("plain", func() plugin.Plugin { return &bare{} }),
 	)
 	order := c.Order()
-	require.Len(t, order, 3, "预期三个实例：两个 Migrator，一个不是")
+	require.Len(t, order, 3, "Expected three instances: two implement Migrator and one does not")
 
 	assert.Equal(t, "", renderMigrationNotice(order, true),
-		"migrate=true 时本次已经执行了迁移，无论有多少 Migrator 都不应该再提示")
+		"When migrate=true, migration has already run, so no notice should be shown regardless of how many instances implement Migrator")
 
 	note := renderMigrationNotice(order, false)
-	assert.Contains(t, note, "（2 个插件声明了 Migrate",
-		"应该准确统计实现了 Migrator 接口的实例数（2 个），而不是全部实例数（3 个）")
-	assert.Contains(t, note, "--migrate", "应该提示如何手动触发迁移")
+	assert.Contains(t, note, "(2 plugins declare Migrate",
+		"Should count instances implementing Migrator (2), not all instances (3)")
+	assert.Contains(t, note, "--migrate", "Should explain how to run migrations manually")
 
 	noMigrators := assemble(t, nil, def("plain_only", func() plugin.Plugin { return &bare{} }))
 	assert.Equal(t, "", renderMigrationNotice(noMigrators.Order(), false),
-		"没有任何实例实现 Migrator 时，即使 migrate=false 也不应该产生迁移提示")
+		"No migration notice should be produced when no instance implements Migrator, even if migrate=false")
 }

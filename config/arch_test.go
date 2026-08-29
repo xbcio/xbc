@@ -23,10 +23,10 @@ import (
 // that only appears in a _test.go file.
 func TestConfigDoesNotDependOnLogOrRoot(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过依赖方向检查")
+		t.Skip("go command is unavailable, skip dependency direction check")
 	}
 	out, err := exec.Command("go", "list", "-test", "-deps", "github.com/xbcio/xbc/config").Output()
-	require.NoError(t, err, "go list -deps github.com/xbcio/xbc/config 失败")
+	require.NoError(t, err, "go list -deps github.com/xbcio/xbc/config failed")
 
 	for _, line := range strings.Split(string(out), "\n") {
 		dep := strings.TrimSpace(line)
@@ -34,9 +34,9 @@ func TestConfigDoesNotDependOnLogOrRoot(t *testing.T) {
 			continue
 		}
 		assert.NotEqual(t, "github.com/xbcio/xbc", dep,
-			"config 包不得 import 根包，否则会跟根包 import config 形成循环")
+			"config package must not import root package, otherwise it will form a cycle with root package importing config")
 		assert.NotEqual(t, "github.com/xbcio/xbc/log", dep,
-			"config 包不得 import log 包，log 配置归核心生命周期/未来 web module 所有")
+			"config package must not import log package, log configuration belongs to core lifecycle / future web module")
 	}
 }
 

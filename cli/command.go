@@ -36,9 +36,9 @@ type Command struct {
 func ParseArgs(args []string) (Command, error) {
 	var cmd Command
 	fs := flag.NewFlagSet("xbc", flag.ContinueOnError)
-	fs.StringVar(&cmd.Config, "config", "", "配置文件路径")
-	fs.StringVar(&cmd.Profile, "profile", "", "配置 profile（未设置时读取 XBC_PROFILE）")
-	fs.BoolVar(&cmd.Migrate, "migrate", false, "启动前先跑一次迁移")
+	fs.StringVar(&cmd.Config, "config", "", "configuration file path")
+	fs.StringVar(&cmd.Profile, "profile", "", "configuration profile (read XBC_PROFILE if not set)")
+	fs.BoolVar(&cmd.Migrate, "migrate", false, "run migration once before starting")
 
 	rest := args
 	if len(rest) > 0 && rest[0] != "" && rest[0][0] != '-' {
@@ -48,7 +48,7 @@ func ParseArgs(args []string) (Command, error) {
 			rest = rest[1:]
 		default:
 			fs.Usage()
-			return cmd, fmt.Errorf("xbc: 未知子命令 %q，可选 migrate/doctor，或不带子命令直接启动", rest[0])
+			return cmd, fmt.Errorf("xbc: unknown subcommand %q; use migrate, doctor, or no subcommand to start", rest[0])
 		}
 	}
 
@@ -57,7 +57,7 @@ func ParseArgs(args []string) (Command, error) {
 	}
 	if fs.NArg() > 0 {
 		fs.Usage()
-		return cmd, fmt.Errorf("xbc: 未知参数 %v", fs.Args())
+		return cmd, fmt.Errorf("xbc: unknown argument %v", fs.Args())
 	}
 
 	if cmd.Profile == "" {

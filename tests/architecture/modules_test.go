@@ -34,16 +34,16 @@ type archModuleFile struct {
 func archRepositoryRoot(t *testing.T) string {
 	t.Helper()
 	_, source, _, ok := runtime.Caller(0)
-	require.True(t, ok, "无法定位 architecture 测试源码，不能可靠读取仓库")
+	require.True(t, ok, "Unable to locate architecture test source code, cannot reliably read repository")
 
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
 	absoluteRoot, err := filepath.Abs(root)
-	require.NoError(t, err, "无法将仓库根转换为绝对路径：%s", root)
+	require.NoError(t, err, "Unable to convert repository root to absolute path: %s", root)
 	root = absoluteRoot
 	for _, marker := range []string{"go.mod", "go.work"} {
 		info, err := os.Stat(filepath.Join(root, marker))
-		require.NoError(t, err, "architecture 测试推导的仓库根 %s 缺少 %s", root, marker)
-		require.False(t, info.IsDir(), "仓库根 %s 必须是文件", marker)
+		require.NoError(t, err, "Architecture test inferred repository root %s lacks %s", root, marker)
+		require.False(t, info.IsDir(), "Repository root %s must be a file", marker)
 	}
 	return root
 }
@@ -55,7 +55,7 @@ func archRepositoryRoot(t *testing.T) string {
 func archReadModuleFile(t *testing.T, manifest string) archModuleFile {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过 module manifest 检查")
+		t.Skip("go command unavailable, skipping module manifest check")
 	}
 
 	if !filepath.IsAbs(manifest) {
@@ -63,10 +63,10 @@ func archReadModuleFile(t *testing.T, manifest string) archModuleFile {
 	}
 	manifest = filepath.Clean(manifest)
 	out, err := archGoCommand(t, "mod", "edit", "-json", manifest).Output()
-	require.NoError(t, err, "解析 %s 失败", manifest)
+	require.NoError(t, err, "Parsing %s failed", manifest)
 
 	var mod archModuleFile
-	require.NoError(t, json.Unmarshal(out, &mod), "解析 %s 的 go mod edit -json 输出失败", manifest)
+	require.NoError(t, json.Unmarshal(out, &mod), "Failed to parse go mod edit -json output for %s", manifest)
 	return mod
 }
 
@@ -86,10 +86,10 @@ func archWorkspaceModuleFiles(t *testing.T) []string {
 	repositoryRoot := archRepositoryRoot(t)
 	workspace := filepath.Join(repositoryRoot, "go.work")
 	out, err := archGoCommand(t, "work", "edit", "-json", workspace).Output()
-	require.NoError(t, err, "解析仓库 workspace %s 失败", workspace)
+	require.NoError(t, err, "Failed to parse workspace repository %s", workspace)
 
 	var work archWorkspaceFile
-	require.NoError(t, json.Unmarshal(out, &work), "解析 go work edit -json 输出失败")
+	require.NoError(t, json.Unmarshal(out, &work), "Failed to parse go work edit -json output")
 	var manifests []string
 	for _, use := range work.Use {
 		moduleRoot := use.DiskPath
@@ -102,11 +102,11 @@ func archWorkspaceModuleFiles(t *testing.T) []string {
 		}
 		manifest := filepath.Join(moduleRoot, "go.mod")
 		info, err := os.Stat(manifest)
-		require.NoError(t, err, "workspace module %s 缺少 go.mod", moduleRoot)
-		require.False(t, info.IsDir(), "workspace module manifest %s 必须是文件", manifest)
+		require.NoError(t, err, "workspace module %s lacks go.mod", moduleRoot)
+		require.False(t, info.IsDir(), "workspace module manifest %s must be a file", manifest)
 		manifests = append(manifests, manifest)
 	}
-	require.NotEmpty(t, manifests, "go.work 没有列出任何独立子 module，发布边界守卫实际未生效")
+	require.NotEmpty(t, manifests, "go.work lists no independent sub module, release boundary guard is effectively inactive")
 	sort.Strings(manifests)
 	return manifests
 }
@@ -124,7 +124,7 @@ func TestArchWorkspaceModuleDiscoveryIgnoresCWDAndGOWORK(t *testing.T) {
 	assert.Contains(t, manifests, filepath.Join(repositoryRoot, "transport", "web", "go.mod"))
 	assert.Contains(t, manifests, filepath.Join(repositoryRoot, "examples", "go.mod"))
 	for _, manifest := range manifests {
-		assert.True(t, filepath.IsAbs(manifest), "workspace manifest 必须解析为绝对路径：%s", manifest)
+		assert.True(t, filepath.IsAbs(manifest), "workspace manifest must resolve to an absolute path: %s", manifest)
 	}
 }
 
@@ -161,20 +161,20 @@ func archStableReleaseVersion(version string) bool {
 // replace, zero placeholder or generated pseudo-version.
 func TestArchWorkspaceModulesRejectLocalReplaceAndSyntheticVersions(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过 module manifest 检查")
+		t.Skip("go command is unavailable, skipping module manifest check")
 	}
 
 	for _, manifest := range archWorkspaceModuleFiles(t) {
 		mod := archReadModuleFile(t, manifest)
 		assert.Empty(t, mod.Replace,
-			"%s 不得包含 replace；仓库内联调用 go.work，发布验证必须解析真实 tag", manifest)
+			"%s must not contain replace; inline repository call to go.work, release validation must resolve real tag", manifest)
 
 		for _, req := range mod.Require {
 			if req.Path != "github.com/xbcio/xbc" && !strings.HasPrefix(req.Path, "github.com/xbcio/xbc/") {
 				continue
 			}
 			assert.Truef(t, archStableReleaseVersion(req.Version),
-				"%s 对 %s 的 require 必须使用真实发布 tag 形状 vX.Y.Z；禁止 v0.0.0、伪版本、预发布或占位版本，得到 %q",
+				"require for %s in %s must use real release tag shape vX.Y.Z; prohibit v0.0.0, pseudo versions, pre-releases or placeholder versions, got %q",
 				manifest, req.Path, req.Version)
 		}
 	}

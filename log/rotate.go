@@ -79,7 +79,7 @@ func newDailyRotator(lj *lumberjack.Logger) *dailyRotator {
 	// local users — content itself is unaffected, see the tightening of
 	// lj.Filename itself below. This is a deployment precondition: ops
 	// must ensure the log directory itself is created with 0750 or
-	// stricter (see README.md's "部署前提：日志目录权限" section).
+	// stricter (see README.md's "Deployment prerequisite: log directory permissions" section).
 	_ = os.MkdirAll(filepath.Dir(lj.Filename), 0o750)
 
 	// [SEC-INFO] lumberjack's openNew() creates a brand-new file with

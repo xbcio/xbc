@@ -52,7 +52,7 @@ func TestFreezeIsIdempotent(t *testing.T) {
 	assert.Equal(t, defKeys(snap1.Definitions()), defKeys(snap2.Definitions()))
 	assert.Equal(t, 2, snap2.Len())
 	assert.Equal(t, reflect.ValueOf(snap1.defs).Pointer(), reflect.ValueOf(snap2.defs).Pointer(),
-		"两次 Freeze 必须返回缓存的同一个 Snapshot，而不是重新计算出一个内容相同的新值")
+		"two Freeze calls must return the same cached Snapshot, not a newly calculated value with the same content")
 }
 
 // TestFreezeIsIdempotentAndCachesTheError pins the harder half of
@@ -68,7 +68,7 @@ func TestFreezeIsIdempotentAndCachesTheError(t *testing.T) {
 	require.Error(t, err1)
 	_, err2 := c.Freeze()
 	require.Error(t, err2)
-	assert.Equal(t, err1.Error(), err2.Error(), "第二次调用不能吞掉错误，也不能报出不同的错误")
+	assert.Equal(t, err1.Error(), err2.Error(), "second call cannot swallow errors, nor report a different error")
 }
 
 // TestDeclareOrderIsIrrelevantToFrozenResult pins §3.3 rule 3: two Catalogs
@@ -96,7 +96,7 @@ func TestDeclareOrderIsIrrelevantToFrozenResult(t *testing.T) {
 	require.Len(t, defsReverse, len(defsForward))
 	for i := range defsForward {
 		assert.Equal(t, defsForward[i].Key, defsReverse[i].Key,
-			"顺序反过来声明，冻结后的 key 顺序必须一致")
+			"reversed declaration order, the key order after freeze must remain consistent")
 	}
 }
 
@@ -109,7 +109,7 @@ func TestDeclarePanicsAfterFreeze(t *testing.T) {
 	_, err := c.Freeze()
 	require.NoError(t, err)
 
-	assert.PanicsWithValue(t, "xbc: 插件目录已冻结，init() 之后不能再声明插件", func() {
+	assert.PanicsWithValue(t, "xbc: plugin directory is frozen, no more plugins can be declared after init()", func() {
 		c.Declare(def("redis"))
 	})
 }
@@ -137,12 +137,12 @@ func TestFreezeReportsDuplicateKeyWithBothSources(t *testing.T) {
 	require.NotEqual(t, -1, firstIdx)
 	rest := msg[firstIdx+len("catalog_test.go:"):]
 	secondRelIdx := strings.Index(rest, "catalog_test.go:")
-	require.NotEqual(t, -1, secondRelIdx, "错误消息必须同时包含两个冲突来源的信息，不能只报一个")
+	require.NotEqual(t, -1, secondRelIdx, "error message must include information from both conflicting sources, cannot report only one")
 
 	firstLine := strings.SplitN(msg[firstIdx:], ")", 2)[0]
 	secondIdx := firstIdx + len("catalog_test.go:") + secondRelIdx
 	secondLine := strings.SplitN(msg[secondIdx:], ")", 2)[0]
-	assert.NotEqual(t, firstLine, secondLine, "两处来源的文件:行号必须不同，否则读者分不清冲突双方")
+	assert.NotEqual(t, firstLine, secondLine, "two sources' file: line numbers must differ, otherwise the reader cannot distinguish between the conflicting parties")
 }
 
 // TestSnapshotDefinitionsIsDefensiveCopy pins that mutating the slice
@@ -158,7 +158,7 @@ func TestSnapshotDefinitionsIsDefensiveCopy(t *testing.T) {
 	first[0].Key = "mutated"
 
 	second := snap.Definitions()
-	assert.Equal(t, "gorm", second[0].Key.String(), "修改上一次调用返回的 slice 不得影响下一次调用的结果")
+	assert.Equal(t, "gorm", second[0].Key.String(), "modifying the slice returned by the previous call must not affect the result of the next call")
 }
 
 // TestSnapshotZeroValueIsUsable pins that a bare Snapshot{} (never built by
@@ -226,14 +226,14 @@ func TestDefaultCatalogDeclareAndFreeze(t *testing.T) {
 	snap, err := Freeze()
 	require.NoError(t, err)
 	_, ok := snap.Lookup("default-catalog-fixture")
-	assert.True(t, ok, "包级 Declare 必须写入包级默认目录，Freeze 后能查到")
+	assert.True(t, ok, "package-level Declare must write to the package-level default directory, and be discoverable after Freeze")
 
 	// Freeze is idempotent for the default catalog too.
 	snap2, err2 := Freeze()
 	require.NoError(t, err2)
 	assert.Equal(t, defKeys(snap.Definitions()), defKeys(snap2.Definitions()))
 
-	assert.PanicsWithValue(t, "xbc: 插件目录已冻结，init() 之后不能再声明插件", func() {
+	assert.PanicsWithValue(t, "xbc: plugin directory is frozen, no more plugins can be declared after init()", func() {
 		Declare(def("too-late"))
 	})
 }

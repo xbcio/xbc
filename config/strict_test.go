@@ -34,7 +34,7 @@ func TestEnvironmentBindRejectsUnknownPluginFields(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plugins.web.adrr")
 	assert.Contains(t, err.Error(), "plugins.web.tls.enabeld")
-	assert.NotContains(t, err.Error(), "plugins.web.addr\n", "合法字段不能被误报")
+	assert.NotContains(t, err.Error(), "plugins.web.addr\n", "Valid fields must not be falsely reported as invalid")
 }
 
 type strictFrameworkConfig struct {
@@ -76,7 +76,7 @@ func TestEnvironmentBindWithOptionsAllowsFrameworkOwnedKey(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, ":9090", allowed.Addr)
-	assert.Equal(t, false, env.Get("plugins.web.enabled"), "allowlist 不应删除或改写框架字段")
+	assert.Equal(t, false, env.Get("plugins.web.enabled"), "Allowlist should not remove or overwrite framework fields")
 }
 
 func TestEnvironmentBindAllowlistDoesNotHideOtherTypos(t *testing.T) {
@@ -134,12 +134,12 @@ func TestBindPointerSubtreeAllocatesOnlyWhenDefaultHits(t *testing.T) {
 	require.NoError(t, err)
 	var untouched optionalRoot
 	require.NoError(t, empty.Bind("service", &untouched))
-	assert.Nil(t, untouched.Optional, "无文件、ENV 或 default 命中时不能物化 nil 子树")
-	assert.False(t, empty.Exists("service.optional.name"), "syncBack 也不能为 nil 子树合成零值路径")
+	assert.Nil(t, untouched.Optional, "Nil subtree should not be materialized when no file, ENV, or default matches")
+	assert.False(t, empty.Exists("service.optional.name"), "SyncBack should not synthesize zero-value paths for nil subtree")
 
 	var withDefault pointerRootConfig
 	require.NoError(t, empty.Bind("database", &withDefault))
-	require.NotNil(t, withDefault.Pool, "子字段 default 命中时应按需分配父指针")
+	require.NotNil(t, withDefault.Pool, "Parent pointer should be allocated as needed when child field default matches")
 	assert.Equal(t, 10, withDefault.Pool.Limit)
 }
 
@@ -230,7 +230,7 @@ func TestBindRejectsInvalidOutputWithoutPanicking(t *testing.T) {
 			require.NotPanics(t, func() {
 				err := env.Bind("server", test.out)
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "非 nil 的 struct 指针")
+				assert.Contains(t, err.Error(), "non-nil struct pointer")
 			})
 		})
 	}
@@ -241,7 +241,7 @@ func TestValidateRejectsInvalidOutputWithoutPanicking(t *testing.T) {
 	require.NotPanics(t, func() {
 		err := Validate(nilConfig, "server")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "非 nil 的 struct 指针")
+		assert.Contains(t, err.Error(), "non-nil struct pointer")
 	})
 }
 
@@ -306,7 +306,7 @@ func TestInlineAnonymousPointerAllocatesOnlyWhenInputMatches(t *testing.T) {
 	var sibling inlinePointerRoot
 	require.NoError(t, siblingOnly.Bind("service", &sibling))
 	assert.Equal(t, "prod", sibling.Mode)
-	assert.Nil(t, sibling.InlinePointerConfig, "同级字段不应永久物化未命中的 inline 指针")
+	assert.Nil(t, sibling.InlinePointerConfig, "Same-level fields should not permanently materialize un-matched inline pointers")
 
 	configured, err := NewEnvironment(map[string]any{
 		"service": map[string]any{"value": "from-file"},

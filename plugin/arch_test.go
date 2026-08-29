@@ -27,13 +27,13 @@ type listResult struct {
 func goListDeps(t *testing.T, pkg string) []string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过依赖方向检查")
+		t.Skip("go command is unavailable, skip dependency direction check")
 	}
 	out, err := exec.Command("go", "list", "-json", pkg).Output()
-	require.NoError(t, err, "go list -json %s 失败", pkg)
+	require.NoError(t, err, "go list -json %s failed", pkg)
 
 	var res listResult
-	require.NoError(t, json.Unmarshal(out, &res), "解析 go list -json 输出失败")
+	require.NoError(t, json.Unmarshal(out, &res), "Parsing go list -json output failed")
 	return res.Deps
 }
 
@@ -62,23 +62,23 @@ func TestPluginPackageDependencyClosureIsClean(t *testing.T) {
 		prefix string
 		reason string
 	}{
-		{"github.com/xbcio/xbc/plugin/catalog", "plugin 不得反向依赖默认目录"},
-		{"github.com/xbcio/xbc/runtime", "plugin 不得反向依赖运行编排实现"},
-		{"github.com/xbcio/xbc/assembly", "plugin 不得反向依赖实例装配实现"},
-		{"github.com/xbcio/xbc/cli", "plugin 不得反向依赖命令解析实现"},
-		{"github.com/xbcio/xbc/internal", "plugin 不得依赖 core internal 包"},
-		{"github.com/xbcio/xbc/transport", "plugin 是协议无关的 SPI，不得依赖任何 transport 实现 module"},
-		{"github.com/gin-gonic/gin", "plugin 是协议无关的 SPI，不得依赖 Gin"},
-		{"google.golang.org/grpc", "plugin 是协议无关的 SPI，不得依赖 Google gRPC"},
+		{"github.com/xbcio/xbc/plugin/catalog", "plugin must not reverse depend on the default directory"},
+		{"github.com/xbcio/xbc/runtime", "plugin must not reverse depend on the runtime orchestration implementation"},
+		{"github.com/xbcio/xbc/assembly", "plugin must not have reverse dependency on instance assembly implementation"},
+		{"github.com/xbcio/xbc/cli", "plugin must not have reverse dependency on command parsing implementation"},
+		{"github.com/xbcio/xbc/internal", "plugin must not depend on core internal package"},
+		{"github.com/xbcio/xbc/transport", "plugin is protocol-agnostic SPI, must not depend on any transport implementation module"},
+		{"github.com/gin-gonic/gin", "plugin is protocol-agnostic SPI, must not depend on Gin"},
+		{"google.golang.org/grpc", "plugin is protocol-agnostic SPI, must not depend on Google gRPC"},
 	}
 
 	for _, dep := range deps {
 		require.NotEqual(t, "github.com/xbcio/xbc", dep,
-			"plugin 不得依赖根门面，否则会与消费它的上层形成反向依赖")
+			"plugin must not depend on root facade, otherwise it would form reverse dependency with the upper layer that consumes it")
 		for _, forbidden := range forbiddenTrees {
 			require.Falsef(t,
 				dep == forbidden.prefix || strings.HasPrefix(dep, forbidden.prefix+"/"),
-				"%s：%s", forbidden.reason, dep)
+				"%s: %s", forbidden.reason, dep)
 		}
 	}
 }
@@ -114,8 +114,8 @@ func TestPluginDependencyClosureAddsNothingBeyondConfigAndLog(t *testing.T) {
 		if allowed[dep] || isStdlib(dep) {
 			continue
 		}
-		t.Errorf("plugin 引入了 config 与 log 都无法解释的第三方依赖 %q，"+
-			"每个实现 SPI 的插件作者都要为它付编译代价；该依赖应留在具体能力包里", dep)
+		t.Errorf("plugin introduced third-party dependency %q that cannot be explained by config or log"+
+			"each SPI implementation plugin author must pay the compilation cost; this dependency should stay in the specific capability package", dep)
 	}
 }
 
@@ -151,8 +151,8 @@ func TestPluginCatalogDependencyClosureIsPluginAndStdlibOnly(t *testing.T) {
 		if isStdlib(dep) {
 			continue
 		}
-		t.Errorf("plugin/catalog 引入了 plugin 自身没有的第三方依赖 %q，"+
-			"违反“plugin/catalog 只依赖 plugin 和标准库”的约束", dep)
+		t.Errorf("plugin/catalog introduced third-party dependency %q that it does not have itself"+
+			"violates the constraint that 'plugin/catalog must only depend on plugin and standard library'", dep)
 	}
 }
 
@@ -164,31 +164,31 @@ func TestPluginCatalogDependencyClosureIsPluginAndStdlibOnly(t *testing.T) {
 func TestArchPluginSPIHasCanonicalShape(t *testing.T) {
 	pluginType := reflect.TypeOf((*Plugin)(nil)).Elem()
 	require.Equal(t, reflect.Interface, pluginType.Kind())
-	assert.Zero(t, pluginType.NumMethod(), "Plugin 必须保持零方法 marker；身份只来自 Definition.Key")
+	assert.Zero(t, pluginType.NumMethod(), "Plugin must maintain zero method marker; identity comes only from Definition.Key")
 	var marker Plugin = struct{}{}
-	assert.IsType(t, struct{}{}, marker, "不嵌入 Base、没有方法的值也必须是合法 marker Plugin")
+	assert.IsType(t, struct{}{}, marker, "embedded Base, or value without methods must also be valid marker Plugin")
 
 	definitionType := reflect.TypeOf(Definition{})
 	keyField, ok := definitionType.FieldByName("Key")
-	require.True(t, ok, "Definition.Key 必须存在")
-	assert.Equal(t, reflect.TypeOf(Key("")), keyField.Type, "Definition.Key 必须使用命名类型 plugin.Key")
+	require.True(t, ok, "Definition.Key must exist")
+	assert.Equal(t, reflect.TypeOf(Key("")), keyField.Type, "Definition.Key must use named type plugin.Key")
 
 	instancesField, ok := definitionType.FieldByName("Instances")
-	require.True(t, ok, "Definition.Instances 必须存在")
+	require.True(t, ok, "Definition.Instances must exist")
 	assert.Equal(t, reflect.TypeOf(Cardinality(0)), instancesField.Type,
-		"Definition.Instances 必须使用命名类型 plugin.Cardinality")
+		"Definition.Instances must use named type plugin.Cardinality")
 	_, hasLegacyName := definitionType.FieldByName("Name")
-	assert.False(t, hasLegacyName, "Definition.Name 不得复活；Key 是唯一身份")
+	assert.False(t, hasLegacyName, "Definition.Name must not be revived; Key is the unique identity")
 
 	var zero Cardinality
-	assert.Equal(t, SingleInstance, zero, "SingleInstance 必须保持 Cardinality 零值")
-	assert.NotEqual(t, SingleInstance, MultipleInstances, "单实例与多实例策略必须不同")
+	assert.Equal(t, SingleInstance, zero, "SingleInstance must maintain Cardinality zero value")
+	assert.NotEqual(t, SingleInstance, MultipleInstances, "single instance and multi instance strategies must be different")
 
 	configMethod, ok := reflect.TypeOf((*Context)(nil)).MethodByName("Config")
-	require.True(t, ok, "(*plugin.Context).Config 必须存在")
-	require.Equal(t, 1, configMethod.Type.NumIn(), "Context.Config 不接受额外参数")
-	require.Equal(t, 1, configMethod.Type.NumOut(), "Context.Config 只返回一个只读 view")
+	require.True(t, ok, "(*plugin.Context).Config must exist")
+	require.Equal(t, 1, configMethod.Type.NumIn(), "Context.Config does not accept additional parameters")
+	require.Equal(t, 1, configMethod.Type.NumOut(), "Context.Config returns only a read-only view")
 	viewType := reflect.TypeOf((*config.View)(nil)).Elem()
 	assert.Equal(t, viewType, configMethod.Type.Out(0),
-		"Context.Config 必须精确返回 config.View，不能泄露可绑定、可变的 *config.Environment")
+		"Context.Config must precisely return config.View, cannot leak bindable, mutable *config.Environment")
 }

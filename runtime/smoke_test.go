@@ -37,7 +37,7 @@ func TestRunStartsAndStopsCleanly(t *testing.T) {
 	res := awaitResult(t, done)
 
 	require.NoError(t, res.err)
-	assert.Equal(t, 0, res.code, "被请求的停止是正常退出")
+	assert.Equal(t, 0, res.code, "The requested stop is a normal exit")
 	assert.Equal(t, []string{"init", "start", "open", "stop"}, stages,
-		"生命周期阶段顺序应为 Init -> Start -> OpenTraffic -> Stop")
+		"Lifecycle phase order should be Init -> Start -> OpenTraffic -> Stop")
 }

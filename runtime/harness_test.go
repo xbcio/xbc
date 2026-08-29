@@ -51,7 +51,7 @@ func newTestApp(t *testing.T, defs ...plugin.Definition) *App {
 		c.Declare(d)
 	}
 	snapshot, err := c.Freeze()
-	require.NoError(t, err, "冻结测试 catalog 失败")
+	require.NoError(t, err, "Freezing test catalog failed")
 
 	app := newApp(snapshot)
 	app.ready = make(chan struct{})
@@ -63,7 +63,7 @@ func newTestApp(t *testing.T, defs ...plugin.Definition) *App {
 func writeConfig(t *testing.T, body string) []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(body), 0o600), "写入测试配置失败")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600), "Writing test configuration failed")
 	return []string{"--config", path}
 }
 
@@ -102,7 +102,7 @@ func awaitReady(t *testing.T, app *App) {
 	select {
 	case <-app.ready:
 	case <-time.After(testTimeout):
-		t.Fatal("应用未在超时内进入运行态")
+		t.Fatal("The application did not enter the running state within the timeout")
 	}
 }
 
@@ -115,7 +115,7 @@ func awaitResult(t *testing.T, ch <-chan runResult) runResult {
 	case res := <-ch:
 		return res
 	case <-time.After(testTimeout):
-		t.Fatal("Execute 未在超时内返回，关机路径可能已挂死")
+		t.Fatal("Execute did not return within the timeout, shutdown path may be deadlocked")
 		return runResult{}
 	}
 }
@@ -136,7 +136,7 @@ func waitFor(t *testing.T, msg string, cond func() bool) {
 		}
 		time.Sleep(200 * time.Microsecond)
 	}
-	t.Fatalf("超时等待条件成立：%s", msg)
+	t.Fatalf("Timeout waiting condition is met: %s", msg)
 }
 
 // --- fake plugins ---------------------------------------------------------
@@ -305,7 +305,7 @@ func (c *logCapture) entries(t *testing.T) []entry {
 	if os.IsNotExist(err) {
 		return nil
 	}
-	require.NoError(t, err, "读取捕获的日志失败")
+	require.NoError(t, err, "Reading captured logs failed")
 
 	var out []entry
 	for _, line := range strings.Split(string(raw), "\n") {

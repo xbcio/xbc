@@ -30,7 +30,7 @@ func envName(prefix, path string) string {
 // which are accepted but deliberately not decoded into out.
 func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...string) error {
 	if k == nil {
-		return fmt.Errorf("xbc: 配置尚未加载，无法绑定 %s", displayPath(path))
+		return fmt.Errorf("xbc: configuration not loaded, cannot bind %s", displayPath(path))
 	}
 	root, schema, err := schemaFor(out)
 	if err != nil {
@@ -66,7 +66,7 @@ func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...str
 		pointer.SetZero()
 	}
 	if unmarshalErr != nil {
-		return fmt.Errorf("xbc: 绑定配置节 %s 失败：%w", displayPath(path), unmarshalErr)
+		return fmt.Errorf("xbc: failed to bind configuration section %s: %w", displayPath(path), unmarshalErr)
 	}
 
 	items := schema.rootedLeaves(path)
@@ -80,10 +80,10 @@ func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...str
 		envSet[item.Path] = true
 		field, ok := fieldByIndex(root, item.Index, true)
 		if !ok {
-			return fmt.Errorf("xbc: 无法定位配置字段 %s", item.Path)
+			return fmt.Errorf("xbc: cannot locate configuration field %s", item.Path)
 		}
 		if err := setScalar(field, item.Type, raw); err != nil {
-			return fmt.Errorf("xbc: 环境变量 %s 的值 %q 无法解析为 %s：%w", name, raw, item.Type, err)
+			return fmt.Errorf("xbc: environment variable %s value %q cannot be parsed as %s: %w", name, raw, item.Type, err)
 		}
 	}
 
@@ -93,10 +93,10 @@ func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...str
 		}
 		field, ok := fieldByIndex(root, item.Index, true)
 		if !ok {
-			return fmt.Errorf("xbc: 无法定位配置字段 %s", item.Path)
+			return fmt.Errorf("xbc: cannot locate configuration field %s", item.Path)
 		}
 		if err := setScalar(field, item.Type, item.Default); err != nil {
-			return fmt.Errorf("xbc: 字段 %s 的 default tag %q 无法解析为 %s：%w", item.Path, item.Default, item.Type, err)
+			return fmt.Errorf("xbc: field %s default tag %q cannot be parsed as %s: %w", item.Path, item.Default, item.Type, err)
 		}
 	}
 
@@ -107,7 +107,7 @@ func allowedPathSet(paths []string) (map[string]struct{}, error) {
 	allowed := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
 		if path == "" || strings.HasPrefix(path, ".") || strings.HasSuffix(path, ".") || strings.Contains(path, "..") {
-			return nil, fmt.Errorf("xbc: 允许的配置键必须是非空 section 相对路径，得到 %q", path)
+			return nil, fmt.Errorf("xbc: allowed configuration keys must be non-empty section relative paths, got %q", path)
 		}
 		allowed[path] = struct{}{}
 	}
@@ -118,7 +118,7 @@ func unknownFieldsError(path string, fields []string) error {
 	fields = append([]string(nil), fields...)
 	sort.Strings(fields)
 	var b strings.Builder
-	fmt.Fprintf(&b, "xbc: 配置节 %s 包含未知字段", displayPath(path))
+	fmt.Fprintf(&b, "xbc: configuration section %s contains unknown field", displayPath(path))
 	for _, field := range fields {
 		b.WriteString("\n  ")
 		b.WriteString(field)
@@ -206,5 +206,5 @@ func setScalar(v reflect.Value, typ reflect.Type, s string) error {
 		v.Set(result)
 		return nil
 	}
-	return fmt.Errorf("不支持的标量类型 %s", typ)
+	return fmt.Errorf("unsupported scalar type %s", typ)
 }

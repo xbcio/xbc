@@ -31,61 +31,61 @@ func TestResolveRejectsMalformedDynamicDeclarationsWithoutPanicking(t *testing.T
 			name:     "dependency nil type",
 			deps:     plugin.Deps{Types: []plugin.Dep{{Type: nil}}},
 			wantPath: "Dependencies()",
-			want:     "Type 不能为空",
+			want:     "Type cannot be empty",
 		},
 		{
 			name:     "dependency invalid instance",
 			deps:     plugin.Deps{Types: []plugin.Dep{{Type: productType, Instance: "read.only"}}},
 			wantPath: "Types[0]",
-			want:     "Instance \"read.only\" 无效",
+			want:     "Instance \"read.only\" is invalid",
 		},
 		{
 			name:     "zero ref",
 			deps:     plugin.Deps{Plugins: []plugin.Ref{{}}},
 			wantPath: "Plugins[0].Key",
-			want:     "不能为空",
+			want:     "cannot be empty",
 		},
 		{
 			name:     "ref invalid key",
 			deps:     plugin.Deps{Plugins: []plugin.Ref{plugin.RefTo("Bad.Key")}},
 			wantPath: "Plugins[0].Key",
-			want:     "含非法字符",
+			want:     "contains invalid character",
 		},
 		{
 			name:     "ref invalid instance",
 			deps:     plugin.Deps{Plugins: []plugin.Ref{plugin.RefTo("cache").Instance("read.only")}},
 			wantPath: "Plugins[0].Instance",
-			want:     "含非法字符",
+			want:     "contains invalid character",
 		},
 		{
 			name:     "after zero key",
 			deps:     plugin.Deps{After: []plugin.Key{""}},
 			wantPath: "After[0]",
-			want:     "不能为空",
+			want:     "cannot be empty",
 		},
 		{
 			name:     "before invalid key",
 			deps:     plugin.Deps{Before: []plugin.Key{"Bad"}},
 			wantPath: "Before[0]",
-			want:     "含非法字符",
+			want:     "contains invalid character",
 		},
 		{
 			name:     "provide nil type",
 			provides: []plugin.Dep{{Type: nil}},
 			wantPath: "Provides()",
-			want:     "Type 不能为空",
+			want:     "Type cannot be empty",
 		},
 		{
 			name:     "provide instance unsupported",
 			provides: []plugin.Dep{{Type: productType, Instance: "readonly"}},
 			wantPath: ".Instance",
-			want:     "Instance 不受支持",
+			want:     "Instance is not supported",
 		},
 		{
 			name:     "provide optional unsupported",
 			provides: []plugin.Dep{{Type: productType, Optional: true}},
 			wantPath: ".Optional",
-			want:     "Optional 不受支持",
+			want:     "Optional is not supported",
 		},
 	}
 
@@ -143,12 +143,12 @@ func TestProvidesCalledOncePerInstanceAndHarvestUsesCache(t *testing.T) {
 	require.Len(t, created, 2)
 	require.Len(t, c.Order(), 2)
 	for _, instance := range created {
-		assert.Equal(t, 1, instance.calls, "每个实例在装配时必须只调用一次 Provides()")
+		assert.Equal(t, 1, instance.calls, "each instance must call Provides() exactly once during assembly")
 	}
 	for _, instance := range c.Order() {
 		require.NoError(t, c.Harvest(instance))
 	}
 	for _, instance := range created {
-		assert.Equal(t, 1, instance.calls, "Harvest 必须使用 Instance 缓存，不能再次调用 Provides()")
+		assert.Equal(t, 1, instance.calls, "Harvest must use Instance cache, cannot call Provides() again")
 	}
 }

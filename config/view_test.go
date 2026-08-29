@@ -27,10 +27,10 @@ func TestScopeRestrictsPathsAndPreservesEmptyPathSemantics(t *testing.T) {
 	root, ok := view.Get("").(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, ":8080", root["addr"])
-	assert.True(t, view.Exists(""), "空路径应指向 scoped root")
+	assert.True(t, view.Exists(""), "Empty path should point to scoped root")
 	assert.Equal(t, root, view.Sub(""))
 
-	assert.Nil(t, view.Get("plugins.database.dsn"), "相对路径不能逃逸到同级或全局 section")
+	assert.Nil(t, view.Get("plugins.database.dsn"), "Relative path cannot escape to same-level or global section")
 	assert.False(t, view.Exists("plugins.database.dsn"))
 }
 

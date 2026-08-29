@@ -14,7 +14,7 @@ import (
 func invokeCallback[T any](key plugin.Key, instance, callback string, fn func() T) (result T, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("xbc: %s 的 %s 回调发生 panic：%s\n%s",
+			err = fmt.Errorf("xbc: %s %s callback panicked: %s\n%s",
 				callbackSubject(key, instance), callback, formatPanicValue(recovered), debug.Stack())
 		}
 	}()
@@ -24,14 +24,14 @@ func invokeCallback[T any](key plugin.Key, instance, callback string, fn func() 
 func formatPanicValue(value any) (text string) {
 	defer func() {
 		if recover() != nil {
-			text = fmt.Sprintf("<%T：panic 值格式化失败>", value)
+			text = fmt.Sprintf("<%T: failed to format panic value>", value)
 		}
 	}()
 	return fmt.Sprint(value)
 }
 
 func callbackSubject(key plugin.Key, instance string) string {
-	return fmt.Sprintf("插件 %s（实例 %q）", key, plugin.NormalizeInstance(instance))
+	return fmt.Sprintf("plugin %s (instance %q)", key, plugin.NormalizeInstance(instance))
 }
 
 func callConfigPtr(inst *Instance, configurable plugin.Configurable) (any, error) {
@@ -40,7 +40,7 @@ func callConfigPtr(inst *Instance, configurable plugin.Configurable) (any, error
 		return nil, err
 	}
 	if err := validateConfigTarget(target); err != nil {
-		return nil, fmt.Errorf("xbc: %s 的 ConfigPtr() 返回值无效：%w",
+		return nil, fmt.Errorf("xbc: %s returned an invalid ConfigPtr() value: %w",
 			callbackSubject(inst.key, inst.instance), err)
 	}
 	return target, nil
@@ -48,18 +48,18 @@ func callConfigPtr(inst *Instance, configurable plugin.Configurable) (any, error
 
 func validateConfigTarget(target any) error {
 	if target == nil {
-		return fmt.Errorf("必须返回非 nil 的 struct 指针，得到 <nil>")
+		return fmt.Errorf("must return non-nil struct pointer, got <nil>")
 	}
 
 	v := reflect.ValueOf(target)
 	if v.Kind() != reflect.Pointer {
-		return fmt.Errorf("必须返回非 nil 的 struct 指针，得到 %T", target)
+		return fmt.Errorf("must return non-nil struct pointer, got %T", target)
 	}
 	if v.IsNil() {
-		return fmt.Errorf("必须返回非 nil 的 struct 指针，得到 %s(nil)", v.Type())
+		return fmt.Errorf("must return non-nil struct pointer, got %s(nil)", v.Type())
 	}
 	if v.Elem().Kind() != reflect.Struct {
-		return fmt.Errorf("必须返回非 nil 的 struct 指针，得到 %s", v.Type())
+		return fmt.Errorf("must return non-nil struct pointer, got %s", v.Type())
 	}
 	return nil
 }

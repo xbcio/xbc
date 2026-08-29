@@ -128,7 +128,7 @@ func (c *Config) Normalize() error {
 	switch c.Console.Color {
 	case ColorAuto, ColorAlways, ColorNever:
 	default:
-		return fmt.Errorf("log.console.color: 未知取值 %q，可选 auto/always/never", c.Console.Color)
+		return fmt.Errorf("log.console.color: unknown value %q, valid values: auto/always/never", c.Console.Color)
 	}
 
 	if c.File.Enabled {
@@ -147,7 +147,7 @@ func (c *Config) Normalize() error {
 		switch c.File.Rotate {
 		case RotateDaily, RotateSize:
 		default:
-			return fmt.Errorf("log.file.rotate: 未知取值 %q，可选 daily/size", c.File.Rotate)
+			return fmt.Errorf("log.file.rotate: unknown value %q, valid values: daily/size", c.File.Rotate)
 		}
 		if c.File.MaxSize <= 0 {
 			c.File.MaxSize = 100
@@ -179,7 +179,7 @@ func checkFormat(field, v string) error {
 	case FormatConsole, FormatJSON:
 		return nil
 	default:
-		return fmt.Errorf("%s: 未知取值 %q，可选 console/json", field, v)
+		return fmt.Errorf("%s: unknown value %q, valid values: console/json", field, v)
 	}
 }
 

@@ -29,7 +29,7 @@ func TestRouteCatalogAllReturnsDefensiveCopy(t *testing.T) {
 	got[0].Path = "/mutated"
 
 	again := catalog.All()
-	assert.NotEqual(t, "/mutated", again[0].Path, "调用方拿到的切片被改动，不能影响 catalog 自身或后续的 All() 调用")
+	assert.NotEqual(t, "/mutated", again[0].Path, "The slice received by caller must not be modified, should not affect catalog itself or subsequent All() calls")
 }
 
 func TestRouteCatalogLookupHitAndMiss(t *testing.T) {
@@ -38,14 +38,14 @@ func TestRouteCatalogLookupHitAndMiss(t *testing.T) {
 	catalog := router.freeze()
 
 	info, ok := catalog.Lookup(http.MethodGet, "/api/users")
-	require.True(t, ok, "已注册的方法+路径组合必须命中")
+	require.True(t, ok, "Registered method+path combination must match")
 	assert.Equal(t, RouteInfo{Method: http.MethodGet, Path: "/api/users"}, info)
 
 	_, ok = catalog.Lookup(http.MethodPost, "/api/users")
-	assert.False(t, ok, "方法不同，即便路径相同，也不能命中")
+	assert.False(t, ok, "Different methods, even with same path, cannot match")
 
 	_, ok = catalog.Lookup(http.MethodGet, "/api/orders")
-	assert.False(t, ok, "从未注册过的路径必须未命中")
+	assert.False(t, ok, "Unregistered paths must not match")
 }
 
 func TestCurrentRouteReportsMatchedRouteDuringRequest(t *testing.T) {
@@ -68,9 +68,9 @@ func TestCurrentRouteReportsMatchedRouteDuringRequest(t *testing.T) {
 	rec := httptest.NewRecorder()
 	engine.ServeHTTP(rec, req)
 
-	require.True(t, ok, "命中的请求必须能拿到 CurrentRoute")
+	require.True(t, ok, "Matching requests must be able to get CurrentRoute")
 	assert.Equal(t, RouteInfo{Method: http.MethodGet, Path: "/api/users/:id"}, got,
-		"CurrentRoute 必须报告冻结路由表里带路径参数占位符的原始 Path，而不是请求里的实际值")
+		"CurrentRoute must report the original Path with path parameter placeholders from the frozen route table, not the actual value from the request")
 }
 
 func TestCurrentRouteReportsFalseForNonMatchingRequest(t *testing.T) {
@@ -91,7 +91,7 @@ func TestCurrentRouteReportsFalseForNonMatchingRequest(t *testing.T) {
 	rec := httptest.NewRecorder()
 	engine.ServeHTTP(rec, req)
 
-	assert.False(t, ok, "未命中任何冻结路由的请求，CurrentRoute 必须返回 false")
+	assert.False(t, ok, "No request matched any frozen route, CurrentRoute must return false")
 }
 
 // TestGroupMustBeCreatedAfterUseOrMiddlewareSilentlyNeverApplies pins the
@@ -121,7 +121,7 @@ func TestGroupMustBeCreatedAfterUseOrMiddlewareSilentlyNeverApplies(t *testing.T
 	rec := httptest.NewRecorder()
 	engine.ServeHTTP(rec, req)
 
-	assert.True(t, ran, "engine.Use() 在 newRouter 建组之前调用，中间件必须真正作用于 basePath 下的路由")
+	assert.True(t, ran, "engine.Use() was called before newRouter group creation, middleware must actually apply to routes under basePath")
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
@@ -149,6 +149,6 @@ func TestGroupCreatedBeforeUseNeverSeesLaterMiddleware(t *testing.T) {
 	rec := httptest.NewRecorder()
 	engine.ServeHTTP(rec, req)
 
-	assert.False(t, ran, "Group 先于 Use 建立时，之后追加的中间件不会作用于已经存在的分组——这正是 newRouter 文档警告的坑")
-	assert.Equal(t, http.StatusOK, rec.Code, "路由本身仍应正常命中，只是中间件没有跑")
+	assert.False(t, ran, "When group is created before Use, subsequent middleware won't apply to existing groups - this is exactly the pitfall warned about in newRouter documentation")
+	assert.Equal(t, http.StatusOK, rec.Code, "The route itself should still match normally, but the middleware won't run")
 }

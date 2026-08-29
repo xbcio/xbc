@@ -40,19 +40,19 @@ type packageJSON struct {
 // package-layout design §9 guard, or "" if dep is fine.
 func forbiddenDirectImport(dep string) string {
 	if dep == "github.com/xbcio/xbc" {
-		return "web 不得反向 import 根门面（design §9 guard #11）"
+		return "web may not reverse import root facade (design §9 guard #11)"
 	}
 	for _, forbidden := range []struct {
 		prefix string
 		reason string
 	}{
-		{"github.com/xbcio/xbc/runtime", "web 不得直接依赖运行编排实现"},
-		{"github.com/xbcio/xbc/assembly", "web 不得直接依赖实例装配实现"},
-		{"github.com/xbcio/xbc/cli", "web 不得直接依赖命令解析实现"},
-		{"github.com/xbcio/xbc/internal", "web 不得 import core internal/*"},
+		{"github.com/xbcio/xbc/runtime", "web may not directly depend on runtime orchestration implementation"},
+		{"github.com/xbcio/xbc/assembly", "web may not directly depend on instance assembly implementation"},
+		{"github.com/xbcio/xbc/cli", "web may not directly depend on command parsing implementation"},
+		{"github.com/xbcio/xbc/internal", "web may not import core internal/*"},
 	} {
 		if dep == forbidden.prefix || strings.HasPrefix(dep, forbidden.prefix+"/") {
-			return forbidden.reason + "（design §9 guards #7/#10）"
+			return forbidden.reason + " (design §9 guards #7/#10)"
 		}
 	}
 	return ""
@@ -66,35 +66,35 @@ func forbiddenDirectImport(dep string) string {
 // rather than Deps.
 func TestWebDoesNotDirectlyImportFacadeOrHigherLevelOwners(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go 命令不可用，跳过依赖方向检查")
+		t.Skip("go command is unavailable, skipping dependency direction check")
 	}
 
 	out, err := exec.Command("go", "list", "-json", "./...").Output()
-	require.NoError(t, err, "go list -json ./... 失败")
+	require.NoError(t, err, "go list -json ./... failed")
 
 	dec := json.NewDecoder(strings.NewReader(string(out)))
 	checked := 0
 	for dec.More() {
 		var pkg packageJSON
-		require.NoError(t, dec.Decode(&pkg), "解析 go list -json 输出失败")
+		require.NoError(t, dec.Decode(&pkg), "Parsing go list -json output failed")
 		checked++
 
 		checks := []struct {
 			label   string
 			imports []string
 		}{
-			{"生产代码 import", pkg.Imports},
-			{"包内 _test.go import", pkg.TestImports},
-			{"外部测试包 import", pkg.XTestImports},
+			{"production code import", pkg.Imports},
+			{"package internal _test.go import", pkg.TestImports},
+			{"external test package import", pkg.XTestImports},
 		}
 		for _, c := range checks {
 			for _, dep := range c.imports {
 				if reason := forbiddenDirectImport(dep); reason != "" {
-					assert.Fail(t, "禁止的直接依赖",
-						"%s 的%s中出现了 %q：%s", pkg.ImportPath, c.label, dep, reason)
+					assert.Fail(t, "forbidden direct dependency",
+						"%s's %s contains %q: %s", pkg.ImportPath, c.label, dep, reason)
 				}
 			}
 		}
 	}
-	require.NotZero(t, checked, "go list -json ./... 没有返回任何 web package，依赖方向检查实际未生效")
+	require.NotZero(t, checked, "go list -json ./... returned no web package, dependency direction check actually did not take effect")
 }

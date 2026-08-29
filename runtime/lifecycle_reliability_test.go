@@ -84,19 +84,19 @@ func TestStartupHooksObserveExecuteCancellation(t *testing.T) {
 			select {
 			case <-entered:
 			case <-time.After(testTimeout):
-				t.Fatalf("%s 未进入，无法验证取消传播", tt.hook)
+				t.Fatalf("%s did not enter, unable to verify cancellation propagation", tt.hook)
 			}
 			cancel()
 
 			res := awaitResult(t, result)
 			require.Error(t, res.err)
-			assert.Equal(t, 1, res.code, "启动 hook 被取消必须以 code 1 退出")
+			assert.Equal(t, 1, res.code, "Startup hook canceled must exit with code 1")
 			assert.ErrorIs(t, res.err, context.Canceled)
 			assert.ErrorIs(t, <-observedErr, context.Canceled,
-				"plugin.Context.Err 必须反映 Execute caller context 的取消")
+				"plugin.Context.Err must reflect the cancellation of the Execute caller context")
 			assert.Equal(t, tt.wantStops, stops.Load())
 			assert.Equal(t, stopReasonContext, app.stopReason,
-				"随后进入 abort(startup-failed) 不能覆盖最先到达的 context stop reason")
+				"Subsequent entry into abort(startup-failed) must not override the first arriving context stop reason")
 		})
 	}
 }
@@ -142,7 +142,7 @@ func TestExecuteLifecycleContextForwardsCallerDeadlineAndValue(t *testing.T) {
 		assert.WithinDuration(t, deadline, got.deadline, time.Millisecond)
 		assert.Equal(t, "caller-value", got.value)
 	case <-time.After(testTimeout):
-		t.Fatal("Init 未收到 Execute 级 lifecycle context")
+		t.Fatal("Init did not receive the Execute-level lifecycle context")
 	}
 
 	cancel()
@@ -170,7 +170,7 @@ func TestLifecycleContextDoesNotLeakCancellationAcrossApps(t *testing.T) {
 	select {
 	case firstCtx = <-firstSeen:
 	case <-time.After(testTimeout):
-		t.Fatal("第一次 Execute 未进入 Init")
+		t.Fatal("First Execute did not enter Init")
 	}
 	cancelFirst()
 	firstRes := awaitResult(t, firstResult)
@@ -192,20 +192,20 @@ func TestLifecycleContextDoesNotLeakCancellationAcrossApps(t *testing.T) {
 	select {
 	case secondCtx = <-secondSeen:
 	case <-time.After(testTimeout):
-		t.Fatal("第二次 Execute 未进入 Init")
+		t.Fatal("Second Execute did not enter Init")
 	}
 	require.NotSame(t, firstCtx, secondCtx)
-	assert.NoError(t, secondCtx.Err(), "新 App 的 Execute 不能继承前一次取消状态")
+	assert.NoError(t, secondCtx.Err(), "New App's Execute cannot inherit the previous cancellation state")
 	select {
 	case <-secondCtx.Done():
-		t.Fatal("新 App 的 lifecycle context 不应已取消")
+		t.Fatal("New App's lifecycle context should not already be canceled")
 	default:
 	}
 
 	second.requestStop(stopReasonSignal)
 	secondRes := awaitResult(t, secondResult)
 	require.NoError(t, secondRes.err)
-	assert.Equal(t, 0, secondRes.code, "完全启动后的 stop 仍应保持 code 0")
+	assert.Equal(t, 0, secondRes.code, "Stop after full startup should still maintain code 0")
 }
 
 func TestRequestStopCancelsHookBeforeUnwind(t *testing.T) {
@@ -234,23 +234,23 @@ func TestRequestStopCancelsHookBeforeUnwind(t *testing.T) {
 	select {
 	case <-entered:
 	case <-time.After(testTimeout):
-		t.Fatal("Start 未进入")
+		t.Fatal("Start did not enter")
 	}
 	app.requestStop(stopReasonSignal)
 	select {
 	case started := <-stopStartedBeforeHookReturn:
 		assert.False(t, started,
-			"同步 Start 尚未返回时，框架绝不能并发调用 Stop")
+			"The framework must never concurrently call Stop while a synchronous Start has not yet returned")
 	case <-time.After(testTimeout):
-		t.Fatal("requestStop 未先关闭 plugin.Context.Done")
+		t.Fatal("requestStop must close plugin.Context.Done first")
 	}
 
 	res := awaitResult(t, result)
-	require.Error(t, res.err, "Start 返回后仍处于启动期，停止请求必须中止启动")
+	require.Error(t, res.err, "Start returns but the plugin is still in startup phase; stop requests must abort the startup")
 	assert.Equal(t, 1, res.code)
-	assert.True(t, stopStarted.Load(), "Start 返回后必须进入统一 unwind")
+	assert.True(t, stopStarted.Load(), "After Start returns, the plugin must enter unified unwind")
 	assert.Equal(t, stopReasonSignal, app.stopReason,
-		"abort(startup-failed) 不能覆盖最先到达的 signal stop reason")
+		"abort(startup-failed) cannot override the first arriving signal stop reason")
 }
 
 func TestStartupFailureCancelsLifecycleContextBeforeStopAndPreservesRootCause(t *testing.T) {
@@ -318,9 +318,9 @@ func TestStartupFailureCancelsLifecycleContextBeforeStopAndPreservesRootCause(t 
 			require.Error(t, err)
 			if tt.returned != nil {
 				assert.ErrorIs(t, err, tt.returned,
-					"清理错误不能覆盖启动失败的 root cause")
+					"Cleanup errors cannot override the root cause of startup failure")
 				assert.False(t, errors.Is(err, cleanupErr),
-					"Stop 的次生错误只应记录日志，不能替换或混入启动 root cause")
+					"Secondary errors from Stop should only be logged, not replace or mix with the root cause of startup")
 			} else {
 				assert.Contains(t, err.Error(), tt.panicValue)
 				assert.Contains(t, err.Error(), "panic")
@@ -330,12 +330,12 @@ func TestStartupFailureCancelsLifecycleContextBeforeStopAndPreservesRootCause(t 
 			select {
 			case observation = <-observed:
 			case <-time.After(testTimeout):
-				t.Fatal("startup failure unwind 未调用已初始化插件的 Stop")
+				t.Fatal("startup failure unwind did not call Stop on already initialized plugins")
 			}
 			assert.True(t, observation.hookReturned,
-				"同步 startup hook 返回或 panic 被 recover 后，框架才能调用 Stop")
+				"The framework can only call Stop after synchronous startup hook returns or panic is recovered")
 			assert.True(t, observation.doneClosed,
-				"任何 startup-failed unwind 的 Stop 开始前 plugin.Context.Done 都必须关闭")
+				"plugin.Context.Done must be closed before any startup-failed unwind begins")
 			assert.ErrorIs(t, observation.err, context.Canceled)
 			assert.Equal(t, stopReasonStartupFailed, app.stopReason)
 		})
@@ -409,9 +409,9 @@ func TestStartupHookPanicsBecomeErrorsAndRollbackInitializedPlugins(t *testing.T
 			assert.Contains(t, err.Error(), "panic")
 			assert.Contains(t, err.Error(), panicText)
 			assert.Contains(t, err.Error(), "lifecycle_reliability_test.go",
-				"panic 错误必须携带 debug stack，而不只是 panic 值")
+				"panic errors must carry debug stack, not just panic value")
 			assert.Equal(t, int32(1), priorStops.Load(),
-				"panic 之前已初始化的插件必须走统一反向清理")
+				"Plugins initialized before panic must go through unified reverse cleanup")
 			assert.Equal(t, tt.wantPanicPluginStops, panicPluginStops.Load())
 		})
 	}
@@ -440,9 +440,9 @@ func TestSuccessfulInitTransfersOwnershipBeforeHarvest(t *testing.T) {
 	code, err := app.Execute(context.Background(), quietConfig(t, ""))
 	assert.Equal(t, 1, code)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Init 后该字段仍为 nil")
+	assert.Contains(t, err.Error(), "field is still nil after Init")
 	assert.Equal(t, int32(1), stops.Load(),
-		"Init 返回 nil 后资源已由框架接管；紧随其后的 Harvest 失败也必须调用 Stop")
+		"After Init returns nil, resources are taken over by the framework; subsequent Harvest failure must also call Stop")
 }
 
 func TestInitErrorRetainsPluginOwnershipUntilSuccessfulReturn(t *testing.T) {
@@ -471,7 +471,7 @@ func TestInitErrorRetainsPluginOwnershipUntilSuccessfulReturn(t *testing.T) {
 	assert.Equal(t, 1, code)
 	require.ErrorIs(t, err, initErr)
 	assert.Equal(t, int32(1), ownedStops.Load(),
-		"Init 已成功返回的插件资源由框架接管，后续失败必须调用 Stop")
+		"Resources of plugins that successfully return from Init are taken over by the framework; subsequent failure must call Stop")
 	assert.Zero(t, failedStops.Load(),
-		fmt.Sprintf("Init 返回错误的实例仍由插件自行回滚，框架不应调用其 Stop（%v）", initErr))
+		fmt.Sprintf("Instances returning error from Init are still rolled back by the plugin; framework should not call its Stop (%v)", initErr))
 }
