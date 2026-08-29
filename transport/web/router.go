@@ -115,7 +115,7 @@ func (r *Router) Group(relativePath string) *Router {
 // programming mistake, not a runtime condition worth recovering from.
 func (r *Router) Handle(method, relativePath string, h ...gin.HandlerFunc) {
 	if *r.frozen {
-		panic("xbc: 路由表已冻结，RouteCatalogConsumer 阶段不能再加路由")
+		panic("xbc: route table is frozen, RouteCatalogConsumer phase cannot add routes")
 	}
 	r.group.Handle(method, relativePath, h...)
 	*r.routes = append(*r.routes, RouteInfo{

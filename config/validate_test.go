@@ -41,28 +41,28 @@ func TestValidateRequiredMessage(t *testing.T) {
 	err := Validate(&cfg, "plugins.gorm.readonly")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "plugins.gorm.readonly.dsn")
-	require.Contains(t, err.Error(), "必填项缺失")
+	require.Contains(t, err.Error(), "required field missing")
 }
 
 func TestValidateHostnamePortMessageIncludesActualValue(t *testing.T) {
 	cfg := redisValidateConfig{Addr: "127.0.0.1"}
 	err := Validate(&cfg, "plugins.redis.default")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), `不是合法的 host:port —— 得到 "127.0.0.1"`)
+	require.Contains(t, err.Error(), `not a valid host:port — got "127.0.0.1"`)
 }
 
 func TestValidateUnknownTagFallsBackToGenericMessage(t *testing.T) {
 	cfg := fallbackValidateConfig{Ratio: 5}
 	err := Validate(&cfg, "plugins.sampler")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "未通过校验规则")
+	require.Contains(t, err.Error(), "failed validation rule")
 }
 
 func TestValidateOneofMessage(t *testing.T) {
 	cfg := oneofValidateConfig{Mode: "weekly"}
 	err := Validate(&cfg, "log.file")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "必须是")
+	require.Contains(t, err.Error(), "must be")
 	require.Contains(t, err.Error(), `"weekly"`)
 }
 
@@ -132,9 +132,9 @@ func TestValidationErrorColumnAlignmentIsExact(t *testing.T) {
 	// "plugins.gorm.readonly.dsn" is 25 runes, "plugins.redis.default.addr"
 	// is 26 -- the wider one sets the column, so the dsn line gets 3 spaces
 	// of padding after it (26-25+2) and the addr line gets 2 (26-26+2).
-	want := "xbc: 配置错误\n" +
-		"  plugins.gorm.readonly.dsn   必填项缺失\n" +
-		"  plugins.redis.default.addr  不是合法的 host:port —— 得到 \"127.0.0.1\""
+	want := "xbc: configuration error\n" +
+		"  plugins.gorm.readonly.dsn   required field missing\n" +
+		"  plugins.redis.default.addr  not a valid host:port — got \"127.0.0.1\""
 	require.Equal(t, want, e1.Error())
 }
 
@@ -194,10 +194,10 @@ func TestValidateConvertsInvalidTagPanicsToContextualErrors(t *testing.T) {
 				err = Validate(test.config, "plugins.example.default")
 			})
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "配置 schema")
+			assert.Contains(t, err.Error(), "configuration schema")
 			assert.Contains(t, err.Error(), test.schemaName)
 			assert.Contains(t, err.Error(), "plugins.example.default")
-			assert.Contains(t, err.Error(), "validate tag 无效")
+			assert.Contains(t, err.Error(), "invalid validate tag")
 			assert.Contains(t, err.Error(), test.panicText)
 		})
 	}

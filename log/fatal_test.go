@@ -60,20 +60,20 @@ func TestFatalWritesThenSyncsThenExits(t *testing.T) {
 		ws.events = append(ws.events, "exit")
 	})
 
-	l.Fatal("数据库连接失败", "attempt", 3)
+	l.Fatal("Database connection failed", "attempt", 3)
 
-	assert.Equal(t, 1, code, "Fatal 必须以退出码 1 结束进程")
+	assert.Equal(t, 1, code, "Fatal must exit with exit code 1")
 	// zapcore's ioCore syncs on its own for levels above Error, so "sync" can
 	// legitimately appear more than once. What must hold is the shape: the
 	// write comes first, the exit comes last, and a flush sits between them.
 	require.GreaterOrEqual(t, len(ws.events), 3)
-	assert.Equal(t, "write", ws.events[0], "必须先写入")
-	assert.Equal(t, "exit", ws.events[len(ws.events)-1], "退出必须是最后一步")
+	assert.Equal(t, "write", ws.events[0], "Must write first")
+	assert.Equal(t, "exit", ws.events[len(ws.events)-1], "Exit must be the last step")
 	assert.Contains(t, ws.events[1:len(ws.events)-1], "sync",
-		"写与退出之间必须落盘——顺序错了就等于丢掉最该保留的那条日志")
+		"Writing and exit must flush to disk—order wrong equals losing the most critical log")
 
 	out := ws.buf.String()
-	assert.Contains(t, out, "数据库连接失败")
+	assert.Contains(t, out, "Database connection failed")
 	assert.Contains(t, out, `"level":"fatal"`)
 	assert.Contains(t, out, `"attempt":3`)
 }
@@ -87,10 +87,10 @@ func TestFatalDoesNotLetZapOwnTheExit(t *testing.T) {
 	calls := 0
 	stubExit(t, func(int) { calls++ })
 
-	l.Fatal("退出一次")
+	l.Fatal("Exit once")
 
-	assert.Equal(t, 1, calls, "退出只能发生一次，且必须由门面发起")
-	assert.Contains(t, ws.events, "sync", "zap 自带的 fatal hook 会跳过 Sync")
+	assert.Equal(t, 1, calls, "Exit can only happen once, and must be initiated by the facade")
+	assert.Contains(t, ws.events, "sync", "zap's built-in fatal hook skips Sync")
 }
 
 // A Sync failure must not swallow the exit -- the process still has to die.
@@ -101,8 +101,8 @@ func TestFatalExitsEvenWhenSyncFails(t *testing.T) {
 	code := -1
 	stubExit(t, func(c int) { code = c })
 
-	l.Fatal("落盘会失败，但仍要退出")
-	assert.Equal(t, 1, code, "Sync 失败也必须退出")
+	l.Fatal("Flush will fail, but exit still required")
+	assert.Equal(t, 1, code, "Sync failure must still exit")
 }
 
 // Nop drops the message -- that is what Nop means -- but it must still honour
@@ -114,8 +114,8 @@ func TestNopFatalStillExits(t *testing.T) {
 	code := -1
 	stubExit(t, func(c int) { code = c })
 
-	Nop().Fatal("即使是 Nop 也要退出", "k", "v")
-	assert.Equal(t, 1, code, "Nop().Fatal 必须仍然退出进程")
+	Nop().Fatal("Even Nop must exit", "k", "v")
+	assert.Equal(t, 1, code, "Nop().Fatal must still exit process")
 }
 
 func TestTFatalGoesThroughTheSameExit(t *testing.T) {
@@ -126,10 +126,10 @@ func TestTFatalGoesThroughTheSameExit(t *testing.T) {
 	code := -1
 	stubExit(t, func(c int) { code = c })
 
-	TFatal(ctx, "语法糖也要退出", "order_id", 1001)
+	TFatal(ctx, "Syntactic sugar must also exit", "order_id", 1001)
 
 	assert.Equal(t, 1, code)
-	assert.Contains(t, ws.buf.String(), "语法糖也要退出")
+	assert.Contains(t, ws.buf.String(), "Syntactic sugar must also exit")
 	assert.Contains(t, ws.buf.String(), `"order_id":1001`)
 }
 
@@ -141,10 +141,10 @@ func TestTFatalfGoesThroughTheSameExit(t *testing.T) {
 	code := -1
 	stubExit(t, func(c int) { code = c })
 
-	TFatalf(ctx, "订单 %d 无法恢复", 1001)
+	TFatalf(ctx, "Order %d cannot be recovered", 1001)
 
 	assert.Equal(t, 1, code)
-	assert.Contains(t, ws.buf.String(), "订单 1001 无法恢复")
+	assert.Contains(t, ws.buf.String(), "Order 1001 cannot be recovered")
 }
 
 // TFatalf must not guard on Enabled: a disabled backend reports false, and a
@@ -152,13 +152,13 @@ func TestTFatalfGoesThroughTheSameExit(t *testing.T) {
 // on the assumption it never returns.
 func TestTFatalfExitsEvenWhenLevelDisabled(t *testing.T) {
 	ctx := NewContext(context.Background(), Nop())
-	require.False(t, Nop().Enabled(FatalLevel), "前提：Nop 报告所有级别都禁用")
+	require.False(t, Nop().Enabled(FatalLevel), "Prerequisite: Nop disables all log levels")
 
 	code := -1
 	stubExit(t, func(c int) { code = c })
 
-	TFatalf(ctx, "级别禁用也要退出 %d", 1001)
-	assert.Equal(t, 1, code, "TFatalf 不能因为级别禁用就跳过退出")
+	TFatalf(ctx, "Disabled level must also exit %d", 1001)
+	assert.Equal(t, 1, code, "TFatalf cannot skip exit due to disabled level")
 }
 
 // ── Level plumbing ──────────────────────────────────────────────────────
@@ -169,7 +169,7 @@ func TestTFatalfExitsEvenWhenLevelDisabled(t *testing.T) {
 func TestFatalLevelMirrorsZapcore(t *testing.T) {
 	assert.Equal(t, Level(5), FatalLevel)
 	assert.Equal(t, zapcore.FatalLevel, zapcore.Level(FatalLevel),
-		"门面级别与 zapcore 的数值必须一一对应")
+		"Facade level must match zapcore value exactly")
 	assert.Equal(t, "FATAL", FatalLevel.String())
 }
 
@@ -189,7 +189,7 @@ func TestFatalAlwaysEnabled(t *testing.T) {
 	l := newZapLogger(zap.New(
 		zapcore.NewCore(zapcore.NewJSONEncoder(jsonEncoderConfig()), ws, zapcore.ErrorLevel),
 	))
-	assert.True(t, l.Enabled(FatalLevel), "即使级别配到 error，Fatal 仍应输出")
+	assert.True(t, l.Enabled(FatalLevel), "Even if level is set to error, Fatal must still output")
 	assert.False(t, l.Enabled(InfoLevel))
 }
 
@@ -198,5 +198,5 @@ func TestFatalAlwaysEnabled(t *testing.T) {
 func TestZapEscapeHatchKeepsNativeFatal(t *testing.T) {
 	ws := &recordingSyncer{}
 	l := fatalTestLogger(ws)
-	assert.NotSame(t, l.Zap(), l.z, "逃生舱返回的必须是未加 hook 的原始实例")
+	assert.NotSame(t, l.Zap(), l.z, "Escape pod must return original instance without hook")
 }

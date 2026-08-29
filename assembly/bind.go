@@ -35,7 +35,7 @@ func (c *Container) bindConfigs(insts []*Instance) error {
 		if err := c.env.BindWithOptions(path, ptr, config.BindOptions{
 			AllowedKeys: []string{"enabled"},
 		}); err != nil {
-			return fmt.Errorf("xbc: 绑定配置 %s 失败：%w", path, err)
+			return fmt.Errorf("xbc: failed to bind configuration %s: %w", path, err)
 		}
 		if err := config.Validate(ptr, path); err != nil {
 			var ve *config.ValidationError

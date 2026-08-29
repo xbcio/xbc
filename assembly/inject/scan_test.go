@@ -37,7 +37,7 @@ func TestScanFourInjectForms(t *testing.T) {
 
 	require.Contains(t, byName, "Default")
 	assert.Equal(t, KindInject, byName["Default"].Kind)
-	assert.Equal(t, "", byName["Default"].Instance, "裸 inject 的实例名是空串，代表 default")
+	assert.Equal(t, "", byName["Default"].Instance, "the instance name of bare inject is empty string, representing default")
 	assert.False(t, byName["Default"].Optional)
 
 	require.Contains(t, byName, "Named")
@@ -51,12 +51,12 @@ func TestScanFourInjectForms(t *testing.T) {
 	assert.True(t, byName["Both"].Optional)
 
 	require.Contains(t, byName, "BothRev")
-	assert.Equal(t, "ro", byName["BothRev"].Instance, "选项顺序不应影响解析结果")
+	assert.Equal(t, "ro", byName["BothRev"].Instance, "the order of options should not affect parsing result")
 	assert.True(t, byName["BothRev"].Optional)
 
-	assert.NotContains(t, byName, "Untagged", "无 tag 字段必须被跳过")
-	assert.NotContains(t, byName, "Skipped", `xbc:"-" 必须被跳过`)
-	assert.NotContains(t, byName, "fakeBase", "嵌入的匿名字段没有 xbc tag，必须被跳过")
+	assert.NotContains(t, byName, "Untagged", "no tag field must be skipped")
+	assert.NotContains(t, byName, "Skipped", `xbc:"-" must be skipped`)
+	assert.NotContains(t, byName, "fakeBase", "embedded anonymous field without xbc tag must be skipped")
 }
 
 type provideOnlyPlugin struct {
@@ -69,7 +69,7 @@ func TestScanProvide(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, specs, 1)
 	assert.Equal(t, KindProvide, specs[0].Kind)
-	assert.Equal(t, "", specs[0].Instance, "产物的实例名恒为空，由插件自己的实例名决定，不能来自 tag")
+	assert.Equal(t, "", specs[0].Instance, "a provided value's instance name is always empty in the field specification; it comes from the plugin instance, not the tag")
 }
 
 type mixedPlugin struct {
@@ -98,7 +98,7 @@ func TestScanIndexAddressesFieldDirectly(t *testing.T) {
 
 	rt := reflect.TypeOf(p).Elem()
 	for _, s := range specs {
-		assert.Equal(t, s.Name, rt.Field(s.Index).Name, "Index 必须能直接定位到同一个字段，不需要二次查找")
+		assert.Equal(t, s.Name, rt.Field(s.Index).Name, "Index must directly locate the same field, no secondary lookup needed")
 	}
 }
 
@@ -109,7 +109,7 @@ type provideNamedPlugin struct {
 func TestScanProvideWithNameErrors(t *testing.T) {
 	_, err := Scan(&provideNamedPlugin{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "不能指定 name", "产物实例名来自插件自己，不能由 tag 指定")
+	assert.Contains(t, err.Error(), "cannot specify name", "a provided value's instance name comes from the plugin itself and cannot be specified by the tag")
 }
 
 type provideOptionalPlugin struct {
@@ -119,7 +119,7 @@ type provideOptionalPlugin struct {
 func TestScanProvideWithOptionalErrors(t *testing.T) {
 	_, err := Scan(&provideOptionalPlugin{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "没有可选一说")
+	assert.Contains(t, err.Error(), "cannot be optional")
 }
 
 type unknownActionPlugin struct {
@@ -150,14 +150,14 @@ type unexportedTaggedPlugin struct {
 
 func TestScanUnexportedFieldWithTagErrors(t *testing.T) {
 	_, err := Scan(&unexportedTaggedPlugin{})
-	require.Error(t, err, "未导出字段带 xbc tag 必须报错——反射设不进去，静默跳过等于埋雷")
-	assert.Contains(t, err.Error(), "未导出")
+	require.Error(t, err, "unexported field with xbc tag must report error — reflection cannot set it, silently skipping equals planting a landmine")
+	assert.Contains(t, err.Error(), "unexported")
 }
 
 func TestScanRejectsNonPointer(t *testing.T) {
 	_, err := Scan(mixedPlugin{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "指针")
+	assert.Contains(t, err.Error(), "pointer")
 }
 
 func TestScanRejectsNilPointer(t *testing.T) {
@@ -171,7 +171,7 @@ func TestScanRejectsPointerToNonStruct(t *testing.T) {
 	n := 1
 	_, err := Scan(&n)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "结构体")
+	assert.Contains(t, err.Error(), "struct")
 }
 
 type setPlugin struct {
@@ -192,9 +192,9 @@ func TestSetRejectsIncompatibleType(t *testing.T) {
 	p := &setPlugin{}
 	spec := FieldSpec{Index: 0, Name: "DB", Type: reflect.TypeOf((*int)(nil))}
 
-	err := Set(p, spec, "不是 *int")
-	require.Error(t, err, "类型不匹配必须报错而不是 panic")
-	assert.Contains(t, err.Error(), "类型不匹配")
+	err := Set(p, spec, "Is not *int")
+	require.Error(t, err, "Type mismatch must error rather than panic")
+	assert.Contains(t, err.Error(), "type mismatch")
 }
 
 func TestSetAcceptsNilForNilableKinds(t *testing.T) {
@@ -224,7 +224,7 @@ func TestIsZeroCoversFourKinds(t *testing.T) {
 	for _, s := range specs {
 		zero, err := IsZero(p, s)
 		require.NoError(t, err)
-		assert.True(t, zero, "字段 %s 初始必须是零值", s.Name)
+		assert.True(t, zero, "Field %s initial value must be zero value", s.Name)
 	}
 
 	n := 1
@@ -236,7 +236,7 @@ func TestIsZeroCoversFourKinds(t *testing.T) {
 	for _, s := range specs {
 		zero, err := IsZero(p, s)
 		require.NoError(t, err)
-		assert.False(t, zero, "字段 %s 赋值后不应仍是零值", s.Name)
+		assert.False(t, zero, "Field %s should not remain zero value after assignment", s.Name)
 	}
 }
 
@@ -258,33 +258,33 @@ func assertFieldValueGuardErrors(t *testing.T, v any, spec FieldSpec, want strin
 	t.Helper()
 
 	err := Set(v, spec, nil)
-	require.Error(t, err, "Set 必须报错而不是 panic")
+	require.Error(t, err, "Set must error rather than panic")
 	assert.Contains(t, err.Error(), want)
 
 	_, err = IsZero(v, spec)
-	require.Error(t, err, "IsZero 必须报错而不是 panic")
+	require.Error(t, err, "IsZero must error rather than panic")
 	assert.Contains(t, err.Error(), want)
 
 	_, err = Value(v, spec)
-	require.Error(t, err, "Value 必须报错而不是 panic")
+	require.Error(t, err, "Value must error rather than panic")
 	assert.Contains(t, err.Error(), want)
 }
 
 func TestFieldValueRejectsNonPointerReceiver(t *testing.T) {
 	spec := FieldSpec{Index: 0, Name: "DB", Type: reflect.TypeOf((*int)(nil))}
-	assertFieldValueGuardErrors(t, setPlugin{}, spec, "指针")
+	assertFieldValueGuardErrors(t, setPlugin{}, spec, "pointer")
 }
 
 func TestFieldValueRejectsNilPointerReceiver(t *testing.T) {
 	var p *setPlugin
 	spec := FieldSpec{Index: 0, Name: "DB", Type: reflect.TypeOf((*int)(nil))}
-	assertFieldValueGuardErrors(t, p, spec, "指针")
+	assertFieldValueGuardErrors(t, p, spec, "pointer")
 }
 
 func TestFieldValueRejectsPointerToNonStruct(t *testing.T) {
 	n := 1
 	spec := FieldSpec{Index: 0, Name: "DB", Type: reflect.TypeOf((*int)(nil))}
-	assertFieldValueGuardErrors(t, &n, spec, "结构体")
+	assertFieldValueGuardErrors(t, &n, spec, "struct")
 }
 
 func TestFieldValueRejectsOutOfRangeIndex(t *testing.T) {
@@ -295,13 +295,13 @@ func TestFieldValueRejectsOutOfRangeIndex(t *testing.T) {
 	// ">" vs ">=" typo would miss).
 	numFields := reflect.TypeOf(*p).NumField()
 
-	t.Run("索引恰好等于字段数", func(t *testing.T) {
-		spec := FieldSpec{Index: numFields, Name: "越界"}
-		assertFieldValueGuardErrors(t, p, spec, "超出范围")
+	t.Run("Index equals number of fields", func(t *testing.T) {
+		spec := FieldSpec{Index: numFields, Name: "Out of bounds"}
+		assertFieldValueGuardErrors(t, p, spec, "out of range")
 	})
 
-	t.Run("索引为负数", func(t *testing.T) {
-		spec := FieldSpec{Index: -1, Name: "越界"}
-		assertFieldValueGuardErrors(t, p, spec, "超出范围")
+	t.Run("Negative index", func(t *testing.T) {
+		spec := FieldSpec{Index: -1, Name: "Out of bounds"}
+		assertFieldValueGuardErrors(t, p, spec, "out of range")
 	})
 }

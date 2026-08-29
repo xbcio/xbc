@@ -35,14 +35,14 @@ func callStartupHook(
 		if recovered := recover(); recovered != nil {
 			id := inst.Identity()
 			err = fmt.Errorf(
-				"xbc: 插件 %s %s失败：%s hook panic（key=%q, instance=%q）：%v\n%s",
+				"xbc: plugin %s %s failed: %s hook panic (key=%q, instance=%q): %v\n%s",
 				inst.Label(), stage, hook, id.Plugin, id.Instance, recovered, debug.Stack(),
 			)
 		}
 	}()
 
 	if err := call(); err != nil {
-		return fmt.Errorf("xbc: 插件 %s %s失败：%w", inst.Label(), stage, err)
+		return fmt.Errorf("xbc: plugin %s %s failed: %w", inst.Label(), stage, err)
 	}
 	return nil
 }
@@ -65,18 +65,18 @@ func callStartupHook(
 func (a *App) initAll(order []*assembly.Instance) error {
 	for _, inst := range order {
 		if a.stopRequested() {
-			return a.errStopDuringStartup("初始化")
+			return a.errStopDuringStartup("initialization")
 		}
 
 		if err := a.container.Inject(inst); err != nil {
 			return err
 		}
 		if a.stopRequested() {
-			return a.errStopDuringStartup("初始化")
+			return a.errStopDuringStartup("initialization")
 		}
 
 		if initer, ok := inst.Plugin().(plugin.Initializer); ok {
-			if err := callStartupHook(inst, "初始化", "Init", func() error {
+			if err := callStartupHook(inst, "initialization", "Init", func() error {
 				return initer.Init(inst.Context())
 			}); err != nil {
 				return err
@@ -87,14 +87,14 @@ func (a *App) initAll(order []*assembly.Instance) error {
 		// is guaranteed to call this instance's Stop.
 		a.container.MarkInitialized(inst)
 		if a.stopRequested() {
-			return a.errStopDuringStartup("初始化")
+			return a.errStopDuringStartup("initialization")
 		}
 
 		if err := a.container.Harvest(inst); err != nil {
 			return err
 		}
 		if a.stopRequested() {
-			return a.errStopDuringStartup("初始化")
+			return a.errStopDuringStartup("initialization")
 		}
 	}
 
@@ -113,19 +113,19 @@ func (a *App) initAll(order []*assembly.Instance) error {
 func (a *App) migrateAll(order []*assembly.Instance) error {
 	for _, inst := range order {
 		if a.stopRequested() {
-			return a.errStopDuringStartup("迁移")
+			return a.errStopDuringStartup("migration")
 		}
 		migrator, ok := inst.Plugin().(plugin.Migrator)
 		if !ok {
 			continue
 		}
-		if err := callStartupHook(inst, "迁移", "Migrate", func() error {
+		if err := callStartupHook(inst, "migration", "Migrate", func() error {
 			return migrator.Migrate(inst.Context())
 		}); err != nil {
 			return err
 		}
 		if a.stopRequested() {
-			return a.errStopDuringStartup("迁移")
+			return a.errStopDuringStartup("migration")
 		}
 	}
 	return nil
@@ -170,19 +170,19 @@ func (a *App) migrateAll(order []*assembly.Instance) error {
 func (a *App) startRunners(order []*assembly.Instance) error {
 	for _, inst := range order {
 		if a.stopRequested() {
-			return a.errStopDuringStartup("启动")
+			return a.errStopDuringStartup("startup")
 		}
 		runner, ok := inst.Plugin().(plugin.Runner)
 		if !ok {
 			continue
 		}
-		if err := callStartupHook(inst, "启动", "Start", func() error {
+		if err := callStartupHook(inst, "startup", "Start", func() error {
 			return runner.Start(inst.Context())
 		}); err != nil {
 			return err
 		}
 		if a.stopRequested() {
-			return a.errStopDuringStartup("启动")
+			return a.errStopDuringStartup("startup")
 		}
 	}
 	return nil
@@ -194,19 +194,19 @@ func (a *App) startRunners(order []*assembly.Instance) error {
 func (a *App) openTraffic(order []*assembly.Instance) error {
 	for _, inst := range order {
 		if a.stopRequested() {
-			return a.errStopDuringStartup("开放流量")
+			return a.errStopDuringStartup("open traffic")
 		}
 		opener, ok := inst.Plugin().(plugin.TrafficOpener)
 		if !ok {
 			continue
 		}
-		if err := callStartupHook(inst, "开放流量", "OpenTraffic", func() error {
+		if err := callStartupHook(inst, "open traffic", "OpenTraffic", func() error {
 			return opener.OpenTraffic(inst.Context())
 		}); err != nil {
 			return err
 		}
 		if a.stopRequested() {
-			return a.errStopDuringStartup("开放流量")
+			return a.errStopDuringStartup("open traffic")
 		}
 	}
 	return nil
@@ -218,5 +218,5 @@ func (a *App) openTraffic(order []*assembly.Instance) error {
 // the run did not do what it was asked to do -- the process must exit
 // non-zero, and the operator needs to see which stage was interrupted.
 func (a *App) errStopDuringStartup(stage string) error {
-	return fmt.Errorf("xbc: 启动期间收到停止请求（%s），已中止%s阶段并开始反向清理", a.stopReason, stage)
+	return fmt.Errorf("xbc: received stop request during startup (%s), aborting %s phase and starting reverse cleanup", a.stopReason, stage)
 }

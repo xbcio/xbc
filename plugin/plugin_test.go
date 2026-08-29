@@ -8,20 +8,20 @@ import (
 )
 
 func TestValidateNameRejectsReservedCharacters(t *testing.T) {
-	cases := []string{"a.b", "a[b]", "a]b", "a b", "ABC", "用户"}
+	cases := []string{"a.b", "a[b]", "a]b", "a b", "ABC", "User"}
 	for _, s := range cases {
-		assert.Error(t, ValidateName(s), "名字 %q 应当被拒绝", s)
+		assert.Error(t, ValidateName(s), "Name %q should be rejected", s)
 	}
 }
 
 func TestValidateNameAcceptsPlainLowercase(t *testing.T) {
 	for _, s := range []string{"jwt", "gorm_v2", "rate-limit", "a1"} {
-		assert.NoError(t, ValidateName(s), "名字 %q 应当合法", s)
+		assert.NoError(t, ValidateName(s), "Name %q should be valid", s)
 	}
 }
 
 func TestValidateNameRejectsEmpty(t *testing.T) {
-	assert.Error(t, ValidateName(""), "空名字不合法")
+	assert.Error(t, ValidateName(""), "Empty name is invalid")
 }
 
 // TestValidateInstanceNameSharesValidateNameRule pins that ValidateInstanceName
@@ -29,23 +29,23 @@ func TestValidateNameRejectsEmpty(t *testing.T) {
 // so an instance name is held to exactly the same character-set rule as a
 // plugin key.
 func TestValidateInstanceNameSharesValidateNameRule(t *testing.T) {
-	for _, s := range []string{"a.b", "a[b]", "a]b", "a b", "ABC", "用户", ""} {
-		assert.Error(t, ValidateInstanceName(s), "实例名 %q 应当被拒绝", s)
+	for _, s := range []string{"a.b", "a[b]", "a]b", "a b", "ABC", "User", ""} {
+		assert.Error(t, ValidateInstanceName(s), "Instance name %q should be rejected", s)
 	}
 	for _, s := range []string{"default", "readonly", "read_only", "read-only", "a1"} {
-		assert.NoError(t, ValidateInstanceName(s), "实例名 %q 应当合法", s)
+		assert.NoError(t, ValidateInstanceName(s), "Instance name %q should be valid", s)
 	}
 }
 
 // TestValidateInstanceNameErrorMentionsInstanceNotPluginKey pins that the
-// error text says "实例名", not "插件 key" -- reusing ValidateName's message
+// error text says "instance name", not "plugin key" -- reusing ValidateName's message
 // verbatim for an instance-name failure would misdirect a user staring at a
 // plugins.gorm.<instance> typo toward looking at the Definition key instead.
 func TestValidateInstanceNameErrorMentionsInstanceNotPluginKey(t *testing.T) {
 	err := ValidateInstanceName("")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "实例名")
-	assert.NotContains(t, err.Error(), "插件 key")
+	assert.Contains(t, err.Error(), "instance name")
+	assert.NotContains(t, err.Error(), "plugin key")
 }
 
 // basePlugin embeds Base so bindBase and the Ctx()/Log()/Name() accessors
@@ -56,7 +56,7 @@ func (p *basePlugin) actualName() string { return p.Name() }
 
 func TestBaseCtxIsNilBeforeBind(t *testing.T) {
 	p := &basePlugin{}
-	assert.Nil(t, p.Ctx(), "bindBase 尚未运行时 Ctx() 必须是 nil，而不是解引用崩溃")
+	assert.Nil(t, p.Ctx(), "Ctx() must be nil before bindBase runs, instead of dereference crash")
 }
 
 // TestBaseLogFallsBackToGlobalLoggerBeforeBind pins that Base.Log() is safe
@@ -74,7 +74,7 @@ func TestBindBaseWiresContextAndKey(t *testing.T) {
 	p := &basePlugin{}
 	ctx := &Context{id: Identity{Plugin: "demo"}}
 	ok := bindBase(p, ctx, "demo")
-	require.True(t, ok, "basePlugin 嵌入了 Base，bindBase 必须成功")
+	require.True(t, ok, "basePlugin embeds Base, bindBase must succeed")
 	assert.Same(t, ctx, p.Ctx())
 	assert.Equal(t, "demo", p.actualName())
 }
@@ -84,7 +84,7 @@ type noBasePlugin struct{}
 func TestBindBaseReturnsFalseWithoutEmbeddedBase(t *testing.T) {
 	p := &noBasePlugin{}
 	ok := bindBase(p, &Context{}, "no-base")
-	assert.False(t, ok, "未嵌入 Base 的插件没有可绑定的锚点")
+	assert.False(t, ok, "Plugins not embedding Base have no bindable anchor")
 }
 
 // TestBindRuntimeContextForwardsToBindBase pins that the exported BindRuntimeContext
@@ -95,12 +95,12 @@ func TestBindRuntimeContextForwardsToBindBase(t *testing.T) {
 	p := &basePlugin{}
 	ctx := &Context{id: Identity{Plugin: "demo"}}
 	ok := BindRuntimeContext(p, ctx, "demo")
-	require.True(t, ok, "basePlugin 嵌入了 Base，BindRuntimeContext 必须成功")
+	require.True(t, ok, "basePlugin embeds Base, BindRuntimeContext must succeed")
 	assert.Same(t, ctx, p.Ctx())
 	assert.Equal(t, "demo", p.actualName())
 
 	np := &noBasePlugin{}
-	assert.False(t, BindRuntimeContext(np, &Context{}, "no-base"), "未嵌入 Base 时 BindRuntimeContext 也必须返回 false")
+	assert.False(t, BindRuntimeContext(np, &Context{}, "no-base"), "BindRuntimeContext must also return false when not embedding Base")
 }
 
 type nilEmbeddedBasePlugin struct{ *Base }
@@ -109,6 +109,6 @@ func TestBindBaseTreatsNilEmbeddedBaseAsAbsent(t *testing.T) {
 	p := nilEmbeddedBasePlugin{}
 	assert.NotPanics(t, func() {
 		assert.False(t, bindBase(p, &Context{}, "nil-base"),
-			"nil 的可选 *Base 无法绑定，但不能让合法 marker Plugin panic")
+			"Nil optional *Base cannot be bound, but cannot let valid marker Plugin panic")
 	})
 }

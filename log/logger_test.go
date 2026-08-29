@@ -18,12 +18,12 @@ func TestParseLevel(t *testing.T) {
 	}
 	for in, want := range cases {
 		got, err := ParseLevel(in)
-		require.NoError(t, err, "输入 %q", in)
-		assert.Equal(t, want, got, "输入 %q", in)
+		require.NoError(t, err, "Input %q", in)
+		assert.Equal(t, want, got, "Input %q", in)
 	}
 
 	_, err := ParseLevel("verbose")
-	assert.Error(t, err, "未知级别必须报错，不能静默降级到 info")
+	assert.Error(t, err, "Unknown level must error, cannot silently degrade to info")
 }
 
 func TestLevelString(t *testing.T) {
@@ -33,8 +33,8 @@ func TestLevelString(t *testing.T) {
 	assert.Equal(t, "ERROR", ErrorLevel.String())
 
 	// Unknown levels fall through to the default branch's fallback format, without panicking or returning an empty string.
-	assert.Equal(t, "LEVEL(99)", Level(99).String(), "越界正值应兜底")
-	assert.Equal(t, "LEVEL(-5)", Level(-5).String(), "越界负值同样应兜底")
+	assert.Equal(t, "LEVEL(99)", Level(99).String(), "Out-of-bound positive value should be handled")
+	assert.Equal(t, "LEVEL(-5)", Level(-5).String(), "Out-of-bound negative value should also be handled")
 }
 
 // Level's numeric values must align with zapcore, so bindings can type-convert directly.
@@ -55,5 +55,5 @@ func TestNopLoggerSatisfiesFacadeAndNeverPanics(t *testing.T) {
 		l.Error("e", "k", nil)
 		l.With("a", 1).Info("chained")
 	})
-	assert.False(t, l.Enabled(ErrorLevel), "Nop 对所有级别都不启用")
+	assert.False(t, l.Enabled(ErrorLevel), "Nop disables all levels")
 }

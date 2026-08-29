@@ -108,7 +108,7 @@ func (r *taskRuntime) submit(id plugin.Identity, fn func(context.Context), criti
 	r.mu.Lock()
 	if !r.accepting {
 		r.mu.Unlock()
-		r.log().Warn("xbc: 任务组已关闭，该任务未启动",
+		r.log().Warn("xbc: task group already closed, task not started",
 			"plugin", id.String(), "critical", critical)
 		return false
 	}
@@ -134,17 +134,17 @@ func (r *taskRuntime) submit(id plugin.Identity, fn func(context.Context), criti
 
 		defer func() {
 			if rec := recover(); rec != nil {
-				r.log().Error("xbc: 托管 goroutine panic，已恢复",
+				r.log().Error("xbc: managed goroutine panic, recovered",
 					"plugin", id.String(),
 					"panic", fmt.Sprintf("%v", rec),
 					"stack", string(debug.Stack()))
 				if critical {
-					r.onCritical(fmt.Sprintf("插件 %s 的托管 goroutine panic：%v", id, rec))
+					r.onCritical(fmt.Sprintf("plugin %s's managed goroutine panic: %v", id, rec))
 				}
 				return
 			}
 			if critical && !requested {
-				r.onCritical(fmt.Sprintf("插件 %s 的托管 goroutine 意外提前返回", id))
+				r.onCritical(fmt.Sprintf("plugin %s's managed goroutine unexpectedly returned early", id))
 			}
 		}()
 
@@ -280,8 +280,8 @@ func waitTasks(g *pluginTasks, owner string, deadline context.Context) error {
 		return nil
 	default:
 		return fmt.Errorf(
-			"xbc: 插件 %s 的托管任务未在关闭预算内退出，已放弃等待\n"+
-				"  → 检查传给 ctx.Go/ctx.GoCritical 的函数是否真的监听了 ctx.Done()", owner)
+			"xbc: plugin %s's managed task did not exit within the shutdown budget, giving up\n"+
+				"  → check if the function passed to ctx.Go/ctx.GoCritical is actually listening to ctx.Done()", owner)
 	}
 }
 

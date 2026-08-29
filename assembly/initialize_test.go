@@ -34,11 +34,11 @@ type fakeWidget struct{ n int }
 func mustInstance(t *testing.T, c *Container, p plugin.Plugin, name, instName string) *Instance {
 	t.Helper()
 	fs, err := inject.Scan(p)
-	require.NoError(t, err, "扫描插件 %s 的 tag 失败", name)
+	require.NoError(t, err, "failed to scan tags of plugin %s", name)
 	inst := c.newInstance(p, plugin.Key(name), instName, instName != defaultInstance)
 	inst.fields = fs
 	provides, err := mergeProvides(inst)
-	require.NoError(t, err, "收集插件 %s 的产出声明失败", name)
+	require.NoError(t, err, "failed to collect provided-value declarations for plugin %s", name)
 	inst.provides = provides
 	return inst
 }
@@ -54,7 +54,7 @@ func runLifecycle(c *Container, insts []*Instance) error {
 		}
 		if initr, ok := inst.Plugin().(plugin.Initializer); ok {
 			if err := initr.Init(inst.Context()); err != nil {
-				return fmt.Errorf("xbc: 插件 %s 初始化失败: %w", inst.Label(), err)
+				return fmt.Errorf("xbc: plugin %s initialization failed: %w", inst.Label(), err)
 			}
 		}
 		if err := c.Harvest(inst); err != nil {
@@ -154,7 +154,7 @@ func TestProvideHarvestedAndInjectedToDownstreamDefaultInstance(t *testing.T) {
 	consInst := mustInstance(t, c, cons, "user", "default")
 
 	require.NoError(t, runLifecycle(c, []*Instance{provInst, consInst}))
-	require.NotNil(t, cons.Conn, "user 应该拿到 gorm 产出的连接")
+	require.NotNil(t, cons.Conn, "user should get the connection produced by gorm")
 	assert.Equal(t, "default", cons.Conn.id)
 }
 
@@ -176,7 +176,7 @@ func TestInjectOptionalMissingLeavesZeroValue(t *testing.T) {
 	consInst := mustInstance(t, c, cons, "report", "default")
 
 	require.NoError(t, runLifecycle(c, []*Instance{consInst}))
-	assert.Nil(t, cons.Conn, "可选依赖缺失时留零值，不报错")
+	assert.Nil(t, cons.Conn, "leave zero value when optional dependency is missing, do not report error")
 }
 
 // This is the fallback described in initialize.go's Inject doc comment:
@@ -188,14 +188,14 @@ func TestInjectRequiredMissingIsTreatedAsInternalError(t *testing.T) {
 	consInst := mustInstance(t, c, cons, "user", "default")
 
 	err := runLifecycle(c, []*Instance{consInst})
-	require.Error(t, err, "resolve 本该拦住这种缺失，Inject 兜底同样要报错，不能让 nil 溜过去")
-	assert.Contains(t, err.Error(), "内部错误")
+	require.Error(t, err, "resolve should block this missing, Inject fallback should also report error, cannot let nil slip through")
+	assert.Contains(t, err.Error(), "internal error")
 
 	// The wrap must be %w, not %v: a caller catching this at a higher layer
 	// should be able to errors.As into the underlying *plugin.NotFoundError
 	// instead of re-parsing the message string.
 	var notFound *plugin.NotFoundError
-	require.ErrorAs(t, err, &notFound, "内部错误包装必须用 %w，errors.As 应该能取到底层 *plugin.NotFoundError")
+	require.ErrorAs(t, err, &notFound, "internal error wrapping must use %w, errors.As should be able to get the underlying *plugin.NotFoundError")
 }
 
 // The fake types in this test verify the error message's template and
@@ -209,8 +209,8 @@ func TestHarvestZeroValueErrorMessageVerbatim(t *testing.T) {
 
 	err := runLifecycle(c, []*Instance{provInst})
 	require.Error(t, err)
-	want := "xbc: 插件 gorm[readonly] 声明产出 *assembly.fakeConn，但 Init 后该字段仍为 nil\n" +
-		"  → 检查 Init 中是否忘记给 Conn 字段赋值"
+	want := "xbc: plugin gorm[readonly] declared that it provides *assembly.fakeConn, but the field is still nil after Init\n" +
+		"  → Check whether Init assigns field Conn"
 	assert.Equal(t, want, err.Error())
 }
 
@@ -220,7 +220,7 @@ func TestProvidesDeclaredButNotManuallyRegisteredFails(t *testing.T) {
 	inst := mustInstance(t, c, p, "cache", "default")
 
 	err := runLifecycle(c, []*Instance{inst})
-	require.Error(t, err, "Provides() 声明了产出，但 Init 里没有调用 plugin.Provide，必须报错")
+	require.Error(t, err, "Provides() declared a provided value, but Init did not call plugin.Provide; an error must be reported")
 	assert.Contains(t, err.Error(), "cache")
 	assert.Contains(t, err.Error(), "xbc.Provide")
 }
@@ -247,11 +247,11 @@ func TestMultiInstanceProductKeysDoNotCollide(t *testing.T) {
 
 	gotDef, err := c.registry.lookup(reflect.TypeOf(&fakeConn{}), "default")
 	require.NoError(t, err)
-	assert.Equal(t, "default", gotDef.(*fakeConn).id, "default 实例的产物必须能按 default 键取到")
+	assert.Equal(t, "default", gotDef.(*fakeConn).id, "the default instance's provided value must be retrievable by the default key")
 
 	gotRO, err := c.registry.lookup(reflect.TypeOf(&fakeConn{}), "readonly")
 	require.NoError(t, err)
-	assert.Equal(t, "readonly", gotRO.(*fakeConn).id, "readonly 实例的产物必须能按 readonly 键取到，不能串成 default 的")
+	assert.Equal(t, "readonly", gotRO.(*fakeConn).id, "the readonly instance's provided value must be retrievable by the readonly key, not merged into the default instance")
 }
 
 // Offer[T]() always builds Dep{Instance: ""} -- Provides() has no way to
@@ -267,7 +267,7 @@ func TestValidateManualProvidesChecksOwningInstanceNotDepInstance(t *testing.T) 
 	inst := mustInstance(t, c, p, "cache", "readonly")
 
 	require.NoError(t, runLifecycle(c, []*Instance{inst}),
-		"Provides() 声明的 Dep 的实例名恒为空串，校验必须按插件自己的实例名 readonly 去查")
+		"the instance name of Dep declared by Provides() is always empty string, validation must use the plugin's own instance name readonly to look up")
 	got, err := c.registry.lookup(reflect.TypeOf(&fakeWidget{}), "readonly")
 	require.NoError(t, err)
 	assert.Equal(t, &fakeWidget{n: 1}, got)
@@ -284,7 +284,7 @@ func TestValidateManualProvidesRunsAfterHarvestSoTaggedFieldsCount(t *testing.T)
 	inst := mustInstance(t, c, p, "combo", "default")
 
 	require.NoError(t, runLifecycle(c, []*Instance{inst}),
-		"Provides() 声明的类型由 provide 字段收割进注册表，harvest 必须先于校验运行")
+		"the type declared by Provides() is harvested into the registry by the provide field, harvest must run before validation")
 	got, err := c.registry.lookup(reflect.TypeOf(&fakeWidget{}), "default")
 	require.NoError(t, err)
 	assert.Equal(t, &fakeWidget{n: 9}, got)

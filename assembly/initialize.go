@@ -14,7 +14,7 @@ import (
 // is supposed to have already turned every hard dependency into a graph
 // edge and failed Assemble if it couldn't be satisfied. If Inject still
 // can't find it, resolve's static analysis and the registry's runtime state
-// have drifted apart -- crashing loudly with an "内部错误" beats letting a
+// have drifted apart -- crashing loudly with an "internal error" beats letting a
 // nil slip through to whichever plugin queries it first, far from where the
 // real mistake was made.
 func (c *Container) Inject(inst *Instance) error {
@@ -28,11 +28,11 @@ func (c *Container) Inject(inst *Instance) error {
 				continue
 			}
 			dep := plugin.Dep{Type: spec.Type, Instance: spec.Instance}
-			return fmt.Errorf("xbc: 内部错误——插件 %s 注入 %s 失败，依赖解析本应拦住这个缺失: %w",
+			return fmt.Errorf("xbc: internal error — plugin %s injection of %s failed, dependency resolution should have detected this missing dependency: %w",
 				inst.Label(), dep.String(), err)
 		}
 		if err := inject.Set(inst.plugin, spec, val); err != nil {
-			return fmt.Errorf("xbc: 插件 %s 字段 %s 注入失败: %w", inst.Label(), spec.Name, err)
+			return fmt.Errorf("xbc: plugin %s field %s injection failed: %w", inst.Label(), spec.Name, err)
 		}
 	}
 	return nil
@@ -57,15 +57,15 @@ func (c *Container) Harvest(inst *Instance) error {
 		}
 		zero, err := inject.IsZero(inst.plugin, spec)
 		if err != nil {
-			return fmt.Errorf("xbc: 插件 %s 收割字段 %s 失败: %w", inst.Label(), spec.Name, err)
+			return fmt.Errorf("xbc: plugin %s failed to harvest field %s: %w", inst.Label(), spec.Name, err)
 		}
 		if zero {
-			return fmt.Errorf("xbc: 插件 %s 声明产出 %s，但 Init 后该字段仍为 nil\n  → 检查 Init 中是否忘记给 %s 字段赋值",
+			return fmt.Errorf("xbc: plugin %s declared that it provides %s, but the field is still nil after Init\n  → Check whether Init assigns field %s",
 				inst.Label(), spec.Type.String(), spec.Name)
 		}
 		val, err := inject.Value(inst.plugin, spec)
 		if err != nil {
-			return fmt.Errorf("xbc: 插件 %s 读取字段 %s 失败: %w", inst.Label(), spec.Name, err)
+			return fmt.Errorf("xbc: plugin %s failed to read field %s: %w", inst.Label(), spec.Name, err)
 		}
 		c.registry.put(spec.Type, plugin.NormalizeInstance(inst.instance), val)
 	}
@@ -80,7 +80,7 @@ func (c *Container) Harvest(inst *Instance) error {
 func validateManualProvides(c *Container, inst *Instance) error {
 	for _, dep := range inst.provides {
 		if _, err := c.registry.lookup(dep.Type, plugin.NormalizeInstance(inst.instance)); err != nil {
-			return fmt.Errorf("xbc: 插件 %s 的 Provides() 声明产出 %s，但 Init 中没有调用 xbc.Provide 登记该类型",
+			return fmt.Errorf("xbc: plugin %s's Provides() declared %s, but Init did not call xbc.Provide to register this type",
 				inst.Label(), dep.Type.String())
 		}
 	}

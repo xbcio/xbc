@@ -240,18 +240,18 @@ func TestReadiness_GlobalBarrier_AllStartsCompleteBeforeAnyOpenTraffic(t *testin
 	events := rec.snapshot()
 	lastStart := readinessIndexOfLast(events, "start:")
 	firstOpen := readinessIndexOfFirst(events, "open:")
-	require.NotEqual(t, -1, lastStart, "预期观察到至少一个 start 事件")
-	require.NotEqual(t, -1, firstOpen, "预期观察到至少一个 open 事件")
+	require.NotEqual(t, -1, lastStart, "At least one start event is expected to be observed")
+	require.NotEqual(t, -1, firstOpen, "At least one open event is expected to be observed")
 	assert.Less(t, lastStart, firstOpen,
-		"全部 Runner.Start 必须先于任何一个 TrafficOpener.OpenTraffic 完成——"+
-			"这是两阶段 readiness 存在的全部意义，抓的就是「一个插件 Start 完就立刻 OpenTraffic」的错误实现")
+		"All Runner.Start must complete before any TrafficOpener.OpenTraffic—"+
+			"This is the entire purpose of two-phase readiness; it catches the erroneous implementation of 'immediately OpenTraffic after Start'")
 	assert.Empty(t, readinessWithPrefix(events, "violation:"))
 }
 
 // --- 2. Start is serial and follows topological order ----------------------
 
 // TestReadiness_StartRunsSeriallyInTopologicalOrder pins §5.1's explicit
-// "串行，不是并发" clause on a four-node chain. The sequence assertion is
+// "Serial, not concurrent" clause on a four-node chain. The sequence assertion is
 // exact equality against the one legal order for a total chain (not merely
 // "b before c"), so a bug that reverses direction or interleaves unrelated
 // nodes fails immediately; the concurrency counter inside readinessSpec.doStart
@@ -286,9 +286,9 @@ func TestReadiness_StartRunsSeriallyInTopologicalOrder(t *testing.T) {
 	events := rec.snapshot()
 	assert.Equal(t, []string{"chain-a", "chain-b", "chain-c", "chain-d"},
 		readinessWithPrefix(events, "start:"),
-		"Start 调用序列必须严格等于依赖拓扑序，不是随便一个满足依赖的排列")
+		"Start call sequence must strictly equal the dependency topological order, not just any permutation satisfying dependencies")
 	assert.Empty(t, readinessWithPrefix(events, "violation:"),
-		"任意时刻至多一个 Start 在执行；出现该事件说明并发度超过 1，说明实现把串行的 Start 阶段并行化了")
+		"At most one Start can be executing at any moment; this event indicates concurrency level exceeds 1, meaning the implementation parallelized the serial Start phase")
 }
 
 // --- 3. a failed Start prevents every OpenTraffic ---------------------------
@@ -303,7 +303,7 @@ func TestReadiness_StartRunsSeriallyInTopologicalOrder(t *testing.T) {
 // health checks while b never even bound its port".
 func TestReadiness_StartFailure_PreventsAnyOpenTraffic(t *testing.T) {
 	rec := newReadinessRecorder()
-	sentinel := errors.New("boom: bind 失败")
+	sentinel := errors.New("boom: bind failed")
 
 	app := newTestApp(t,
 		def("fail-a", func() plugin.Plugin { return &readinessNodeA{spec: &readinessSpec{rec: rec}} }),
@@ -320,9 +320,9 @@ func TestReadiness_StartFailure_PreventsAnyOpenTraffic(t *testing.T) {
 
 	events := rec.snapshot()
 	assert.Equal(t, []string{"fail-a", "fail-b"}, readinessWithPrefix(events, "start:"),
-		"c 排在 b 之后，b 失败后 Start 阶段必须立刻停止，c 的 Start 永远不会被调用")
+		"c comes after b; after b fails, the Start phase must immediately stop, c's Start will never be called")
 	assert.Empty(t, readinessWithPrefix(events, "open:"),
-		"Start 阶段失败后，不能有任何插件的 OpenTraffic 被调用——即便是已经 Start 成功的 a")
+		"After the Start phase fails, no plugin's OpenTraffic should be called—even if a has successfully started")
 }
 
 // --- 4. a failed OpenTraffic still unwinds and names the plugin ------------
@@ -334,7 +334,7 @@ func TestReadiness_StartFailure_PreventsAnyOpenTraffic(t *testing.T) {
 // after it in topological order -- open is sequential exactly like start is.
 func TestReadiness_OpenTrafficFailure_UnwindsAndNamesThePlugin(t *testing.T) {
 	rec := newReadinessRecorder()
-	sentinel := errors.New("boom: 端口未就绪")
+	sentinel := errors.New("boom: port not ready")
 
 	app := newTestApp(t,
 		def("open-fail-a", func() plugin.Plugin { return &readinessNodeA{spec: &readinessSpec{rec: rec}} }),
@@ -350,14 +350,14 @@ func TestReadiness_OpenTrafficFailure_UnwindsAndNamesThePlugin(t *testing.T) {
 	assert.Equal(t, 1, code)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "open-fail-b",
-		"错误必须点名到底是哪个插件的 OpenTraffic 失败")
+		"The error must specify which plugin's OpenTraffic failed")
 
 	events := rec.snapshot()
 	assert.Equal(t, []string{"open-fail-a", "open-fail-b", "open-fail-c"},
 		readinessWithPrefix(events, "start:"),
-		"OpenTraffic 失败之前，Start 阶段必须已经对全部插件跑完")
+		"The Start phase must have completed for all plugins before OpenTraffic fails")
 	assert.Equal(t, []string{"open-fail-a", "open-fail-b"}, readinessWithPrefix(events, "open:"),
-		"c 排在 b 之后，b 的 OpenTraffic 失败后必须立刻停止，c 的 OpenTraffic 永远不会被调用")
+		"c comes after b; after b's OpenTraffic fails, c's OpenTraffic must never be called")
 }
 
 // --- 5. dependency order overrides Definition-key order --------------------
@@ -384,6 +384,6 @@ func TestReadiness_DependencyOverridesDefinitionKeyOrder(t *testing.T) {
 
 	events := rec.snapshot()
 	assert.Equal(t, []string{"zzz-first", "aaa-second"}, readinessWithPrefix(events, "start:"),
-		"顺序必须跟着依赖关系走：aaa-second 依赖 zzz-first，"+
-			"即便按 Definition key 排序时 aaa-second 更靠前，它也必须晚于 zzz-first 才 Start")
+		"The order must follow dependency relationships: aaa-second depends on zzz-first,"+
+			"even if aaa-second is sorted earlier by Definition key, it must start after zzz-first")
 }

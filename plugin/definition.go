@@ -48,13 +48,13 @@ func (d Definition) Validate() error {
 		return err
 	}
 	if d.Factory == nil {
-		return fmt.Errorf("xbc: 插件 %q 的 Definition.Factory 不能为空", d.Key)
+		return fmt.Errorf("xbc: plugin %q's Definition.Factory cannot be nil", d.Key)
 	}
 	if d.Instances != SingleInstance && d.Instances != MultipleInstances {
-		return fmt.Errorf("xbc: 插件 %q 的 Definition.Instances 无效：%d", d.Key, d.Instances)
+		return fmt.Errorf("xbc: plugin %q has invalid Definition.Instances value %d", d.Key, d.Instances)
 	}
 	if err := d.Activation.validate(); err != nil {
-		return fmt.Errorf("xbc: 插件 %q 的 Activation 无效：%w", d.Key, err)
+		return fmt.Errorf("xbc: plugin %q has invalid Activation: %w", d.Key, err)
 	}
 	return nil
 }
@@ -79,11 +79,11 @@ func (a Activation) validate() error {
 		return nil
 	case strings.HasPrefix(string(a), string(configuredPrefix)):
 		if strings.TrimPrefix(string(a), string(configuredPrefix)) == "" {
-			return fmt.Errorf("Configured 的配置路径不能为空")
+			return fmt.Errorf("Configured activation path cannot be empty")
 		}
 		return nil
 	default:
-		return fmt.Errorf("未知策略 %q", a)
+		return fmt.Errorf("unknown strategy %q", a)
 	}
 }
 

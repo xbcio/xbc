@@ -102,7 +102,7 @@ type Miss struct {
 type CycleError struct{ Path []string }
 
 func (e *CycleError) Error() string {
-	return "graph: 存在环 " + strings.Join(e.Path, " → ")
+	return "graph: cycle detected " + strings.Join(e.Path, " → ")
 }
 
 // MissingNodeError reports a hard edge pointing at a node that does not
@@ -113,7 +113,7 @@ func (e *CycleError) Error() string {
 type MissingNodeError struct{ From, To string }
 
 func (e *MissingNodeError) Error() string {
-	return fmt.Sprintf("graph: 硬依赖引用了不存在的节点：%s → %s", e.From, e.To)
+	return fmt.Sprintf("graph: hard dependency references non-existent node: %s → %s", e.From, e.To)
 }
 
 // Sort returns nodes in dependency order together with every soft edge that

@@ -109,7 +109,7 @@ func TestStartBindsPortButDoesNotServeUntilOpenTraffic(t *testing.T) {
 
 	require.NoError(t, s.Start(ctx))
 	addr := s.Addr()
-	require.NotEmpty(t, addr, "Start 成功后 Addr() 必须能读出真实绑定地址")
+	require.NotEmpty(t, addr, "After Start succeeds, Addr() must read the actual bound address")
 
 	probe := func() error {
 		reqCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
@@ -126,14 +126,14 @@ func TestStartBindsPortButDoesNotServeUntilOpenTraffic(t *testing.T) {
 		return nil
 	}
 
-	assert.Error(t, probe(), "OpenTraffic 还没跑，监听器没有 Accept 循环，请求必须超时而不是拿到响应")
+	assert.Error(t, probe(), "OpenTraffic hasn't run yet, listener hasn't started Accept loop, request must timeout instead of getting a response")
 
 	require.NoError(t, s.OpenTraffic(ctx))
 
 	ok := pollUntil(2*time.Second, 20*time.Millisecond, func() bool {
 		return probe() == nil
 	})
-	assert.True(t, ok, "OpenTraffic 之后，请求必须能在超时上限之内成功拿到响应")
+	assert.True(t, ok, "After OpenTraffic, request must successfully get a response within timeout limit")
 
 	require.NoError(t, s.Stop(context.Background()))
 }
@@ -147,11 +147,11 @@ func TestAddrReturnsRealBoundEphemeralPort(t *testing.T) {
 	require.NoError(t, s.Start(ctx))
 	addr := s.Addr()
 
-	assert.NotEqual(t, "127.0.0.1:0", addr, "Addr() 必须解析出真实端口，不能原样回显配置里的 :0")
+	assert.NotEqual(t, "127.0.0.1:0", addr, "Addr() must resolve to the real port, can't echo the configured :0 as is")
 	host, port, err := net.SplitHostPort(addr)
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1", host)
-	assert.NotEqual(t, "0", port, "端口必须是操作系统实际分配的那一个")
+	assert.NotEqual(t, "0", port, "The port must be the one actually assigned by the operating system")
 
 	require.NoError(t, s.Stop(context.Background()))
 }
@@ -169,10 +169,10 @@ func TestStopWithoutOpenTrafficDoesNotLeakListener(t *testing.T) {
 	require.NoError(t, s.Start(ctx))
 	addr := s.Addr()
 
-	require.NoError(t, s.Stop(context.Background()), "Start 成功但从未 OpenTraffic 时，Stop 必须能干净关闭")
+	require.NoError(t, s.Stop(context.Background()), "When Start succeeds but never OpenTraffic, Stop must cleanly shut down")
 
 	ln, err := net.Listen("tcp", addr)
-	require.NoError(t, err, "监听器必须已被释放，否则同一地址会 bind: address already in use")
+	require.NoError(t, err, "Listener must have been released, otherwise the same address will bind: address already in use")
 	require.NoError(t, ln.Close())
 }
 
@@ -182,7 +182,7 @@ func TestStopWithoutOpenTrafficDoesNotLeakListener(t *testing.T) {
 // InitializedPlugins failure path all three Extensions[T] calls share.
 func TestStartPropagatesMiddlewareProviderExtensionsError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	wantErr := errors.New("宿主还没初始化完所有插件")
+	wantErr := errors.New("Host hasn't initialized all plugins yet")
 	host := newFakeHost()
 	host.initializedErr = wantErr
 	ctx := contextFromHost(host)
@@ -190,8 +190,8 @@ func TestStartPropagatesMiddlewareProviderExtensionsError(t *testing.T) {
 	s := &Server{cfg: Config{Addr: "127.0.0.1:0", BasePath: "/"}}
 	err := s.Start(ctx)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, wantErr, "Extensions 失败必须原样透出给调用方，不能被吞掉")
-	assert.Empty(t, s.Addr(), "Extensions 失败必须在 net.Listen 之前返回，端口不应被绑定")
+	assert.ErrorIs(t, err, wantErr, "Extensions failures must be passed through to the caller as-is, cannot be swallowed")
+	assert.Empty(t, s.Addr(), "Extensions failures must return before net.Listen, the port should not be bound")
 }
 
 // TestStartAppliesContributedMiddlewareToRoutesUnderBasePath is the
@@ -228,8 +228,8 @@ func TestStartAppliesContributedMiddlewareToRoutesUnderBasePath(t *testing.T) {
 		defer resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	})
-	require.True(t, ok, "/api/ping 必须能在超时上限之内成功响应")
-	assert.True(t, ran, "MiddlewareProvider 贡献的中间件必须真正作用于 basePath 下的路由，这是 Start 内部 Use-then-Group 顺序的钉子测试")
+	require.True(t, ok, "/api/ping must respond successfully within the timeout limit")
+	assert.True(t, ran, "MiddlewareProvider contributed middleware must actually apply to routes under basePath, this is a pin test for the Start internal Use-then-Group order")
 }
 
 // TestStartPropagatesRouteCatalogConsumerError covers the other error shape
@@ -238,14 +238,14 @@ func TestStartAppliesContributedMiddlewareToRoutesUnderBasePath(t *testing.T) {
 // failure.
 func TestStartPropagatesRouteCatalogConsumerError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	wantErr := errors.New("swagger 生成失败")
+	wantErr := errors.New("Swagger generation failed")
 	consumer := fakeRouteCatalogConsumer{fn: func(RouteCatalog) error { return wantErr }}
 	consumerID := plugin.Identity{Plugin: "swagger", Instance: "default"}
 
 	s, ctx := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, asAny(consumerID, consumer))
 	err := s.Start(ctx)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, wantErr, "RoutesReady 的业务错误必须透出，不能被吞掉")
+	assert.ErrorIs(t, err, wantErr, "Business errors from RoutesReady must surface, cannot be swallowed")
 	assert.Contains(t, err.Error(), "swagger")
-	assert.Empty(t, s.Addr(), "RoutesReady 失败必须在 net.Listen 之前返回，端口不应被绑定")
+	assert.Empty(t, s.Addr(), "RoutesReady failure must return before net.Listen, and the port must not be bound")
 }

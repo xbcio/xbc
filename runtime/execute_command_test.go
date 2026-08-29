@@ -39,16 +39,16 @@ func TestCommandDoctorNeverCallsLifecycleHooks(t *testing.T) {
 	ch := runAsync(app, append([]string{"doctor"}, quietConfig(t, "")...)...)
 	res := awaitResult(t, ch)
 
-	require.NoError(t, res.err, "doctor 只报告现状，不应该失败")
+	require.NoError(t, res.err, "doctor should only report the current state and should not fail")
 	assert.Equal(t, 0, res.code)
-	assert.False(t, initCalled, "doctor 不应该调用任何插件的 Init")
-	assert.False(t, migrateCalled, "doctor 不应该调用任何插件的 Migrate")
-	assert.False(t, startCalled, "doctor 不应该调用任何插件的 Start")
-	assert.False(t, openCalled, "doctor 不应该调用任何插件的 OpenTraffic")
+	assert.False(t, initCalled, "doctor should not call any plugin's Init")
+	assert.False(t, migrateCalled, "doctor should not call any plugin's Migrate")
+	assert.False(t, startCalled, "doctor should not call any plugin's Start")
+	assert.False(t, openCalled, "doctor should not call any plugin's OpenTraffic")
 }
 
-// TestCommandDoctorSucceedsOnEmptyCatalog pins the first half of "doctor 在
-// catalog 为空或无插件启用时也不报错": a catalog with nothing declared at
+// TestCommandDoctorSucceedsOnEmptyCatalog pins the first half of "doctor does not
+// report an error when the catalog is empty or no plugins are enabled": a catalog with nothing declared at
 // all must still let doctor report (an empty report) and exit 0, precisely
 // because doctor's own check in App.run happens before the "nothing
 // enabled" failure that a normal boot would hit.
@@ -58,7 +58,7 @@ func TestCommandDoctorSucceedsOnEmptyCatalog(t *testing.T) {
 	ch := runAsync(app, append([]string{"doctor"}, quietConfig(t, "")...)...)
 	res := awaitResult(t, ch)
 
-	require.NoError(t, res.err, "空 catalog 下 doctor 仍然应该成功返回")
+	require.NoError(t, res.err, "doctor should still succeed in an empty catalog")
 	assert.Equal(t, 0, res.code)
 }
 
@@ -78,7 +78,7 @@ func TestCommandDoctorSucceedsWhenNoPluginEnabled(t *testing.T) {
 	ch := runAsync(app, append([]string{"doctor"}, quietConfig(t, "")...)...)
 	res := awaitResult(t, ch)
 
-	require.NoError(t, res.err, "全部插件都未启用时 doctor 仍然应该成功返回")
+	require.NoError(t, res.err, "doctor should still succeed when all plugins are disabled")
 	assert.Equal(t, 0, res.code)
 }
 
@@ -118,14 +118,14 @@ func TestCommandMigrateSubcommandRunsOnceAndUnwinds(t *testing.T) {
 	ch := runAsync(app, append([]string{"migrate"}, quietConfig(t, "")...)...)
 	res := awaitResult(t, ch)
 
-	require.NoError(t, res.err, "migrate 子命令跑完不应该返回错误")
+	require.NoError(t, res.err, "The migrate subcommand should not return an error after completing")
 	assert.Equal(t, 0, res.code)
-	assert.True(t, migrateCalled, "migrate 子命令必须调用 Migrate")
-	assert.True(t, stopCalled, "一次性 migrate 运行结束后仍必须完整 unwind（调用 Stop）")
-	assert.False(t, startCalled, "migrate 子命令绝不能调用 Start")
-	assert.False(t, openCalled, "migrate 子命令绝不能调用 OpenTraffic")
+	assert.True(t, migrateCalled, "The migrate subcommand must call Migrate")
+	assert.True(t, stopCalled, "After a single migrate run, the complete unwind (calling Stop) must still be performed")
+	assert.False(t, startCalled, "The migrate subcommand must never call Start")
+	assert.False(t, openCalled, "The migrate subcommand must never call OpenTraffic")
 	assert.True(t, lifecycleDoneBeforeStop,
-		"migrate 成功后的 completed unwind 必须先关闭 plugin.Context.Done 再调用 Stop")
+		"After a successful migrate, the completed unwind must first close plugin.Context.Done before calling Stop")
 	assert.ErrorIs(t, lifecycleErrInStop, context.Canceled)
 	assert.Equal(t, stopReasonCompleted, app.stopReason)
 }
@@ -140,7 +140,7 @@ func TestCommandExitCodeUsageErrorIsTwo(t *testing.T) {
 
 	code, err := app.Execute(context.Background(), []string{"--this-flag-does-not-exist"})
 	require.Error(t, err)
-	assert.Equal(t, 2, code, "命令行用法错误必须返回退出码 2")
+	assert.Equal(t, 2, code, "Command line usage errors must return exit code 2")
 }
 
 // TestCommandExitCodeUnknownSubcommandIsTwo pins the same convention for an
@@ -150,7 +150,7 @@ func TestCommandExitCodeUnknownSubcommandIsTwo(t *testing.T) {
 
 	code, err := app.Execute(context.Background(), []string{"frobnicate"})
 	require.Error(t, err)
-	assert.Equal(t, 2, code, "未知子命令必须返回退出码 2")
+	assert.Equal(t, 2, code, "Unknown subcommand must return exit code 2")
 }
 
 // TestCommandExitCodeAssemblyFailureIsOne pins that a run which parses
@@ -162,7 +162,7 @@ func TestCommandExitCodeAssemblyFailureIsOne(t *testing.T) {
 
 	code, err := app.Execute(context.Background(), quietConfig(t, ""))
 	require.Error(t, err)
-	assert.Equal(t, 1, code, "装配/运行失败必须返回退出码 1")
+	assert.Equal(t, 1, code, "Assembly or runtime failure must return exit code 1")
 }
 
 // TestCommandExitCodeCleanStopIsZero pins the normal case: a boot that
@@ -177,7 +177,7 @@ func TestCommandExitCodeCleanStopIsZero(t *testing.T) {
 	res := awaitResult(t, ch)
 
 	require.NoError(t, res.err)
-	assert.Equal(t, 0, res.code, "正常收到停止请求并干净关机必须返回退出码 0")
+	assert.Equal(t, 0, res.code, "Normal receipt of a stop request and clean shutdown must return exit code 0")
 }
 
 // TestCommandShutdownTimeoutNonPositiveFailsAtLoadSettings pins requirement
@@ -193,7 +193,7 @@ func TestCommandShutdownTimeoutNonPositiveFailsAtLoadSettings(t *testing.T) {
 
 			code, err := app.Execute(context.Background(), args)
 			require.Error(t, err)
-			assert.Equal(t, 1, code, "非正数的 shutdown_timeout 必须在装配阶段失败，退出码 1")
+			assert.Equal(t, 1, code, "A non-positive shutdown_timeout must fail during assembly phase with exit code 1")
 			assert.Contains(t, err.Error(), "shutdown_timeout")
 		})
 	}

@@ -36,7 +36,7 @@ func TestExtensionsReturnsOnlyMatchingCapabilityInGivenOrder(t *testing.T) {
 
 	got, err := Extensions[Middler](ctx)
 	require.NoError(t, err)
-	require.Len(t, got, 2, "非 Middler 的实例必须被过滤掉")
+	require.Len(t, got, 2, "Instances that are not Middler must be filtered out")
 	assert.Equal(t, Key("a"), got[0].Identity.Plugin)
 	assert.Same(t, a, got[0].Value.(*middlerA))
 	assert.Equal(t, Key("b"), got[1].Identity.Plugin)
@@ -58,7 +58,7 @@ func TestExtensionsPreservesHostOrderExactly(t *testing.T) {
 	got, err := Extensions[Middler](ctx)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
-	assert.Equal(t, Key("zeta"), got[0].Identity.Plugin, "顺序必须与宿主返回的一致，不能被重新排序")
+	assert.Equal(t, Key("zeta"), got[0].Identity.Plugin, "Order must match the host's return, cannot be reordered")
 	assert.Equal(t, Key("alpha"), got[1].Identity.Plugin)
 }
 
@@ -86,7 +86,7 @@ func TestExtensionsResultIsDefensiveCopy(t *testing.T) {
 	second, err := Extensions[Middler](ctx)
 	require.NoError(t, err)
 	assert.Equal(t, Key("a"), second[0].Identity.Plugin,
-		"修改上一次调用返回的 slice 不得影响下一次调用的结果")
+		"Modifying the slice returned by the previous call must not affect the result of the next call")
 }
 
 // TestExtensionsRejectsConcreteType pins the §5.6 rule that Extensions only
@@ -100,7 +100,7 @@ func TestExtensionsRejectsConcreteType(t *testing.T) {
 	_, err := Extensions[*middlerA](ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "xbc: ")
-	assert.Contains(t, err.Error(), "Get[T]", "错误要指路：具体类型该用 Get[T]")
+	assert.Contains(t, err.Error(), "Get[T]", "Error should point to the specific type, use Get[T] for that")
 }
 
 // TestExtensionsAcceptsStdlibInterfaceType is a second, independent case for
@@ -122,12 +122,12 @@ func TestExtensionsAcceptsStdlibInterfaceType(t *testing.T) {
 // the host refuses to give one.
 func TestExtensionsPropagatesHostErrorUnchanged(t *testing.T) {
 	host := newFakeHost()
-	sentinel := errors.New("xbc: 插件尚未全部完成 Init")
+	sentinel := errors.New("xbc: Plugin has not completed Init yet")
 	host.initializedErr = sentinel
 	host.initialized = []Extension[any]{{Identity: Identity{Plugin: "a"}, Value: &middlerA{}}}
 	ctx := NewRuntimeContext(host, Identity{Plugin: "consumer"}, nil, nil)
 
 	got, err := Extensions[Middler](ctx)
-	assert.Nil(t, got, "宿主报错时不能返回任何不完整快照")
+	assert.Nil(t, got, "Cannot return an incomplete snapshot when the host errors")
 	assert.Same(t, sentinel, err)
 }

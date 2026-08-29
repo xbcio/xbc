@@ -54,7 +54,7 @@ func freezeDefs(t *testing.T, defs ...plugin.Definition) catalog.Snapshot {
 		cat.Declare(d)
 	}
 	snap, err := cat.Freeze()
-	require.NoError(t, err, "测试用的插件目录应当总是能冻结成功")
+	require.NoError(t, err, "the test plugin directory must always freeze successfully")
 	return snap
 }
 

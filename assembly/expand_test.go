@@ -54,33 +54,33 @@ func TestExpandEnableRuleMatrix(t *testing.T) {
 		wantLen    int
 	}{
 		{
-			"Always 且无配置节 → 启用",
+			"Always and no configuration section → enabled",
 			plugin.Always, nil, 1,
 		},
 		{
-			"Always 且配置节存在 → 启用",
+			"Always and configuration section exists → enabled",
 			plugin.Always,
 			map[string]any{"plugins": map[string]any{"demo": map[string]any{"x": 1}}},
 			1,
 		},
 		{
-			"Always 且 enabled:false → 关闭",
+			"Always and enabled:false → disabled",
 			plugin.Always,
 			map[string]any{"plugins": map[string]any{"demo": map[string]any{"enabled": false}}},
 			0,
 		},
 		{
-			"Configured(path) 且无配置节 → 不启用",
+			"Configured(path) and no configuration section → not enabled",
 			plugin.Configured("plugins.demo"), nil, 0,
 		},
 		{
-			"Configured(path) 且配置节存在（哪怕空） → 启用",
+			"Configured(path) and configuration section exists (even if empty) → enabled",
 			plugin.Configured("plugins.demo"),
 			map[string]any{"plugins": map[string]any{"demo": map[string]any{}}},
 			1,
 		},
 		{
-			"Configured(path) 且 enabled:false → 关闭",
+			"Configured(path) and enabled:false → disabled",
 			plugin.Configured("plugins.demo"),
 			map[string]any{"plugins": map[string]any{"demo": map[string]any{"enabled": false}}},
 			0,
@@ -124,7 +124,7 @@ func TestExpandDisabledActivationNeverCallsFactory(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, insts)
 	assert.Equal(t, []string{"demo"}, disabled)
-	assert.Equal(t, 0, calls, "Configured 路径的配置节缺失时，Factory 一次都不该被调用")
+	assert.Equal(t, 0, calls, "Factory must never be called if the configuration section for Configured path is missing")
 }
 
 func TestExpandMultiInstanceExpandsNamedInstances(t *testing.T) {
@@ -171,7 +171,7 @@ func TestExpandMultiInstanceMissingSectionDiffersByActivation(t *testing.T) {
 	c := newTestContainer(t, always, nil)
 	insts, _, err := c.expand()
 	require.NoError(t, err)
-	require.Len(t, insts, 1, "Always 且配置节缺失 → 展开出一个 default 实例")
+	require.Len(t, insts, 1, "Always and configuration section missing → expand a default instance")
 	assert.Equal(t, defaultInstance, insts[0].instance)
 
 	configured := freezeDefs(t, plugin.Definition{
@@ -183,7 +183,7 @@ func TestExpandMultiInstanceMissingSectionDiffersByActivation(t *testing.T) {
 	c2 := newTestContainer(t, configured, nil)
 	insts2, _, err := c2.expand()
 	require.NoError(t, err)
-	assert.Empty(t, insts2, "Configured(path) 且配置节缺失 → 不启用")
+	assert.Empty(t, insts2, "Configured(path) and configuration section missing → not enabled")
 }
 
 func TestExpandMultiInstanceSingleInstanceDisabled(t *testing.T) {
@@ -210,8 +210,8 @@ func TestExpandMultiInstanceSingleInstanceDisabled(t *testing.T) {
 	insts, _, err := c.expand()
 	require.NoError(t, err)
 	require.Len(t, insts, 1)
-	assert.Equal(t, "default", insts[0].instance, "单独一个实例被 enabled:false 关掉，不影响别的实例")
-	assert.Equal(t, 1, calls, "禁用实例不能调用 Factory；唯一一次调用只属于启用的 default 实例")
+	assert.Equal(t, "default", insts[0].instance, "disabling a single instance does not affect other instances")
+	assert.Equal(t, 1, calls, "disabled instances cannot call Factory; the only call belongs to the enabled default instance")
 }
 
 func TestExpandMultiInstancePluginLevelDisabledSkipsAll(t *testing.T) {
@@ -238,8 +238,8 @@ func TestExpandMultiInstancePluginLevelDisabledSkipsAll(t *testing.T) {
 
 	insts, _, err := c.expand()
 	require.NoError(t, err)
-	assert.Empty(t, insts, "插件级 enabled:false 必须关掉全部实例")
-	assert.Equal(t, 0, calls, "插件级禁用必须在构造前短路，Factory 一次也不能调用")
+	assert.Empty(t, insts, "plugin-level enabled:false must disable all instances")
+	assert.Equal(t, 0, calls, "plugin-level disable must short-circuit before construction, Factory must never be called")
 }
 
 func TestExpandMultiInstanceNonMapKeyErrors(t *testing.T) {
@@ -261,7 +261,7 @@ func TestExpandMultiInstanceNonMapKeyErrors(t *testing.T) {
 
 	_, _, err := c.expand()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `多实例插件 gorm 的配置节下 "max_retries" 不是实例（实例配置必须是映射）`)
+	assert.Contains(t, err.Error(), `multi-instance plugin gorm's configuration section "max_retries" is not an instance (instance configuration must be a map)`)
 }
 
 // TestExpandMultiInstanceEmptyKeyErrors pins down that an empty-string
@@ -284,9 +284,9 @@ func TestExpandMultiInstanceEmptyKeyErrors(t *testing.T) {
 	})
 
 	_, _, err := c.expand()
-	require.Error(t, err, "空字符串实例名必须在展开阶段就报错，不能悄悄归一化成 default")
-	assert.Contains(t, err.Error(), "多实例插件 gorm 的实例名")
-	assert.Contains(t, err.Error(), "实例名不能为空")
+	require.Error(t, err, "empty instance name must error during expansion phase, cannot silently normalize to default")
+	assert.Contains(t, err.Error(), "multi-instance plugin gorm's instance name")
+	assert.Contains(t, err.Error(), "instance name cannot be empty")
 }
 
 // TestExpandMultiInstanceReservedCharacterKeyErrors covers the other half:
@@ -311,9 +311,9 @@ func TestExpandMultiInstanceReservedCharacterKeyErrors(t *testing.T) {
 	})
 
 	_, _, err := c.expand()
-	require.Error(t, err, "实例名含 '.' 会破坏 plugins.<name>.<instance> 配置路径，必须拒绝")
+	require.Error(t, err, "instance name containing '.' breaks the plugins.<name>.<instance> configuration path, must be rejected")
 	assert.Contains(t, err.Error(), `"read.only"`)
-	assert.Contains(t, err.Error(), "含非法字符")
+	assert.Contains(t, err.Error(), "contains invalid character")
 }
 
 func TestExpandOrphanSectionAbortsWithExactMessage(t *testing.T) {
@@ -327,7 +327,7 @@ func TestExpandOrphanSectionAbortsWithExactMessage(t *testing.T) {
 	_, _, err := c.expand()
 	require.Error(t, err)
 	assert.Equal(t,
-		"xbc: plugins.kafka 有配置但无对应插件\n  → 是否忘了 import 对应的 provider/autoload 包？",
+		"xbc: plugins.kafka has configuration but no corresponding plugin\n  → Did you forget to import the corresponding provider/autoload package?",
 		err.Error())
 }
 
@@ -342,8 +342,8 @@ func TestExpandOrphanSectionsAreAllListedAtOnce(t *testing.T) {
 
 	_, _, err := c.expand()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "plugins.kafka 有配置但无对应插件", "多个孤儿节要一次全部列出，不能报一个就退")
-	assert.Contains(t, err.Error(), "plugins.mq 有配置但无对应插件")
+	assert.Contains(t, err.Error(), "plugins.kafka has configuration but no corresponding plugin", "multiple orphan sections must be listed all at once, cannot return after reporting one")
+	assert.Contains(t, err.Error(), "plugins.mq has configuration but no corresponding plugin")
 }
 
 // TestExpandOrphanSectionsExcludesDisabledButKnownPlugins is the R6 positive
@@ -364,7 +364,7 @@ func TestExpandOrphanSectionsExcludesDisabledButKnownPlugins(t *testing.T) {
 	})
 
 	insts, disabled, err := c.expand()
-	require.NoError(t, err, "gorm 出现在 Snapshot 里，哪怕这次运行被 enabled:false 关掉，也不该被判定为孤儿配置节")
+	require.NoError(t, err, "gorm appears in Snapshot, even if this run is disabled with enabled:false, it should not be considered an orphan configuration section")
 	assert.Empty(t, insts)
 	assert.Equal(t, []string{"gorm"}, disabled)
 }
@@ -385,8 +385,8 @@ func TestExpandOrphanSectionRejectsTypoedPluginKey(t *testing.T) {
 	})
 
 	_, _, err := c.expand()
-	require.Error(t, err, "拼错的插件 key 不在 Snapshot 里，必须报孤儿配置节错误")
-	assert.Contains(t, err.Error(), "plugins.gorn 有配置但无对应插件")
+	require.Error(t, err, "misspelled plugin key not in Snapshot, must report orphan configuration error")
+	assert.Contains(t, err.Error(), "plugins.gorn has configuration but no corresponding plugin")
 }
 
 // TestExpandReservedNamespacesAreNeverTreatedAsOrphans confirms
@@ -406,7 +406,7 @@ func TestExpandReservedNamespacesAreNeverTreatedAsOrphans(t *testing.T) {
 	})
 
 	insts, _, err := c.expand()
-	require.NoError(t, err, "xbc/log/app 命名空间必须豁免于孤儿诊断")
+	require.NoError(t, err, "xbc/log/app namespace must be exempt from orphan diagnosis")
 	assert.Empty(t, insts)
 }
 
@@ -446,8 +446,8 @@ func TestExpandBuildsFreshValueFromFactoryEveryTime(t *testing.T) {
 	p1 := insts1[0].plugin.(*fakeCountedPlugin)
 	p2 := insts2[0].plugin.(*fakeCountedPlugin)
 	assert.NotEqual(t, p1.instanceID, p2.instanceID,
-		"每次 expand 都必须调用一次全新的 Factory，不能把值跨 Container 复用")
-	assert.NotSame(t, p1, p2, "两个 Container 各自 expand 出来的插件值必须是不同的对象")
+		"each expand must call a new Factory, cannot reuse values across Containers")
+	assert.NotSame(t, p1, p2, "the plugin values expanded by each Container must be different objects")
 }
 
 // fakeCountedMultiPlugin is fakeCountedPlugin's multi-instance twin.
@@ -483,7 +483,7 @@ func TestExpandMultiInstanceEachNamedInstanceGetsIndependentFactoryCall(t *testi
 		p := inst.plugin.(*fakeCountedMultiPlugin)
 		seen[p.instanceID] = true
 	}
-	assert.Len(t, seen, 2, "两个具名实例必须各自来自独立的 Factory 调用，不能共享同一个对象")
+	assert.Len(t, seen, 2, "named instances must come from separate Factory calls, cannot share the same object")
 }
 
 func TestExpandRejectsNilFactoryResult(t *testing.T) {
@@ -496,7 +496,7 @@ func TestExpandRejectsNilFactoryResult(t *testing.T) {
 
 	_, _, err := c.expand()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `插件 nil-result 的 Factory 为实例 "default" 返回了 nil`)
+	assert.Contains(t, err.Error(), `plugin nil-result's Factory returned nil for instance "default"`)
 }
 
 func TestExpandRejectsTypedNilFactoryResult(t *testing.T) {
@@ -512,7 +512,7 @@ func TestExpandRejectsTypedNilFactoryResult(t *testing.T) {
 
 	_, _, err := c.expand()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `插件 typed-nil-result 的 Factory 为实例 "default" 返回了 nil`)
+	assert.Contains(t, err.Error(), `plugin typed-nil-result's Factory returned nil for instance "default"`)
 }
 
 func TestExpandRejectsNilUnsafePointerFactoryResult(t *testing.T) {
@@ -528,17 +528,17 @@ func TestExpandRejectsNilUnsafePointerFactoryResult(t *testing.T) {
 
 	_, _, err := c.expand()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `插件 typed-nil-unsafe-pointer 的 Factory 为实例 "default" 返回了 nil`)
+	assert.Contains(t, err.Error(), `plugin typed-nil-unsafe-pointer's Factory returned nil for instance "default"`)
 }
 
 func TestInstanceIDAndLabel(t *testing.T) {
 	single := &Instance{key: "cors", instance: defaultInstance, plugin: &fakeSinglePlugin{}}
 	assert.Equal(t, "cors", single.ID())
-	assert.Equal(t, "cors", single.Label(), "单实例插件的 default 实例，Label 与 ID 一致，不加 [default]")
+	assert.Equal(t, "cors", single.Label(), "default instance of single-instance plugin, Label and ID are the same, no [default] added")
 
 	multiDefault := &Instance{key: "gorm", multiple: true, instance: defaultInstance, plugin: &fakeMultiPlugin{}}
-	assert.Equal(t, "gorm", multiDefault.ID(), "ID() 里 default 被省略")
-	assert.Equal(t, "gorm[default]", multiDefault.Label(), "Label() 要把多实例插件的 default 显式标出来")
+	assert.Equal(t, "gorm", multiDefault.ID(), "default is omitted in ID()")
+	assert.Equal(t, "gorm[default]", multiDefault.Label(), "Label() must explicitly mark the default of multi-instance plugin")
 
 	named := &Instance{key: "gorm", multiple: true, instance: "readonly", plugin: &fakeMultiPlugin{}}
 	assert.Equal(t, "gorm[readonly]", named.ID())
@@ -622,18 +622,18 @@ func TestExpandWiresContextAndBase(t *testing.T) {
 	require.Len(t, insts, 1)
 
 	p := insts[0].plugin.(*baseWiredPlugin)
-	require.NotNil(t, p.Ctx(), "BindRuntimeContext 必须在 expand 阶段就把 Context 绑进 Base，不能留到 Init 才绑")
-	assert.Same(t, insts[0].ctx, p.Ctx(), "Base.Ctx() 必须与 Instance 自己持有的 *plugin.Context 是同一个对象，不是另外重新构造的一个")
-	assert.Equal(t, "basewired", p.Name(), "Base.Name() 绑定的必须是 Definition.Key，不是实例名，也不是插件自己的类型名")
+	require.NotNil(t, p.Ctx(), "BindRuntimeContext must bind Context into Base during expand phase, not leave it until Init")
+	assert.Same(t, insts[0].ctx, p.Ctx(), "Base.Ctx() must be the same object as the *plugin.Context held by the Instance, not a newly constructed one")
+	assert.Equal(t, "basewired", p.Name(), "Base.Name() must bind to Definition.Key, not instance name, nor plugin's own type name")
 
 	rl, ok := p.Log().(*recordingLogger)
-	require.True(t, ok, "Base.Log() 必须返回真正绑定的实例 logger，不能悄悄回退成全局 log.L()")
-	assert.Contains(t, rl.fields, "plugin", "实例 logger 必须带上 plugin 字段，证明它是 newInstance 派生出来的子 logger，不是凭空来的")
+	require.True(t, ok, "Base.Log() must return the truly bound instance logger, not silently fall back to global log.L()")
+	assert.Contains(t, rl.fields, "plugin", "instance logger must carry the plugin field, proving it is a child logger derived from newInstance, not coming from nowhere")
 	assert.Contains(t, rl.fields, "basewired")
 	assert.Equal(t, "visible", p.Ctx().Config().Get("own"),
-		"Context.Config 的路径必须相对当前 Definition 的配置节")
+		"Context.Config path must be relative to the current Definition's configuration section")
 	assert.Nil(t, p.Ctx().Config().Get("app.secret"),
-		"实例作用域配置不能越权读取应用或其他 owner 的全局键")
+		"instance-scoped configuration cannot read application or other owner's global keys")
 }
 
 // baseWiredMultiPlugin is baseWiredPlugin's multi-instance twin, used to
@@ -665,16 +665,16 @@ func TestExpandMultiInstanceEachInstanceGetsIndependentContextAndBase(t *testing
 	byInstance := make(map[string]*baseWiredMultiPlugin, 2)
 	for _, inst := range insts {
 		p := inst.plugin.(*baseWiredMultiPlugin)
-		require.NotNil(t, p.Ctx(), "每个具名实例都必须各自被 BindRuntimeContext 绑定，不能只绑第一个")
-		assert.Equal(t, "gorm", p.Name(), "Base.Name() 返回 Definition key 的文本，不随实例名变化")
+		require.NotNil(t, p.Ctx(), "each named instance must be bound by BindRuntimeContext, not just the first one")
+		assert.Equal(t, "gorm", p.Name(), "Base.Name() returns the text of Definition key, not changing with instance name")
 		byInstance[inst.instance] = p
 	}
 	require.Len(t, byInstance, 2)
 	assert.NotSame(t, byInstance["default"].Ctx(), byInstance["readonly"].Ctx(),
-		"多实例插件的每个具名实例必须拿到各自独立的 *plugin.Context，不能共享同一个对象")
+		"each named instance of multi-instance plugin must get its own *plugin.Context, not share the same object")
 	assert.Equal(t, "default", byInstance["default"].Ctx().Instance())
 	assert.Equal(t, "readonly", byInstance["readonly"].Ctx().Instance())
 	assert.Equal(t, "primary", byInstance["default"].Ctx().Config().Get("dsn"))
 	assert.Equal(t, "replica", byInstance["readonly"].Ctx().Config().Get("dsn"),
-		"多实例 Context.Config 必须限定到当前实例，不能看到兄弟实例")
+		"multi-instance Context.Config must be limited to the current instance, not see sibling instances")
 }

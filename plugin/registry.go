@@ -22,9 +22,9 @@ type NotFoundError struct {
 
 func (e *NotFoundError) Error() string {
 	if e.Closest == nil {
-		return fmt.Sprintf("xbc: 未找到类型 %s（实例 %q），该实例下未登记任何类型", e.Want, e.Instance)
+		return fmt.Sprintf("xbc: type %s (instance %q) not found, no type is registered under this instance", e.Want, e.Instance)
 	}
-	return fmt.Sprintf("xbc: 未找到类型 %s（实例 %q），最接近的是 %s，缺少方法：%s",
+	return fmt.Sprintf("xbc: type %s (instance %q) not found, closest is %s, missing methods: %s",
 		e.Want, e.Instance, e.Closest, strings.Join(e.Missing, ", "))
 }
 
@@ -42,7 +42,7 @@ func (e *AmbiguousError) Error() string {
 	for i, c := range e.Candidates {
 		names[i] = c.String()
 	}
-	return fmt.Sprintf("xbc: 类型 %s（实例 %q）匹配到 %d 个候选：%s",
+	return fmt.Sprintf("xbc: type %s (instance %q) matched to %d candidates: %s",
 		e.Want, e.Instance, len(e.Candidates), strings.Join(names, ", "))
 }
 
@@ -93,7 +93,7 @@ func MustGetNamed[T any](ctx *Context, name string) T {
 	}
 	tv, ok := v.(T)
 	if !ok {
-		panic(fmt.Sprintf("xbc: 类型断言失败：注册表中 %s（实例 %q）的值无法转换为 %s", reflect.TypeOf(v), inst, want))
+		panic(fmt.Sprintf("xbc: type assertion failed: value of %s (instance %q) in registry cannot be converted to %s", reflect.TypeOf(v), inst, want))
 	}
 	return tv
 }

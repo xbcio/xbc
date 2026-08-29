@@ -23,7 +23,7 @@ func newRegistryTestContext(host RuntimeHost, instance string) *Context {
 
 func TestNotFoundErrorWithoutClosestReportsNothingRegistered(t *testing.T) {
 	err := &NotFoundError{Want: typeOf[*fakeDB](), Instance: "default"}
-	assert.Contains(t, err.Error(), "该实例下未登记任何类型")
+	assert.Contains(t, err.Error(), "no type is registered under this instance")
 }
 
 func TestNotFoundErrorWithClosestReportsMissingMethods(t *testing.T) {
@@ -34,8 +34,8 @@ func TestNotFoundErrorWithClosestReportsMissingMethods(t *testing.T) {
 		Missing:  []string{"Expire"},
 	}
 	msg := err.Error()
-	assert.Contains(t, msg, "最接近的是")
-	assert.Contains(t, msg, "Expire", "panic/错误文案要带上缺失的方法名，否则排查者两眼一抹黑")
+	assert.Contains(t, msg, "closest is")
+	assert.Contains(t, msg, "Expire", "Error message should include the missing method name, otherwise the troubleshooter is left in the dark")
 }
 
 func TestAmbiguousErrorListsCandidatesInGivenOrder(t *testing.T) {
@@ -45,7 +45,7 @@ func TestAmbiguousErrorListsCandidatesInGivenOrder(t *testing.T) {
 		Candidates: []reflect.Type{reflect.TypeOf(&fakeDB{}), typeOf[*bytesBufferLike]()},
 	}
 	msg := err.Error()
-	assert.Contains(t, msg, "匹配到 2 个候选")
+	assert.Contains(t, msg, "matched to 2 candidates")
 }
 
 type bytesBufferLike struct{}
@@ -69,7 +69,7 @@ func TestProvideStoresUnderCallingContextInstance(t *testing.T) {
 
 	defCtx := newRegistryTestContext(host, "default")
 	_, ok := Get[*fakeDB](defCtx)
-	require.False(t, ok, "Provide 落在 readonly 实例名下，default 实例看不到它")
+	require.False(t, ok, "Provide is placed under readonly instance name, default instance cannot see it")
 
 	got, ok := GetNamed[*fakeDB](defCtx, "readonly")
 	require.True(t, ok)
@@ -83,7 +83,7 @@ func TestGetNamedEmptyStringMeansDefaultInstance(t *testing.T) {
 	Provide(ctx, db)
 
 	got, ok := GetNamed[*fakeDB](ctx, "")
-	require.True(t, ok, "GetNamed 的空实例名经归一化后应等价于 default")
+	require.True(t, ok, "Empty instance name in GetNamed should be normalized to default")
 	require.Same(t, db, got)
 }
 
@@ -91,7 +91,7 @@ func TestGetReturnsFalseWhenHostReportsNotFound(t *testing.T) {
 	host := newFakeHost()
 	ctx := newRegistryTestContext(host, "default")
 	_, ok := Get[*fakeDB](ctx)
-	assert.False(t, ok, "宿主未登记任何值时 Get 必须返回 false，而不是 panic")
+	assert.False(t, ok, "Get must return false when no value is registered by the host, instead of panic")
 }
 
 func TestMustGetPanicsWithHostDiagnostic(t *testing.T) {
@@ -100,10 +100,10 @@ func TestMustGetPanicsWithHostDiagnostic(t *testing.T) {
 
 	defer func() {
 		r := recover()
-		require.NotNil(t, r, "MustGet 在未命中时必须 panic，不能返回零值让调用者带着 nil 指针继续跑")
+		require.NotNil(t, r, "MustGet must panic when not found, cannot return zero value letting the caller proceed with nil pointer")
 		msg, ok := r.(string)
 		require.True(t, ok)
-		require.Contains(t, msg, "未找到类型")
+		require.Contains(t, msg, "not found")
 	}()
 	MustGet[*fakeDB](ctx)
 }
@@ -126,7 +126,7 @@ func TestMustGetNamedPanicsOnTypeAssertionFailure(t *testing.T) {
 		require.NotNil(t, r)
 		msg, ok := r.(string)
 		require.True(t, ok)
-		assert.Contains(t, msg, "类型断言失败")
+		assert.Contains(t, msg, "type assertion failed")
 	}()
 	MustGet[*fakeDB](ctx)
 }

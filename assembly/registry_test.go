@@ -60,14 +60,14 @@ func TestRegistryConcreteHitAndMiss(t *testing.T) {
 	r.put(dbType, "default", db)
 
 	got, err := r.lookup(dbType, "default")
-	require.NoError(t, err, "已登记的具体类型应当能精确命中")
+	require.NoError(t, err, "Registered concrete type should match exactly")
 	require.Same(t, db, got)
 
 	_, err = r.lookup(dbType, "readonly")
-	require.Error(t, err, "同类型换一个实例名应当未命中")
+	require.Error(t, err, "Same type with different instance name should not match")
 	var nfe *plugin.NotFoundError
 	require.ErrorAs(t, err, &nfe)
-	require.Nil(t, nfe.Closest, "具体类型未命中没有\"最接近\"这个概念，Closest 必须是 nil")
+	require.Nil(t, nfe.Closest, "Concrete type not matched has no concept of closest, Closest must be nil")
 }
 
 func TestRegistryInstanceIsolation(t *testing.T) {
@@ -79,7 +79,7 @@ func TestRegistryInstanceIsolation(t *testing.T) {
 
 	got, err := r.lookup(reflect.TypeOf(def), "default")
 	require.NoError(t, err)
-	require.Same(t, def, got, "default 实例下应取到 default 那份，不能串到 readonly")
+	require.Same(t, def, got, "default instance should get default, not mix with readonly")
 
 	got, err = r.lookup(reflect.TypeOf(ro), "readonly")
 	require.NoError(t, err)
@@ -98,14 +98,14 @@ func TestRegistryLookupNormalizesInstance(t *testing.T) {
 	r.put(reflect.TypeOf(db), "", db)
 
 	got, err := r.lookup(reflect.TypeOf(db), "default")
-	require.NoError(t, err, "put 用空串登记，lookup 用 default 查找应当命中同一个 key")
+	require.NoError(t, err, "put with empty string registered, lookup with default should match same key")
 	require.Same(t, db, got)
 
 	db2 := &fakeDB{name: "y"}
 	r.put(reflect.TypeOf(db2), "default", db2)
 
 	got2, err := r.lookup(reflect.TypeOf(db2), "")
-	require.NoError(t, err, "put 用 default 登记，lookup 用空串查找应当命中同一个 key")
+	require.NoError(t, err, "put with default registered, lookup with empty string should match same key")
 	require.Same(t, db2, got2)
 }
 
@@ -116,7 +116,7 @@ func TestRegistryInterfaceUniqueHit(t *testing.T) {
 
 	want := reflect.TypeOf((*registryCounter)(nil)).Elem()
 	got, err := r.lookup(want, "default")
-	require.NoError(t, err, "唯一实现了 registryCounter 的具体类型应当被命中")
+	require.NoError(t, err, "Only concrete type implementing registryCounter should be matched")
 	require.Same(t, a, got)
 }
 
@@ -130,8 +130,8 @@ func TestRegistryInterfaceZeroHitReportsClosest(t *testing.T) {
 	require.Error(t, err)
 	var nfe *plugin.NotFoundError
 	require.ErrorAs(t, err, &nfe)
-	require.Equal(t, reflect.TypeOf(half), nfe.Closest, "唯一候选即最接近的候选")
-	require.Equal(t, []string{"Expire"}, nfe.Missing, "halfCounter 只缺 Expire 这一个方法")
+	require.Equal(t, reflect.TypeOf(half), nfe.Closest, "the only candidate is the closest candidate")
+	require.Equal(t, []string{"Expire"}, nfe.Missing, "halfCounter is missing only Expire method")
 }
 
 func TestRegistryClosestMatchTiesKeepEarliestRegistered(t *testing.T) {
@@ -152,8 +152,8 @@ func TestRegistryClosestMatchTiesKeepEarliestRegistered(t *testing.T) {
 	var nfe *plugin.NotFoundError
 	require.ErrorAs(t, err, &nfe)
 	require.Equal(t, reflect.TypeOf(first), nfe.Closest,
-		"两个候选命中方法数并列时，必须保留先登记的那个")
-	require.Equal(t, []string{"Expire"}, nfe.Missing, "先登记的 onlyIncr 缺的是 Expire")
+		"When two candidates have same number of matching methods, keep the one registered first")
+	require.Equal(t, []string{"Expire"}, nfe.Missing, "onlyIncr registered first is missing Expire")
 }
 
 func TestRegistryConcreteTypesReturnsOwnInstanceInOrder(t *testing.T) {
@@ -167,7 +167,7 @@ func TestRegistryConcreteTypesReturnsOwnInstanceInOrder(t *testing.T) {
 
 	got := r.concreteTypes("default")
 	require.Equal(t, []reflect.Type{reflect.TypeOf(a), reflect.TypeOf(b)}, got,
-		"concreteTypes 只应返回本 instance 下的类型，且顺序与登记顺序一致，不能混入 other 实例的类型")
+		"concreteTypes should return only types from this instance, in registration order, not include other instances")
 }
 
 func TestRegistryInterfaceMultiHitReportsCandidatesInOrder(t *testing.T) {
@@ -183,7 +183,7 @@ func TestRegistryInterfaceMultiHitReportsCandidatesInOrder(t *testing.T) {
 	var ae *plugin.AmbiguousError
 	require.ErrorAs(t, err, &ae)
 	require.Equal(t, []reflect.Type{reflect.TypeOf(a), reflect.TypeOf(b)}, ae.Candidates,
-		"候选顺序必须与登记顺序一致，否则报错文案在不同运行间会飘，用户没法拿着文案去复现")
+		"Candidate order must match registration order, otherwise error messages vary between runs and users can't reproduce")
 }
 
 func TestRegistryConcurrentPutAndLookupDoesNotRace(t *testing.T) {

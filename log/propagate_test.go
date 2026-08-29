@@ -18,15 +18,15 @@ func TestInjectThenExtractInheritsTrace(t *testing.T) {
 	h := http.Header{}
 	Inject(WithTrace(context.Background(), upstream), propagation.HeaderCarrier(h))
 
-	require.NotEmpty(t, h.Get("traceparent"), "必须写 W3C 标准头")
+	require.NotEmpty(t, h.Get("traceparent"), "Must write W3C standard header")
 	assert.Equal(t, upstream.RequestID, h.Get(RequestIDHeader))
 
 	ctx := Extract(context.Background(), propagation.HeaderCarrier(h), "GET /orders")
 	got := TraceFrom(ctx)
 
-	assert.Equal(t, upstream.TraceID(), got.TraceID(), "trace_id 跨进程继承")
-	assert.Equal(t, upstream.SpanID(), got.ParentSpanID, "上游 span 成为 parent")
-	assert.NotEqual(t, upstream.SpanID(), got.SpanID(), "本进程开新 span")
+	assert.Equal(t, upstream.TraceID(), got.TraceID(), "trace_id inheritance across processes")
+	assert.Equal(t, upstream.SpanID(), got.ParentSpanID, "Upstream span becomes parent")
+	assert.NotEqual(t, upstream.SpanID(), got.SpanID(), "New span opened in this process")
 	assert.Equal(t, upstream.RequestID, got.RequestID)
 	assert.Equal(t, "GET /orders", got.SpanName)
 }
@@ -46,7 +46,7 @@ func TestExtractIgnoresMalformedTraceparent(t *testing.T) {
 	h.Set("traceparent", "garbage")
 
 	tr := TraceFrom(Extract(context.Background(), propagation.HeaderCarrier(h), "svc"))
-	assert.True(t, tr.Valid(), "上游头畸形时降级为新链路，不能让请求失败")
+	assert.True(t, tr.Valid(), "Downgrade to new trace when upstream header is malformed, cannot let request fail")
 	assert.False(t, tr.ParentSpanID.IsValid())
 }
 
@@ -64,7 +64,7 @@ func TestExtractDerivesRequestIDFromTraceID(t *testing.T) {
 
 	u, err := ulid.Parse(tr.RequestID)
 	require.NoError(t, err)
-	assert.Equal(t, tr.TraceID(), trace.TraceID(u), "request_id 是 trace_id 的 ULID 编码")
+	assert.Equal(t, tr.TraceID(), trace.TraceID(u), "request_id is ULID encoded trace_id")
 }
 
 func TestExtractPrefersUpstreamRequestID(t *testing.T) {
@@ -73,7 +73,7 @@ func TestExtractPrefersUpstreamRequestID(t *testing.T) {
 	h.Set(RequestIDHeader, "01M0RX90K2CGPJ7V41N2SN057D")
 
 	tr := TraceFrom(Extract(context.Background(), propagation.HeaderCarrier(h), "svc"))
-	assert.Equal(t, "01M0RX90K2CGPJ7V41N2SN057D", tr.RequestID, "上游给了就用上游的")
+	assert.Equal(t, "01M0RX90K2CGPJ7V41N2SN057D", tr.RequestID, "Use upstream if provided")
 }
 
 func TestExtractBindsLoggerIntoContext(t *testing.T) {
@@ -91,7 +91,7 @@ func TestExtractBindsLoggerIntoContext(t *testing.T) {
 func TestInjectIsNoopWithoutTrace(t *testing.T) {
 	h := http.Header{}
 	Inject(context.Background(), propagation.HeaderCarrier(h))
-	assert.Empty(t, h, "没有链路就什么都不写，别造出无效的 traceparent")
+	assert.Empty(t, h, "Do not write anything if no trace, do not create invalid traceparent")
 }
 
 // propagation.MapCarrier does not canonicalize keys the way http.Header
@@ -108,7 +108,7 @@ func TestExtractFindsLowercaseRequestIDOnNonCanonicalizingCarrier(t *testing.T) 
 
 	tr := TraceFrom(Extract(context.Background(), c, "svc"))
 	assert.Equal(t, upstreamRequestID, tr.RequestID,
-		"carrier 不做大小写归一化时，全小写的 x-request-id 也必须命中")
+		"x-request-id in lowercase must also match when carrier does not normalize case")
 }
 
 func TestExtractWithNilContext(t *testing.T) {

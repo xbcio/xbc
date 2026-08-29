@@ -26,7 +26,7 @@ const stopReasonStartupFailed = "startup-failed"
 // the root cause.
 func (a *App) abort(cause error) error {
 	if err := a.unwind(stopReasonStartupFailed); err != nil {
-		a.log().Error("xbc: 启动失败后的清理未能完全成功", "error", err)
+		a.log().Error("xbc: cleanup after failed startup was not fully successful", "error", err)
 	}
 	return cause
 }
@@ -104,7 +104,7 @@ func (a *App) unwind(reason string) error {
 // promptly still releases its resources, and skipping it would guarantee a
 // leak to save nothing -- but nothing is waited for any more.
 func (a *App) doUnwind(reason string) error {
-	a.log().Info("xbc: 开始关闭", "reason", reason)
+	a.log().Info("xbc: starting shutdown", "reason", reason)
 
 	deadline, cancel := context.WithTimeout(context.Background(), a.settings.ShutdownTimeout)
 	defer cancel()
@@ -122,14 +122,14 @@ func (a *App) doUnwind(reason string) error {
 
 		if closer, ok := inst.Plugin().(plugin.Closer); ok {
 			if err := stopBounded(deadline, a.settings.ShutdownTimeout, inst, closer); err != nil {
-				a.log().Error("xbc: 插件停止失败，已继续关闭其余插件",
+				a.log().Error("xbc: plugin stop failed, continuing to shut down other plugins",
 					"plugin", inst.Label(), "error", err)
 				errs = append(errs, err)
 			}
 		}
 
 		if err := a.tasks.stopPlugin(inst.Identity(), deadline); err != nil {
-			a.log().Error("xbc: 插件的托管任务未能按时退出，已继续关闭其余插件",
+			a.log().Error("xbc: plugin's managed task did not exit in time, continuing to shut down other plugins",
 				"plugin", inst.Label(), "error", err)
 			errs = append(errs, err)
 		}
@@ -170,7 +170,7 @@ func stopBounded(deadline context.Context, budget time.Duration, inst *assembly.
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				done <- fmt.Errorf("xbc: 插件 %s 的 Stop panic：%v\n%s",
+				done <- fmt.Errorf("xbc: plugin %s's Stop panic: %v\n%s",
 					inst.Label(), r, debug.Stack())
 			}
 		}()
@@ -192,8 +192,8 @@ func stopBounded(deadline context.Context, budget time.Duration, inst *assembly.
 		return wrapStopError(inst, err)
 	default:
 		return fmt.Errorf(
-			"xbc: 插件 %s 的 Stop 未在关闭预算（%s）内返回，已放弃等待并继续关闭其余插件\n"+
-				"  → 该 goroutine 被有意泄漏，进程退出时才会回收；检查 Stop 是否在等一个永远不会完成的操作",
+			"xbc: plugin %s's Stop did not return within the shutdown budget (%s), giving up and continuing to shut down other plugins\n"+
+				"  → this goroutine is intentionally leaked and will be reclaimed when the process exits; check if Stop is waiting for an operation that will never complete",
 			inst.Label(), budget)
 	}
 }
@@ -205,5 +205,5 @@ func wrapStopError(inst *assembly.Instance, err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("xbc: 插件 %s 停止失败：%w", inst.Label(), err)
+	return fmt.Errorf("xbc: plugin %s stop failed: %w", inst.Label(), err)
 }

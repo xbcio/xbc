@@ -327,7 +327,7 @@ func (e *consoleEncoder) writeFieldsPrefixed(b *buffer.Buffer, m map[string]any,
 // A pitfall found by testing: the original approach was paint(cyan, key)
 // followed by writing '=' and value separately -- this inserts ansiReset
 // between key and '=', so "key=value" is no longer contiguous in the raw
-// colored bytes. TestConsoleDemo's literal Contains(`reason="余额 不足"`)
+// colored bytes. TestConsoleDemo's literal Contains(`reason="insufficient balance"`)
 // assertion against buf.String() (which keeps the color codes) gets broken
 // by this reset sitting in the middle, and the assertion fails.
 // Fix: for non-error keys, assemble the whole "key=value" string first and
@@ -422,16 +422,14 @@ func callerText(c zapcore.EntryCaller) string {
 //
 // Of the three leading columns (level, trace, caller), level and trace are
 // always ASCII, but caller comes from a Go source file path, and a user's
-// directory names can be Chinese. Measured consequence of counting by byte:
-// padding "中文" to 5 leaves it untouched because len == 6 >= 5, even though
-// it actually only occupies 2 display columns, misaligning the whole line.
+// directory names can contain multibyte UTF-8. Measured consequence of counting by byte:
+// padding "ééé" to 5 leaves it untouched because len == 6 >= 5, even though
+// it actually occupies 3 display columns, misaligning the whole line.
 //
-// This only does rune alignment, not East Asian double-width handling (a
-// CJK rune occupies two terminal columns) -- that would require an
-// out-of-scope dependency like runewidth, and these three columns are
-// ASCII-dominated anyway. Conclusion: a caller path containing CJK will
-// still have an off display width, but will no longer produce invalid
-// UTF-8.
+// This only does rune alignment, not full terminal-width handling -- that
+// would require an out-of-scope dependency like runewidth, and these three
+// columns are ASCII-dominated anyway. The important guarantee here is that a
+// multibyte caller path can never be truncated into invalid UTF-8.
 //
 // They write into the buffer rather than returning a padded string. Building
 // the string first cost one allocation per column per entry -- for a value
@@ -527,8 +525,7 @@ func (e *consoleEncoder) paintPadCallerLeft(b *buffer.Buffer, c, s string, w int
 }
 
 // stringify converts a field value to a string.
-// strconv.Quote is not used -- it would turn Chinese characters into
-// \uXXXX, garbling Chinese log content.
+// Non-ASCII text is preserved literally rather than escaped as \uXXXX.
 func stringify(v any) string {
 	switch x := v.(type) {
 	case string:

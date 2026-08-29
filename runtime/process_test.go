@@ -92,7 +92,7 @@ func TestProcessRunnerRoutesExecuteExitCodeThroughOsExit(t *testing.T) {
 	}()
 
 	code, called := exitCode()
-	require.True(t, called, "Run 必须通过 osExit 终止进程，而不是直接返回")
+	require.True(t, called, "Run must terminate the process via osExit, not return directly")
 	assert.Equal(t, 1, code,
-		"空 catalog 的启动失败必须以非零码退出——退出 0 会让编排系统把失败当成健康")
+		"Startup failure with empty catalog must exit with non-zero code—exit 0 will make orchestration systems treat failure as healthy")
 }

@@ -28,7 +28,7 @@ func TestMaskAppliesToWriteFields(t *testing.T) {
 	require.Len(t, logs.All(), 1)
 	m := logs.All()[0].ContextMap()
 	assert.Equal(t, maskPlaceholder, m["password"])
-	assert.Equal(t, "alice", m["user"], "非敏感字段不受影响")
+	assert.Equal(t, "alice", m["user"], "Non-sensitive fields are unaffected")
 }
 
 // This test proves the value of the Core-layer approach: fields derived via
@@ -59,24 +59,24 @@ func TestMaskNormalizesKeyStyle(t *testing.T) {
 	for _, k := range []string{
 		"accessToken", "ACCESS_TOKEN", "access-token", "Access.Token", "access token",
 	} {
-		assert.True(t, m.hit(k), "应命中：%q", k)
+		assert.True(t, m.hit(k), "Should match: %q", k)
 	}
 }
 
 func TestMaskMatchesExactlyNotByPrefix(t *testing.T) {
 	m := newMasker(nil)
 	assert.True(t, m.hit("phone"))
-	assert.False(t, m.hit("phone_masked"), "已脱敏的字段不该被二次替换")
-	assert.False(t, m.hit("mobile_type"), "前缀相同但语义无关的字段不该误伤")
-	assert.False(t, m.hit("token_count"), "token_count 是数量不是凭据")
+	assert.False(t, m.hit("phone_masked"), "Fields that have already been redacted should not be replaced again")
+	assert.False(t, m.hit("mobile_type"), "Fields with the same prefix but unrelated semantics should not be mistakenly affected")
+	assert.False(t, m.hit("token_count"), "token_count is a count, not a credential")
 }
 
 func TestBuiltinBlacklistCannotBeRemoved(t *testing.T) {
 	// There's no API to "configure away" a built-in entry; this verifies that
 	// appending doesn't affect the built-ins.
 	m := newMasker([]string{"salary", "  ", ""})
-	assert.True(t, m.hit("salary"), "配置项生效")
-	assert.True(t, m.hit("password"), "内置黑名单始终生效")
+	assert.True(t, m.hit("salary"), "Configuration item takes effect")
+	assert.True(t, m.hit("password"), "Built-in blacklist always takes effect")
 	assert.True(t, m.hit("private_key"))
 	assert.True(t, m.hit("id_card"))
 	assert.True(t, m.hit("bank_card"))
@@ -90,7 +90,7 @@ func TestMaskCoversOrgMandatedBlacklist(t *testing.T) {
 		"password", "token", "ulp-token", "access_token", "refresh_token",
 		"AK", "SK", "private_key", "db_url", "bank_card", "id_card", "phone",
 	} {
-		assert.True(t, m.hit(k), "组织规范要求脱敏：%q", k)
+		assert.True(t, m.hit(k), "Organization policy requires redaction: %q", k)
 	}
 }
 
@@ -102,14 +102,14 @@ func TestMaskDoesNotAllocateWhenNothingHits(t *testing.T) {
 	// DeepEqual path for pointers, whose semantics are "same address OR the
 	// pointed-to values are deeply equal", so an unconditional copy would pass
 	// just as well.
-	assert.Same(t, &in[0], &out[0], "无命中时应原样返回同一个切片，不复制")
+	assert.Same(t, &in[0], &out[0], "When there is no match, return the same slice as-is, without copying")
 }
 
 func TestMaskDoesNotMutateInput(t *testing.T) {
 	m := newMasker(nil)
 	in := []zapcore.Field{zap.String("password", "hunter2")}
 	out := m.apply(in)
-	assert.Equal(t, "hunter2", in[0].String, "输入切片不能被改写")
+	assert.Equal(t, "hunter2", in[0].String, "Input slice should not be modified")
 	assert.Equal(t, maskPlaceholder, out[0].String)
 }
 
@@ -157,7 +157,7 @@ func TestMaskFiltersInlineMarshaler(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	m := logs.All()[0].ContextMap()
-	assert.Equal(t, maskPlaceholder, m["password"], "Inline 摊进顶层的字段必须同样被拦")
+	assert.Equal(t, maskPlaceholder, m["password"], "Inline fields promoted to top level must also be blocked")
 	assert.Equal(t, "alice", m["user"])
 }
 
@@ -167,9 +167,9 @@ func TestMaskFiltersObjectMarshaler(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	sub, ok := logs.All()[0].ContextMap()["payload"].(map[string]any)
-	require.True(t, ok, "payload 应是嵌套对象")
+	require.True(t, ok, "payload should be a nested object")
 	assert.Equal(t, maskPlaceholder, sub["password"])
-	assert.Equal(t, "alice", sub["user"], "同层非敏感字段完好")
+	assert.Equal(t, "alice", sub["user"], "Non-sensitive fields at the same level remain intact")
 }
 
 func TestMaskFiltersReflectedStruct(t *testing.T) {
@@ -183,12 +183,12 @@ func TestMaskFiltersReflectedStruct(t *testing.T) {
 	m := logs.All()[0].ContextMap()
 
 	req, ok := m["req"].(map[string]any)
-	require.True(t, ok, "命中后应替换成 map，实际 %T", m["req"])
-	assert.Equal(t, maskPlaceholder, req["password"], "json tag 名参与判定")
+	require.True(t, ok, "Should be replaced with map after hit, actual %T", m["req"])
+	assert.Equal(t, maskPlaceholder, req["password"], "JSON tag name is involved in the judgment")
 	assert.Equal(t, "alice", req["user"])
 
 	raw, ok := m["raw"].(map[string]any)
-	require.True(t, ok, "无 tag 时用 Go 字段名，实际 %T", m["raw"])
+	require.True(t, ok, "Use Go field name without tag, actual %T", m["raw"])
 	assert.Equal(t, maskPlaceholder, raw["Password"])
 	assert.Equal(t, "bob", raw["User"])
 }
@@ -202,7 +202,7 @@ func TestMaskFiltersReflectedMap(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	sub, ok := logs.All()[0].ContextMap()["payload"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["payload"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["payload"])
 	assert.Equal(t, maskPlaceholder, sub["token"])
 	assert.Equal(t, "alice", sub["user"])
 }
@@ -216,11 +216,11 @@ func TestMaskFiltersReflectedSlice(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	arr, ok := logs.All()[0].ContextMap()["reqs"].([]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["reqs"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["reqs"])
 	require.Len(t, arr, 2)
 	for i, e := range arr {
 		item, ok := e.(map[string]any)
-		require.True(t, ok, "第 %d 个元素实际 %T", i, e)
+		require.True(t, ok, "The %d-th element actual %T", i, e)
 		assert.Equal(t, maskPlaceholder, item["password"])
 	}
 	assert.Equal(t, "alice", arr[0].(map[string]any)["user"])
@@ -243,9 +243,9 @@ func TestMaskKeepsSelfMarshalingTypesIntact(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	rec, ok := logs.All()[0].ContextMap()["rec"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["rec"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["rec"])
 	assert.Equal(t, maskPlaceholder, rec["password"])
-	assert.Equal(t, now, rec["created_at"], "时间字段不能被拆开也不能被替换")
+	assert.Equal(t, now, rec["created_at"], "Time fields cannot be split or replaced")
 }
 
 func TestMaskTruncatesOverDeepNesting(t *testing.T) {
@@ -269,8 +269,8 @@ func TestMaskTruncatesOverDeepNesting(t *testing.T) {
 		cur = sub["n"]
 		walked++
 	}
-	assert.Less(t, walked, levels, "超过深度上限就不该继续递归")
-	assert.Equal(t, maskPlaceholder, cur, "超深子树应被整体替换")
+	assert.Less(t, walked, levels, "Should not continue recursion beyond depth limit")
+	assert.Equal(t, maskPlaceholder, cur, "Deep subtree should be replaced as a whole")
 }
 
 type selfRef struct {
@@ -288,12 +288,12 @@ func TestMaskHandlesSelfReference(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["req"])
 	assert.Equal(t, maskPlaceholder, req["password"])
 	inner, ok := req["self"].(map[string]any)
-	require.True(t, ok, "自引用的一层应被展开，实际 %T", req["self"])
+	require.True(t, ok, "Self-referenced layer should be expanded, actual %T", req["self"])
 	assert.Equal(t, maskPlaceholder, inner["password"])
-	assert.Equal(t, maskPlaceholder, inner["self"], "第二次遇到同一地址即截断")
+	assert.Equal(t, maskPlaceholder, inner["self"], "Truncate when encountering the same address again")
 }
 
 // OpenNamespace only forwards as-is: keys inside the namespace still go
@@ -304,7 +304,7 @@ func TestMaskFiltersInsideNamespace(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	sub, ok := logs.All()[0].ContextMap()["nested"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["nested"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["nested"])
 	assert.Equal(t, maskPlaceholder, sub["password"])
 }
 
@@ -320,11 +320,11 @@ func TestMaskFiltersArrayMarshaler(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	arr, ok := logs.All()[0].ContextMap()["reqs"].([]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["reqs"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["reqs"])
 	require.Len(t, arr, 2)
 	for i, e := range arr {
 		item, ok := e.(map[string]any)
-		require.True(t, ok, "第 %d 个元素实际 %T", i, e)
+		require.True(t, ok, "The %d-th element actual %T", i, e)
 		assert.Equal(t, maskPlaceholder, item["password"])
 	}
 	assert.Equal(t, "alice", arr[0].(map[string]any)["user"])
@@ -355,12 +355,12 @@ func TestMaskTruncatesOverDeepMarshaler(t *testing.T) {
 		if !ok {
 			break
 		}
-		assert.Equal(t, maskPlaceholder, sub["password"], "第 %d 层的 password", walked)
+		assert.Equal(t, maskPlaceholder, sub["password"], "The %d-th layer's password", walked)
 		cur = sub["n"]
 		walked++
 	}
-	assert.Less(t, walked, levels, "过滤 encoder 也要有深度上限")
-	assert.Equal(t, maskPlaceholder, cur, "超深子树应被整体替换")
+	assert.Less(t, walked, levels, "Filter encoder should also have depth limit")
+	assert.Equal(t, maskPlaceholder, cur, "Deep subtree should be replaced as a whole")
 }
 
 // A type that implements MarshalJSON only on the pointer: encoding/json won't
@@ -380,7 +380,7 @@ func TestMaskDoesNotTrustPointerOnlyMarshaler(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	creds, ok := logs.All()[0].ContextMap()["creds"].(map[string]any)
-	require.True(t, ok, "按值传入时不能当成自带序列化，实际 %T", logs.All()[0].ContextMap()["creds"])
+	require.True(t, ok, "Should not be treated as self-serializing when passed by value, actual %T", logs.All()[0].ContextMap()["creds"])
 	assert.Equal(t, maskPlaceholder, creds["password"])
 	assert.Equal(t, "alice", creds["user"])
 }
@@ -414,10 +414,10 @@ func TestMaskTraversesStringerFieldsInsideStruct(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	w, ok := logs.All()[0].ContextMap()["w"].(map[string]any)
-	require.True(t, ok, "只实现 String() 的类型不能当成自带序列化，实际 %T",
+	require.True(t, ok, "Types that only implement String() should not be treated as self-serializing, actual %T",
 		logs.All()[0].ContextMap()["w"])
 	creds, ok := w["creds"].(map[string]any)
-	require.True(t, ok, "实际 %T", w["creds"])
+	require.True(t, ok, "Actual %T", w["creds"])
 	assert.Equal(t, maskPlaceholder, creds["password"])
 	assert.Equal(t, "alice", creds["user"])
 }
@@ -440,13 +440,13 @@ func TestMaskDepthCountsStructureNotIndirection(t *testing.T) {
 	cur := logs.All()[0].ContextMap()["root"]
 	for i := 1; i < levels; i++ {
 		sub, ok := cur.(map[string]any)
-		require.True(t, ok, "第 %d 层应仍是 map，实际 %T", i, cur)
+		require.True(t, ok, "The %d-th layer should still be map, actual %T", i, cur)
 		cur = sub["n"]
 	}
 	bottom, ok := cur.(map[string]any)
-	require.True(t, ok, "第 %d 层应仍是 map，实际 %T", levels, cur)
-	assert.Equal(t, "visible", bottom["leaf"], "上限之内的正常字段不能被整体替换")
-	assert.Equal(t, maskPlaceholder, bottom["token"], "遍历确实走到了最深一层")
+	require.True(t, ok, "The %d-th layer should still be map, actual %T", levels, cur)
+	assert.Equal(t, "visible", bottom["leaf"], "Normal fields within the limit should not be replaced as a whole")
+	assert.Equal(t, maskPlaceholder, bottom["token"], "Traversal indeed reaches the deepest layer")
 }
 
 // ---------------------------------------------------------------------------
@@ -512,11 +512,11 @@ func TestMaskFlattensEmbeddedStruct(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
-	assert.Equal(t, maskPlaceholder, req["password"], "应平铺到顶层而不是 MaskBase.password")
-	assert.Equal(t, "cn-north", req["region"], "嵌入体的非敏感字段也要平铺")
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["req"])
+	assert.Equal(t, maskPlaceholder, req["password"], "Should be flattened to the top level instead of MaskBase.password")
+	assert.Equal(t, "cn-north", req["region"], "Non-sensitive fields of embedded types should also be flattened")
 	assert.Equal(t, "alice", req["user"])
-	assert.NotContains(t, req, "MaskBase", "不能留下按类型名嵌套的那一层")
+	assert.NotContains(t, req, "MaskBase", "Cannot leave the layer nested by type name")
 }
 
 func TestMaskFlattensEmbeddedStructPointer(t *testing.T) {
@@ -528,7 +528,7 @@ func TestMaskFlattensEmbeddedStructPointer(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["req"])
 	assert.Equal(t, maskPlaceholder, req["password"])
 	assert.Equal(t, "cn-north", req["region"])
 	assert.Equal(t, "alice", req["user"])
@@ -543,8 +543,8 @@ func TestMaskFlattensUnexportedEmbeddedStruct(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
-	assert.Equal(t, maskPlaceholder, req["password"], "encoding/json 会提升它，不平铺就是放行")
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["req"])
+	assert.Equal(t, maskPlaceholder, req["password"], "encoding/json will promote it, not flattening is to allow through")
 	assert.Equal(t, "alice", req["user"])
 }
 
@@ -559,11 +559,11 @@ func TestMaskKeepsTaggedEmbeddedStructNested(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["req"])
 	base, ok := req["base"].(map[string]any)
-	require.True(t, ok, "有 tag 就该按普通字段嵌套，实际 %T", req["base"])
+	require.True(t, ok, "Should be nested as normal field with tag, actual %T", req["base"])
 	assert.Equal(t, maskPlaceholder, base["password"])
-	assert.NotContains(t, req, "password", "不该平铺")
+	assert.NotContains(t, req, "password", "Should not flatten")
 }
 
 // A non-struct embedded type becomes a regular field named after the type.
@@ -573,9 +573,9 @@ func TestMaskKeepsNonStructEmbeddedAsNamedField(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["req"])
 	assert.Equal(t, maskPlaceholder, req["password"])
-	assert.Equal(t, MaskInt(7), req["MaskInt"], "非 struct 的嵌入按类型名成为普通字段")
+	assert.Equal(t, MaskInt(7), req["MaskInt"], "Embedded non-structs become normal fields by type name")
 }
 
 // The outer field wins when field names collide.
@@ -588,9 +588,9 @@ func TestMaskEmbeddedFlatteningPrefersOuterField(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["req"])
 	assert.Equal(t, maskPlaceholder, req["password"])
-	assert.Equal(t, "outer", req["region"], "同名时外层字段胜出")
+	assert.Equal(t, "outer", req["region"], "Outer field wins when names are the same")
 }
 
 type MaskPlain struct {
@@ -620,9 +620,9 @@ func TestMaskFlattensUnchangedEmbeddedOnOuterHit(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["req"])
 	assert.Equal(t, maskPlaceholder, req["token"])
-	assert.Equal(t, "az-1", req["zone"], "未命中的嵌入体也要平铺")
+	assert.Equal(t, "az-1", req["zone"], "Unmatched embedded types should also be flattened")
 	assert.NotContains(t, req, "MaskPlain")
 }
 
@@ -638,11 +638,11 @@ func TestMaskFlattensEarlierEmbeddedOnLaterHit(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	req, ok := logs.All()[0].ContextMap()["req"].(map[string]any)
-	require.True(t, ok, "实际 %T", logs.All()[0].ContextMap()["req"])
+	require.True(t, ok, "Actual %T", logs.All()[0].ContextMap()["req"])
 	assert.Equal(t, maskPlaceholder, req["password"])
 	assert.Equal(t, "cn-north", req["region"])
 	assert.Equal(t, "alice", req["user"])
-	assert.Equal(t, "az-1", req["zone"], "命中字段之前的嵌入体不能丢")
+	assert.Equal(t, "az-1", req["zone"], "Embedded types before hit field cannot be lost")
 }
 
 // ---------------------------------------------------------------------------
@@ -655,11 +655,11 @@ func TestMaskCoreHidesInnerCoreFromReflection(t *testing.T) {
 	rv := reflect.ValueOf(c).Elem()
 	if f := rv.FieldByName("Core"); f.IsValid() {
 		assert.False(t, f.CanInterface(),
-			"嵌入产生的隐式字段名 Core 是导出标识符，会把未脱敏的内层 core 交出去")
+			"The implicitly named field Core from embedding is an exported identifier, will expose the unmasked inner core")
 	}
 	f := rv.FieldByName("inner")
-	require.True(t, f.IsValid(), "内层 core 应放在未导出的命名字段 inner 里")
-	assert.False(t, f.CanInterface(), "未导出字段不能被反射取值")
+	require.True(t, f.IsValid(), "Inner core should be placed in an unexported field named inner")
+	assert.False(t, f.CanInterface(), "Unexported fields cannot be accessed by reflection")
 }
 
 // ---------------------------------------------------------------------------
@@ -673,21 +673,21 @@ func TestMaskMatchesCompoundNamesBySuffix(t *testing.T) {
 		"user_phone", "userPhone",
 		"auth_token", "bearer_token", "x-api-key", "req.token",
 	} {
-		assert.True(t, m.hit(k), "复合命名的中心词在尾部，应命中：%q", k)
+		assert.True(t, m.hit(k), "The central word of composite naming is at the end, should hit: %q", k)
 	}
 }
 
 func TestMaskSuffixRuleDoesNotOverreach(t *testing.T) {
 	m := newMasker(nil)
 	for _, k := range []string{"token_count", "phone_masked", "mobile_type"} {
-		assert.False(t, m.hit(k), "中心词不是凭据，不该误伤：%q", k)
+		assert.False(t, m.hit(k), "Central word is not credential, should not be misjudged: %q", k)
 	}
 }
 
 func TestMaskSplitsConsecutiveUpperCase(t *testing.T) {
 	m := newMasker(nil)
-	assert.True(t, m.hit("AK"), "两字母全大写不能被切成 a / k")
-	assert.True(t, m.hit("xAPIKey"), "大写序列后跟小写时在最后一个大写字母前切")
+	assert.True(t, m.hit("AK"), "Two-letter uppercase cannot be split into a / k")
+	assert.True(t, m.hit("xAPIKey"), "Uppercase sequence followed by lowercase should be split before the last uppercase letter")
 	assert.True(t, m.hit("accessToken"))
 }
 
@@ -699,7 +699,7 @@ func TestMaskHitDoesNotAllocate(t *testing.T) {
 		m.hit("accessToken")
 		m.hit("trace_id")
 	})
-	assert.Zero(t, n, "hit 在每条日志的每个字段上调用，是真正的热路径")
+	assert.Zero(t, n, "hit is called on each field of every log line, it's the real hot path")
 }
 
 // ---------------------------------------------------------------------------
@@ -716,7 +716,7 @@ func TestMaskDoesNotCopyUnrelatedReflectedValue(t *testing.T) {
 	in := []zapcore.Field{zap.Any("profile", profile{Name: "alice", Age: 30})}
 	out := m.apply(in)
 	require.Len(t, out, 1)
-	assert.Same(t, &in[0], &out[0], "反射遍历一路无命中时必须原样交回，不拷贝")
+	assert.Same(t, &in[0], &out[0], "When reflection traversal has no hits, it must be returned as-is, without copying")
 }
 
 // ---------------------------------------------------------------------------
@@ -749,7 +749,7 @@ func logJSONWith(t *testing.T, extra []string, fs ...zapcore.Field) (string, map
 	l.Info("m", fs...)
 	raw := buf.String()
 	var parsed map[string]any
-	require.NoError(t, json.Unmarshal([]byte(raw), &parsed), "落盘字节应是合法 JSON：%s", raw)
+	require.NoError(t, json.Unmarshal([]byte(raw), &parsed), "Disk bytes should be valid JSON: %s", raw)
 	return raw, parsed
 }
 
@@ -765,7 +765,7 @@ func logJSON(t *testing.T, fs ...zapcore.Field) (string, map[string]any) {
 func subMap(t *testing.T, raw string, m map[string]any, key string) map[string]any {
 	t.Helper()
 	sub, ok := m[key].(map[string]any)
-	require.True(t, ok, "%q 应是对象，实际 %T；落盘：%s", key, m[key], raw)
+	require.True(t, ok, "%q should be an object, actual %T; disk: %s", key, m[key], raw)
 	return sub
 }
 
@@ -781,10 +781,10 @@ type mapCreds struct {
 func TestMaskRecursesIntoNonStringKeyMap(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", map[int]mapCreds{1: {User: "alice", Password: "hunter2"}}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘字节里不能出现明文口令")
+	assert.NotContains(t, raw, "hunter2", "Plain text passwords should not appear in disk bytes")
 	entry := subMap(t, raw, subMap(t, raw, m, "v"), "1")
 	assert.Equal(t, maskPlaceholder, entry["password"])
-	assert.Equal(t, "alice", entry["user"], "非敏感字段不受影响")
+	assert.Equal(t, "alice", entry["user"], "Non-sensitive fields are unaffected")
 }
 
 type byIDReq struct {
@@ -851,13 +851,13 @@ func TestMaskChecksStringifiedMapKey(t *testing.T) {
 // panic.
 func TestMaskHandlesFloatAndBoolMapKeys(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", map[float64]mapCreds{1.5: {User: "alice", Password: "hunter2"}}))
-	assert.NotContains(t, raw, "hunter2", "float key 的 map 是能序列化的，必须递归")
+	assert.NotContains(t, raw, "hunter2", "Maps with float keys are serializable, must be recursive")
 	assert.Equal(t, maskPlaceholder,
 		subMap(t, raw, subMap(t, raw, m, "v"), "1.5")["password"])
 
 	raw, m = logJSON(t, zap.Any("v", map[bool]mapCreds{true: {User: "alice", Password: "hunter2"}}))
-	assert.NotContains(t, raw, "hunter2", "bool key 编不出成员名，json 报错而非落盘")
-	assert.Contains(t, m, "vError", "zap 把编码失败记成 <key>Error，落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Bool keys cannot generate member names, json error instead of disk")
+	assert.Contains(t, m, "vError", "zap marks encoding failure as <key>Error, disk: %s", raw)
 	assert.NotContains(t, m, "v")
 }
 
@@ -891,7 +891,7 @@ func TestMaskTraversesUnexportedTaggedEmbed(t *testing.T) {
 	v := subMap(t, raw, m, "v")
 	base := subMap(t, raw, v, "base")
 	assert.Equal(t, maskPlaceholder, base["password"])
-	assert.Equal(t, "cn-north", base["region"], "同层的非敏感字段不能丢")
+	assert.Equal(t, "cn-north", base["region"], "Non-sensitive fields at the same level cannot be dropped")
 	assert.Equal(t, "alice", v["user"])
 }
 
@@ -934,7 +934,7 @@ func TestMaskDoesNotPanicOnUnexportedEmbedWithSiblingHit(t *testing.T) {
 	assert.NotContains(t, raw, "abc.def")
 	v := subMap(t, raw, m, "v")
 	assert.Equal(t, maskPlaceholder, v["token"])
-	assert.Equal(t, "cn-north", subMap(t, raw, v, "base")["region"], "无命中的嵌入体不能丢")
+	assert.Equal(t, "cn-north", subMap(t, raw, v, "base")["region"], "Unmatched embedded structs cannot be dropped")
 }
 
 // sMaskBadTag's json tag name is invalid (contains a quote). encoding/json
@@ -948,7 +948,7 @@ type sMaskBadTag struct {
 // 22: invalid tag name -- the dual-name lookup kicks in.
 func TestMaskChecksGoFieldNameWhenTagNameIsInvalid(t *testing.T) {
 	raw, _ := logJSON(t, zap.Any("v", sMaskBadTag{Password: "hunter2", User: "alice"}))
-	assert.NotContains(t, raw, "hunter2", "tag 名查不中时要退回 Go 字段名，落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "When tag name is not found, revert to Go field name, disk: %s", raw)
 }
 
 type sMaskRenamed struct {
@@ -971,7 +971,7 @@ type sMaskTokenCount struct {
 // field like TokenCount down with it.
 func TestMaskDoubleNameLookupDoesNotOverreach(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskTokenCount{TokenCount: 42}))
-	assert.EqualValues(t, 42, subMap(t, raw, m, "v")["n"], "计数字段不是凭据，落盘：%s", raw)
+	assert.EqualValues(t, 42, subMap(t, raw, m, "v")["n"], "Count fields are not credentials, disk: %s", raw)
 }
 
 type sMaskConfirm struct {
@@ -992,7 +992,7 @@ func TestMaskCoversPasswordConfirmVariants(t *testing.T) {
 	assert.NotContains(t, raw, "hunter2")
 	v := subMap(t, raw, m, "v")
 	for _, k := range []string{"passwordConfirm", "password2", "password_repeat"} {
-		assert.Equal(t, maskPlaceholder, v[k], "%q 的值就是明文口令", k)
+		assert.Equal(t, maskPlaceholder, v[k], "The value of %q is plain text password", k)
 	}
 }
 
@@ -1001,7 +1001,7 @@ func TestMaskCoversPasswordConfirmVariants(t *testing.T) {
 func TestMaskStillDoesNotOverreachAfterBlacklistGrowth(t *testing.T) {
 	m := newMasker(nil)
 	for _, k := range []string{"password_hash", "token_count", "phone_masked", "mobile_type"} {
-		assert.False(t, m.hit(k), "既有裁决：不该命中 %q", k)
+		assert.False(t, m.hit(k), "There is a ruling: should not hit %q", k)
 	}
 }
 
@@ -1024,7 +1024,7 @@ func TestMaskLeavesUnencodableFloatKeyMapAlone(t *testing.T) {
 	}))
 
 	assert.NotContains(t, raw, "hunter2")
-	assert.Contains(t, m, "vError", "落盘：%s", raw)
+	assert.Contains(t, m, "vError", "Disk: %s", raw)
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,8 +1097,8 @@ type sMaskCutCount struct {
 func TestMaskChecksV2TruncatedTagName(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskCutQuote{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`password"x`], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`password"x`], "Disk: %s", raw)
 }
 
 // 28: neither candidate 1 nor the Go name hits; it relies on the replacement
@@ -1106,19 +1106,19 @@ func TestMaskChecksV2TruncatedTagName(t *testing.T) {
 func TestMaskChecksV2NameWhenTagPrefixMisses(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskCutDash{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`access_token-extra\y`], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`access_token-extra\y`], "Disk: %s", raw)
 }
 
 // 29: backslash and backtick are reserved characters too.
 func TestMaskChecksV2NameForOtherReservedChars(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskCutBackslash{Foo: "hunter2"}))
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`token\x`], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`token\x`], "Disk: %s", raw)
 
 	raw, m = logJSON(t, zap.Any("v", sMaskCutBacktick{Foo: "hunter2"}))
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["secret`x"], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["secret`x"], "Disk: %s", raw)
 }
 
 // 30: the mirror image of 28 (the garbage is after the sensitive word),
@@ -1126,8 +1126,8 @@ func TestMaskChecksV2NameForOtherReservedChars(t *testing.T) {
 func TestMaskChecksTruncatedTagNameWhenV2NameMisses(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskCutDot{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`db.password"x`], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`db.password"x`], "Disk: %s", raw)
 }
 
 // 31: a digit-leading tag; v2 falls back to the Go field name -- candidate 2
@@ -1135,16 +1135,16 @@ func TestMaskChecksTruncatedTagNameWhenV2NameMisses(t *testing.T) {
 func TestMaskFallsBackToGoNameForDigitLeadingTag(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskCutDigit{Password: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`2fa"x`], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`2fa"x`], "Disk: %s", raw)
 }
 
 // 32: a single-quoted tag also falls back to the Go field name.
 func TestMaskFallsBackToGoNameForQuotedTag(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskCutQuoted{Token: "abc.def"}))
 
-	assert.NotContains(t, raw, "abc.def", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["'password'"], "落盘：%s", raw)
+	assert.NotContains(t, raw, "abc.def", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["'password'"], "Disk: %s", raw)
 }
 
 // 33: over-reach regression -- adding more candidates must not drag a
@@ -1155,8 +1155,8 @@ func TestMaskFallsBackToGoNameForQuotedTag(t *testing.T) {
 func TestMaskExtraNameCandidatesDoNotOverreach(t *testing.T) {
 	raw, _ := logJSON(t, zap.Any("v", sMaskCutCount{Count: 42}))
 
-	assert.NotContains(t, raw, maskPlaceholder, "计数字段不是凭据，落盘：%s", raw)
-	assert.Contains(t, raw, "42", "落盘：%s", raw)
+	assert.NotContains(t, raw, maskPlaceholder, "Count fields are not credentials, disk: %s", raw)
+	assert.Contains(t, raw, "42", "Disk: %s", raw)
 }
 
 // assertFloatKeyName asserts that the member name written on disk for a float
@@ -1169,14 +1169,14 @@ func assertFloatKeyName[T float32 | float64](t *testing.T, v T) {
 	b, err := json.Marshal(map[T]int{v: 1})
 	require.NoError(t, err)
 	s := string(b)
-	require.True(t, strings.HasPrefix(s, `{"`) && strings.HasSuffix(s, `":1}`), "意外的形状：%s", s)
+	require.True(t, strings.HasPrefix(s, `{"`) && strings.HasSuffix(s, `":1}`), "Unexpected shape: %s", s)
 	want := s[2 : len(s)-4]
 
 	raw, m := logJSON(t, zap.Any("v", map[T]mapCreds{v: {User: "alice", Password: "hunter2"}}))
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Contains(t, raw, `"`+want+`":{`, "成员名要与 encoding/json 逐字节相同（%v），落盘：%s", v, raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Contains(t, raw, `"`+want+`":{`, "Member name must be exactly the same as encoding/json (%v), disk: %s", v, raw)
 	assert.Equal(t, maskPlaceholder,
-		subMap(t, raw, subMap(t, raw, m, "v"), want)["password"], "落盘：%s", raw)
+		subMap(t, raw, subMap(t, raw, m, "v"), want)["password"], "Disk: %s", raw)
 }
 
 // 34: the ECMAScript boundary for float member names.
@@ -1252,14 +1252,13 @@ type sMaskPreTokenizer struct {
 }
 
 // sMaskCJKTag: candidate 1's suffix word groups don't hit; it relies on the
-// word window 密码 in the replacement name 密码-extra_y.
+// word window 암호 in the replacement name 암호-extra_y.
 // splitMaskKey splits words byte by byte and doesn't interpret non-ASCII
 // bytes, so a CJK head word still forms its own word.
-// The built-in blacklist is all English, so 密码 must be appended to masker
-// explicitly -- otherwise this test would stay green even if the wording were
-// changed to ASCII.
+// The built-in blacklist is all ASCII, so 암호 must be appended to the masker
+// explicitly; otherwise this test would not exercise a non-ASCII key.
 type sMaskCJKTag struct {
-	Foo string `json:"密码-extra\"y"`
+	Foo string `json:"암호-extra\"y"`
 }
 
 // 35: a reserved character lands before the sensitive head word -- what used
@@ -1267,19 +1266,19 @@ type sMaskCJKTag struct {
 func TestMaskChecksReplacedNameWhenReservedCharPrecedesKeyword(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskPreQuote{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`db"password`], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`db"password`], "Disk: %s", raw)
 }
 
 // 36: backslash and backtick are the same family of shape.
 func TestMaskChecksReplacedNameForOtherReservedChars(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskPreBackslash{Foo: "hunter2"}))
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`db\password`], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`db\password`], "Disk: %s", raw)
 
 	raw, m = logJSON(t, zap.Any("v", sMaskPreBacktick{Foo: "hunter2"}))
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["db`password"], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["db`password"], "Disk: %s", raw)
 }
 
 // 37: swap the head word for secret and the prefix for svc -- this isn't
@@ -1287,8 +1286,8 @@ func TestMaskChecksReplacedNameForOtherReservedChars(t *testing.T) {
 func TestMaskChecksReplacedNameForSecretKeyword(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskPreSecret{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`svc\secret`], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`svc\secret`], "Disk: %s", raw)
 }
 
 // 38: after replacement it still follows the suffix-word-group rule --
@@ -1297,8 +1296,8 @@ func TestMaskChecksReplacedNameForSecretKeyword(t *testing.T) {
 func TestMaskReplacedNameStillUsesSuffixWordGroups(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskPreUnderscore{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`_x"private_key`], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")[`_x"private_key`], "Disk: %s", raw)
 }
 
 // 39: over-reach regression, a strengthened version of #33 -- none of the
@@ -1309,8 +1308,8 @@ func TestMaskReplacedNameStillUsesSuffixWordGroups(t *testing.T) {
 func TestMaskReplacedNameCandidateDoesNotOverreach(t *testing.T) {
 	raw, _ := logJSON(t, zap.Any("v", sMaskCutCount{Count: 42}))
 
-	assert.NotContains(t, raw, maskPlaceholder, "计数字段不是凭据，落盘：%s", raw)
-	assert.Contains(t, raw, "42", "落盘：%s", raw)
+	assert.NotContains(t, raw, maskPlaceholder, "Count field is not credential, persisted: %s", raw)
+	assert.Contains(t, raw, "42", "Persisted: %s", raw)
 }
 
 // 40: tokenizer and token only share a prefix; the head word isn't a
@@ -1318,18 +1317,18 @@ func TestMaskReplacedNameCandidateDoesNotOverreach(t *testing.T) {
 func TestMaskReplacedNameDoesNotOverreachOnPrefixLookalike(t *testing.T) {
 	raw, _ := logJSON(t, zap.Any("v", sMaskPreTokenizer{Foo: "visible"}))
 
-	assert.NotContains(t, raw, maskPlaceholder, "落盘：%s", raw)
-	assert.Contains(t, raw, "visible", "落盘：%s", raw)
+	assert.NotContains(t, raw, maskPlaceholder, "Persisted: %s", raw)
+	assert.Contains(t, raw, "visible", "Persisted: %s", raw)
 }
 
-// 41: CJK tag. The built-in blacklist is all English, so newMasker must be
-// used to append "密码" -- otherwise this test would stay green no matter how
+// 41: CJK tag. The built-in blacklist is all ASCII, so newMasker must be
+// used to append "암호"; otherwise this test would stay green no matter how
 // the implementation changed, pinning down nothing.
 func TestMaskChecksV2NameForCJKTag(t *testing.T) {
-	raw, m := logJSONWith(t, []string{"密码"}, zap.Any("v", sMaskCJKTag{Foo: "hunter2"}))
+	raw, m := logJSONWith(t, []string{"암호"}, zap.Any("v", sMaskCJKTag{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["密码-extra\"y"], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Persisted: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["암호-extra\"y"], "Persisted: %s", raw)
 }
 
 // ---------------------------------------------------------------------------
@@ -1378,26 +1377,26 @@ type sMaskSandwichBenign struct {
 func TestMaskChecksWindowForSandwichedTag(t *testing.T) {
 	raw, m := logJSON(t, zap.Any("v", sMaskSandwichPassword{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
-	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["db\\password\\x"], "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Persisted: %s", raw)
+	assert.Equal(t, maskPlaceholder, subMap(t, raw, m, "v")["db\\password\\x"], "Persisted: %s", raw)
 }
 
 func TestMaskChecksWindowForSandwichedCompoundWord(t *testing.T) {
 	raw, _ := logJSON(t, zap.Any("v", sMaskSandwichCompound{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Persisted: %s", raw)
 }
 
 func TestMaskChecksWindowForMixedReservedChars(t *testing.T) {
 	raw, _ := logJSON(t, zap.Any("v", sMaskSandwichMixed{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Persisted: %s", raw)
 }
 
 func TestMaskChecksWholeTagAfterComma(t *testing.T) {
 	raw, _ := logJSON(t, zap.Any("v", sMaskAfterComma{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "Persisted: %s", raw)
 }
 
 func TestMaskWindowDoesNotOverreachBenignSandwich(t *testing.T) {
@@ -1405,7 +1404,7 @@ func TestMaskWindowDoesNotOverreachBenignSandwich(t *testing.T) {
 	// member written on disk is svc; keeping the value as-is is correct here.
 	raw, m := logJSON(t, zap.Any("v", sMaskSandwichBenign{Count: 7}))
 
-	assert.Equal(t, float64(7), subMap(t, raw, m, "v")["svc"], "落盘：%s", raw)
+	assert.Equal(t, float64(7), subMap(t, raw, m, "v")["svc"], "Persisted: %s", raw)
 }
 
 // sMaskReservedThenComma: a reserved character comes first, then a comma. A
@@ -1419,5 +1418,5 @@ type sMaskReservedThenComma struct {
 func TestMaskChecksWindowAcrossCommaOption(t *testing.T) {
 	raw, _ := logJSON(t, zap.Any("v", sMaskReservedThenComma{Foo: "hunter2"}))
 
-	assert.NotContains(t, raw, "hunter2", "落盘：%s", raw)
+	assert.NotContains(t, raw, "hunter2", "persisted: %s", raw)
 }

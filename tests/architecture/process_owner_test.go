@@ -44,24 +44,24 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 	for _, name := range archProductionGoFilesInDir(t, runtimeDir) {
 		sourcePaths = append(sourcePaths, filepath.Join(runtimeDir, name))
 	}
-	require.NotEmpty(t, sourcePaths, "runtime/ 没有扫描到生产 Go 文件，进程设施守卫实际未生效")
+	require.NotEmpty(t, sourcePaths, "runtime/ no production Go files scanned, process facility guard actually not effective")
 
 	fset := token.NewFileSet()
 	for _, filePath := range sourcePaths {
 		relative, err := filepath.Rel(root, filePath)
-		require.NoError(t, err, "计算 %s 的仓库相对路径失败", filePath)
+		require.NoError(t, err, "failed to calculate relative path of repository for %s", filePath)
 		name := filepath.ToSlash(relative)
 
 		file, err := parser.ParseFile(fset, filePath, nil, parser.SkipObjectResolution)
-		require.NoError(t, err, "解析 %s 失败", name)
+		require.NoError(t, err, "failed to parse %s", name)
 
 		aliases := make(map[string]string, len(file.Imports))
 		for _, spec := range file.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
-			require.NoError(t, err, "解析 %s 的 import path 失败", name)
+			require.NoError(t, err, "failed to parse import path of %s", name)
 			if importPath == "os/signal" && name != owner {
-				assert.Fail(t, "进程 signal owner 漂移",
-					"%s import 了 os/signal；所有 signal 操作只能由 %s 拥有", name, owner)
+				assert.Fail(t, "process signal owner drift",
+					"%s imported os/signal; all signal operations must be owned by %s", name, owner)
 			}
 			alias := path.Base(importPath)
 			if spec.Name != nil {
@@ -73,8 +73,8 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 			if alias == "." {
 				for key := range concerns {
 					if key.importPath == importPath {
-						assert.Fail(t, "进程设施不得使用 dot import",
-							"%s dot-import 了 %s，架构守卫无法可靠确认 owner", name, importPath)
+						assert.Fail(t, "process facility must not use dot import",
+							"%s dot-imported %s, architecture guard cannot reliably confirm owner", name, importPath)
 						break
 					}
 				}
@@ -93,8 +93,8 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 				if !ok || ident.Name != exitHook {
 					return true
 				}
-				assert.Fail(t, "进程退出 hook owner 漂移",
-					"%s 第 %d 行使用 %s；包级退出 hook 只能由 %s 持有和调用",
+				assert.Fail(t, "process exit hook owner drift",
+					"%s line %d uses %s; the package-level exit hook can only be owned and called by %s",
 					name, fset.Position(ident.Pos()).Line, exitHook, owner)
 				return true
 			})
@@ -140,8 +140,8 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 				return true
 			}
 			if name != owner {
-				assert.Fail(t, "进程设施 owner 漂移",
-					"%s 第 %d 行使用 %s；os.Args、signal、os.Stderr、log.Sync 与 os.Exit 只能由 %s 拥有，App.Execute 必须可嵌入",
+				assert.Fail(t, "Process facility owner drift",
+					"%s line %d uses %s; os.Args, signal, os.Stderr, log.Sync and os.Exit can only be owned by %s, App.Execute must be embeddable",
 					name, fset.Position(sel.Pos()).Line, label, owner)
 				return true
 			}
@@ -157,6 +157,6 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 		"log.Sync",
 		exitHookLabel,
 	} {
-		assert.True(t, seenInOwner[label], "%s 必须继续实际持有 %s，否则 owner 守卫可能在空跑", owner, label)
+		assert.True(t, seenInOwner[label], "%s must continue to actually hold %s, otherwise the owner guard may run empty", owner, label)
 	}
 }

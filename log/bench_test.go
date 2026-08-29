@@ -119,7 +119,7 @@ func BenchmarkEntry(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				l.Info("订单已支付",
+				l.Info("Order has been paid",
 					"order_id", 1001,
 					"user", "alice",
 					"amount", 99.5,
@@ -145,7 +145,7 @@ func BenchmarkReflectPath(b *testing.B) {
 	b.Run("struct_with_hit", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			l.Info("下单", "order", v)
+			l.Info("Place order", "order", v)
 		}
 	})
 
@@ -156,7 +156,7 @@ func BenchmarkReflectPath(b *testing.B) {
 	b.Run("struct_no_hit", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			l.Info("下单", "order", clean)
+			l.Info("Place order", "order", clean)
 		}
 	})
 }
@@ -170,13 +170,13 @@ func BenchmarkSugar(b *testing.B) {
 	b.Run("TInfo", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			TInfo(ctx, "请求进入", "order_id", 1001)
+			TInfo(ctx, "Request incoming", "order_id", 1001)
 		}
 	})
 	b.Run("CtxInfo", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			Ctx(ctx).Info("请求进入", "order_id", 1001)
+			Ctx(ctx).Info("Request incoming", "order_id", 1001)
 		}
 	})
 }

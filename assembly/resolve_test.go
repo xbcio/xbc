@@ -83,7 +83,7 @@ type fakeBadTag struct {
 func newInst(t *testing.T, name, instanceName string, p plugin.Plugin) *Instance {
 	t.Helper()
 	fields, err := inject.Scan(p)
-	require.NoError(t, err, "插件 %s 的 tag 扫描不应失败", name)
+	require.NoError(t, err, "inject tag scan for plugin %s should not fail", name)
 	return &Instance{plugin: p, key: plugin.Key(name), instance: instanceName, multiple: instanceName != defaultInstance, fields: fields}
 }
 
@@ -101,11 +101,11 @@ func TestResolveScansTagsItself(t *testing.T) {
 	middle := &Instance{plugin: &fakeMiddle{}, key: "middle", instance: defaultInstance}
 
 	order, _, err := c.resolve([]*Instance{middle, producer})
-	require.NoError(t, err, "resolve 必须自己扫出 inject tag，不能依赖调用方预先填好 fields")
-	require.NotEmpty(t, middle.fields, "resolve 返回后 fields 应当已被填上")
+	require.NoError(t, err, "resolve must scan inject tag itself, not rely on caller to pre-fill fields")
+	require.NotEmpty(t, middle.fields, "fields should be filled after resolve returns")
 	require.Len(t, order, 2)
 	assert.Equal(t, []string{"producer-a", "middle"}, idsOf(order),
-		"扫出来的 inject 边要真的进图：产出方排在消费方之前")
+		"Scanned inject edges must be real in graph: producer comes before consumer")
 }
 
 func TestResolveRejectsMalformedTag(t *testing.T) {
@@ -113,9 +113,9 @@ func TestResolveRejectsMalformedTag(t *testing.T) {
 	bad := &Instance{plugin: &fakeBadTag{}, key: "bad", instance: defaultInstance}
 
 	_, _, err := c.resolve([]*Instance{bad})
-	require.Error(t, err, "tag 写错必须在解析阶段就报出来")
-	assert.Contains(t, err.Error(), "xbc: 插件 bad 的 xbc tag 有误",
-		"错误文案要点名是哪个实例的 tag 有问题")
+	require.Error(t, err, "Tag error must be reported during parsing")
+	assert.Contains(t, err.Error(), "xbc: plugin bad has an invalid xbc tag",
+		"Error message must specify which instance's tag is problematic")
 }
 
 func TestResolve_LinearOrder(t *testing.T) {
@@ -126,11 +126,11 @@ func TestResolve_LinearOrder(t *testing.T) {
 
 	// Input order is shuffled: the sorted result must not depend on the caller's order, only on the dependency graph itself.
 	order, misses, err := c.resolve([]*Instance{consumer, middle, producer})
-	require.NoError(t, err, "线性依赖链不应报错")
-	assert.Empty(t, misses, "没有声明任何软约束，misses 必须是空的")
+	require.NoError(t, err, "Linear dependency chain should not error")
+	assert.Empty(t, misses, "No soft constraints declared, misses must be empty")
 	require.Len(t, order, 3)
 	assert.Equal(t, []string{"producer-a", "middle", "consumer"}, idsOf(order),
-		"producer 产出 svcA，middle 消费 svcA 产出 svcB，consumer 消费 svcB —— 拓扑序必须是这个顺序")
+		"producer produces svcA, middle consumes svcA produces svcB, consumer consumes svcB — topological order must be this sequence")
 }
 
 func TestResolve_MergeTagAndDependencies(t *testing.T) {
@@ -140,7 +140,7 @@ func TestResolve_MergeTagAndDependencies(t *testing.T) {
 	audit := newInst(t, "audit", defaultInstance, &fakeAudit{})
 
 	order, misses, err := c.resolve([]*Instance{audit, jwt, producer})
-	require.NoError(t, err, "tag 的 svcA 依赖与 Dependencies() 的 jwt 依赖应当都被满足")
+	require.NoError(t, err, "tag's svcA dependency and Dependencies()'s jwt dependency should both be satisfied")
 	assert.Empty(t, misses)
 	// audit must sort after both jwt and producer-a -- both edges must take effect, and this assertion fails if either one is missing.
 	assert.Equal(t, "audit", order[len(order)-1].ID())
@@ -151,13 +151,13 @@ func TestResolve_OptionalMissingLeavesZero(t *testing.T) {
 	consumer := newInst(t, "opt-consumer", defaultInstance, &fakeOptionalConsumer{})
 
 	order, misses, err := c.resolve([]*Instance{consumer})
-	require.NoError(t, err, "optional 依赖缺失不应报错")
-	assert.Empty(t, misses, "optional 硬依赖缺失不算软约束未命中，不进 misses")
+	require.NoError(t, err, "Optional dependency missing should not error")
+	assert.Empty(t, misses, "Optional hard dependency missing is not considered as soft constraint miss, not in misses")
 	require.Len(t, order, 1)
 
 	zero, err := inject.IsZero(consumer.plugin, consumer.fields[0])
 	require.NoError(t, err)
-	assert.True(t, zero, "optional 缺失时字段必须留零值，框架不能塞任何东西进去")
+	assert.True(t, zero, "Optional missing, field must remain zero value, framework should not inject anything")
 }
 
 // idsOf renders a topological order into a slice of id strings, so assert.Equal can compare order directly.
@@ -195,11 +195,11 @@ func TestResolve_ConcreteTypeMissing(t *testing.T) {
 	consumer := newInst(t, "user", defaultInstance, &fakeDBConsumer{})
 
 	_, _, err := c.resolve([]*Instance{consumer})
-	require.Error(t, err, "无人提供 *svcC，必须启动中止")
-	assert.Contains(t, err.Error(), "xbc: 依赖检查失败")
-	assert.Contains(t, err.Error(), "插件 user 需要")
-	assert.Contains(t, err.Error(), "无任何插件提供")
-	assert.Contains(t, err.Error(), "是否忘了 import 对应的 provider/autoload 包")
+	require.Error(t, err, "No *svcC provided, must terminate during startup")
+	assert.Contains(t, err.Error(), "xbc: dependency check failed")
+	assert.Contains(t, err.Error(), "plugin user requires")
+	assert.Contains(t, err.Error(), "no plugin provides")
+	assert.Contains(t, err.Error(), "Did you forget to import the corresponding provider/autoload package")
 	assert.NotContains(t, err.Error(), "github.com/xbcio/xbc/plugins/")
 }
 
@@ -210,14 +210,14 @@ func TestResolve_NamedInstanceMissing(t *testing.T) {
 	gormCache := newInst(t, "gorm", "cache", &fakeNamedProducer{})
 
 	_, _, err := c.resolve([]*Instance{report, gormDefault, gormCache})
-	require.Error(t, err, "只有 default/cache 实例，没有 readonly")
-	assert.Contains(t, err.Error(), "插件 report 依赖")
+	require.Error(t, err, "Only default/cache instance exists, no readonly")
+	assert.Contains(t, err.Error(), "plugin report depends on")
 	assert.Contains(t, err.Error(), "[readonly]")
-	assert.Contains(t, err.Error(), "当前只有")
-	// The "当前只有" list must enumerate both existing instances, not just the first.
+	assert.Contains(t, err.Error(), "but only")
+	// The "but only" list must enumerate both existing instances, not just the first.
 	assert.Contains(t, err.Error(), "[default]")
 	assert.Contains(t, err.Error(), "[cache]")
-	assert.Contains(t, err.Error(), "下添加 readonly 实例")
+	assert.Contains(t, err.Error(), "add instance")
 }
 
 // fakeRefConsumer hard-depends on the *fakeJWT plugin being present (without narrowing to an instance).
@@ -239,14 +239,14 @@ func TestResolve_RefMissing(t *testing.T) {
 	consumer := newInst(t, "audit", defaultInstance, &fakeRefConsumer{})
 
 	_, _, err := c.resolve([]*Instance{consumer})
-	require.Error(t, err, "jwt 一个实例都没启用")
+	require.Error(t, err, "No jwt instance is enabled")
 	// A Ref is resolved exclusively from its Definition key. Neither the
 	// fakeJWT concrete type nor this test's package path may affect the
 	// diagnostic or the suggested configuration path.
-	assert.Contains(t, err.Error(), "插件 audit 依赖插件 jwt")
-	assert.Contains(t, err.Error(), "未启用")
-	assert.Contains(t, err.Error(), "在 application.yml 中添加 plugins.jwt")
-	assert.Contains(t, err.Error(), "配置节")
+	assert.Contains(t, err.Error(), "plugin audit depends on plugin jwt")
+	assert.Contains(t, err.Error(), "not enabled")
+	assert.Contains(t, err.Error(), "add plugins.jwt")
+	assert.Contains(t, err.Error(), "configuration section")
 }
 
 func TestResolve_RefInstanceNarrowedMissing(t *testing.T) {
@@ -255,12 +255,12 @@ func TestResolve_RefInstanceNarrowedMissing(t *testing.T) {
 	jwtDefault := newInst(t, "jwt", defaultInstance, &fakeJWT{})
 
 	_, _, err := c.resolve([]*Instance{consumer, jwtDefault})
-	require.Error(t, err, "jwt 启用了，但只有 default 实例，没有 readonly")
-	assert.Contains(t, err.Error(), "插件 audit 依赖插件")
+	require.Error(t, err, "Jwt is enabled, but only default instance exists, no readonly")
+	assert.Contains(t, err.Error(), "plugin audit depends on plugin")
 	assert.Contains(t, err.Error(), "[readonly]")
-	assert.Contains(t, err.Error(), "当前只有")
+	assert.Contains(t, err.Error(), "but only")
 	assert.Contains(t, err.Error(), "[default]")
-	assert.Contains(t, err.Error(), "下添加 readonly 实例")
+	assert.Contains(t, err.Error(), "add instance")
 }
 
 func TestResolve_RefWithoutInstanceDependsOnAllEnabledInstances(t *testing.T) {
@@ -277,8 +277,8 @@ func TestResolve_RefWithoutInstanceDependsOnAllEnabledInstances(t *testing.T) {
 	for index, inst := range order {
 		positions[inst.ID()] = index
 	}
-	assert.Less(t, positions["jwt"], positions["audit"], "default 实例必须成为硬依赖")
-	assert.Less(t, positions["jwt[readonly]"], positions["audit"], "readonly 实例也必须成为硬依赖")
+	assert.Less(t, positions["jwt"], positions["audit"], "Default instance must be a hard dependency")
+	assert.Less(t, positions["jwt[readonly]"], positions["audit"], "Readonly instance must also be a hard dependency")
 }
 
 // resolveCounter is an example of an interface defined on the consumer side: the consumer only cares about this interface, not who implements it.
@@ -326,7 +326,7 @@ func TestResolve_InterfaceSingleMatch(t *testing.T) {
 	producer := newInst(t, "provider", defaultInstance, &fakeCounterProviderConcrete{})
 
 	order, misses, err := c.resolve([]*Instance{consumer, producer})
-	require.NoError(t, err, "唯一命中应当直接连边成功")
+	require.NoError(t, err, "The only match should directly connect successfully")
 	assert.Empty(t, misses)
 	assert.Equal(t, "ratelimit", order[len(order)-1].ID())
 }
@@ -337,12 +337,12 @@ func TestResolve_InterfaceZeroMatchWithClosest(t *testing.T) {
 	producer := newInst(t, "half-provider", defaultInstance, &fakeHalfCounterProvider{})
 
 	_, _, err := c.resolve([]*Instance{consumer, producer})
-	require.Error(t, err, "halfCounterNoArgs 没有 Expire 方法，不满足 resolveCounter")
-	assert.Contains(t, err.Error(), "插件 ratelimit 需要")
-	assert.Contains(t, err.Error(), "无任何插件提供")
-	assert.Contains(t, err.Error(), "最接近的是")
+	require.Error(t, err, "halfCounterNoArgs lacks Expire method, does not satisfy resolveCounter")
+	assert.Contains(t, err.Error(), "plugin ratelimit requires")
+	assert.Contains(t, err.Error(), "no plugin provides")
+	assert.Contains(t, err.Error(), "closest match is")
 	assert.Contains(t, err.Error(), "halfCounterNoArgs")
-	assert.Contains(t, err.Error(), "缺少方法：Expire")
+	assert.Contains(t, err.Error(), "missing methods: Expire")
 }
 
 type fakeHalfCounterProvider struct{}
@@ -358,12 +358,12 @@ func TestResolve_InterfaceAmbiguous(t *testing.T) {
 	pb := newInst(t, "provider-b", defaultInstance, &fakeCounterProviderConcreteB{})
 
 	_, _, err := c.resolve([]*Instance{consumer, pa, pb})
-	require.Error(t, err, "两个候选都满足 resolveCounter，框架不能瞎猜")
-	assert.Contains(t, err.Error(), "插件 ratelimit 需要")
-	assert.Contains(t, err.Error(), "有 2 个候选")
+	require.Error(t, err, "Both candidates satisfy resolveCounter, framework cannot guess")
+	assert.Contains(t, err.Error(), "plugin ratelimit requires")
+	assert.Contains(t, err.Error(), "has 2 candidates")
 	assert.Contains(t, err.Error(), "fullCounterA")
 	assert.Contains(t, err.Error(), "fullCounterB")
-	assert.Contains(t, err.Error(), `用 xbc:"inject,name=xxx" 指定实例消歧`)
+	assert.Contains(t, err.Error(), `use xbc:"inject,name=xxx" to resolve ambiguity`)
 }
 
 type fakeCounterProviderConcreteA struct{}
@@ -400,12 +400,12 @@ func TestResolve_InterfaceSignatureMismatchNotSatisfied(t *testing.T) {
 	producer := newInst(t, "arg-provider", defaultInstance, &fakeArgCounterProvider{})
 
 	_, _, err := c.resolve([]*Instance{consumer, producer})
-	require.Error(t, err, "argCounter 的 Incr 方法签名与接口不符，即便方法名都命中也不能算满足")
-	assert.Contains(t, err.Error(), "插件 ratelimit 需要")
-	assert.Contains(t, err.Error(), "无任何插件提供")
-	assert.Contains(t, err.Error(), "最接近的是")
+	require.Error(t, err, "argCounter's Incr method signature does not match the interface, even if method names match, it cannot satisfy")
+	assert.Contains(t, err.Error(), "plugin ratelimit requires")
+	assert.Contains(t, err.Error(), "no plugin provides")
+	assert.Contains(t, err.Error(), "closest match is")
 	assert.Contains(t, err.Error(), "argCounter")
-	assert.Contains(t, err.Error(), "缺少方法：Incr")
+	assert.Contains(t, err.Error(), "missing methods: Incr")
 }
 
 // tieIncrOnly and tieExpireOnly each implement exactly one of resolveCounter's
@@ -443,13 +443,13 @@ func TestResolve_InterfaceZeroMatchClosestTieKeepsFirstRegistered(t *testing.T) 
 	expireProvider := newInst(t, "tie-expire", defaultInstance, &fakeTieExpireProvider{})
 
 	_, _, err := c.resolve([]*Instance{consumer, incrProvider, expireProvider})
-	require.Error(t, err, "两个候选都只命中一个方法，谁都不满足 resolveCounter")
-	assert.Contains(t, err.Error(), "最接近的是")
+	require.Error(t, err, "Both candidates only match one method, neither satisfies resolveCounter")
+	assert.Contains(t, err.Error(), "closest match is")
 	assert.Contains(t, err.Error(), "tieIncrOnly",
-		"同分时必须保留先注册的候选 tieIncrOnly，不能被后注册的 tieExpireOnly 顶替")
+		"When scores are tied, the first registered candidate tieIncrOnly must be retained, cannot be replaced by later registered tieExpireOnly")
 	assert.NotContains(t, err.Error(), "tieExpireOnly")
-	assert.Contains(t, err.Error(), "缺少方法：Expire",
-		"先注册的 tieIncrOnly 缺的是 Expire")
+	assert.Contains(t, err.Error(), "missing methods: Expire",
+		"The first registered tieIncrOnly is missing Expire")
 }
 
 func TestResolve_InterfaceZeroProductsInWholeApp(t *testing.T) {
@@ -461,10 +461,10 @@ func TestResolve_InterfaceZeroProductsInWholeApp(t *testing.T) {
 	consumer := newInst(t, "ratelimit", defaultInstance, &fakeCounterConsumer{})
 
 	_, _, err := c.resolve([]*Instance{consumer})
-	require.Error(t, err, "整个应用没有任何插件提供任何产物，接口依赖必然无法满足")
-	assert.Contains(t, err.Error(), "插件 ratelimit 需要")
-	assert.Contains(t, err.Error(), "无任何插件提供")
-	assert.Contains(t, err.Error(), "是否忘了 import 提供该类型的插件包")
+	require.Error(t, err, "Interface dependencies cannot be satisfied when the application has no provided values")
+	assert.Contains(t, err.Error(), "plugin ratelimit requires")
+	assert.Contains(t, err.Error(), "no plugin provides")
+	assert.Contains(t, err.Error(), "Did you forget to import the plugin package that provides this type")
 }
 
 // fakeMultiDefault models the default instance of a statically multi-instance
@@ -481,7 +481,7 @@ func TestResolve_GraphNodeUsesIDNotLabelForMultiInstanceDefault(t *testing.T) {
 	m.multiple = true
 
 	order, misses, err := c.resolve([]*Instance{m})
-	require.NoError(t, err, "单个多实例插件的 default 实例，不该报任何错")
+	require.NoError(t, err, "A single multi-instance plugin's default instance should not cause any error")
 	assert.Empty(t, misses)
 	require.Len(t, order, 1)
 	// resolve maps the sorted node ids back through byID, and a map miss
@@ -490,11 +490,11 @@ func TestResolve_GraphNodeUsesIDNotLabelForMultiInstanceDefault(t *testing.T) {
 	// here with a readable message, instead of panicking on a nil receiver
 	// and taking the rest of the package's tests down with it.
 	require.NotNil(t, order[0],
-		"拓扑序里出现了 nil 实例，说明建图用的 key 和 byID 的 key 对不上——"+
-			"建图必须用 ID()，不能用 Label()")
+		"Nil instance appears in the topological order, indicating the key used for graph building does not match the key from byID — "+
+			"Graph building must use ID(), not Label()")
 	assert.Equal(t, "multi", order[0].ID(),
-		"图节点必须用 ID()（不带 [default] 后缀）建图；如果建图时误用了 Label()，"+
-			"这里的查找会因为 key 不匹配而失败")
+		"Graph nodes must use ID() (without [default] suffix) for graph building; if Label() was mistakenly used during graph building,"+
+			"The lookup will fail due to key mismatch")
 }
 
 // fakeConflictProducer and fakeConflictProducerAlt both declare producing *svcA[default] -- a conflict.
@@ -512,10 +512,10 @@ func TestResolve_ProductConflict(t *testing.T) {
 	p2 := newInst(t, "conflict-b", defaultInstance, &fakeConflictProducerAlt{})
 
 	_, _, err := c.resolve([]*Instance{p1, p2})
-	require.Error(t, err, "两个插件的同一实例名都产出 *svcA，必须报冲突")
+	require.Error(t, err, "Two plugins with the same instance name both produce *svcA, must report conflict")
 	assert.Contains(t, err.Error(), "conflict-a")
 	assert.Contains(t, err.Error(), "conflict-b")
-	assert.Contains(t, err.Error(), "都声明产出")
+	assert.Contains(t, err.Error(), "both declare producing")
 }
 
 // fakeSoftAfter has no hard dependency at all; it only declares "if tracing exists, sort me after it".
@@ -537,7 +537,7 @@ func TestResolve_SoftConstraintOrdering(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, misses)
 	assert.Equal(t, []string{"tracing", "business"}, idsOf(order),
-		"After 软约束命中，必须把 tracing 排到 business 前面")
+		"After soft constraint hits, tracing must be placed before business")
 }
 
 // fakeSoftMiss declares After on a Definition key that does not exist at all -- this must not abort startup.
@@ -552,7 +552,7 @@ func TestResolve_SoftConstraintMissNotFatal(t *testing.T) {
 	z := newInst(t, "z-plugin", defaultInstance, &fakeSoftMiss{})
 
 	order, misses, err := c.resolve([]*Instance{z})
-	require.NoError(t, err, "软约束引用的 Definition key 不存在，只记 miss，不能中止启动")
+	require.NoError(t, err, "The referenced Definition key does not exist, only record miss, cannot abort startup")
 	require.Len(t, order, 1)
 	require.Len(t, misses, 1)
 	assert.Equal(t, ordering.Miss{Node: "z-plugin", Ref: "ghost", Dir: ordering.After}, misses[0])
@@ -584,8 +584,8 @@ func TestResolve_Cycle(t *testing.T) {
 	cc := newInst(t, "payment", defaultInstance, &fakeCycleC{})
 
 	_, _, err := c.resolve([]*Instance{ca, cb, cc})
-	require.Error(t, err, "user → payment → order → user 是一个环")
-	assert.Contains(t, err.Error(), "xbc: 依赖成环")
+	require.Error(t, err, "user → payment → order → user is a cycle")
+	assert.Contains(t, err.Error(), "xbc: dependency cycle")
 	assert.Contains(t, err.Error(), "→")
 }
 
@@ -599,9 +599,9 @@ func TestResolve_MultipleErrorsReportedTogether(t *testing.T) {
 
 	_, _, err := c.resolve([]*Instance{userConsumer, auditConsumer})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "插件 user 需要")
-	assert.Contains(t, err.Error(), "插件 audit 依赖插件")
-	assert.Contains(t, err.Error(), "未启用")
+	assert.Contains(t, err.Error(), "plugin user requires")
+	assert.Contains(t, err.Error(), "plugin audit depends on plugin")
+	assert.Contains(t, err.Error(), "not enabled")
 }
 
 // fakeDualProvider uses both a tag (provide *svcA) and Provides() (an extra
@@ -621,7 +621,7 @@ func TestResolve_ProvideTagAndProvidesMerge(t *testing.T) {
 	consumer := newInst(t, "consumer", defaultInstance, &fakeConsumer{}) // injects *svcB via tag
 
 	order, misses, err := c.resolve([]*Instance{consumer, dual})
-	require.NoError(t, err, "tag 声明的 *svcA 与 Provides() 声明的 *svcB 都要生效")
+	require.NoError(t, err, "tag declared *svcA and Provides() declared *svcB should both take effect")
 	assert.Empty(t, misses)
 	assert.Equal(t, []string{"dual", "consumer"}, idsOf(order))
 }
@@ -646,7 +646,7 @@ func TestResolve_ProvideTagAndProvidesSameTypeDeduped(t *testing.T) {
 
 	order, misses, err := c.resolve([]*Instance{dual})
 	require.NoError(t, err,
-		"同一实例通过 tag 与 Provides() 各声明一次同一类型，属于无害重复，不该报冲突")
+		"Same instance declares the same type once via tag and Provides(), it's harmless duplication and should not report conflict")
 	assert.Empty(t, misses)
 	require.Len(t, order, 1)
 	assert.Equal(t, "dual-same", order[0].ID())

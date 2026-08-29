@@ -105,16 +105,16 @@ func TestSignalRegisteredBeforeFirstInit(t *testing.T) {
 	ch := runAsyncProcess(app, quietConfig(t, "")...)
 	res := awaitResult(t, ch)
 
-	require.NoError(t, sendErr, "向测试进程发送 SIGTERM 失败")
+	require.NoError(t, sendErr, "Failed to send SIGTERM to the test process")
 	require.True(t, observedStopInTime,
-		"发出 SIGTERM 后 App 从未观察到停止请求；signal.Notify 可能注册得太晚，或根本没注册")
+		"After sending SIGTERM, the App never observed the shutdown request; signal.Notify may have registered too late, or not at all")
 
-	require.Error(t, res.err, "启动期间收到停止请求必须让 run 返回错误")
-	assert.Equal(t, 1, res.code, "启动被中止属于运行失败，退出码应为 1")
-	assert.Contains(t, res.err.Error(), "初始化", "错误必须点明中止发生在初始化阶段")
-	assert.Contains(t, res.err.Error(), stopReasonSignal, "错误应说明启动期间收到的是停止请求")
+	require.Error(t, res.err, "Receiving a shutdown request during startup must make run return an error")
+	assert.Equal(t, 1, res.code, "An aborted startup is considered a runtime failure, exit code should be 1")
+	assert.Contains(t, res.err.Error(), "initialization", "The error must specify that the abortion occurred during initialization")
+	assert.Contains(t, res.err.Error(), stopReasonSignal, "The error should explain that a shutdown request was received during startup")
 	assert.Equal(t, []string{"first", "first-stop"}, initOrder,
-		"second 的 Init 绝不能被调用；已经 Init 成功的 first 必须被反向清理（Stop 调用）")
+		"second's Init must never be called; the already successfully initialized first must be reverse cleaned up (Stop called)")
 }
 
 // TestSignalWatcherContinuesAfterFirstSignal ensures the process adapter keeps
@@ -126,13 +126,13 @@ func TestSignalWatcherContinuesAfterFirstSignal(t *testing.T) {
 	stop := watchProcessSignals(func() { calls.Add(1) })
 	defer stop()
 
-	require.NoError(t, signalSelf(syscall.SIGTERM), "发送第一次信号失败")
+	require.NoError(t, signalSelf(syscall.SIGTERM), "Failed to send the first signal")
 	require.True(t, signalWaitUntil(func() bool { return calls.Load() >= 1 }, testTimeout),
-		"监听器没有消费第一次信号")
+		"The listener did not consume the first signal")
 
-	require.NoError(t, signalSelf(syscall.SIGINT), "发送第二次信号失败")
+	require.NoError(t, signalSelf(syscall.SIGINT), "Failed to send the second signal")
 	require.True(t, signalWaitUntil(func() bool { return calls.Load() >= 2 }, testTimeout),
-		"监听器在第一次回调后退出，第二次信号无人读取")
+		"The listener exits after the first callback, the second signal is unread")
 	assert.Equal(t, int32(2), calls.Load())
 }
 
@@ -163,13 +163,13 @@ func TestSignalDuringRunTriggersCleanShutdown(t *testing.T) {
 			ch := runAsyncProcess(app, quietConfig(t, "")...)
 			awaitReady(t, app)
 
-			require.NoError(t, signalSelf(sig), "向测试进程发送信号失败")
+			require.NoError(t, signalSelf(sig), "Failed to send a signal to the test process")
 			res := awaitResult(t, ch)
 
-			require.NoError(t, res.err, "信号触发的关机应当是干净的，不应带错误返回")
-			assert.Equal(t, 0, res.code, "signal 触发的停止属于正常退出，退出码应为 0")
-			assert.Equal(t, stopReasonSignal, app.stopReason, "停止原因应记录为 signal 而非其它来源")
-			assert.True(t, stopped, "运行中的插件必须收到 Stop")
+			require.NoError(t, res.err, "The shutdown triggered by a signal should be clean, without error return")
+			assert.Equal(t, 0, res.code, "The shutdown triggered by a signal is considered a normal exit, exit code should be 0")
+			assert.Equal(t, stopReasonSignal, app.stopReason, "The reason for shutdown should be recorded as signal, not from other sources")
+			assert.True(t, stopped, "Running plugins must receive Stop")
 		})
 	}
 }
@@ -208,12 +208,12 @@ func TestSignalStopDuringInitStageAbortsRemainingInitAndUnwinds(t *testing.T) {
 	ch := runAsync(app, quietConfig(t, "")...)
 	res := awaitResult(t, ch)
 
-	require.Error(t, res.err, "启动被中止必须返回错误")
+	require.Error(t, res.err, "An aborted startup must return an error")
 	assert.Equal(t, 1, res.code)
-	assert.Contains(t, res.err.Error(), "初始化", "错误必须点明中止发生在初始化阶段")
-	assert.False(t, bInitCalled, "停止请求之后，b 的 Init 绝不能被调用")
-	assert.True(t, aStopped, "a 已经 Init 成功，必须在反向清理中收到 Stop")
-	assert.False(t, bStopped, "b 从未 Init 成功，不应该有 Stop 被调用")
+	assert.Contains(t, res.err.Error(), "initialization", "The error must specify that the abortion occurred during initialization")
+	assert.False(t, bInitCalled, "After a shutdown request, b's Init must never be called")
+	assert.True(t, aStopped, "a has already successfully Init, it must receive Stop during reverse cleanup")
+	assert.False(t, bStopped, "b has never successfully Init, it should not have Stop called")
 }
 
 // TestSignalStopDuringMigrateStageAbortsRemainingMigrateAndUnwinds pins the
@@ -250,12 +250,12 @@ func TestSignalStopDuringMigrateStageAbortsRemainingMigrateAndUnwinds(t *testing
 	ch := runAsync(app, args...)
 	res := awaitResult(t, ch)
 
-	require.Error(t, res.err, "启动被中止必须返回错误")
+	require.Error(t, res.err, "An aborted startup must return an error")
 	assert.Equal(t, 1, res.code)
-	assert.Contains(t, res.err.Error(), "迁移", "错误必须点明中止发生在迁移阶段")
-	assert.False(t, bMigrateCalled, "停止请求之后，b 的 Migrate 绝不能被调用")
-	assert.True(t, aStopped, "a 已经 Init 成功，必须在反向清理中收到 Stop")
-	assert.True(t, bStopped, "b 即便没跑到 Migrate，此前也已经 Init 成功，同样必须被反向清理")
+	assert.Contains(t, res.err.Error(), "migration", "The error must specify that the abortion occurred during migration")
+	assert.False(t, bMigrateCalled, "After a shutdown request, b's Migrate must never be called")
+	assert.True(t, aStopped, "a has already been Init successfully, must receive Stop in reverse cleanup")
+	assert.True(t, bStopped, "b has already been Init successfully even if it didn't reach Migrate, must still be cleaned up in reverse")
 }
 
 // TestSignalStopDuringStartStageAbortsRemainingStartAndUnwinds pins the
@@ -286,12 +286,12 @@ func TestSignalStopDuringStartStageAbortsRemainingStartAndUnwinds(t *testing.T) 
 	ch := runAsync(app, quietConfig(t, "")...)
 	res := awaitResult(t, ch)
 
-	require.Error(t, res.err, "启动被中止必须返回错误")
+	require.Error(t, res.err, "Startup interruption must return an error")
 	assert.Equal(t, 1, res.code)
-	assert.Contains(t, res.err.Error(), "启动", "错误必须点明中止发生在启动阶段")
-	assert.False(t, bStartCalled, "停止请求之后，b 的 Start 绝不能被调用")
-	assert.True(t, aStopped, "a 已经 Init 成功，必须在反向清理中收到 Stop")
-	assert.True(t, bStopped, "b 已经 Init 成功，即便没跑到 Start，也必须被反向清理")
+	assert.Contains(t, res.err.Error(), "startup", "Error must indicate that the interruption occurred during the startup phase")
+	assert.False(t, bStartCalled, "After a stop request, b's Start must never be called")
+	assert.True(t, aStopped, "a has already been Init successfully, must receive Stop in reverse cleanup")
+	assert.True(t, bStopped, "b has already been Init successfully, must still be cleaned up in reverse even if it didn't reach Start")
 }
 
 // TestSignalStopDuringOpenTrafficStageAbortsRemainingOpenAndUnwinds pins the
@@ -321,12 +321,12 @@ func TestSignalStopDuringOpenTrafficStageAbortsRemainingOpenAndUnwinds(t *testin
 	ch := runAsync(app, quietConfig(t, "")...)
 	res := awaitResult(t, ch)
 
-	require.Error(t, res.err, "启动被中止必须返回错误")
+	require.Error(t, res.err, "Startup interruption must return an error")
 	assert.Equal(t, 1, res.code)
-	assert.Contains(t, res.err.Error(), "开放流量", "错误必须点明中止发生在开放流量阶段")
-	assert.False(t, bOpenCalled, "停止请求之后，b 的 OpenTraffic 绝不能被调用")
-	assert.True(t, aStopped, "a 已经 Init 成功，必须在反向清理中收到 Stop")
-	assert.True(t, bStopped, "b 已经 Init 成功，即便没跑到 OpenTraffic，也必须被反向清理")
+	assert.Contains(t, res.err.Error(), "open traffic", "Error must indicate that the interruption occurred during the open traffic phase")
+	assert.False(t, bOpenCalled, "After a stop request, b's OpenTraffic must never be called")
+	assert.True(t, aStopped, "a has already been Init successfully, must receive Stop in reverse cleanup")
+	assert.True(t, bStopped, "b has already been Init successfully, must still be cleaned up in reverse even if it didn't reach OpenTraffic")
 }
 
 // TestSignalHandlerUnregisteredAfterStopFunctionReturns pins rule #4: the
@@ -358,9 +358,9 @@ func TestSignalHandlerUnregisteredAfterStopFunctionReturns(t *testing.T) {
 	stopB := watchProcessSignals(func() { observedB.Store(true) })
 	defer stopB()
 
-	require.NoError(t, signalSelf(syscall.SIGTERM), "向测试进程发送信号失败")
+	require.NoError(t, signalSelf(syscall.SIGTERM), "Failed to send signal to test process")
 	require.True(t, signalWaitUntil(observedB.Load, testTimeout),
-		"appB 仍在监听，理应在信号发出后观察到停止请求；如果这里超时，说明测试环境本身在拦截信号，而非生产代码的问题")
+		"appB is still listening, should observe a stop request after the signal is sent; if this times out, it indicates the test environment is intercepting signals, not the production code")
 
 	// appA and appB observe the very same OS signal at essentially the same
 	// time (Notify's delivery loop reaches every registered channel before
@@ -368,5 +368,5 @@ func TestSignalHandlerUnregisteredAfterStopFunctionReturns(t *testing.T) {
 	// chance to react. This assertion, not any additional sleep, is what
 	// determines the outcome.
 	assert.False(t, observedA.Load(),
-		"appA 已经调用 stop()，之后不应再收到信号；出现该情况说明 watchProcessSignals 返回的 stop 函数未能解除 signal.Notify 注册")
+		"appA has already called stop(), should not receive any further signals; if this occurs, it indicates the stop function returned by watchProcessSignals failed to deregister signal.Notify")
 }

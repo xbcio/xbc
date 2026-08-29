@@ -25,9 +25,9 @@ func TestTSeriesCallerPointsToCallSite(t *testing.T) {
 	TInfof(context.Background(), "via %s", "Tf") // line + 3
 
 	require.Len(t, logs.All(), 3)
-	assert.Equal(t, line+1, logs.All()[0].Caller.Line, "TInfo 的 caller")
-	assert.Equal(t, line+2, logs.All()[1].Caller.Line, "门面方法的 caller")
-	assert.Equal(t, line+3, logs.All()[2].Caller.Line, "TInfof 的 caller")
+	assert.Equal(t, line+1, logs.All()[0].Caller.Line, "caller of TInfo")
+	assert.Equal(t, line+2, logs.All()[1].Caller.Line, "caller of facade method")
+	assert.Equal(t, line+3, logs.All()[2].Caller.Line, "caller of TInfof")
 
 	for _, e := range logs.All() {
 		assert.Contains(t, e.Caller.File, "sugar_test.go")
@@ -54,7 +54,7 @@ func TestTSeriesLevels(t *testing.T) {
 
 func TestTSeriesCarriesKV(t *testing.T) {
 	logs := installObserver(t)
-	TInfo(context.Background(), "下单", "order_id", 1001, "amount", 99.5)
+	TInfo(context.Background(), "Place order", "order_id", 1001, "amount", 99.5)
 
 	require.Len(t, logs.All(), 1)
 	m := logs.All()[0].ContextMap()
@@ -66,20 +66,20 @@ func TestTSeriesEquivalentToFacade(t *testing.T) {
 	logs := installObserver(t)
 	ctx := context.Background()
 
-	TInfo(ctx, "同一条", "k", "v")
-	Ctx(ctx).Info("同一条", "k", "v")
+	TInfo(ctx, "Same line", "k", "v")
+	Ctx(ctx).Info("Same line", "k", "v")
 
 	require.Len(t, logs.All(), 2)
 	assert.Equal(t, logs.All()[0].Message, logs.All()[1].Message)
 	assert.Equal(t, logs.All()[0].ContextMap(), logs.All()[1].ContextMap(),
-		"两条路径必须产出完全相同的日志")
+		"Two paths must produce exactly the same log")
 }
 
 func TestTSeriesInheritsContextTrace(t *testing.T) {
 	logs := installObserver(t)
 
 	tr := NewTrace("http.request")
-	TInfo(WithTrace(context.Background(), tr), "带链路")
+	TInfo(WithTrace(context.Background(), tr), "With trace")
 
 	require.Len(t, logs.All(), 1)
 	assert.Equal(t, tr.TraceID().String(), logs.All()[0].ContextMap()["trace_id"])
@@ -116,10 +116,10 @@ func TestTInfofSkipsFormattingWhenLevelDisabled(t *testing.T) {
 	arg := stringerFunc(func() string { calls++; return "expensive" })
 
 	TInfof(context.Background(), "%s", arg)
-	assert.Zero(t, calls, "级别不启用时不该触发格式化")
+	assert.Zero(t, calls, "Should not trigger formatting when level is not enabled")
 
 	TErrorf(context.Background(), "%s", arg)
-	assert.Equal(t, 1, calls, "启用的级别照常格式化")
+	assert.Equal(t, 1, calls, "Enabled level is formatted normally")
 }
 
 func TestTSeriesNilContextDoesNotPanic(t *testing.T) {
@@ -135,7 +135,7 @@ func TestTSeriesWorksWithBackendLackingCallerSkipper(t *testing.T) {
 	t.Cleanup(func() { SetLogger(Nop()) })
 
 	assert.NotPanics(t, func() {
-		TInfo(context.Background(), "后端不支持 skip 也要能打")
+		TInfo(context.Background(), "Backend not supporting skip should still log")
 		TInfof(context.Background(), "%d", 1)
 	})
 }

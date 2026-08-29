@@ -39,7 +39,7 @@ func TestAppNewUsesProvidedFrozenSnapshot(t *testing.T) {
 		names = append(names, inst.Label())
 	}
 	assert.Equal(t, []string{"app-private-keepalive"}, names,
-		"newApp 必须只装配调用者提供的冻结快照")
+		"newApp must only assemble the frozen snapshot provided by the caller")
 
 	app.requestStop(stopReasonSignal)
 	res := awaitResult(t, done)
@@ -76,7 +76,7 @@ func TestApp_DisabledPlugin_FactoryNeverCalled(t *testing.T) {
 	assert.Equal(t, 0, res.code)
 
 	assert.False(t, called.Load(),
-		"配置里没有 plugins.app-gated-plugin 小节时，禁用插件的 Factory 绝对不能被调用")
+		"Factory of disabled plugin must never be called when there is no plugins.app-gated-plugin section in the configuration")
 }
 
 // --- B. App-owned runtime-state isolation --------------------------------
@@ -136,17 +136,17 @@ func TestApp_TwoApps_HaveIndependentInstancesAndValueRegistries(t *testing.T) {
 	require.NotNil(t, instA)
 	require.NotNil(t, instB)
 	assert.NotSame(t, instA, instB,
-		"两个 App 必须各自调用 Factory 产出独立的插件实例，不能共享同一个对象")
+		"Two Apps must each call Factory to produce independent plugin instances, cannot share the same object")
 
 	gotA, ok := plugin.Get[*appProbe](ctxA)
 	require.True(t, ok)
 	assert.Same(t, instA, gotA,
-		"App A 的值注册表查询必须返回 App A 自己 provide 的实例")
+		"Querying the value registry of App A must return the instance provided by App A itself")
 
 	gotB, ok := plugin.Get[*appProbe](ctxB)
 	require.True(t, ok)
 	assert.Same(t, instB, gotB,
-		"App B 的值注册表查询必须返回 App B 自己 provide 的实例，不能被 App A 覆盖或读到 App A 的值")
+		"The value registration lookup for App B must return the instance provided by App B itself, and cannot be overridden or read from App A's value")
 
 	appA.requestStop(stopReasonSignal)
 	appB.requestStop(stopReasonSignal)
@@ -169,8 +169,8 @@ func TestApp_EmptyCatalog_FailsWithBlankImportHint(t *testing.T) {
 	code, err := app.Execute(context.Background(), quietConfig(t, ""))
 	assert.Equal(t, 1, code)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "blank import",
-		"空 catalog 的错误信息必须提示大概率忘了 blank import，这是它和「声明了但没启用」之间唯一有用的区别")
+	assert.Contains(t, err.Error(), "blank-import",
+		"The error message for an empty catalog must indicate that the user likely forgot a blank import, which is the only useful distinction between this case and 'declared but not enabled'")
 }
 
 // TestApp_NoPluginEnabled_FailsListingDisabledNames pins §5.2's second cause
@@ -190,8 +190,8 @@ func TestApp_NoPluginEnabled_FailsListingDisabledNames(t *testing.T) {
 	assert.Equal(t, 1, code)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "app-never-enabled",
-		"必须点名到底是哪个插件被声明却没启用")
-	assert.Contains(t, err.Error(), "没有一个被启用")
+		"The error must explicitly name which plugin was declared but not enabled")
+	assert.Contains(t, err.Error(), "none were enabled")
 }
 
 // --- liveness capability judgement (§5.2) ----------------------------------
@@ -238,8 +238,8 @@ func TestApp_NoLivenessCapability_FailsStartup(t *testing.T) {
 	assert.Equal(t, 1, code)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "app-inert",
-		"错误必须列出已装配的插件，让人一眼看出装是装上了、但没有一个能跑的")
-	assert.Contains(t, err.Error(), "没有任何插件提供长期存活能力")
+		"The error must list the plugins that are assembled, allowing the user to immediately see that they are assembled but none can run")
+	assert.Contains(t, err.Error(), "no plugin provides a long-lived capability")
 }
 
 // TestApp_TrafficOpenerOnly_StartsSuccessfully is the bullet the task
@@ -256,7 +256,7 @@ func TestApp_TrafficOpenerOnly_StartsSuccessfully(t *testing.T) {
 	res := awaitResult(t, done)
 	require.NoError(t, res.err)
 	assert.Equal(t, 0, res.code,
-		"只实现 TrafficOpener（不实现 Runner）的插件必须被判定为合法的存活能力，启动必须成功")
+		"Plugins that only implement TrafficOpener (and not Runner) must be considered valid long-lived capabilities and must start successfully")
 }
 
 // TestApp_RunnerOnly_StartsSuccessfully is Runner's own half of the same
@@ -283,7 +283,7 @@ func TestApp_ManagedTaskOnly_StartsSuccessfully(t *testing.T) {
 	res := awaitResult(t, done)
 	require.NoError(t, res.err)
 	assert.Equal(t, 0, res.code,
-		"Init 里用 ctx.Go 起了托管任务，即使不实现 Runner/TrafficOpener，也必须算作存活能力")
+		"Plugins that use ctx.Go to start a hosted task in Init, even without implementing Runner/TrafficOpener, must be considered as providing a long-lived capability")
 }
 
 // --- ruling R6: orphan plugins.* sections ----------------------------------
@@ -299,8 +299,8 @@ func TestApp_OrphanConfigSection_NamesUnknownSectionAndFailsStartup(t *testing.T
 	assert.Equal(t, 1, code)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "app-typo-no-such-plugin",
-		"孤儿配置节的名字必须出现在错误信息里，否则没法定位是哪一节写错了")
-	assert.Contains(t, err.Error(), "无对应插件")
+		"The name of an orphaned configuration section must appear in the error message, otherwise it is impossible to determine which section was incorrectly written")
+	assert.Contains(t, err.Error(), "no corresponding plugin")
 }
 
 // TestApp_DisabledPluginSection_NotTreatedAsOrphan pins the other half of
@@ -321,6 +321,6 @@ func TestApp_DisabledPluginSection_NotTreatedAsOrphan(t *testing.T) {
 	app.requestStop(stopReasonSignal)
 	res := awaitResult(t, done)
 	require.NoError(t, res.err,
-		"已链接（有 Definition）只是显式 enabled:false 的插件不是孤儿配置节，不应导致启动失败")
+		"A plugin that is linked (has Definition) but explicitly enabled:false is not an orphaned configuration section and should not cause a startup failure")
 	assert.Equal(t, 0, res.code)
 }

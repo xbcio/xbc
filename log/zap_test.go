@@ -41,12 +41,12 @@ func TestToFieldsOddCountProducesBadKey(t *testing.T) {
 	fs := toFields([]any{"a", 1, "dangling"})
 	require.Len(t, fs, 2)
 	assert.Equal(t, "a", fs[0].Key)
-	assert.Equal(t, badKeyName, fs[1].Key, "落单的参数进 !BADKEY，不能静默吞掉")
+	assert.Equal(t, badKeyName, fs[1].Key, "Single parameter goes to !BADKEY, cannot be silently dropped")
 }
 
 // A call migrated from gfa's Sprintln semantics will hit this case.
 func TestToFieldsNonStringKeyProducesBadKey(t *testing.T) {
-	fs := toFields([]any{1001, 99.5}) // the kv portion of TInfo(ctx, "支付", id, amt)
+	fs := toFields([]any{1001, 99.5}) // the kv portion of TInfo(ctx, "payment", id, amt)
 	require.Len(t, fs, 2)
 	assert.Equal(t, badKeyName, fs[0].Key)
 	assert.Equal(t, badKeyName, fs[1].Key)
@@ -55,8 +55,8 @@ func TestToFieldsNonStringKeyProducesBadKey(t *testing.T) {
 func TestToFieldsRealignsAfterBadKey(t *testing.T) {
 	fs := toFields([]any{42, "user", "alice"})
 	require.Len(t, fs, 2)
-	assert.Equal(t, badKeyName, fs[0].Key, "42 当不了 key")
-	assert.Equal(t, "user", fs[1].Key, "后面的合法 KV 必须重新对齐")
+	assert.Equal(t, badKeyName, fs[0].Key, "42 cannot be a key")
+	assert.Equal(t, "user", fs[1].Key, "Subsequent valid KV must realign")
 }
 
 func TestFacadeCallerPointsToCallSite(t *testing.T) {
@@ -67,7 +67,7 @@ func TestFacadeCallerPointsToCallSite(t *testing.T) {
 
 	require.Len(t, logs.All(), 1)
 	e := logs.All()[0]
-	assert.Equal(t, line+1, e.Caller.Line, "caller 必须指向业务代码，不是 zap.go")
+	assert.Equal(t, line+1, e.Caller.Line, "caller must point to business code, not zap.go")
 	assert.Contains(t, e.Caller.File, "zap_test.go")
 }
 
@@ -99,7 +99,7 @@ func TestWithCallerSkipCachesSkipOne(t *testing.T) {
 	l := newZapLogger(zap.NewNop())
 	a := l.WithCallerSkip(1)
 	b := l.WithCallerSkip(1)
-	assert.Same(t, a, b, "skip+1 是 T 系列热路径，必须缓存复用")
+	assert.Same(t, a, b, "skip+1 is the T series hot path, must be cached and reused")
 	assert.NotSame(t, a, l.WithCallerSkip(2))
 }
 
@@ -107,7 +107,7 @@ func TestCtxFastPathReturnsStoredLogger(t *testing.T) {
 	installObserver(t)
 	stored := L().With("svc", "order")
 	ctx := NewContext(context.Background(), stored)
-	assert.Same(t, stored, Ctx(ctx), "存过 logger 就直接取，不再派生")
+	assert.Same(t, stored, Ctx(ctx), "Take the stored logger directly, no longer derive")
 }
 
 func TestCtxSlowPathDerivesFromTrace(t *testing.T) {
@@ -134,7 +134,7 @@ func TestCtxFallsBackToGlobal(t *testing.T) {
 
 func TestTraceKVSkipsZeroValues(t *testing.T) {
 	kv := traceKV(Trace{})
-	assert.Empty(t, kv, "零值 Trace 不该产出任何字段")
+	assert.Empty(t, kv, "Zero-value Trace should not produce any fields")
 }
 
 func TestEnabledReflectsCoreLevel(t *testing.T) {
@@ -147,7 +147,7 @@ func TestEnabledReflectsCoreLevel(t *testing.T) {
 
 func TestWithEmptyKVReturnsSameLogger(t *testing.T) {
 	l := newZapLogger(zap.NewNop())
-	assert.Same(t, Logger(l), l.With(), "空 With 不该白白克隆一个 logger")
+	assert.Same(t, Logger(l), l.With(), "Empty With should not clone a logger unnecessarily")
 }
 
 // ── Init assembly ────────────────────────────────────────
@@ -178,7 +178,7 @@ func TestInitFileSinkWritesJSONLWithMasking(t *testing.T) {
 	require.NoError(t, Init(cfg))
 	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
 
-	L().Info("下单", "order_id", 1001, "password", "hunter2")
+	L().Info("Place an order", "order_id", 1001, "password", "hunter2")
 	require.NoError(t, Close())
 
 	data, err := os.ReadFile(cfg.File.Path)
@@ -186,9 +186,9 @@ func TestInitFileSinkWritesJSONLWithMasking(t *testing.T) {
 
 	var m map[string]any
 	require.NoError(t, json.Unmarshal(bytes.TrimSpace(data), &m))
-	assert.Equal(t, "下单", m["msg"])
+	assert.Equal(t, "Place an order", m["msg"])
 	assert.EqualValues(t, 1001, m["order_id"])
-	assert.Equal(t, maskPlaceholder, m["password"], "脱敏必须覆盖文件 sink")
+	assert.Equal(t, maskPlaceholder, m["password"], "Sensitive fields must be masked in the file sink")
 	assert.Contains(t, m, "caller")
 	assert.Contains(t, m, "ts")
 	assert.Equal(t, "info", m["level"])
@@ -204,24 +204,24 @@ func TestInitErrorPathOnlyReceivesErrors(t *testing.T) {
 	require.NoError(t, Init(cfg))
 	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
 
-	L().Info("普通信息")
-	L().Error("出事了", "password", "hunter2")
+	L().Info("Normal information")
+	L().Error("Something went wrong", "password", "hunter2")
 	require.NoError(t, Close())
 
 	all, err := os.ReadFile(cfg.File.Path)
 	require.NoError(t, err)
-	assert.Contains(t, string(all), "普通信息")
-	assert.Contains(t, string(all), "出事了")
+	assert.Contains(t, string(all), "Normal information")
+	assert.Contains(t, string(all), "Something went wrong")
 
 	errOnly, err := os.ReadFile(cfg.File.ErrorPath)
 	require.NoError(t, err)
-	assert.NotContains(t, string(errOnly), "普通信息", "error sink 只收 error 及以上")
-	assert.Contains(t, string(errOnly), "出事了")
+	assert.NotContains(t, string(errOnly), "Normal information", "error sink only accepts error and above")
+	assert.Contains(t, string(errOnly), "Something went wrong")
 
 	// Every leaf sink is wrapped in its own maskCore layer -- missing any one of
 	// them would be exposed right here.
-	assert.NotContains(t, string(all), "hunter2", "app sink 必须脱敏")
-	assert.NotContains(t, string(errOnly), "hunter2", "error sink 必须同样脱敏")
+	assert.NotContains(t, string(all), "hunter2", "app sink must redact sensitive fields")
+	assert.NotContains(t, string(errOnly), "hunter2", "error sink must also redact sensitive fields")
 	assert.Contains(t, string(errOnly), maskPlaceholder)
 }
 
@@ -245,14 +245,14 @@ func TestSamplingWrapsOutsideMaskCore(t *testing.T) {
 	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
 
 	for i := 0; i < 5; i++ {
-		L().Info("重复消息")
+		L().Info("Duplicate message")
 	}
 	require.NoError(t, Close())
 
 	b, err := os.ReadFile(cfg.File.Path)
 	require.NoError(t, err)
-	assert.Equal(t, 1, bytes.Count(b, []byte("重复消息")),
-		"采样必须生效：5 条相同消息只应落盘 1 条")
+	assert.Equal(t, 1, bytes.Count(b, []byte("Duplicate message")),
+		"Sampling must take effect: 5 identical messages should only be logged once")
 }
 
 func TestInitCreatesMissingLogDir(t *testing.T) {
@@ -274,7 +274,7 @@ func TestSyncOnStdoutIsNotAnError(t *testing.T) {
 	require.NoError(t, Init(cfg))
 	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
 
-	assert.NoError(t, Sync(), "对终端/管道 fsync 会返回 EINVAL，那不是错误")
+	assert.NoError(t, Sync(), "Fsync to terminal/pipeline fs will return EINVAL, which is not an error")
 }
 
 // ── SetLogger's safety warning ────────────────────────────
@@ -308,7 +308,7 @@ func TestSetLoggerWarnsWhenBackendReplaced(t *testing.T) {
 	t.Cleanup(func() { SetLogger(Nop()) })
 
 	out := captureStderr(t, func() { SetLogger(fakeBackend{Nop()}) })
-	assert.Contains(t, out, "脱敏", "换后端等于换掉内置脱敏，必须显式警示")
+	assert.Contains(t, out, "sensitive field masking", "Replacing the backend disables built-in sensitive field masking, so the warning must be explicit")
 }
 
 func TestSetLoggerSilentForDefaultAndNop(t *testing.T) {
@@ -318,7 +318,7 @@ func TestSetLoggerSilentForDefaultAndNop(t *testing.T) {
 		SetLogger(Nop())
 		SetLogger(newZapLogger(zap.NewNop()))
 	})
-	assert.Empty(t, out, "默认 binding 与显式禁用都不该刷警告")
+	assert.Empty(t, out, "Default binding and explicit disable should not log warnings")
 }
 
 func TestSetLoggerNilFallsBackToNop(t *testing.T) {

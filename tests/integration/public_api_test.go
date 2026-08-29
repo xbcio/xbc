@@ -51,7 +51,7 @@ func TestPublicAPIExecutesPrivateSnapshot(t *testing.T) {
 	code, err = app.Execute(context.Background(), []string{"doctor"})
 	assert.Equal(t, 1, code)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "只能调用一次")
+	assert.Contains(t, err.Error(), "can only be called once")
 }
 
 // TestPublicAppSurface pins App's exported method set to exactly Execute, with

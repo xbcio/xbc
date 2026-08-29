@@ -19,7 +19,7 @@ func TestNewTraceIsValidAndSampled(t *testing.T) {
 	assert.True(t, tr.SpanID().IsValid())
 	assert.True(t, tr.IsSampled())
 	assert.Equal(t, "http.request", tr.SpanName)
-	assert.False(t, tr.ParentSpanID.IsValid(), "根 span 没有 parent")
+	assert.False(t, tr.ParentSpanID.IsValid(), "Root span has no parent")
 }
 
 // RequestID and TraceID must be two encodings of the same value; Extract's reverse derivation depends on this.
@@ -27,9 +27,9 @@ func TestRequestIDAndTraceIDAreSameValue(t *testing.T) {
 	tr := NewTrace("root")
 
 	u, err := ulid.Parse(tr.RequestID)
-	require.NoError(t, err, "RequestID 必须是合法 ULID")
+	require.NoError(t, err, "RequestID must be a valid ULID")
 	assert.Equal(t, trace.TraceID(u), tr.TraceID())
-	assert.Equal(t, tr.RequestID, ulid.ULID(tr.TraceID()).String(), "反推必须无损")
+	assert.Equal(t, tr.RequestID, ulid.ULID(tr.TraceID()).String(), "Reverse must be lossless")
 }
 
 func TestNewTraceIsUnique(t *testing.T) {
@@ -37,7 +37,7 @@ func TestNewTraceIsUnique(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		id := NewTrace("x").TraceID().String()
 		_, dup := seen[id]
-		require.False(t, dup, "第 %d 次生成了重复 trace_id", i)
+		require.False(t, dup, "Duplicate trace_id generated on the %d-th attempt", i)
 		seen[id] = struct{}{}
 	}
 }
@@ -46,11 +46,11 @@ func TestForkInheritsTraceIDAndChainsParent(t *testing.T) {
 	root := NewTrace("http.request")
 	child := root.Fork("db.query")
 
-	assert.Equal(t, root.TraceID(), child.TraceID(), "trace_id 必须继承")
-	assert.NotEqual(t, root.SpanID(), child.SpanID(), "span_id 必须是新的")
-	assert.Equal(t, root.SpanID(), child.ParentSpanID, "parent 必须指向 fork 的源")
+	assert.Equal(t, root.TraceID(), child.TraceID(), "trace_id must be inherited")
+	assert.NotEqual(t, root.SpanID(), child.SpanID(), "span_id must be new")
+	assert.Equal(t, root.SpanID(), child.ParentSpanID, "parent must point to the source of the fork")
 	assert.Equal(t, "db.query", child.SpanName)
-	assert.Equal(t, root.RequestID, child.RequestID, "request_id 贯穿整条链路")
+	assert.Equal(t, root.RequestID, child.RequestID, "request_id spans the entire trace")
 
 	grand := child.Fork("redis.get")
 	assert.Equal(t, root.TraceID(), grand.TraceID())
@@ -61,7 +61,7 @@ func TestForkDoesNotMutateParent(t *testing.T) {
 	root := NewTrace("root")
 	rootSpan := root.SpanID()
 	_ = root.Fork("child")
-	assert.Equal(t, rootSpan, root.SpanID(), "Fork 是值语义，不能改到调用者")
+	assert.Equal(t, rootSpan, root.SpanID(), "Fork is value semantics, cannot be modified by the caller")
 }
 
 func TestTraceContextRoundTrip(t *testing.T) {
@@ -97,7 +97,7 @@ func TestTraceFromFallsBackToOTelSpanContext(t *testing.T) {
 	tr := TraceFrom(ctx)
 	assert.True(t, tr.Valid())
 	assert.Equal(t, sc.TraceID(), tr.TraceID())
-	assert.Equal(t, tr.TraceID(), trace.TraceID(ulid.MustParse(tr.RequestID)), "request_id 是 trace_id 的 ULID 编码")
+	assert.Equal(t, tr.TraceID(), trace.TraceID(ulid.MustParse(tr.RequestID)), "request_id is the ULID encoding of trace_id")
 }
 
 // The most important regression guard: when ctx carries both an outer OTel
@@ -118,7 +118,7 @@ func TestTraceFromPrefersLocalOverOTel(t *testing.T) {
 	ctx = WithTrace(ctx, inner)
 
 	got := TraceFrom(ctx)
-	assert.Equal(t, inner.TraceID(), got.TraceID(), "必须是本地 trace，不是外层 OTel span 的")
+	assert.Equal(t, inner.TraceID(), got.TraceID(), "Must be a local trace, not an outer OTel span")
 	assert.Equal(t, inner.SpanID(), got.SpanID())
 	assert.Equal(t, inner.RequestID, got.RequestID)
 	assert.Equal(t, "db.query", got.SpanName)
@@ -141,8 +141,8 @@ func TestSpanForksFromParent(t *testing.T) {
 	defer done()
 
 	child := TraceFrom(ctx2)
-	assert.Equal(t, root.TraceID(), child.TraceID(), "trace_id 必须继承")
-	assert.NotEqual(t, root.SpanID(), child.SpanID(), "span_id 必须是新的")
+	assert.Equal(t, root.TraceID(), child.TraceID(), "trace_id must be inherited")
+	assert.NotEqual(t, root.SpanID(), child.SpanID(), "span_id must be new")
 	assert.Equal(t, root.SpanID(), child.ParentSpanID)
 	assert.Equal(t, "db.query", child.SpanName)
 	assert.Equal(t, root.RequestID, child.RequestID)
@@ -154,7 +154,7 @@ func TestSpanWithoutParentStartsNewTrace(t *testing.T) {
 
 	tr := TraceFrom(ctx)
 	assert.True(t, tr.Valid())
-	assert.False(t, tr.ParentSpanID.IsValid(), "没有上游就是根 span")
+	assert.False(t, tr.ParentSpanID.IsValid(), "No upstream means root span")
 	assert.Equal(t, "cron.cleanup", tr.SpanName)
 }
 
@@ -162,7 +162,7 @@ func TestSpanBindsLoggerIntoContext(t *testing.T) {
 	logs := installObserver(t)
 
 	ctx, done := Span(context.Background(), "svc.call")
-	Ctx(ctx).Info("span 内部")
+	Ctx(ctx).Info("Inside span")
 	done()
 
 	require.GreaterOrEqual(t, len(logs.All()), 1)
@@ -181,7 +181,7 @@ func TestSpanIDOptionOverridesGenerated(t *testing.T) {
 func TestSpanIDOptionIgnoresZeroValue(t *testing.T) {
 	ctx, done := SpanWith(context.Background(), "x", SpanID(trace.SpanID{}))
 	defer done()
-	assert.True(t, TraceFrom(ctx).SpanID().IsValid(), "零值 span_id 不该覆盖掉生成的那个")
+	assert.True(t, TraceFrom(ctx).SpanID().IsValid(), "Zero-value span_id should not override the generated one")
 }
 
 func TestSpanLogsElapsedOnDone(t *testing.T) {
@@ -198,7 +198,7 @@ func TestSpanLogsElapsedOnDone(t *testing.T) {
 	require.Len(t, logs.All(), 1)
 	e := logs.All()[0]
 	assert.Equal(t, zapcore.DebugLevel, e.Level)
-	assert.Equal(t, "span 结束", e.Message)
+	assert.Equal(t, "span ended", e.Message)
 	assert.Equal(t, "slow.op", e.ContextMap()["span_name"])
 	assert.InDelta(t, 1500.0, e.ContextMap()["elapsed_ms"], 0.001)
 }
@@ -212,7 +212,7 @@ func TestSpanNestsThreeLevels(t *testing.T) {
 	d1()
 
 	t1, t2, t3 := TraceFrom(c1), TraceFrom(c2), TraceFrom(c3)
-	assert.Equal(t, t1.TraceID(), t3.TraceID(), "三层共用一个 trace_id")
+	assert.Equal(t, t1.TraceID(), t3.TraceID(), "Three layers share the same trace_id")
 	assert.Equal(t, t1.SpanID(), t2.ParentSpanID)
 	assert.Equal(t, t2.SpanID(), t3.ParentSpanID)
 }

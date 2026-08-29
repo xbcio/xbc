@@ -17,7 +17,7 @@ func TestDefaultConfigNormalizes(t *testing.T) {
 	assert.True(t, c.Console.Enabled)
 	assert.Equal(t, FormatConsole, c.Console.Format)
 	assert.Equal(t, ColorAuto, c.Console.Color)
-	assert.False(t, c.File.Enabled, "文件输出默认关闭")
+	assert.False(t, c.File.Enabled, "File output is default disabled")
 	assert.Equal(t, 100, c.Sampling.Initial)
 	assert.Equal(t, 100, c.Sampling.Thereafter)
 }
@@ -30,7 +30,7 @@ func TestNormalizeIsIdempotent(t *testing.T) {
 	require.NoError(t, c.Normalize())
 	first := c
 	require.NoError(t, c.Normalize())
-	assert.Equal(t, first, c, "Normalize 必须幂等")
+	assert.Equal(t, first, c, "Normalize must be idempotent")
 }
 
 // The file suffix itself is the format declaration. Use .jsonl instead of .json --
@@ -52,7 +52,7 @@ func TestFileFormatInferredFromExtension(t *testing.T) {
 		c.File.Path = path
 		c.File.Format = ""
 		require.NoError(t, c.Normalize(), path)
-		assert.Equal(t, want, c.File.Format, "路径 %q", path)
+		assert.Equal(t, want, c.File.Format, "Path %q", path)
 	}
 }
 
@@ -62,7 +62,7 @@ func TestExplicitFormatOverridesInference(t *testing.T) {
 	c.File.Path = "logs/app.jsonl"
 	c.File.Format = FormatConsole
 	require.NoError(t, c.Normalize())
-	assert.Equal(t, FormatConsole, c.File.Format, "显式配置压过后缀推导")
+	assert.Equal(t, FormatConsole, c.File.Format, "Explicit configuration overrides suffix derivation")
 }
 
 // error_path has its own suffix and its format is inferred independently.
@@ -109,7 +109,7 @@ func TestNoSinkEnabledIsAllowed(t *testing.T) {
 	c := DefaultConfig()
 	c.Console.Enabled = false
 	c.File.Enabled = false
-	assert.NoError(t, c.Normalize(), "全关等价于 Nop，是合法配置（测试环境常用）")
+	assert.NoError(t, c.Normalize(), "All off is equivalent to Nop, is a valid configuration (common in test environments)")
 }
 
 // TestNormalizeClampsBoundaryValues pins down the 5 numeric clamp points in
@@ -123,11 +123,11 @@ func TestNormalizeClampsBoundaryValues(t *testing.T) {
 		c.File.Enabled = true
 		c.File.MaxSize = 0
 		require.NoError(t, c.Normalize())
-		assert.Equal(t, 100, c.File.MaxSize, "MaxSize=0 必须夹回默认值 100")
+		assert.Equal(t, 100, c.File.MaxSize, "MaxSize=0 must revert to default value 100")
 
 		c.File.MaxSize = -5
 		require.NoError(t, c.Normalize())
-		assert.Equal(t, 100, c.File.MaxSize, "MaxSize=-5 必须夹回默认值 100")
+		assert.Equal(t, 100, c.File.MaxSize, "MaxSize=-5 must revert to default value 100")
 	})
 
 	t.Run("MaxAge<0 clamped to 0", func(t *testing.T) {
@@ -135,7 +135,7 @@ func TestNormalizeClampsBoundaryValues(t *testing.T) {
 		c.File.Enabled = true
 		c.File.MaxAge = -1
 		require.NoError(t, c.Normalize())
-		assert.Equal(t, 0, c.File.MaxAge, "MaxAge=-1 必须夹回 0（不限期）")
+		assert.Equal(t, 0, c.File.MaxAge, "MaxAge=-1 must revert to 0 (unlimited)")
 	})
 
 	t.Run("MaxBackups<0 clamped to 0", func(t *testing.T) {
@@ -143,7 +143,7 @@ func TestNormalizeClampsBoundaryValues(t *testing.T) {
 		c.File.Enabled = true
 		c.File.MaxBackups = -3
 		require.NoError(t, c.Normalize())
-		assert.Equal(t, 0, c.File.MaxBackups, "MaxBackups=-3 必须夹回 0（不限个数）")
+		assert.Equal(t, 0, c.File.MaxBackups, "MaxBackups=-3 must revert to 0 (unlimited number)")
 	})
 
 	// ── Sampling clamps (always active) ──
@@ -152,13 +152,13 @@ func TestNormalizeClampsBoundaryValues(t *testing.T) {
 		c := DefaultConfig()
 		c.Sampling.Initial = -10
 		require.NoError(t, c.Normalize())
-		assert.Equal(t, 0, c.Sampling.Initial, "负的采样初始值必须夹回 0（禁用采样）")
+		assert.Equal(t, 0, c.Sampling.Initial, "Negative sampling initial value must be clamped to 0 (disable sampling)")
 	})
 
 	t.Run("Sampling.Thereafter<0 clamped to 0", func(t *testing.T) {
 		c := DefaultConfig()
 		c.Sampling.Thereafter = -1
 		require.NoError(t, c.Normalize())
-		assert.Equal(t, 0, c.Sampling.Thereafter, "负的采样后续值必须夹回 0")
+		assert.Equal(t, 0, c.Sampling.Thereafter, "Negative sampling subsequent value must be clamped to 0")
 	})
 }

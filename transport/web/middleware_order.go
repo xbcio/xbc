@@ -29,7 +29,7 @@ type PhaseConflictError struct {
 
 func (e *PhaseConflictError) Error() string {
 	return fmt.Sprintf(
-		"xbc: 中间件 %s（阶段 %s）声明 %s=%q（阶段 %s），与 Phase 先后顺序矛盾，无法排出一致的中间件链",
+		"xbc: middleware %s (phase %s) declared %s=%q (phase %s), conflicting with phase order, cannot form a consistent middleware chain",
 		e.From, e.FromPhase, e.Dir, e.To, e.ToPhase,
 	)
 }
@@ -54,7 +54,7 @@ func orderMiddlewares(entries []mwEntry) (ordered []mwEntry, misses []ordering.M
 		e := &entries[i]
 		if _, dup := byName[e.qname]; dup {
 			return nil, nil, fmt.Errorf(
-				"xbc: 中间件名 %q 重复注册，After/Before 靠名字引用，重名会让引用变成掷骰子", e.qname)
+				"xbc: middleware name %q is registered more than once; After/Before references require unique names", e.qname)
 		}
 		byName[e.qname] = e
 	}
@@ -132,7 +132,7 @@ func orderMiddlewares(entries []mwEntry) (ordered []mwEntry, misses []ordering.M
 		// fires here; a non-nil err can only be a cycle within this phase.
 		order, _, sortErr := phaseGraphs[ph].Sort()
 		if sortErr != nil {
-			return nil, nil, fmt.Errorf("xbc: 阶段 %s 内的中间件排序失败: %w", ph, sortErr)
+			return nil, nil, fmt.Errorf("xbc: middleware ordering failed in phase %s: %w", ph, sortErr)
 		}
 		for _, name := range order {
 			ordered = append(ordered, *byName[name])

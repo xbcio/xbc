@@ -88,7 +88,7 @@ func TestNewEnvironmentSubOnAbsentPathReturnsNil(t *testing.T) {
 func TestNewEnvironmentSubOnScalarPathReturnsNil(t *testing.T) {
 	env, err := NewEnvironment(map[string]any{"server": map[string]any{"addr": ":8080"}}, "")
 	require.NoError(t, err)
-	require.Nil(t, env.Sub("server.addr"), "标量路径不是 map，Sub 应返回 nil 而不是 panic")
+	require.Nil(t, env.Sub("server.addr"), "Scalar path is not a map, Sub should return nil instead of panic")
 }
 
 func TestNewEnvironmentGetOnAbsentPathReturnsNil(t *testing.T) {
@@ -119,7 +119,7 @@ func TestEnvironmentBindSyncsDefaultsBackIntoEnvironment(t *testing.T) {
 	require.Equal(t, ":8080", sc.Addr)
 	require.Equal(t, 10*time.Second, sc.ReadTimeout)
 
-	require.True(t, env.Exists("server.addr"), "default tag 填充的值也要能被 Exists 看见")
+	require.True(t, env.Exists("server.addr"), "Values filled by default tag should also be visible to Exists")
 	require.Equal(t, ":8080", env.Get("server.addr"))
 	require.True(t, env.Exists("server.read_timeout"))
 	require.Equal(t, 10*time.Second, env.Get("server.read_timeout"))
@@ -134,15 +134,15 @@ func TestEnvironmentBindAppliesEnvOverride(t *testing.T) {
 	var sc envServerLeaf
 	require.NoError(t, env.Bind("server", &sc))
 
-	require.Equal(t, ":9999", sc.Addr, "ENV 覆盖应当生效")
-	require.Equal(t, ":9999", env.Get("server.addr"), "ENV 覆盖同样要回写进 environment")
+	require.Equal(t, ":9999", sc.Addr, "ENV override should take effect")
+	require.Equal(t, ":9999", env.Get("server.addr"), "ENV override should also be written back into environment")
 }
 
 func TestEnvironmentBindOnUninitializedEnvironmentIsError(t *testing.T) {
 	var env *Environment
 	var sc envServerLeaf
 	err := env.Bind("server", &sc)
-	require.Error(t, err, "Environment 还没被 Load/NewEnvironment 初始化时调用 Bind 必须报错，不能拿着 nil 的 koanf 去 panic")
+	require.Error(t, err, "Calling Bind before Environment is loaded/initialized must error, cannot panic with nil koanf")
 }
 
 func TestLoadWithoutFileUsesDefaults(t *testing.T) {
@@ -152,7 +152,7 @@ func TestLoadWithoutFileUsesDefaults(t *testing.T) {
 	env, err := Load(Options{})
 	require.NoError(t, err)
 	require.NotNil(t, env)
-	require.False(t, env.Exists("server.addr"), "没有 Bind 之前，freeform 路径不应该被合成出来")
+	require.False(t, env.Exists("server.addr"), "Freeform paths should not be synthesized before Bind")
 }
 
 func TestLoadDefaultsEnvPrefixWhenEmpty(t *testing.T) {
@@ -164,7 +164,7 @@ func TestLoadDefaultsEnvPrefixWhenEmpty(t *testing.T) {
 	require.NoError(t, err)
 
 	var sc envServerLeaf
-	require.NoError(t, env.Bind("server", &sc), "EnvPrefix 为空时应默认落到 XBC_")
+	require.NoError(t, env.Bind("server", &sc), "EnvPrefix should default to XBC_ when empty")
 	require.Equal(t, ":7777", sc.Addr)
 }
 

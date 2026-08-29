@@ -44,11 +44,11 @@ func TestDailyRotatorTriggersOnDayChange(t *testing.T) {
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	assert.Len(t, entries, 2, "跨天后应有一个归档文件加一个当前文件")
+	assert.Len(t, entries, 2, "Should have an archive file and a current file after day change")
 
 	cur, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, "day2\n", string(cur), "当前文件只含跨天之后的内容")
+	assert.Equal(t, "day2\n", string(cur), "Current file contains only content after day change")
 }
 
 func TestDailyRotatorDoesNotRotateWithinSameDay(t *testing.T) {
@@ -69,7 +69,7 @@ func TestDailyRotatorDoesNotRotateWithinSameDay(t *testing.T) {
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	assert.Len(t, entries, 1, "同一天内不滚")
+	assert.Len(t, entries, 1, "Do not roll within the same day")
 
 	cur, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -109,12 +109,12 @@ func TestDailyRotatorConcurrentWritesRotateOnce(t *testing.T) {
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	assert.Len(t, entries, 2, "32 个并发写只该触发一次滚动")
+	assert.Len(t, entries, 2, "32 concurrent writes should trigger roll only once")
 }
 
 func TestDailyRotatorSyncIsNoop(t *testing.T) {
 	d := newDailyRotator(&lumberjack.Logger{Filename: filepath.Join(t.TempDir(), "a.log")})
-	assert.NoError(t, d.Sync(), "lumberjack 不缓冲，Sync 无事可做但必须存在以满足 WriteSyncer")
+	assert.NoError(t, d.Sync(), "lumberjack does not buffer, Sync does nothing but must exist to satisfy WriteSyncer")
 	assert.NoError(t, d.Close())
 }
 
@@ -134,7 +134,7 @@ func TestDailyRotatorSkipsRotateOnEmptyFile(t *testing.T) {
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
-	assert.Len(t, entries, 1, "空文件跨天不该滚出 0 字节归档")
+	assert.Len(t, entries, 1, "Empty file across day change should not roll out 0-byte archive")
 }
 
 func TestDailyRotatorCreatesDirWith0750(t *testing.T) {
@@ -146,7 +146,7 @@ func TestDailyRotatorCreatesDirWith0750(t *testing.T) {
 	require.NoError(t, err)
 	// [SEC-INFO] lumberjack creates the directory itself at 0755, so we
 	// must create it ourselves first at 0750.
-	assert.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "日志目录权限")
+	assert.Equal(t, os.FileMode(0o750), fi.Mode().Perm(), "log directory permissions")
 }
 
 // TestDailyRotatorDoesNotChmodPreexistingDir pins down a deliberate
@@ -177,7 +177,7 @@ func TestDailyRotatorDoesNotChmodPreexistingDir(t *testing.T) {
 
 	fi, err := os.Stat(dir)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o755), fi.Mode().Perm(), "预先存在的目录权限不该被我们改动")
+	assert.Equal(t, os.FileMode(0o755), fi.Mode().Perm(), "Pre-existing directory permissions should not be modified by us")
 }
 
 // TestDailyRotatorTightensPreexistingFileTo0600 covers the real gap
@@ -190,14 +190,14 @@ func TestDailyRotatorDoesNotChmodPreexistingDir(t *testing.T) {
 func TestDailyRotatorTightensPreexistingFileTo0600(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
-	require.NoError(t, os.WriteFile(path, []byte("旧内容\n"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte("Old content\n"), 0o644))
 
 	d := newDailyRotator(&lumberjack.Logger{Filename: path})
 	defer d.Close()
 
 	fi, err := os.Stat(path)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm(), "预存在的日志文件权限必须被收紧到 0600")
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm(), "Pre-existing log file permissions must be tightened to 0600")
 }
 
 // TestDailyRotatorDoesNotCreateFileWhenAbsent confirms the tightening
@@ -213,7 +213,7 @@ func TestDailyRotatorDoesNotCreateFileWhenAbsent(t *testing.T) {
 	defer d.Close()
 
 	_, err := os.Stat(path)
-	assert.True(t, os.IsNotExist(err), "文件不存在时不该被抢先创建")
+	assert.True(t, os.IsNotExist(err), "File should not be preemptively created when not exists")
 }
 
 // TestDailyRotatorSkipsChmodWhenAlready0600 exercises the "file exists
@@ -227,7 +227,7 @@ func TestDailyRotatorDoesNotCreateFileWhenAbsent(t *testing.T) {
 func TestDailyRotatorSkipsChmodWhenAlready0600(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "app.log")
-	require.NoError(t, os.WriteFile(path, []byte("已有内容\n"), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte("Existing content\n"), 0o600))
 
 	d := newDailyRotator(&lumberjack.Logger{Filename: path})
 	defer d.Close()
@@ -235,5 +235,5 @@ func TestDailyRotatorSkipsChmodWhenAlready0600(t *testing.T) {
 	fi, err := os.Stat(path)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm(),
-		"已经是 0600 的文件不该被改动")
+		"File already 0600 should not be modified")
 }

@@ -26,8 +26,8 @@ func TestResolveRefRejectsSameImplementationUnderWrongKey(t *testing.T) {
 
 	_, _, err := c.resolve([]*Instance{consumer, decoy})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "依赖插件 target")
-	assert.Contains(t, err.Error(), "target 未启用")
+	assert.Contains(t, err.Error(), "depends on plugin target")
+	assert.Contains(t, err.Error(), "target is not enabled")
 }
 
 func TestResolveRefAcceptsKeyRegardlessOfImplementationType(t *testing.T) {

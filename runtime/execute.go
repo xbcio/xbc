@@ -51,17 +51,17 @@ func (a *App) Execute(ctx context.Context, args []string) (int, error) {
 // supplies stopReasonSignal so diagnostics retain the actual process trigger.
 func (a *App) execute(ctx context.Context, args []string, cancelReason string) (int, error) {
 	if ctx == nil {
-		return 1, fmt.Errorf("xbc: Execute 的 context 不能为空")
+		return 1, fmt.Errorf("xbc: Execute context cannot be nil")
 	}
 	a.executeMu.Lock()
 	if a.executed {
 		a.executeMu.Unlock()
-		return 1, fmt.Errorf("xbc: App.Execute 只能调用一次")
+		return 1, fmt.Errorf("xbc: App.Execute can only be called once")
 	}
 	a.executed = true
 	a.executeMu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return 1, fmt.Errorf("xbc: Execute 开始前 context 已取消：%w", err)
+		return 1, fmt.Errorf("xbc: context was canceled before Execute: %w", err)
 	}
 	stopContext := a.watchContext(ctx, cancelReason)
 	defer stopContext()
@@ -71,14 +71,14 @@ func (a *App) execute(ctx context.Context, args []string, cancelReason string) (
 		return 2, err
 	}
 	if a.stopRequested() {
-		return 1, a.errStopDuringStartup("命令解析")
+		return 1, a.errStopDuringStartup("command parsing")
 	}
 
 	if err := a.bootstrap(cmd); err != nil {
 		return 1, err
 	}
 	if a.stopRequested() {
-		return 1, a.errStopDuringStartup("引导")
+		return 1, a.errStopDuringStartup("bootstrapping")
 	}
 
 	if err := a.container.Assemble(); err != nil {
@@ -88,7 +88,7 @@ func (a *App) execute(ctx context.Context, args []string, cancelReason string) (
 	a.bindLifecycleContexts(ctx, order)
 	migrate := cmd.WantsMigration(a.settings.AutoMigrate)
 	if a.stopRequested() {
-		return 1, a.errStopDuringStartup("装配")
+		return 1, a.errStopDuringStartup("assembly")
 	}
 
 	// doctor reports the assembly result and stops there: it must not
@@ -116,7 +116,7 @@ func (a *App) execute(ctx context.Context, args []string, cancelReason string) (
 		// may be no next lifecycle iteration to observe a cancellation that
 		// arrived just after migrateAll's final per-instance check.
 		if a.stopRequested() {
-			return 1, a.abort(a.errStopDuringStartup("迁移"))
+			return 1, a.abort(a.errStopDuringStartup("migration"))
 		}
 	}
 
@@ -132,7 +132,7 @@ func (a *App) execute(ctx context.Context, args []string, cancelReason string) (
 		// a later stop cannot relabel the successful one-shot run.
 		a.requestStop(stopReasonCompleted)
 		if a.stopReason != stopReasonCompleted {
-			return 1, a.abort(a.errStopDuringStartup("迁移"))
+			return 1, a.abort(a.errStopDuringStartup("migration"))
 		}
 		if err := a.unwind(stopReasonCompleted); err != nil {
 			return 1, err
@@ -152,7 +152,7 @@ func (a *App) execute(ctx context.Context, args []string, cancelReason string) (
 		return 1, a.abort(err)
 	}
 	if a.stopRequested() {
-		return 1, a.abort(a.errStopDuringStartup("完成启动"))
+		return 1, a.abort(a.errStopDuringStartup("startup completion"))
 	}
 
 	return a.wait()
@@ -267,7 +267,7 @@ func (a *App) stopRequested() bool {
 // responsibility of the single unwind path, after any in-flight hook has
 // returned, so Stop cannot race plugin startup code.
 func (a *App) onCritical(reason string) {
-	a.log().Error("xbc: 收到 critical 信号，即将关闭应用", "reason", reason)
+	a.log().Error("xbc: received critical signal, shutting down application", "reason", reason)
 	a.requestStop(stopReasonCritical)
 }
 
@@ -309,10 +309,10 @@ func (a *App) assertLiveness(order []*assembly.Instance) error {
 		names = append(names, inst.Label())
 	}
 	return fmt.Errorf(
-		"xbc: 没有任何插件提供长期存活能力，应用启动后会永远空等\n"+
-			"  已启用的插件：%s\n"+
-			"  → 需要一个实现 Start(ctx) 的 Runner（例如 blank import 一个服务端模块），"+
-			"或在 Init 中通过 ctx.Go/ctx.GoCritical 启动长期任务",
+		"xbc: no plugin provides a long-lived capability; the application would wait forever after startup\n"+
+			"  Enabled plugins: %s\n"+
+			"  → Add a Runner that implements Start(ctx) (for example, blank-import a server module), "+
+			"or start long-running tasks via ctx.Go/ctx.GoCritical in Init",
 		strings.Join(names, ", "))
 }
 
@@ -323,14 +323,14 @@ func (a *App) assertLiveness(order []*assembly.Instance) error {
 func (a *App) errNothingEnabled() error {
 	if a.snapshot.Len() == 0 {
 		return fmt.Errorf(
-			"xbc: 没有任何插件被声明，无事可做\n" +
-				"  → 检查是否忘了 blank import 插件的 autoload 包（例如 _ \"github.com/xbcio/xbc/transport/web/autoload\"）")
+			"xbc: no plugin was declared, nothing to do\n" +
+				"  → Check whether you forgot to blank-import a plugin autoload package (for example, _ \"github.com/xbcio/xbc/transport/web/autoload\")")
 	}
 	disabled := a.container.Disabled()
 	return fmt.Errorf(
-		"xbc: 声明了 %d 个插件，但没有一个被启用\n"+
-			"  未启用：%s\n"+
-			"  → 这些插件按 Activation 需要对应的配置节；检查配置文件路径（--config）和 plugins.* 小节是否写对",
+		"xbc: declared %d plugins, but none were enabled\n"+
+			"  Disabled: %s\n"+
+			"  → These plugins require matching configuration sections according to Activation; check the --config path and plugins.* sections",
 		a.snapshot.Len(), strings.Join(disabled, ", "))
 }
 

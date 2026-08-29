@@ -38,18 +38,18 @@ type configSchema struct {
 
 func inspectStructPointer(out any) (reflect.Value, error) {
 	if out == nil {
-		return reflect.Value{}, fmt.Errorf("xbc: 配置目标必须是非 nil 的 struct 指针，得到 <nil>")
+		return reflect.Value{}, fmt.Errorf("xbc: configuration target must be a non-nil struct pointer, got <nil>")
 	}
 
 	v := reflect.ValueOf(out)
 	if v.Kind() != reflect.Pointer {
-		return reflect.Value{}, fmt.Errorf("xbc: 配置目标必须是非 nil 的 struct 指针，得到 %T", out)
+		return reflect.Value{}, fmt.Errorf("xbc: configuration target must be a non-nil struct pointer, got %T", out)
 	}
 	if v.IsNil() {
-		return reflect.Value{}, fmt.Errorf("xbc: 配置目标必须是非 nil 的 struct 指针，得到 %s(nil)", v.Type())
+		return reflect.Value{}, fmt.Errorf("xbc: configuration target must be a non-nil struct pointer, got %s(nil)", v.Type())
 	}
 	if v.Elem().Kind() != reflect.Struct {
-		return reflect.Value{}, fmt.Errorf("xbc: 配置目标必须是非 nil 的 struct 指针，得到 %s", v.Type())
+		return reflect.Value{}, fmt.Errorf("xbc: configuration target must be a non-nil struct pointer, got %s", v.Type())
 	}
 	return v.Elem(), nil
 }
@@ -71,7 +71,7 @@ func schemaForType(root reflect.Type) (*configSchema, error) {
 		root = root.Elem()
 	}
 	if root.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("xbc: 配置 schema 必须是 struct，得到 %s", root)
+		return nil, fmt.Errorf("xbc: configuration schema must be a struct, got %s", root)
 	}
 
 	schema := &configSchema{
@@ -80,7 +80,7 @@ func schemaForType(root reflect.Type) (*configSchema, error) {
 	}
 	node, err := schema.walkStruct(root, "", nil, nil, make(map[reflect.Type]bool), true)
 	if err != nil {
-		return nil, fmt.Errorf("xbc: 配置 schema %s 无效：%w", root, err)
+		return nil, fmt.Errorf("xbc: configuration schema %s is invalid: %w", root, err)
 	}
 	schema.Node = node
 	return schema, nil
@@ -95,7 +95,7 @@ func (s *configSchema) walkStruct(
 	collectLeaves bool,
 ) (*schemaNode, error) {
 	if stack[t] {
-		return nil, fmt.Errorf("递归 struct %s 不受支持", t)
+		return nil, fmt.Errorf("recursive struct %s is not supported", t)
 	}
 	stack[t] = true
 	defer delete(stack, t)
@@ -115,10 +115,10 @@ func (s *configSchema) walkStruct(
 		fieldType := dereference(field.Type)
 		if inline {
 			if !field.Anonymous || !isStructSchema(fieldType) {
-				return nil, fmt.Errorf("字段 %s 的 yaml:\",inline\" 仅支持匿名 struct 或 *struct", field.Name)
+				return nil, fmt.Errorf("yaml inline for field %s only supports anonymous struct or *struct", field.Name)
 			}
 			if name != "" {
-				return nil, fmt.Errorf("字段 %s 的 yaml inline 不能同时声明名称 %q", field.Name, name)
+				return nil, fmt.Errorf("yaml inline for field %s cannot simultaneously declare name %q", field.Name, name)
 			}
 		}
 
@@ -259,7 +259,7 @@ func mergeSchemaFields(dst, src map[string]*schemaNode, prefix string) error {
 }
 
 func duplicateYAMLField(path string) error {
-	return fmt.Errorf("yaml 路径 %s 被多个字段声明", displayPath(path))
+	return fmt.Errorf("yaml path %s is declared by multiple fields", displayPath(path))
 }
 
 func appendIndex(prefix []int, index int) []int {

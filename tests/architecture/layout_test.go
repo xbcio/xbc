@@ -21,7 +21,7 @@ import (
 func archProductionGoFilesInDir(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
-	require.NoError(t, err, "读取生产源码目录 %s 失败", dir)
+	require.NoError(t, err, "Reading production source code directory %s failed", dir)
 
 	var files []string
 	for _, entry := range entries {
@@ -50,8 +50,8 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	root := archRepositoryRoot(t)
 	for _, canonical := range []string{"runtime", "assembly", "assembly/inject", "cli", "transport/web"} {
 		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(canonical)))
-		require.NoError(t, err, "canonical package %s 必须存在", canonical)
-		require.True(t, info.IsDir(), "canonical package %s 必须是目录", canonical)
+		require.NoError(t, err, "canonical package %s must exist", canonical)
+		require.True(t, info.IsDir(), "canonical package %s must be a directory", canonical)
 	}
 
 	retiredPaths := []string{
@@ -70,22 +70,22 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		retiredPath := filepath.Join(root, filepath.FromSlash(retired))
 		_, err := os.Stat(retiredPath)
 		if err == nil {
-			t.Errorf("旧路径 %s 不得复活；请使用当前 canonical owner", retired)
+			t.Errorf("old path %s must not be revived; please use current canonical owner", retired)
 			continue
 		}
-		require.ErrorIs(t, err, os.ErrNotExist, "检查旧路径 %s 失败", retired)
+		require.ErrorIs(t, err, os.ErrNotExist, "Checking old path %s failed", retired)
 	}
 
 	transportDir := filepath.Join(root, "transport")
 	entries, err := os.ReadDir(transportDir)
-	require.NoError(t, err, "读取 transport 命名空间失败")
+	require.NoError(t, err, "Reading transport namespace failed")
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
 		if name == "go.mod" || strings.HasSuffix(name, ".go") {
-			t.Errorf("transport/%s 不得存在：transport/ 只作仓库级命名空间，不提供 Go package 或 module", name)
+			t.Errorf("transport/%s must not exist: transport/ is only for repository-level namespace, does not provide Go package or module", name)
 		}
 	}
 }
@@ -116,7 +116,7 @@ func TestArchRootPublicAPIIsFrozen(t *testing.T) {
 	root := archRepositoryRoot(t)
 	names := archExportedNamesInDir(t, root)
 	assert.Equal(t, want, names,
-		"根包的公开 API 已漂移；新增导出必须是对公开清单的明确修改")
+		"Root package's public API has drifted; new exports must be explicit modifications to the public manifest")
 }
 
 // archExportedNamesInDir returns the sorted exported API surface of the
@@ -129,7 +129,7 @@ func archExportedNamesInDir(t *testing.T, dir string) []string {
 	var names []string
 	for _, base := range archProductionGoFilesInDir(t, dir) {
 		file, err := parser.ParseFile(fset, filepath.Join(dir, base), nil, parser.SkipObjectResolution)
-		require.NoError(t, err, "解析 %s 失败", base)
+		require.NoError(t, err, "Parsing %s failed", base)
 
 		for _, decl := range file.Decls {
 			switch d := decl.(type) {
@@ -162,7 +162,7 @@ func archExportedNamesInDir(t *testing.T, dir string) []string {
 			}
 		}
 	}
-	require.NotEmpty(t, names, "根包没有解析到任何导出符号，API 冻结守卫实际未生效")
+	require.NotEmpty(t, names, "Root package did not resolve any exported symbols, API freeze guard actually did not take effect")
 	sort.Strings(names)
 	return names
 }

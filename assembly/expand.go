@@ -77,7 +77,7 @@ func (c *Container) sectionEnabled(path string) (bool, error) {
 	}
 	b, ok := v.(bool)
 	if !ok {
-		return false, fmt.Errorf("xbc: %s.enabled 必须是布尔值，得到 %v", path, v)
+		return false, fmt.Errorf("xbc: %s.enabled must be a boolean, got %v", path, v)
 	}
 	return b, nil
 }
@@ -98,7 +98,7 @@ func (c *Container) expandMultiple(d plugin.Definition, path string) ([]*Instanc
 		if _, ok := raw.(map[string]any); ok {
 			if err := plugin.ValidateInstanceName(name); err != nil {
 				return nil, fmt.Errorf(
-					"xbc: 多实例插件 %s 的实例名 %q 不合法：%w\n  → 实例名只能用小写字母、数字、下划线、连字符；一个空字符串键几乎总是配置笔误",
+					"xbc: multi-instance plugin %s's instance name %q is invalid: %w\n  → instance names can only use lowercase letters, numbers, underscores, and hyphens; an empty string key is almost always a configuration typo",
 					d.Key, name, err)
 			}
 			names = append(names, name)
@@ -106,11 +106,11 @@ func (c *Container) expandMultiple(d plugin.Definition, path string) ([]*Instanc
 		}
 		if name != "enabled" {
 			return nil, fmt.Errorf(
-				"xbc: 多实例插件 %s 的配置节下 %q 不是实例（实例配置必须是映射）", d.Key, name)
+				"xbc: multi-instance plugin %s's configuration section %q is not an instance (instance configuration must be a map)", d.Key, name)
 		}
 		b, ok := raw.(bool)
 		if !ok {
-			return nil, fmt.Errorf("xbc: %s.enabled 必须是布尔值，得到 %v", path, raw)
+			return nil, fmt.Errorf("xbc: %s.enabled must be a boolean, got %v", path, raw)
 		}
 		pluginEnabled = b
 	}
@@ -128,7 +128,7 @@ func (c *Container) expandMultiple(d plugin.Definition, path string) ([]*Instanc
 		if raw, ok := sub["enabled"]; ok {
 			b, ok := raw.(bool)
 			if !ok {
-				return nil, fmt.Errorf("xbc: %s.%s.enabled 必须是布尔值，得到 %v", path, name, raw)
+				return nil, fmt.Errorf("xbc: %s.%s.enabled must be a boolean, got %v", path, name, raw)
 			}
 			if !b {
 				continue
@@ -154,7 +154,7 @@ func (c *Container) construct(d plugin.Definition, instance string) (*Instance, 
 		return nil, err
 	}
 	if nilPlugin(p) {
-		return nil, fmt.Errorf("xbc: 插件 %s 的 Factory 为实例 %q 返回了 nil", d.Key, plugin.NormalizeInstance(instance))
+		return nil, fmt.Errorf("xbc: plugin %s's Factory returned nil for instance %q", d.Key, plugin.NormalizeInstance(instance))
 	}
 	return c.newInstance(p, d.Key, instance, d.Instances == plugin.MultipleInstances), nil
 }
@@ -224,7 +224,7 @@ func (c *Container) checkOrphanSections(defs []plugin.Definition) error {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "xbc: plugins.%s 有配置但无对应插件\n  → 是否忘了 import 对应的 provider/autoload 包？", name)
+		fmt.Fprintf(&b, "xbc: plugins.%s has configuration but no corresponding plugin\n  → Did you forget to import the corresponding provider/autoload package?", name)
 	}
 	return errors.New(b.String())
 }

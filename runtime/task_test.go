@@ -51,7 +51,7 @@ func taskCaptureLogger(t *testing.T) (log.Logger, *logCapture) {
 	cfg.Console.Enabled = false
 	cfg.File.Enabled = true
 	cfg.File.Path = path
-	require.NoError(t, log.Init(cfg), "初始化任务运行时测试日志失败")
+	require.NoError(t, log.Init(cfg), "Initialization task run test log failed")
 
 	return log.L(), &logCapture{path: path}
 }
@@ -72,7 +72,7 @@ func taskCaptureLogger(t *testing.T) (log.Logger, *logCapture) {
 func TestTaskSubmitRejectedAfterAdmissionClosedLogsIdentifiedWarn(t *testing.T) {
 	logger, cap := taskCaptureLogger(t)
 	rt := newTaskRuntime(logger, func(reason string) {
-		t.Fatalf("被拒绝的普通提交不应触发 critical，reason=%q", reason)
+		t.Fatalf("Rejected regular submission should not trigger critical, reason=%q", reason)
 	})
 	id := plugin.Identity{Plugin: "billing", Instance: "eu"}
 
@@ -81,16 +81,16 @@ func TestTaskSubmitRejectedAfterAdmissionClosedLogsIdentifiedWarn(t *testing.T) 
 	var ran atomic.Bool
 	ok := rt.submit(id, func(context.Context) { ran.Store(true) }, false)
 
-	require.False(t, ok, "准入关闭后 submit 必须返回 false，调用方才有办法知道任务没有启动")
-	assert.False(t, ran.Load(), "被拒绝的任务不能仍然启动 goroutine——那才是真正的静默丢弃")
+	require.False(t, ok, "After admission is closed, submit must return false, allowing callers to know the task has not started")
+	assert.False(t, ran.Load(), "Rejected tasks must not still start a goroutine; that would be the real silent discard")
 
 	var found bool
 	for _, e := range cap.entries(t) {
-		if e.Level == "warn" && strings.Contains(e.Message, "任务组已关闭") && e.Plugin == id.String() {
+		if e.Level == "warn" && strings.Contains(e.Message, "task group already closed") && e.Plugin == id.String() {
 			found = true
 		}
 	}
-	assert.True(t, found, "拒绝提交必须产生一条写明插件身份（%s）的 WARN 日志，不能静默丢弃", id.String())
+	assert.True(t, found, "Rejected submission must produce a WARN log specifying the plugin identity (%s), cannot be silently discarded", id.String())
 }
 
 // TestTaskConcurrentSubmitDuringCloseAdmissionAndStopDoesNotRace is the
@@ -135,8 +135,8 @@ func TestTaskConcurrentSubmitDuringCloseAdmissionAndStopDoesNotRace(t *testing.T
 	close(stop)
 	spammerWG.Wait()
 
-	require.NoError(t, err, "准入关闭后 stopPlugin 必须能正常收敛，不受仍在敲门的并发提交影响")
-	assert.False(t, criticalCalled.Load(), "普通任务被拒绝提交不应触发 critical")
+	require.NoError(t, err, "After admission is closed, stopPlugin must be able to converge normally, unaffected by concurrent submissions still in progress")
+	assert.False(t, criticalCalled.Load(), "Rejected regular submission should not trigger critical")
 }
 
 // --- one task context per plugin instance ---------------------------------
@@ -174,12 +174,12 @@ func TestTaskCancelOnePluginDoesNotAffectAnothersRunningTask(t *testing.T) {
 
 	deadline, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	require.NoError(t, rt.stopPlugin(a, deadline), "A 自己的任务应正常退出")
+	require.NoError(t, rt.stopPlugin(a, deadline), "A's own task should exit normally")
 	<-aCancelled // guaranteed already closed: stopPlugin(a) only returns after A's wg.Wait does.
 
 	select {
 	case <-bDone:
-		t.Fatal("停止插件 A 不应该让插件 B 仍在运行的任务提前结束——说明两者共享了同一个任务 context")
+		t.Fatal("Stopping plugin A should not let plugin B's ongoing task end prematurely—indicating both share the same task context")
 	default:
 	}
 
@@ -205,7 +205,7 @@ func TestTaskCancelOnePluginDoesNotAffectAnothersRunningTask(t *testing.T) {
 func TestTaskShuttingDownFlagChangesWhetherReturnIsJudgedUnexpected(t *testing.T) {
 	logger, _ := taskCaptureLogger(t)
 
-	t.Run("准入仍开放时的正常返回被判定为意外", func(t *testing.T) {
+	t.Run("Normal return when admission is still open is considered an unexpected", func(t *testing.T) {
 		var got []string
 		var mu sync.Mutex
 		rt := newTaskRuntime(logger, func(reason string) {
@@ -225,11 +225,11 @@ func TestTaskShuttingDownFlagChangesWhetherReturnIsJudgedUnexpected(t *testing.T
 
 		mu.Lock()
 		defer mu.Unlock()
-		require.Len(t, got, 1, "关机尚未开始时的正常返回，必须被判定为意外提前返回并触发一次 critical")
-		assert.Contains(t, got[0], "意外提前返回")
+		require.Len(t, got, 1, "Normal return before shutdown starts must be considered an unexpected early return and trigger a critical")
+		assert.Contains(t, got[0], "unexpectedly returned early")
 	})
 
-	t.Run("closeAdmission之后同一种返回不再被判定为意外", func(t *testing.T) {
+	t.Run("After closeAdmission, the same return is no longer considered unexpected", func(t *testing.T) {
 		var got []string
 		var mu sync.Mutex
 		rt := newTaskRuntime(logger, func(reason string) {
@@ -259,7 +259,7 @@ func TestTaskShuttingDownFlagChangesWhetherReturnIsJudgedUnexpected(t *testing.T
 
 		mu.Lock()
 		defer mu.Unlock()
-		assert.Empty(t, got, "shuttingDown 已置位后的正常返回不得被判定为意外，不能触发 critical")
+		assert.Empty(t, got, "Normal return after shuttingDown is set must not be considered unexpected, cannot trigger critical")
 	})
 }
 
@@ -291,7 +291,7 @@ func TestTaskSpawnedCountCountsEverAdmittedNotCurrentlyRunning(t *testing.T) {
 	require.NoError(t, rt.stopPlugin(id, deadline)) // ...and been reaped by Wait, too.
 
 	assert.Equal(t, n, rt.spawnedCount(),
-		"spawnedCount 必须统计曾经被准入的任务数，即便它们此刻已经全部跑完并被 Wait 收走")
+		"spawnedCount must count the number of tasks that were admitted, even if they have already completed and been collected by Wait")
 }
 
 // --- App-level wiring -------------------------------------------------------
@@ -330,9 +330,9 @@ func TestTaskContextTasksAcceptedReflectsAdmissionThroughHostAdapter(t *testing.
 	require.NoError(t, res.err)
 	assert.Equal(t, 0, res.code)
 	assert.True(t, beforeShutdown,
-		"关机开始之前，TasksAccepted 必须为 true——走的是 hostAdapter.TasksAccepted 的默认接通路径")
+		"Before shutdown starts, TasksAccepted must be true—following the default path of hostAdapter.TasksAccepted")
 	assert.False(t, duringStop,
-		"closeAdmission 在任何 Closer.Stop 之前执行，Stop 内部通过同一个 Context 看到的 TasksAccepted 必须已经是 false")
+		"closeAdmission must be executed before any Closer.Stop, and Stop must see TasksAccepted as false through the same Context")
 }
 
 // TestTaskStopSpammingGoDuringShutdownDoesNotRaceOrPanic is the App-level
@@ -375,7 +375,7 @@ func TestTaskStopSpammingGoDuringShutdownDoesNotRaceOrPanic(t *testing.T) {
 	app.requestStop(stopReasonSignal)
 	res := awaitResult(t, done)
 
-	waitFor(t, "Stop 内后台的 spam goroutine 应该跑完", func() bool {
+	waitFor(t, "The background spam goroutine in Stop should complete", func() bool {
 		select {
 		case <-spamDone:
 			return true
@@ -385,9 +385,9 @@ func TestTaskStopSpammingGoDuringShutdownDoesNotRaceOrPanic(t *testing.T) {
 	})
 
 	require.NoError(t, res.err)
-	assert.Equal(t, 0, res.code, "关机期间被拒绝的海量并发提交不应升级为失败退出，也不应引发崩溃")
-	assert.True(t, cap.containsMessage(t, "任务组已关闭"),
-		"这些并发提交必须真的走到了拒绝路径并留下日志，而不是恰好全部发生在 closeAdmission 之前")
+	assert.Equal(t, 0, res.code, "A large number of concurrent submissions rejected during shutdown should not escalate to failure exit, nor cause a crash")
+	assert.True(t, cap.containsMessage(t, "task group already closed"),
+		"These concurrent submissions must have genuinely followed the rejection path and left logs, not all occurring before closeAdmission")
 }
 
 // --- §5.5's critical escalation paths (App-level, for the exit code) ------
@@ -412,9 +412,9 @@ func TestTaskGoCriticalPanicEscalatesShutdownWithNonZeroExit(t *testing.T) {
 	done := runAsync(app, writeConfig(t, extra+"xbc:\n  shutdown_timeout: 500ms\n")...)
 	res := awaitResult(t, done)
 
-	assert.Equal(t, 1, res.code, "GoCritical 的 goroutine panic 必须让整个运行以退出码 1 结束")
-	assert.True(t, cap.containsMessage(t, "托管 goroutine panic"), "panic 必须被 recover 并记录日志")
-	assert.True(t, cap.containsMessage(t, "收到 critical 信号"), "panic 之后必须真的走了 critical 升级路径")
+	assert.Equal(t, 1, res.code, "The goroutine panic from GoCritical must cause the entire run to end with exit code 1")
+	assert.True(t, cap.containsMessage(t, "managed goroutine panic"), "panic must be recovered and logged")
+	assert.True(t, cap.containsMessage(t, "received critical signal"), "After panic, must have genuinely followed the critical escalation path")
 }
 
 // TestTaskGoCriticalUnpromptedReturnEscalatesShutdownWithNonZeroExit pins
@@ -441,19 +441,19 @@ func TestTaskGoCriticalUnpromptedReturnEscalatesShutdownWithNonZeroExit(t *testi
 	res := awaitResult(t, done)
 
 	assert.Equal(t, 1, res.code,
-		"GoCritical 的 goroutine 在无人要求的情况下正常返回，必须视为失败，退出码为 1")
+		"GoCritical's goroutine returning normally without being requested must be considered a failure, exit code 1")
 
-	// "意外提前返回" travels as the reason argument of the critical-escalation
+	// "unexpectedly returned early" travels as the reason argument of the critical-escalation
 	// log line, not as its message text -- unlike the panic case above, there
 	// is no separate log call at the point of the return itself.
 	var sawReason bool
 	for _, e := range cap.entries(t) {
-		if strings.Contains(e.Reason, "意外提前返回") {
+		if strings.Contains(e.Reason, "unexpectedly returned early") {
 			sawReason = true
 		}
 	}
-	assert.True(t, sawReason, "critical 升级的 reason 字段必须写明 goroutine 是意外提前返回，而不是别的原因")
-	assert.True(t, cap.containsMessage(t, "收到 critical 信号"))
+	assert.True(t, sawReason, "The reason field of critical escalation must specify that the goroutine unexpectedly returned early, not for another reason")
+	assert.True(t, cap.containsMessage(t, "received critical signal"))
 }
 
 // TestTaskPlainGoPanicIsLoggedButDoesNotEscalate is the control case for the
@@ -478,16 +478,16 @@ func TestTaskPlainGoPanicIsLoggedButDoesNotEscalate(t *testing.T) {
 	done := runAsync(app, writeConfig(t, extra+"xbc:\n  shutdown_timeout: 500ms\n")...)
 	awaitReady(t, app)
 
-	waitFor(t, "普通 Go 任务的 panic 应该已经被记录", func() bool {
-		return cap.containsMessage(t, "托管 goroutine panic")
+	waitFor(t, "Panic of regular Go task should have been logged", func() bool {
+		return cap.containsMessage(t, "managed goroutine panic")
 	})
-	assert.False(t, cap.containsMessage(t, "收到 critical 信号"), "普通 Go 的 panic 不得升级为 critical")
+	assert.False(t, cap.containsMessage(t, "received critical signal"), "Panic of regular Go task must not escalate to critical")
 
 	app.requestStop(stopReasonSignal)
 	res := awaitResult(t, done)
 
 	require.NoError(t, res.err)
-	assert.Equal(t, 0, res.code, "普通 Go 的 panic 之后应用应继续运行，直到被明确要求停止")
+	assert.Equal(t, 0, res.code, "After panic of regular Go task, the application should continue running until explicitly requested to stop")
 }
 
 // --- drainRemaining ----------------------------------------------------------
@@ -511,7 +511,7 @@ func TestTaskDrainRemainingReapsGoroutineFromPluginWhoseInitFailed(t *testing.T)
 				<-taskCtx.Done()
 				close(cancelled)
 			})
-			return errors.New("模拟 Init 中途失败")
+			return errors.New("Simulate Init failure in the middle")
 		}}
 	}))
 
@@ -519,12 +519,12 @@ func TestTaskDrainRemainingReapsGoroutineFromPluginWhoseInitFailed(t *testing.T)
 	<-started // the task was genuinely admitted before Init returned its error.
 
 	res := awaitResult(t, done)
-	assert.Equal(t, 1, res.code, "Init 失败必须以非零退出码结束")
+	assert.Equal(t, 1, res.code, "Init failure must end with a non-zero exit code")
 
 	select {
 	case <-cancelled:
 	default:
-		t.Fatal("drainRemaining 必须取消并等待 Init 失败前已提交的托管任务，不能遗漏——" +
-			"该任务的 goroutine 从未观察到取消")
+		t.Fatal("drainRemaining must cancel and wait for hosted tasks submitted before Init failed, without missing any" +
+			"The goroutine of this task was never observed to be canceled")
 	}
 }

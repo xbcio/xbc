@@ -11,7 +11,7 @@ import (
 // entry, with soft-order hints (after=/before=) appended when declared. It
 // is the "web: " counterpart of the pre-split kernel's renderMiddlewareChain
 // -- same layout, moved here because middleware ordering is now something
-// only web owns (package-layout design §4: "启动报告留在拥有数据的模块").
+// only web owns (package-layout design §4: "startup report stays in the module that owns the data")
 func renderMiddlewareChain(chain []mwEntry) string {
 	nameWidth := 0
 	for _, e := range chain {
@@ -20,7 +20,7 @@ func renderMiddlewareChain(chain []mwEntry) string {
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "web: 中间件链（%d）", len(chain))
+	fmt.Fprintf(&b, "web: middleware chain (%d)", len(chain))
 	for i, e := range chain {
 		line := fmt.Sprintf("  %d. %-*s  [%s]", i+1, nameWidth, e.qname, e.Phase.String())
 		if len(e.After) > 0 {
@@ -47,7 +47,7 @@ func renderRouteTable(routes []RouteInfo) string {
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "web: 路由表（%d）", len(routes))
+	fmt.Fprintf(&b, "web: route table (%d)", len(routes))
 	for i, r := range routes {
 		fmt.Fprintf(&b, "\n  %d. %-*s  %s", i+1, methodWidth, r.Method, r.Path)
 	}
@@ -60,13 +60,13 @@ func renderRouteTable(routes []RouteInfo) string {
 // line.
 func renderSoftMisses(misses []ordering.Miss) string {
 	var b strings.Builder
-	b.WriteString("web: 软约束未命中（不影响启动）")
+	b.WriteString("web: unmatched soft constraints (startup unaffected)")
 	for _, m := range misses {
 		dir := "After"
 		if m.Dir == ordering.Before {
 			dir = "Before"
 		}
-		fmt.Fprintf(&b, "\n  %s.%s = %q —— 无此中间件，忽略\n    → 拼写错误？还是忘了启用对应插件？", m.Node, dir, m.Ref)
+		fmt.Fprintf(&b, "\n  %s.%s = %q — no such middleware, ignored\n    → spelling error? or forgot to enable the corresponding plugin?", m.Node, dir, m.Ref)
 	}
 	return b.String()
 }

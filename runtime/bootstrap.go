@@ -58,10 +58,10 @@ func (a *App) bootstrap(cmd cli.Command) error {
 func initLogging(env *config.Environment) error {
 	cfg := log.DefaultConfig()
 	if err := env.Bind("log", &cfg); err != nil {
-		return fmt.Errorf("xbc: 绑定 log 配置失败：%w", err)
+		return fmt.Errorf("xbc: failed to bind log configuration: %w", err)
 	}
 	if err := log.Init(cfg); err != nil {
-		return fmt.Errorf("xbc: 初始化日志失败：%w", err)
+		return fmt.Errorf("xbc: failed to initialize logging: %w", err)
 	}
 	return nil
 }

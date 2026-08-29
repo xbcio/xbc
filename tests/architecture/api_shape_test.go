@@ -21,18 +21,18 @@ func TestArchOrderingPublicAPIShape(t *testing.T) {
 	wantEdgeMethod := reflect.TypeOf((func(*ordering.Graph, string, string))(nil))
 	for _, name := range []string{"AddHardEdge", "AddSoftEdge"} {
 		method, ok := graphType.MethodByName(name)
-		require.True(t, ok, "ordering.Graph.%s 必须存在", name)
-		assert.Equal(t, wantEdgeMethod, method.Type, "ordering.Graph.%s 签名必须是 (string, string)", name)
+		require.True(t, ok, "ordering.Graph.%s must exist", name)
+		assert.Equal(t, wantEdgeMethod, method.Type, "ordering.Graph.%s signature must be (string, string)", name)
 	}
 	_, hasLegacyAddEdge := graphType.MethodByName("AddEdge")
-	assert.False(t, hasLegacyAddEdge, "含义模糊的 ordering.Graph.AddEdge(..., hard bool) 不得复活")
+	assert.False(t, hasLegacyAddEdge, "Ambiguous ordering.Graph.AddEdge(..., hard bool) must not be revived")
 
 	var after ordering.Direction = ordering.After
 	var before ordering.Direction = ordering.Before
 	directionType := reflect.TypeOf(after)
-	assert.Equal(t, "Direction", directionType.Name(), "After/Before 必须属于命名类型 ordering.Direction")
+	assert.Equal(t, "Direction", directionType.Name(), "After/Before must belong to named type ordering.Direction")
 	assert.Equal(t, "github.com/xbcio/xbc/plugin/ordering", directionType.PkgPath())
-	assert.NotEqual(t, after, before, "After 与 Before 必须是不同的 typed direction")
+	assert.NotEqual(t, after, before, "After and Before must be different typed directions")
 }
 
 // TestArchRuntimeHostPublicAPIShape locks the deliberately narrow reverse
@@ -43,7 +43,7 @@ func TestArchOrderingPublicAPIShape(t *testing.T) {
 func TestArchRuntimeHostPublicAPIShape(t *testing.T) {
 	hostType := reflect.TypeOf((*plugin.RuntimeHost)(nil)).Elem()
 	require.Equal(t, reflect.Interface, hostType.Kind())
-	require.Equal(t, 4, hostType.NumMethod(), "plugin.RuntimeHost 必须保持四方法窄端口")
+	require.Equal(t, 4, hostType.NumMethod(), "plugin.RuntimeHost must maintain four-method narrow port")
 
 	want := map[string]reflect.Type{
 		"ProvideValue":       reflect.TypeOf((func(reflect.Type, string, any))(nil)),
@@ -53,7 +53,7 @@ func TestArchRuntimeHostPublicAPIShape(t *testing.T) {
 	}
 	for name, signature := range want {
 		method, ok := hostType.MethodByName(name)
-		require.True(t, ok, "plugin.RuntimeHost.%s 必须存在", name)
-		assert.Equal(t, signature, method.Type, "plugin.RuntimeHost.%s 签名漂移", name)
+		require.True(t, ok, "plugin.RuntimeHost.%s must exist", name)
+		assert.Equal(t, signature, method.Type, "plugin.RuntimeHost.%s signature drift", name)
 	}
 }

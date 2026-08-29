@@ -34,14 +34,14 @@ func loadKoanf(opts Options) (*koanf.Koanf, error) {
 
 	if basePath != "" {
 		if err := k.Load(file.Provider(basePath), yaml.Parser()); err != nil {
-			return nil, fmt.Errorf("xbc: 读取配置文件 %s 失败：%w", basePath, err)
+			return nil, fmt.Errorf("xbc: failed to read configuration file %s: %w", basePath, err)
 		}
 
 		if opts.Profile != "" {
 			profilePath := profileSibling(basePath, opts.Profile)
 			if _, statErr := os.Stat(profilePath); statErr == nil {
 				if err := k.Load(file.Provider(profilePath), yaml.Parser()); err != nil {
-					return nil, fmt.Errorf("xbc: 读取 profile 配置文件 %s 失败：%w", profilePath, err)
+					return nil, fmt.Errorf("xbc: failed to read profile configuration file %s: %w", profilePath, err)
 				}
 			}
 			// A missing profile file is silently skipped: it is an optional
@@ -51,7 +51,7 @@ func loadKoanf(opts Options) (*koanf.Koanf, error) {
 
 	if len(opts.Overrides) > 0 {
 		if err := k.Load(confmap.Provider(opts.Overrides, "."), nil); err != nil {
-			return nil, fmt.Errorf("xbc: 应用配置覆盖失败：%w", err)
+			return nil, fmt.Errorf("xbc: failed to apply configuration override: %w", err)
 		}
 	}
 
@@ -73,9 +73,9 @@ func locateBaseFile(explicitPath string) (string, error) {
 	if explicitPath != "" {
 		if _, err := os.Stat(explicitPath); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return "", fmt.Errorf("xbc: 指定的配置文件 %s 不存在", explicitPath)
+				return "", fmt.Errorf("xbc: specified configuration file %s does not exist", explicitPath)
 			}
-			return "", fmt.Errorf("xbc: 无法访问配置文件 %s：%w", explicitPath, err)
+			return "", fmt.Errorf("xbc: cannot access configuration file %s: %w", explicitPath, err)
 		}
 		return explicitPath, nil
 	}

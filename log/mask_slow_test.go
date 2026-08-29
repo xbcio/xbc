@@ -22,17 +22,17 @@ func TestHitSlowIsAmortizedZeroAlloc(t *testing.T) {
 	m := newMasker(nil)
 	// 98 bytes, over maskKeyBufSize (64), ending in a word that DOES hit.
 	longHit := strings.Repeat("verylongsegment_", 6) + "password"
-	require.Greater(t, len(longHit), maskKeyBufSize, "用例必须真的走溢出路径")
+	require.Greater(t, len(longHit), maskKeyBufSize, "Test case must really follow the overflow path")
 
 	avg := testing.AllocsPerRun(200, func() { _ = m.hit(longHit) })
-	assert.Zero(t, avg, "溢出路径应摊销零分配，实测每次 %v 次分配", avg)
+	assert.Zero(t, avg, "Overflow path should amortize zero allocations, actual test shows %v allocations per call", avg)
 }
 
 func TestHitWindowSlowIsAmortizedZeroAlloc(t *testing.T) {
 	m := newMasker(nil)
 	manyWords := strings.Repeat("a_", 20) + "token_x" // > maskKeyMaxWords
 	avg := testing.AllocsPerRun(200, func() { _ = m.hitWindow(manyWords) })
-	assert.Zero(t, avg, "窗口匹配的溢出路径应摊销零分配，实测每次 %v 次分配", avg)
+	assert.Zero(t, avg, "Window match overflow path should amortize zero allocations, actual test shows %v allocations per call", avg)
 }
 
 // Pooling must not change any verdict: the slow path's rule is identical to
@@ -47,19 +47,19 @@ func TestSlowPathVerdictsUnchangedByPooling(t *testing.T) {
 		key  string
 		want bool
 	}{
-		{"超长且中心词命中", pad + "password", true},
-		{"超长且中心词不命中", pad + "count", false},
-		{"超长驼峰命中", pad + "accessToken", true},
-		{"超长但只是含敏感词非中心词", pad + "token_count", false},
-		{"超词数命中", strings.Repeat("a_", 20) + "secret", true},
-		{"超词数不命中", strings.Repeat("a_", 20) + "name", false},
+		{"Very long and center word matches", pad + "password", true},
+		{"Very long and center word does not match", pad + "count", false},
+		{"Very long camel case match", pad + "accessToken", true},
+		{"Very long but only contains sensitive word, not center word", pad + "token_count", false},
+		{"Exceeds word count match", strings.Repeat("a_", 20) + "secret", true},
+		{"Exceeds word count does not match", strings.Repeat("a_", 20) + "name", false},
 	}
 
 	// Run the whole set twice: the second pass reuses buffers the first pass
 	// dirtied, which is exactly where a length-tracking bug would surface.
 	for pass := 1; pass <= 2; pass++ {
 		for _, c := range cases {
-			assert.Equal(t, c.want, m.hit(c.key), "第 %d 轮 %s", pass, c.name)
+			assert.Equal(t, c.want, m.hit(c.key), "The %d-th round %s", pass, c.name)
 		}
 	}
 }
@@ -69,21 +69,21 @@ func TestSlowPathVerdictsUnchangedByPooling(t *testing.T) {
 // steady-state memory.
 func TestSlowPathPoolDoesNotRetainOversizedBuffers(t *testing.T) {
 	assert.False(t, maskSlowBufReusable(&maskSlowBuf{buf: make([]byte, maskSlowBufMax+1)}),
-		"超过上限的 buf 不应放回池中")
+		"Buffer exceeding the limit should not be put back into the pool")
 	assert.False(t, maskSlowBufReusable(&maskSlowBuf{starts: make([]int, maskSlowBufMax+1)}),
-		"超过上限的 starts 不应放回池中")
+		"Starts exceeding the limit should not be put back into the pool")
 	assert.True(t, maskSlowBufReusable(&maskSlowBuf{
 		buf:    make([]byte, maskSlowBufMax),
 		starts: make([]int, maskSlowBufMax),
-	}), "恰好在上限的缓冲仍应复用")
+	}), "Buffer exactly at the limit should still be reused")
 
 	// The behavioural half: an oversized key is still matched correctly, and
 	// the ordinary overflow path stays cheap afterwards.
 	m := newMasker(nil)
 	huge := strings.Repeat("x", maskSlowBufMax*4) + "_password"
-	assert.True(t, m.hit(huge), "超大 key 的中心词仍应命中")
+	assert.True(t, m.hit(huge), "Center word should still match for very large key")
 
 	ordinary := strings.Repeat("verylongsegment_", 6) + "password"
 	avg := testing.AllocsPerRun(200, func() { _ = m.hit(ordinary) })
-	assert.Zero(t, avg, "超大 key 之后普通溢出 key 仍应摊销零分配")
+	assert.Zero(t, avg, "After very large key, normal overflow key should still amortize zero allocations")
 }

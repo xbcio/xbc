@@ -22,8 +22,8 @@ func tLogger(ctx context.Context) Logger {
 // TDebug is sugar for Ctx(ctx).Debug(msg, kv...). The two paths produce
 // identical output, caller included:
 //
-//	log.TInfo(ctx, "下单", "order_id", 1001)
-//	log.Ctx(ctx).Info("下单", "order_id", 1001)
+//	log.TInfo(ctx, "place order", "order_id", 1001)
+//	log.Ctx(ctx).Info("place order", "order_id", 1001)
 //
 // Identical output, not identical cost: the T-series adds the tLogger call
 // above, whose CallerSkipper type assertion measured ~3% slower per entry at

@@ -56,14 +56,14 @@ type settings struct {
 func loadSettings(env *config.Environment) (settings, error) {
 	var s settings
 	if err := env.Bind(settingsSection, &s); err != nil {
-		return s, fmt.Errorf("xbc: 绑定 %s 配置失败：%w", settingsSection, err)
+		return s, fmt.Errorf("xbc: failed to bind %s configuration: %w", settingsSection, err)
 	}
 	if err := config.Validate(&s, settingsSection); err != nil {
 		return s, err
 	}
 	if s.ShutdownTimeout <= 0 {
 		return s, fmt.Errorf(
-			"xbc: %s.shutdown_timeout 必须为正数，当前为 %s\n  → 这是整个关闭流程的总预算，非正数会让关闭立刻超时，等于没有优雅关闭",
+			"xbc: %s.shutdown_timeout must be positive, got %s\n  → this is the total shutdown budget; a non-positive value causes an immediate timeout and prevents graceful shutdown",
 			settingsSection, s.ShutdownTimeout)
 	}
 	return s, nil

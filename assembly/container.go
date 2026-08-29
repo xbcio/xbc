@@ -190,7 +190,7 @@ func (c *Container) InitializedPlugins() ([]plugin.Extension[any], error) {
 	defer c.mu.Unlock()
 
 	if !c.sealed {
-		return nil, fmt.Errorf("xbc: 尚未完成全部插件初始化，此时不能查询 InitializedPlugins")
+		return nil, fmt.Errorf("xbc: not all plugins initialized yet, cannot query InitializedPlugins")
 	}
 
 	out := make([]plugin.Extension[any], len(c.initialized))
