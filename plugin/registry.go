@@ -1,4 +1,3 @@
-// registry.go
 package plugin
 
 import (
@@ -12,7 +11,7 @@ import (
 // concept when the match is exact-or-nothing) and also nil when the
 // instance has nothing registered at all. Populating Closest/Missing with
 // "which registered type is nearest and what does it lack" is the RuntimeHost
-// implementation's job (internal/container's registry) -- plugin only
+// implementation's job (package assembly's registry) -- plugin only
 // defines the shape the diagnostic travels in and renders it.
 type NotFoundError struct {
 	Want     reflect.Type

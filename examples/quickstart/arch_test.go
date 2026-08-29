@@ -1,4 +1,3 @@
-// arch_test.go
 package main
 
 import (
@@ -14,17 +13,11 @@ import (
 // list -- what its source files literally wrote -- as opposed to Deps, the
 // full transitive closure.
 //
-// The distinction is the entire point of this guard, and it is the one place
-// in the repository where the two must not be confused. An example
-// application legitimately *depends* on core's internal packages: it imports
-// the root package, the root package imports internal/container, so
-// internal/container is unavoidably in this module's Deps. That is fine and
-// says nothing about the example. What must never happen is an example
-// writing `import "github.com/xbcio/xbc/internal/container"` itself, reaching
-// past the public API into machinery that carries no compatibility promise.
-// Only the direct-import lists can tell those two situations apart; checking
-// Deps here would fail on the first, which is correct behaviour, and would
-// therefore have to be deleted rather than fixed.
+// The distinction is the entire point of this guard. What must never happen
+// is an example bypassing the root application facade to import runtime,
+// assembly, cli, or a core internal package directly. A transitive dependency
+// could still be legitimate if the facade or another public owner used it, so
+// only the direct-import lists answer the question this guard asks.
 type packageJSON struct {
 	ImportPath   string
 	Imports      []string
@@ -35,30 +28,38 @@ type packageJSON struct {
 // forbiddenDirectImport reports why importing dep from an example would
 // violate a package-layout design §9 guard, or "" if dep is fine.
 //
-// Note that Go's own internal-package rule does not cover this case: examples
-// is a separate module, and the compiler would already reject the import.
-// This guard exists anyway because the compiler's rejection is a property of
-// the current module layout -- move examples inside the core module for
-// convenience and the language-level protection silently evaporates, while
-// this test keeps failing.
+// Go's internal-package rule does not protect this boundary: visibility is
+// based on the import-path directory tree, not module boundaries, and this
+// module's github.com/xbcio/xbc/examples/... paths are still beneath
+// github.com/xbcio/xbc. The architecture guard is therefore the enforcement
+// mechanism rather than a duplicate of a compiler error.
 func forbiddenDirectImport(dep string) string {
-	const internalPrefix = "github.com/xbcio/xbc/internal"
-	if dep == internalPrefix || strings.HasPrefix(dep, internalPrefix+"/") {
-		return "示例只能使用公开 API，不得直接 import core 的 internal/*（design §9 guard #10）"
+	for _, forbidden := range []struct {
+		prefix string
+		reason string
+	}{
+		{"github.com/xbcio/xbc/runtime", "示例应通过根门面启动，不得直接编排 runtime"},
+		{"github.com/xbcio/xbc/assembly", "示例应通过根门面启动，不得直接依赖 assembly"},
+		{"github.com/xbcio/xbc/cli", "示例应通过根门面启动，不得直接调用 cli"},
+		{"github.com/xbcio/xbc/internal", "示例只能使用公开 API，不得直接 import core internal/*"},
+	} {
+		if dep == forbidden.prefix || strings.HasPrefix(dep, forbidden.prefix+"/") {
+			return forbidden.reason + "（design §9 guard #10）"
+		}
 	}
 	return ""
 }
 
-// TestExamplesDoNotDirectlyImportCoreInternal is the package-layout design §9
-// guard #10 as it applies to the examples module: an example demonstrates what
-// an outside user can actually write, so anything it imports must be something
-// an outside user could also import. See packageJSON's doc comment for why
-// this reads the direct-import lists rather than Deps.
+// TestExamplesDoNotDirectlyImportCoreImplementationPackages is the
+// package-layout design §9 guard #10 as it applies to the examples module: an
+// example may consume the root facade, plugin-owned contracts, and optional
+// modules, but this quickstart must not bypass the facade for lower-level core APIs. See
+// packageJSON's doc comment for why this reads direct imports rather than Deps.
 //
 // It walks every package in the module, not just this one, so adding a second
 // example or a helper package under examples/ is covered without touching
 // this file.
-func TestExamplesDoNotDirectlyImportCoreInternal(t *testing.T) {
+func TestExamplesDoNotDirectlyImportCoreImplementationPackages(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go 命令不可用，跳过依赖方向检查")
 	}

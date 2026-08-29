@@ -1,4 +1,3 @@
-// config/bind_test.go
 package config
 
 import (

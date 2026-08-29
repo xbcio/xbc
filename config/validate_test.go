@@ -1,4 +1,3 @@
-// config/validate_test.go
 package config
 
 import (

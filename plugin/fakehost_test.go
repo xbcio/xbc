@@ -1,4 +1,3 @@
-// fakehost_test.go
 package plugin
 
 import (
@@ -8,9 +7,8 @@ import (
 )
 
 // fakeHost is a minimal, in-memory RuntimeHost used only by this package's own
-// tests. plugin cannot import the root package's real hostAdapter (that
-// would be an import cycle -- the root package is the thing that imports
-// plugin), so exercising Context/registry/Extensions behavior needs a local
+// tests. plugin cannot import package runtime's real hostAdapter (that
+// would be an import cycle -- runtime imports plugin), so exercising Context/registry/Extensions behavior needs a local
 // stand-in that implements the four RuntimeHost methods directly.
 type fakeHost struct {
 	mu    sync.Mutex

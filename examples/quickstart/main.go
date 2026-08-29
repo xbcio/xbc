@@ -22,7 +22,7 @@ package main
 import (
 	"github.com/xbcio/xbc"
 	_ "github.com/xbcio/xbc/examples/quickstart/internal/greeter"
-	_ "github.com/xbcio/xbc/web/autoload"
+	_ "github.com/xbcio/xbc/transport/web/autoload"
 )
 
 func main() { xbc.Run() }

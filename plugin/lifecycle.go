@@ -1,11 +1,10 @@
-// lifecycle.go
 package plugin
 
 import "context"
 
 // ── Optional capability interfaces: implement one, get its stage ──────────
 //
-// A plugin implements zero or more of these; the container type-asserts for
+// A plugin implements zero or more of these; the assembly layer type-asserts for
 // each one rather than requiring a fat interface, so a plugin only pays (in
 // implementation surface) for the stages it actually participates in.
 //

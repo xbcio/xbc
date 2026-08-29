@@ -1,4 +1,3 @@
-// extension.go
 package plugin
 
 import (

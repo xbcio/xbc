@@ -1,4 +1,3 @@
-// context.go
 package plugin
 
 import (

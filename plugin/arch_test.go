@@ -52,22 +52,34 @@ func isStdlib(pkg string) bool {
 
 // TestPluginPackageDependencyClosureIsClean is the automated guard for the
 // package-layout design's hardest constraint on `plugin` (§6, §9 rule 2):
-// it must never pull in the root package, any internal/ package, or a
-// specific protocol implementation (Gin, gRPC) -- doing so would make the
-// protocol-agnostic core SPI secretly protocol-aware, or create an import
-// cycle back to the root package that consumes it.
+// it must never pull in the root facade, catalog, higher-level public owner
+// packages, private implementation packages, or a specific protocol runtime.
+// Any of those edges would make the protocol-neutral SPI depend upward on a
+// consumer or concrete capability layer.
 func TestPluginPackageDependencyClosureIsClean(t *testing.T) {
 	deps := goListDeps(t, "github.com/xbcio/xbc/plugin")
+	forbiddenTrees := []struct {
+		prefix string
+		reason string
+	}{
+		{"github.com/xbcio/xbc/plugin/catalog", "plugin 不得反向依赖默认目录"},
+		{"github.com/xbcio/xbc/runtime", "plugin 不得反向依赖运行编排实现"},
+		{"github.com/xbcio/xbc/assembly", "plugin 不得反向依赖实例装配实现"},
+		{"github.com/xbcio/xbc/cli", "plugin 不得反向依赖命令解析实现"},
+		{"github.com/xbcio/xbc/internal", "plugin 不得依赖 core internal 包"},
+		{"github.com/xbcio/xbc/transport", "plugin 是协议无关的 SPI，不得依赖任何 transport 实现 module"},
+		{"github.com/gin-gonic/gin", "plugin 是协议无关的 SPI，不得依赖 Gin"},
+		{"google.golang.org/grpc", "plugin 是协议无关的 SPI，不得依赖 Google gRPC"},
+	}
 
 	for _, dep := range deps {
 		require.NotEqual(t, "github.com/xbcio/xbc", dep,
-			"plugin 不得依赖根包，否则会与根包 import plugin 形成循环")
-		require.NotEqual(t, "github.com/gin-gonic/gin", dep,
-			"plugin 是协议无关的 SPI，不得依赖 Gin")
-		require.NotEqual(t, "google.golang.org/grpc", dep,
-			"plugin 是协议无关的 SPI，不得依赖 gRPC")
-		require.Falsef(t, strings.HasPrefix(dep, "github.com/xbcio/xbc/internal/"),
-			"plugin 不得依赖 internal 包：%s", dep)
+			"plugin 不得依赖根门面，否则会与消费它的上层形成反向依赖")
+		for _, forbidden := range forbiddenTrees {
+			require.Falsef(t,
+				dep == forbidden.prefix || strings.HasPrefix(dep, forbidden.prefix+"/"),
+				"%s：%s", forbidden.reason, dep)
+		}
 	}
 }
 
@@ -103,7 +115,7 @@ func TestPluginDependencyClosureAddsNothingBeyondConfigAndLog(t *testing.T) {
 			continue
 		}
 		t.Errorf("plugin 引入了 config 与 log 都无法解释的第三方依赖 %q，"+
-			"每个实现 SPI 的插件作者都要为它付编译代价；该依赖应留在实现包里", dep)
+			"每个实现 SPI 的插件作者都要为它付编译代价；该依赖应留在具体能力包里", dep)
 	}
 }
 

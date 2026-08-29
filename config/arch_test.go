@@ -1,4 +1,3 @@
-// config/arch_test.go
 package config
 
 import (
