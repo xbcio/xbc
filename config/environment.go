@@ -1,4 +1,3 @@
-// config/environment.go
 package config
 
 import (
@@ -12,23 +11,6 @@ import (
 // DefaultEnvPrefix is used when Options.EnvPrefix (for Load) or the envPrefix
 // argument (for NewEnvironment) is left empty.
 const DefaultEnvPrefix = "XBC_"
-
-// View is the read-only configuration surface exposed to plugins. It omits
-// Bind deliberately, and Get/Sub return recursive copies of maps and slices,
-// so callers cannot mutate the merged runtime environment through values they
-// read from Context.Config.
-type View interface {
-	// Get returns the value at path. Mutable maps and slices are recursively
-	// copied before they cross the boundary.
-	Get(path string) any
-
-	// Exists reports whether path is present in the merged environment.
-	Exists(path string) bool
-
-	// Sub returns an independent copy of the map at path, or nil when path
-	// is absent or is not a map.
-	Sub(path string) map[string]any
-}
 
 // Environment is the merged, read-only configuration environment. It is the
 // protocol-agnostic, log-independent facade other packages bind against:
@@ -184,8 +166,8 @@ func (e *Environment) Bind(path string, out any) error {
 //
 // AllowedKeys contains section-relative paths owned by the framework rather
 // than by out's schema. Such keys are accepted by strict unknown-field checks;
-// if no field in out matches them, the decoder ignores them. A plugin
-// container can, for example, pass []string{"enabled"} while binding a
+// if no field in out matches them, the decoder ignores them. The assembly layer
+// can, for example, pass []string{"enabled"} while binding a
 // plugin-owned ConfigPtr.
 type BindOptions struct {
 	AllowedKeys []string

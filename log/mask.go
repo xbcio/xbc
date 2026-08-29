@@ -337,7 +337,7 @@ func (m *masker) apply(fs []zapcore.Field) []zapcore.Field {
 // The order is to check f.Key first -- if the key hits, replace the whole
 // field with *** and there's no need to look inside. Only when the key
 // doesn't hit does the Field type decide whether to dig into the value (see
-// mask_nested.go).
+// nested-mask helpers).
 func (m *masker) maskField(f zapcore.Field, depth int) (zapcore.Field, bool) {
 	switch f.Type {
 	case zapcore.NamespaceType, zapcore.SkipType:

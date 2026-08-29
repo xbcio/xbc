@@ -23,7 +23,7 @@ import (
 
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/catalog"
-	"github.com/xbcio/xbc/web"
+	"github.com/xbcio/xbc/transport/web"
 )
 
 const key plugin.Key = "greeter"

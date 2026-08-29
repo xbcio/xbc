@@ -57,10 +57,9 @@ func TestPublicAPIExecutesPrivateSnapshot(t *testing.T) {
 // TestPublicAppSurface pins App's exported method set to exactly Execute, with
 // exactly that signature.
 //
-// This matters more now than it did when App was a thin wrapper. App is the
-// runtime state itself today, carrying every method the runtime needs, and the
-// only thing separating an internal helper from public API is one capital
-// letter.
+// App intentionally exposes only Execute. This test ensures that root-package
+// implementation methods cannot become public accidentally through embedding
+// or an API change.
 //
 // It is deliberately not the same check as tests/architecture's
 // TestArchRootPublicAPIIsFrozen, which reads the root package's source with an

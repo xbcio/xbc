@@ -1,4 +1,3 @@
-// host.go
 package plugin
 
 import (
@@ -10,14 +9,13 @@ import (
 )
 
 // RuntimeHost is the framework-implemented, plugin-package-consumed narrow port
-// that connects plugin.Context back to the container and task runtime,
-// without plugin importing the root package or internal/container (Go's
-// package boundaries would otherwise force one of them to). It has exactly
-// one real implementation -- the root package's hostAdapter -- and it is
+// that connects plugin.Context back to the assembly container and task runtime,
+// without plugin importing package runtime (which already imports plugin).
+// It has exactly one real implementation -- package runtime's hostAdapter -- and it is
 // not an extension point for plugin authors: ordinary plugins never see a
 // RuntimeHost value directly, only the Context built around one.
 //
-//	plugin.Context ──► plugin.RuntimeHost ◄── runtime hostAdapter ──► container / task runtime
+//	plugin.Context ──► plugin.RuntimeHost ◄── runtime hostAdapter ──► assembly / task runtime
 //
 // RuntimeHost carries only lookup/provide/extensions/task mechanics. It must never
 // grow a Router, a Gin or gRPC type, or a full *App -- those would make
@@ -34,9 +32,8 @@ import (
 // the plugin instance itself (a plugin.Plugin dynamic value); plugin only
 // ever does one thing with it -- a reflect assignability check -- and never
 // sees the instance's Context, bound config, Deps, provided values, init
-// state, or any other internal/container.Instance field. The container's
-// internal shape therefore never enters plugin's API surface, and
-// Instance never needs to be exported.
+// state, or any other private assembly field. The runtime and assembly packages' private
+// shape therefore never enters plugin's API surface.
 type RuntimeHost interface {
 	// ProvideValue and LookupValue are the storage behind Provide[T] /
 	// Get[T] / GetNamed[T] (registry.go): a (type, instance) keyed value
@@ -60,8 +57,8 @@ type RuntimeHost interface {
 
 // NewRuntimeContext builds a *Context wired to host, under the given
 // Definition-key/instance Identity, config.View and logger. It is the
-// assembly-time entry point -- called by internal/container while
-// expanding a Definition into a live instance -- not a constructor ordinary
+// assembly-time entry point -- called by package assembly while expanding a
+// Definition into a live instance -- not a constructor ordinary
 // plugin code should ever call: a plugin receives its Context as an
 // argument (Init(ctx *Context), Start(ctx *Context), ...), it never builds
 // one.
@@ -76,7 +73,8 @@ func NewRuntimeContext(host RuntimeHost, id Identity, env config.View, logger lo
 
 // BindRuntimeContext wires ctx and the Definition key into p's embedded Base,
 // if it has one. Like NewRuntimeContext above, this is a framework assembly-time
-// entry point -- called by the container while expanding a Definition into a live instance, under
+// entry point -- called by package assembly while expanding a Definition into a
+// live instance, under
 // the exact Definition.Key that Definition carries (rule 1, package-layout
 // design §3.3: Definition.Key is a plugin's sole identity) -- never by
 // ordinary plugin code, which receives its Context as a lifecycle-method

@@ -1,4 +1,3 @@
-// config/source.go
 package config
 
 import (

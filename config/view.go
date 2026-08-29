@@ -1,5 +1,22 @@
 package config
 
+// View is the read-only configuration surface exposed to plugins. It omits
+// Bind deliberately, and Get/Sub return recursive copies of maps and slices,
+// so callers cannot mutate the merged runtime environment through values they
+// read from Context.Config.
+type View interface {
+	// Get returns the value at path. Mutable maps and slices are recursively
+	// copied before they cross the boundary.
+	Get(path string) any
+
+	// Exists reports whether path is present in the merged environment.
+	Exists(path string) bool
+
+	// Sub returns an independent copy of the map at path, or nil when path
+	// is absent or is not a map.
+	Sub(path string) map[string]any
+}
+
 // Scope returns a read-only View rooted at prefix. Paths passed to the
 // returned View are relative to that prefix. Scope never grants access above
 // its prefix; an empty relative path refers to the scoped root itself.

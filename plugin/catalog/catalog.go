@@ -1,4 +1,3 @@
-// catalog.go
 package catalog
 
 import (

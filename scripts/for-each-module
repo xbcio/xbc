@@ -1,0 +1,40 @@
+#!/bin/sh
+# Run one Go command in every main module joined by the repository workspace.
+set -eu
+
+if [ "$#" -eq 0 ]; then
+	echo "usage: $0 <go-subcommand> [args...]" >&2
+	exit 2
+fi
+
+go_cmd=${GO:-go}
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+workspace=$repository_root/go.work
+if [ ! -f "$workspace" ]; then
+	echo "workspace not found: $workspace" >&2
+	exit 1
+fi
+
+modules_file=$(mktemp "${TMPDIR:-/tmp}/xbc-modules.XXXXXX")
+trap 'rm -f "$modules_file"' EXIT HUP INT TERM
+
+GOWORK="$workspace" "$go_cmd" work edit -json "$workspace" |
+	awk -F'"' '/"DiskPath"[[:space:]]*:/ { print $4 }' >"$modules_file"
+
+count=0
+while IFS= read -r module_dir; do
+	[ -n "$module_dir" ] || continue
+	case "$module_dir" in
+		/*) ;;
+		*) module_dir=$(CDPATH= cd -- "$(dirname -- "$workspace")/$module_dir" && pwd) ;;
+	esac
+	count=$((count + 1))
+	printf '\n==> %s: go %s\n' "$module_dir" "$*"
+	(cd "$module_dir" && GOWORK="$workspace" "$go_cmd" "$@")
+done <"$modules_file"
+
+if [ "$count" -eq 0 ]; then
+	echo "no workspace modules discovered" >&2
+	exit 1
+fi
