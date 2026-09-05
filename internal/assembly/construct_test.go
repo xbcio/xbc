@@ -643,3 +643,67 @@ func TestUnwindRunTwiceStopsEachOwnedValueExactlyOnce(t *testing.T) {
 	assert.Equal(t, first.Attempted, second.Attempted,
 		"a repeated unwind still visits the same instances in the same order")
 }
+
+// bothReadyDeadline forces the exact interleaving the trailing non-blocking
+// read of done exists for. Done() is a method call, and a select evaluates its
+// channel operands before it blocks, so making Done() return only *after* the
+// Stop result has been delivered guarantees the following select finds both
+// cases ready. A real context.WithTimeout reaches that state only when the
+// deadline fires in the same instant the Stop returns; this makes that instant
+// reproducible instead of waiting for it to occur by luck.
+type bothReadyDeadline struct {
+	context.Context
+	stopReturned <-chan struct{}
+	expired      chan struct{}
+}
+
+func (deadline bothReadyDeadline) Done() <-chan struct{} {
+	<-deadline.stopReturned
+	// Give the Stop goroutine time to finish delivering its result before the
+	// caller is allowed to observe an expired budget.
+	time.Sleep(20 * time.Millisecond)
+	return deadline.expired
+}
+
+func (deadline bothReadyDeadline) Err() error { return context.DeadlineExceeded }
+
+// TestStopBoundedPrefersADeliveredResultOverAnExpiredShutdownBudget pins root
+// cause B on its own: when a Stop has already delivered its result and the
+// budget is spent, the outcome must be decided by what the Stop did, not by
+// which of two ready select cases the scheduler picks.
+//
+// Without the trailing non-blocking read this assertion fails on roughly half
+// of all iterations, because Go picks uniformly at random among ready select
+// cases — a plugin that stopped cleanly would be reported abandoned, skipped
+// in Completed, denied its afterStop join, and named in the operator warning.
+func TestStopBoundedPrefersADeliveredResultOverAnExpiredShutdownBudget(t *testing.T) {
+	t.Parallel()
+	stopReturned := make(chan struct{})
+	definition := plugin.Define("racing", func(plugin.BuildContext) (*store, error) {
+		return &store{name: "racing"}, nil
+	}, plugin.Options[*store]{Lifecycle: plugin.Lifecycle[*store]{
+		Stop: func(*store, context.Context) error {
+			close(stopReturned)
+			return nil
+		},
+	}})
+	plan, err := planFor(t, nil, definition)
+	require.NoError(t, err)
+	constructed, err := Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+	instance, ok := constructed.Instance(plugin.Identity{Plugin: "racing"})
+	require.True(t, ok)
+
+	expired := make(chan struct{})
+	close(expired)
+	deadline := bothReadyDeadline{
+		Context:      context.Background(),
+		stopReturned: stopReturned,
+		expired:      expired,
+	}
+
+	outcome, err := instance.stopBounded(deadline, 50*time.Millisecond)
+	require.NoError(t, err, "a Stop that already returned cleanly must not be reported as a failure")
+	assert.Equal(t, StopCompleted, outcome,
+		"the delivered Stop result must win over an expired budget, not a coin flip")
+}
