@@ -35,33 +35,68 @@ func archProductionGoFilesInDir(t *testing.T, dir string) []string {
 	return files
 }
 
-// TestArchRetiredPathsStayRetired prevents retired packages from becoming a
-// second owner beside their canonical replacements.
-//
-// topology moved under plugin/ordering. runtime and cli retained their package
-// boundaries while moving from internal/ to the repository root; the former
-// internal/container became assembly, and assembly/inject moved with it. The
-// Web module moved from web/ to transport/web/, while transport/ itself remains
-// a repository namespace rather than a Go package or module. Neither a former
-// owner nor a package at the namespace root may coexist with the canonical
-// paths. internal/architecture was a test-only package; tests/architecture is
-// its replacement.
+// archWebBuiltinNames is the intentional set of Web-owned plugins compiled as
+// packages of the transport/web module. Adding or removing one changes the Web
+// runtime's distribution boundary and therefore requires an explicit update.
+var archWebBuiltinNames = []string{
+	"accesslog",
+	"apikey",
+	"auditlog",
+	"biz",
+	"cors",
+	"gracefulshutdown",
+	"gzip",
+	"health",
+	"pprof",
+	"ratelimit",
+	"recovery",
+	"requestid",
+	"securityheaders",
+	"tenant",
+	"timeout",
+}
+
+// TestArchRetiredPathsStayRetired prevents retired packages and repository
+// groupings from becoming second owners beside their canonical replacements.
+// Core orchestration is private under internal; Web built-ins are packages of
+// transport/web; optional third-party Web adapters and protocol-neutral
+// integrations retain independent module boundaries.
 func TestArchRetiredPathsStayRetired(t *testing.T) {
 	root := archRepositoryRoot(t)
-	for _, canonical := range []string{"runtime", "assembly", "assembly/inject", "cli", "transport/web"} {
+	for _, canonical := range []string{
+		"internal",
+		"internal/runtime",
+		"internal/assembly",
+		"internal/cli",
+		"plugin",
+		"integrations",
+		"transport",
+		"transport/web",
+		"transport/web/prelude",
+		"transport/web/integrations",
+	} {
 		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(canonical)))
-		require.NoError(t, err, "canonical package %s must exist", canonical)
-		require.True(t, info.IsDir(), "canonical package %s must be a directory", canonical)
+		require.NoError(t, err, "canonical path %s must exist", canonical)
+		require.True(t, info.IsDir(), "canonical path %s must be a directory", canonical)
 	}
 
 	retiredPaths := []string{
+		"runtime",
+		"assembly",
+		"cli",
+		"plugins",
+		"plugin/catalog",
 		"web",
 		"topology",
 		"container",
-		"internal/runtime",
+		"integration",
+		"management",
+		"transport/web/plugins",
+		"transport/web/autoload/prelude",
+		"transport/web/business",
 		"internal/container",
-		"internal/cli",
 		"internal/inject",
+		"internal/assembly/inject",
 		"internal/report",
 		"internal/startupreport",
 		"internal/architecture",
@@ -70,33 +105,78 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		retiredPath := filepath.Join(root, filepath.FromSlash(retired))
 		_, err := os.Stat(retiredPath)
 		if err == nil {
-			t.Errorf("old path %s must not be revived; please use current canonical owner", retired)
+			t.Errorf("old path %s must not be revived; use the canonical internal, transport, or integrations owner", retired)
 			continue
 		}
-		require.ErrorIs(t, err, os.ErrNotExist, "Checking old path %s failed", retired)
+		require.ErrorIs(t, err, os.ErrNotExist, "checking old path %s failed", retired)
 	}
 
-	transportDir := filepath.Join(root, "transport")
-	entries, err := os.ReadDir(transportDir)
-	require.NoError(t, err, "Reading transport namespace failed")
+	archAssertIndependentIntegrationNamespace(t, filepath.Join(root, "integrations"))
+	archAssertIndependentIntegrationNamespace(t, filepath.Join(root, "transport", "web", "integrations"))
+
+	webRoot := filepath.Join(root, "transport", "web")
+	preludeRoot := filepath.Join(webRoot, "prelude")
+	require.NotEmpty(t, archProductionGoFilesInDir(t, preludeRoot), "Web prelude must be a production package")
+	_, err := os.Stat(filepath.Join(preludeRoot, "go.mod"))
+	require.ErrorIs(t, err, os.ErrNotExist, "Web prelude must belong to the transport/web module")
+
+	builtinSet := make(map[string]bool, len(archWebBuiltinNames))
+	for _, name := range archWebBuiltinNames {
+		builtinSet[name] = true
+		builtinRoot := filepath.Join(webRoot, name)
+		info, err := os.Stat(builtinRoot)
+		require.NoError(t, err, "Web built-in package %s must exist", filepath.ToSlash(filepath.Join("transport", "web", name)))
+		require.True(t, info.IsDir(), "Web built-in %s must be a directory", builtinRoot)
+		require.NotEmpty(t, archProductionGoFilesInDir(t, builtinRoot), "%s must contain a production Go package", builtinRoot)
+		_, err = os.Stat(filepath.Join(builtinRoot, "go.mod"))
+		require.ErrorIs(t, err, os.ErrNotExist, "Web built-in %s must belong to the transport/web module, not declare its own module", name)
+		autoload, err := os.Stat(filepath.Join(builtinRoot, "autoload"))
+		require.NoError(t, err, "Web built-in %s must provide an autoload package", name)
+		require.True(t, autoload.IsDir(), "Web built-in autoload path %s must be a directory", autoload.Name())
+	}
+
+	entries, err := os.ReadDir(webRoot)
+	require.NoError(t, err, "reading Web module root failed")
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if !entry.IsDir() || entry.Name() == "autoload" || entry.Name() == "prelude" || entry.Name() == "integrations" {
 			continue
 		}
-		name := entry.Name()
-		if name == "go.mod" || strings.HasSuffix(name, ".go") {
-			t.Errorf("transport/%s must not exist: transport/ is only for repository-level namespace, does not provide Go package or module", name)
-		}
+		assert.Truef(t, builtinSet[entry.Name()], "unexpected direct package directory transport/web/%s; declare its ownership explicitly", entry.Name())
 	}
 }
 
+// archAssertIndependentIntegrationNamespace permits documentation at a module
+// namespace but requires every direct child directory to be a real module.
+func archAssertIndependentIntegrationNamespace(t *testing.T, namespace string) {
+	t.Helper()
+	entries, err := os.ReadDir(namespace)
+	require.NoError(t, err, "reading integration namespace %s failed", namespace)
+	modules := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			name := entry.Name()
+			if name == "go.mod" || strings.HasSuffix(name, ".go") {
+				t.Errorf("%s must not exist: %s is a namespace, not a Go package or module", filepath.Join(namespace, name), namespace)
+			}
+			continue
+		}
+		modules++
+		manifest := filepath.Join(namespace, entry.Name(), "go.mod")
+		info, err := os.Stat(manifest)
+		require.NoError(t, err, "integration directory %s must be an independent module", filepath.Join(namespace, entry.Name()))
+		require.False(t, info.IsDir(), "integration manifest %s must be a file", manifest)
+	}
+	require.NotZero(t, modules, "integration namespace %s must contain independent modules", namespace)
+}
+
 // TestArchRootPublicAPIIsFrozen keeps the application-facing facade narrow.
-// runtime, assembly and cli have their own package APIs, but importing the root
-// package must still expose only the six entry-point symbols below.
+// Runtime, assembly, and CLI implementation packages are private under
+// internal/; importing the root package must expose only the six entry-point
+// symbols below.
 //
 // The set below is deliberately tiny and should stay that way: an application
 // calls Run, an embedding host calls New and App.Execute, and a test supplies
-// its own catalog through WithDefinitions. Adding to it is a real API decision
+// its own explicit composition through WithBundles. Adding to it is a real API decision
 // and must be a deliberate edit to this list, not a side effect of a rename.
 //
 // Scope note: this collects exported top-level declarations plus exported
@@ -110,7 +190,7 @@ func TestArchRootPublicAPIIsFrozen(t *testing.T) {
 		"New",
 		"Option",
 		"Run",
-		"WithDefinitions",
+		"WithBundles",
 	}
 
 	root := archRepositoryRoot(t)

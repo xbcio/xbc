@@ -2,80 +2,117 @@ package web
 
 import (
 	"context"
-	"reflect"
 	"sync"
 
-	"github.com/xbcio/xbc/config"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
 
-// fakeHost is a minimal, in-memory plugin.RuntimeHost used only by web's own tests.
-// web cannot import any of core's internal/* packages (design §9 guard #10)
-// nor reach into plugin's own package-private fakehost_test.go, so
-// exercising (*Server).Start/OpenTraffic against real
-// plugin.Context/Extensions machinery needs a local stand-in that implements
-// RuntimeHost's four methods directly, built for web's own tests only.
+type submittedTask struct {
+	identity plugin.Identity
+	critical bool
+}
+
+// fakeHost is the smallest faithful RuntimeHost needed by Web lifecycle tests.
+// It owns one traffic gate and one cancellable task scope, just like runtime.
 type fakeHost struct {
 	mu sync.Mutex
 
-	initialized    []plugin.Extension[any]
-	initializedErr error
+	execution context.Context
+	logger    log.Logger
+	gate      chan struct{}
+	gateOnce  sync.Once
+
+	acceptTasks bool
+	taskContext context.Context
+	cancelTasks context.CancelFunc
+	tasks       []submittedTask
+	wg          sync.WaitGroup
+
+	shutdownRequested bool
+	shutdownIdentity  plugin.Identity
+	shutdownReason    string
 }
 
 var _ plugin.RuntimeHost = (*fakeHost)(nil)
 
-func newFakeHost(extensions ...plugin.Extension[any]) *fakeHost {
-	return &fakeHost{initialized: extensions}
+func newFakeHost() *fakeHost {
+	execution, cancel := context.WithCancel(context.Background())
+	return &fakeHost{
+		execution:   execution,
+		logger:      log.Nop(),
+		gate:        make(chan struct{}),
+		acceptTasks: true,
+		taskContext: execution,
+		cancelTasks: cancel,
+	}
 }
 
-func (h *fakeHost) ProvideValue(reflect.Type, string, any) {}
+func (h *fakeHost) ExecutionContext() context.Context { return h.execution }
+func (h *fakeHost) Logger() log.Logger                { return h.logger }
+func (h *fakeHost) TrafficGate() <-chan struct{}      { return h.gate }
 
-func (h *fakeHost) LookupValue(typ reflect.Type, instance string) (any, error) {
-	return nil, &plugin.NotFoundError{Want: typ, Instance: instance}
+func (h *fakeHost) SubmitTask(id plugin.Identity, fn func(context.Context), critical bool) bool {
+	if fn == nil {
+		return false
+	}
+	h.mu.Lock()
+	if !h.acceptTasks {
+		h.mu.Unlock()
+		return false
+	}
+	h.tasks = append(h.tasks, submittedTask{identity: id.Normalized(), critical: critical})
+	h.wg.Add(1)
+	taskContext := h.taskContext
+	h.mu.Unlock()
+
+	go func() {
+		defer h.wg.Done()
+		fn(taskContext)
+	}()
+	return true
 }
 
-func (h *fakeHost) InitializedPlugins() ([]plugin.Extension[any], error) {
+func (h *fakeHost) RequestShutdown(id plugin.Identity, reason string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.initializedErr != nil {
-		return nil, h.initializedErr
+	if h.shutdownRequested {
+		return false
 	}
-	out := make([]plugin.Extension[any], len(h.initialized))
-	copy(out, h.initialized)
-	return out, nil
+	h.shutdownRequested = true
+	h.shutdownIdentity = id.Normalized()
+	h.shutdownReason = reason
+	return true
 }
 
-// GoManaged spawns a genuine goroutine, unlike plugin's own package-private
-// fakeHost (plugin/fakehost_test.go), which calls fn synchronously because
-// that package's tests only ever check that GoManaged was *called*, not
-// that it behaves like a real scheduler. web's readiness tests depend on
-// OpenTraffic returning immediately while srv.Serve keeps running in the
-// background (design §5.1 rule 5) -- a synchronous fn call here would make
-// OpenTraffic itself block forever on Serve and the whole point of the
-// two-phase contract would go untested.
-func (h *fakeHost) GoManaged(_ plugin.Identity, fn func(context.Context), _ bool) {
-	go fn(context.Background())
+func (h *fakeHost) releaseTraffic() { h.gateOnce.Do(func() { close(h.gate) }) }
+
+func (h *fakeHost) trafficReleased() bool {
+	select {
+	case <-h.gate:
+		return true
+	default:
+		return false
+	}
 }
 
-// contextFromHost builds a *plugin.Context wired to host, with a discard
-// logger and an empty read-only config.View -- everything
-// (*Server).Start/OpenTraffic need to run for real, without pulling in the
-// real assembly container. The concrete Environment below is used only to
-// construct
-// that view; NewRuntimeContext exposes it through the config.View contract.
+func (h *fakeHost) rejectTasks() {
+	h.mu.Lock()
+	h.acceptTasks = false
+	h.mu.Unlock()
+}
+
+func (h *fakeHost) submittedTasks() []submittedTask {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]submittedTask(nil), h.tasks...)
+}
+
+func (h *fakeHost) shutdown() {
+	h.cancelTasks()
+	h.wg.Wait()
+}
+
 func contextFromHost(host *fakeHost) *plugin.Context {
-	env, err := config.NewEnvironment(nil, "")
-	if err != nil {
-		panic(err)
-	}
-	return plugin.NewRuntimeContext(host, plugin.Identity{Plugin: "web", Instance: "default"}, env, log.Nop())
-}
-
-// asAny upcasts a concrete capability value plus its providing Identity
-// into the plugin.Extension[any] shape (*fakeHost).initialized holds, so a
-// test can hand Start a MiddlewareProvider/RouteProvider/RouteCatalogConsumer
-// fixture through the exact same Extensions[T] path Start itself uses.
-func asAny(id plugin.Identity, v any) plugin.Extension[any] {
-	return plugin.Extension[any]{Identity: id, Value: v}
+	return plugin.NewRuntimeContext(host, plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance})
 }

@@ -13,48 +13,57 @@ import (
 
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/security"
 )
 
-// Server is the Gin-backed Web plugin. It implements the two-phase
-// readiness contract from package-layout design §5.1: Start (Runner) binds
-// the listening socket but accepts no traffic yet; OpenTraffic
-// (TrafficOpener), called once every Runner in the application has
-// finished Start, is what actually begins serving requests.
+// Server is the Gin-backed HTTP server Plugin. Its Definition injects the
+// complete middleware, route-contributor, and route-listener sets before the
+// value is constructed; no lifecycle hook scans initialized Plugins.
 type Server struct {
-	plugin.Base
-
 	cfg Config
 
-	// listener, when non-nil, replaces the net.Listen call inside Start.
-	// Only transport/web/export_test.go's setListener ever assigns it -- see that
-	// file's doc comment for why there is deliberately no public setter.
+	middlewares []plugin.Entry[Middleware]
+	routes      []plugin.Entry[RouteContributor]
+	listeners   []plugin.Entry[RouteCatalogListener]
+
+	// listener is a test-only pre-bound socket set from export_test.go.
 	listener net.Listener
 
-	mu      sync.Mutex
-	engine  *gin.Engine
-	router  *Router
-	ln      net.Listener
-	srv     *http.Server
-	started bool // Start completed successfully
-	served  bool // OpenTraffic has handed srv.Serve to a managed goroutine
+	mu       sync.Mutex
+	engine   *gin.Engine
+	router   *Router
+	ln       net.Listener
+	srv      *http.Server
+	ordered  []plugin.Entry[Middleware]
+	misses   []MiddlewareOrderMiss
+	catalog  RouteCatalog
+	started  bool
+	prepared bool
+	served   bool
 }
 
 var (
-	_ plugin.Plugin        = (*Server)(nil)
-	_ plugin.Configurable  = (*Server)(nil)
 	_ plugin.Runner        = (*Server)(nil)
 	_ plugin.TrafficOpener = (*Server)(nil)
 	_ plugin.Closer        = (*Server)(nil)
 )
 
-// ConfigPtr implements plugin.Configurable. Package assembly binds
-// "plugins.web" onto this pointer before Start ever runs.
-func (s *Server) ConfigPtr() any { return &s.cfg }
+func newServer(
+	cfg Config,
+	middlewares []plugin.Entry[Middleware],
+	routes []plugin.Entry[RouteContributor],
+	listeners []plugin.Entry[RouteCatalogListener],
+) *Server {
+	return &Server{
+		cfg:         cfg,
+		middlewares: append([]plugin.Entry[Middleware](nil), middlewares...),
+		routes:      append([]plugin.Entry[RouteContributor](nil), routes...),
+		listeners:   append([]plugin.Entry[RouteCatalogListener](nil), listeners...),
+	}
+}
 
-// Addr returns the actual address Start bound. It is the only way to learn
-// the real port when Config.Addr is "host:0" and the kernel picked an
-// ephemeral one, and it is safe to call once Start has returned (nothing
-// about it depends on OpenTraffic having run yet).
+// Addr returns the bound address after Start succeeds. It resolves an ephemeral
+// :0 port before the global traffic gate is released.
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -64,33 +73,23 @@ func (s *Server) Addr() string {
 	return s.ln.Addr().String()
 }
 
-// ginLogWriter adapts an xbc log.Logger to io.Writer so gin's own startup
-// banner and internal warnings land in the same structured log stream as
-// everything else, instead of a second, unstructured format fighting for
-// stdout.
 type ginLogWriter struct {
 	logger log.Logger
 	level  log.Level
 }
 
 func (w ginLogWriter) Write(p []byte) (int, error) {
-	msg := strings.TrimRight(string(p), "\n")
-	if msg != "" {
+	message := strings.TrimRight(string(p), "\n")
+	if message != "" {
 		if w.level == log.ErrorLevel {
-			w.logger.Error(msg)
+			w.logger.Error(message)
 		} else {
-			w.logger.Info(msg)
+			w.logger.Info(message)
 		}
 	}
 	return len(p), nil
 }
 
-// setGinMode derives gin's run mode from the logger capability already bound
-// to this plugin. Web must not reach across owner boundaries to read core's
-// "log.level" configuration key: doing so would create a runtime-only
-// dependency that Go's import graph cannot check. If debug entries are
-// enabled, gin's own diagnostics are useful; otherwise release mode avoids a
-// noisy duplicate startup banner.
 func setGinMode(logger log.Logger) {
 	if logger != nil && logger.Enabled(log.DebugLevel) {
 		gin.SetMode(gin.DebugMode)
@@ -99,76 +98,158 @@ func setGinMode(logger log.Logger) {
 	gin.SetMode(gin.ReleaseMode)
 }
 
-// Start is readiness phase 1 (plugin.Runner): assemble the gin.Engine,
-// install the internal CurrentRoute-recording middleware, collect and order
-// every MiddlewareProvider's contributions, register every RouteProvider's
-// routes, freeze the route table, notify every RouteCatalogConsumer, render
-// web's own startup report, and finally bind the listening socket. Start
-// returning successfully means the port is bound and Addr() is readable --
-// it does NOT mean requests are being served; that only begins once
-// OpenTraffic runs (design §5.1, §8.1).
+// Start assembles the immutable request pipeline, binds the listener, and
+// submits the serving loop while managed-task admission is open. The task waits
+// for the runtime-owned traffic gate (or task cancellation) before calling
+// Serve, so no ingress is exposed during fallible preparation.
 func (s *Server) Start(ctx *plugin.Context) error {
+	if ctx == nil {
+		return errors.New("xbc: web Start requires a non-nil plugin context")
+	}
+	cfg, err := normalizeConfig(s.cfg)
+	if err != nil {
+		return err
+	}
+	s.cfg = cfg
+
 	logger := ctx.Log()
 	setGinMode(logger)
 	gin.DefaultWriter = ginLogWriter{logger: logger, level: log.InfoLevel}
 	gin.DefaultErrorWriter = ginLogWriter{logger: logger, level: log.ErrorLevel}
 
 	engine := gin.New()
+	if err := engine.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		return fmt.Errorf("xbc: web trusted_proxies: %w", err)
+	}
+	engine.HandleMethodNotAllowed = true
+	engine.MaxMultipartMemory = cfg.MaxMultipartMemory
 
-	// recordCurrentRoute must be the very first engine.Use() call -- outside
-	// every user middleware -- so CurrentRoute keeps working even for a
-	// request a later middleware aborts early (design §5.6). It closes over
-	// routeTable's pointers, which freeze() below fills in once the route
-	// table is complete; the middleware itself only ever runs at request
-	// time, well after Start has returned.
 	routes, frozen, index := newRouteTable()
 	engine.Use(recordCurrentRoute(frozen, index))
+	engine.Use(limitRequestBody(cfg.MaxRequestBodyBytes))
+	engine.Use(newErrorResolver(logger).attach)
 
-	mwExtensions, err := plugin.Extensions[MiddlewareProvider](ctx)
-	if err != nil {
-		return err
+	orderOptions := []middlewareOrderOption{
+		pinMiddlewareOutermost(Require(ErrorBoundaryKey)),
 	}
-	var entries []mwEntry
-	for _, ext := range mwExtensions {
-		for _, mw := range ext.Value.Middlewares() {
-			entries = append(entries, mwEntry{
-				Middleware: mw,
-				qname:      qualify(ext.Identity.Plugin.String(), mw.Name),
-			})
+	for _, entry := range s.middlewares {
+		if _, requiresPrincipal := entry.Value.(security.RequiresPrincipal); requiresPrincipal {
+			orderOptions = append(orderOptions,
+				pinMiddlewareAfter(entry.Identity, Require(AuthenticationMiddlewareKey)))
 		}
 	}
-	ordered, misses, err := orderMiddlewares(entries)
+	ordered, misses, err := orderMiddlewares(s.middlewares, orderOptions...)
 	if err != nil {
 		return err
 	}
-	for _, e := range ordered {
-		engine.Use(e.Handler)
+	for _, entry := range ordered {
+		engine.Use(entry.Value.Handler())
+	}
+	engine.NoRoute(func(c *gin.Context) {
+		AbortProblem(c, NewProblem(http.StatusNotFound, "not_found"))
+	})
+	engine.NoMethod(func(c *gin.Context) {
+		AbortProblem(c, NewProblem(http.StatusMethodNotAllowed, "method_not_allowed"))
+	})
+
+	// Group snapshots the engine middleware slice, so this must happen after
+	// every Use call above.
+	router := newRouter(engine, cfg.BasePath, routes, frozen, index)
+	for _, entry := range s.routes {
+		entry.Value.RegisterRoutes(router)
 	}
 
-	// newRouter's engine.Group(basePath) must run after every engine.Use()
-	// call above, not before -- see newRouter's own doc comment for why.
-	router := newRouter(engine, s.cfg.BasePath, routes, frozen, index)
+	ln := s.listener
+	if ln == nil {
+		ln, err = net.Listen("tcp", cfg.Addr)
+		if err != nil {
+			return fmt.Errorf("xbc: failed to listen on %s: %w", cfg.Addr, err)
+		}
+	}
+	srv := &http.Server{
+		Handler:           engine,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		MaxHeaderBytes:    cfg.MaxHeaderBytes,
+	}
 
-	routeExtensions, err := plugin.Extensions[RouteProvider](ctx)
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		_ = ln.Close()
+		return errors.New("xbc: web Server has already started")
+	}
+	s.engine = engine
+	s.router = router
+	s.ln = ln
+	s.srv = srv
+	s.ordered = ordered
+	s.misses = misses
+	s.started = true
+	s.mu.Unlock()
+
+	gate := ctx.TrafficGate()
+	accepted := ctx.GoCritical(func(taskCtx context.Context) {
+		select {
+		case <-gate:
+		case <-taskCtx.Done():
+			return
+		}
+
+		s.mu.Lock()
+		s.served = true
+		s.mu.Unlock()
+		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
+			logger.Error("xbc: HTTP service terminated abnormally", "error", serveErr)
+		}
+	})
+	if !accepted {
+		_ = ln.Close()
+		s.mu.Lock()
+		s.started = false
+		s.ln = nil
+		s.mu.Unlock()
+		return errors.New("xbc: web managed serving task was rejected outside Start admission")
+	}
+	return nil
+}
+
+// OpenTraffic performs the remaining fallible preparation while the runtime
+// traffic gate is still closed: route-policy validation/freeze and listener
+// notification. The runtime atomically closes the gate only after every
+// participant's OpenTraffic succeeds.
+func (s *Server) OpenTraffic(ctx *plugin.Context) error {
+	s.mu.Lock()
+	if !s.started || s.router == nil {
+		s.mu.Unlock()
+		return errors.New("xbc: web Server has not started successfully; cannot prepare traffic")
+	}
+	if s.prepared {
+		s.mu.Unlock()
+		return nil
+	}
+	router := s.router
+	ordered := append([]plugin.Entry[Middleware](nil), s.ordered...)
+	misses := append([]MiddlewareOrderMiss(nil), s.misses...)
+	listeners := append([]plugin.Entry[RouteCatalogListener](nil), s.listeners...)
+	s.mu.Unlock()
+
+	catalog, err := router.freeze()
 	if err != nil {
 		return err
 	}
-	for _, ext := range routeExtensions {
-		ext.Value.RegisterRoutes(router)
-	}
-
-	catalog := router.freeze()
-
-	consumerExtensions, err := plugin.Extensions[RouteCatalogConsumer](ctx)
-	if err != nil {
-		return err
-	}
-	for _, ext := range consumerExtensions {
-		if err := ext.Value.RoutesReady(catalog); err != nil {
-			return fmt.Errorf("xbc: plugin %s's RoutesReady failed: %w", ext.Identity, err)
+	for _, entry := range listeners {
+		if err := entry.Value.RoutesReady(catalog); err != nil {
+			return fmt.Errorf("xbc: plugin %s RoutesReady failed: %w", entry.Identity, err)
 		}
 	}
 
+	logger := log.L()
+	if ctx != nil {
+		logger = ctx.Log()
+	}
 	if len(ordered) > 0 {
 		logger.Info(renderMiddlewareChain(ordered))
 	}
@@ -177,100 +258,41 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	}
 	logger.Info(renderRouteTable(catalog.All()))
 
-	ln := s.listener
-	if ln == nil {
-		ln, err = net.Listen("tcp", s.cfg.Addr)
-		if err != nil {
-			return fmt.Errorf("xbc: failed to listen on %s: %w", s.cfg.Addr, err)
-		}
-	}
-
 	s.mu.Lock()
-	s.engine = engine
-	s.router = router
-	s.ln = ln
-	s.srv = &http.Server{
-		Handler:      engine,
-		ReadTimeout:  s.cfg.ReadTimeout,
-		WriteTimeout: s.cfg.WriteTimeout,
-	}
-	s.started = true
+	s.catalog = catalog
+	s.prepared = true
 	s.mu.Unlock()
 	return nil
 }
 
-// OpenTraffic is readiness phase 2 (plugin.TrafficOpener): hand the bound
-// listener to http.Server.Serve inside a managed critical goroutine, and
-// return immediately -- it must never block on Serve itself (design §5.1
-// rule 5). Serve returning with http.ErrServerClosed is the expected,
-// graceful-shutdown outcome (Stop calls srv.Shutdown/Close to produce
-// exactly that); any other error is logged because nothing else would ever
-// see it, but this goroutine still lets Go's own "unprompted return"
-// judgment (design §5.5) run against the application-level shutdown flag
-// rather than second-guessing it here.
-func (s *Server) OpenTraffic(ctx *plugin.Context) error {
-	s.mu.Lock()
-	srv := s.srv
-	ln := s.ln
-	if srv == nil || ln == nil {
-		s.mu.Unlock()
-		return fmt.Errorf("xbc: web.Server has not started successfully; cannot open traffic")
-	}
-	s.served = true
-	s.mu.Unlock()
-
-	logger := ctx.Log()
-	ctx.GoCritical(func(context.Context) {
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("xbc: HTTP service terminated abnormally", "error", err)
-		}
-	})
-	return nil
-}
-
-// Stop implements plugin.Closer. ctx carries whatever is left of core's
-// shared shutdown deadline (design §5.3); Server must use it to bound its
-// own drain instead of assuming an unlimited budget.
-//
-// Two shapes have to be told apart:
-//
-//   - OpenTraffic ran: srv.Serve is (or was) actively accepting connections,
-//     so the correct stop is srv.Shutdown(ctx) -- drain in-flight requests,
-//     stop accepting new ones -- falling back to srv.Close() if the deadline
-//     is hit first.
-//   - OpenTraffic never ran (startup aborted between Start and the
-//     traffic-opening barrier): srv exists but was never handed to Serve,
-//     so http.Server has no listener registered to close on Shutdown's
-//     behalf (that registration only happens inside Serve itself). The raw,
-//     bound-but-never-accepted listener must be closed directly here, or the
-//     fd leaks for the life of the process.
+// Stop drains a serving server or closes a listener that never crossed the
+// global traffic gate. It is safe after every partially completed owned state.
 func (s *Server) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
 	started := s.started
 	served := s.served
 	srv := s.srv
 	ln := s.ln
 	s.mu.Unlock()
-
 	if !started {
 		return nil
 	}
 
-	if served {
-		if srv == nil {
-			return nil
-		}
+	if served && srv != nil {
 		if err := srv.Shutdown(ctx); err != nil {
-			if cerr := srv.Close(); cerr != nil {
-				return fmt.Errorf("xbc: graceful shutdown timed out and forced shutdown also failed: %w", cerr)
+			if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+				return fmt.Errorf("xbc: graceful shutdown failed (%v) and forced close failed: %w", err, closeErr)
 			}
+			return err
 		}
 		return nil
 	}
-
 	if ln != nil {
-		if err := ln.Close(); err != nil {
-			return fmt.Errorf("xbc: failed to close listener before traffic was opened: %w", err)
+		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return fmt.Errorf("xbc: failed to close listener before traffic gate release: %w", err)
 		}
 	}
 	return nil

@@ -17,11 +17,10 @@ import (
 //
 // This guard deliberately checks Imports/TestImports/XTestImports, not
 // Deps, per package-layout design §9.1: the rule under test is "web's own
-// source files must never bypass public capability owners to import the root
-// facade or lower-level core owner packages", a statement about what web's
-// authors wrote, not about what
-// ends up on disk once gin or any other dependency's own transitive graph
-// is flattened. Using Deps here would produce a false negative the moment
+// source files must never import the root facade or private core implementation
+// packages", a statement about what web's authors wrote, not about what ends
+// up on disk once gin or any other dependency's own transitive graph is
+// flattened. Using Deps here would produce a false negative the moment
 // gin (or any future dependency) happens to import something that in turn
 // imports the root package -- Deps would report that unrelated edge as if
 // web itself had written the import, when web's own source never did.
@@ -38,17 +37,20 @@ type packageJSON struct {
 
 // forbiddenDirectImport reports why importing dep from web would violate a
 // package-layout design §9 guard, or "" if dep is fine.
-func forbiddenDirectImport(dep string) string {
+func forbiddenDirectImport(importer, dep string) string {
 	if dep == "github.com/xbcio/xbc" {
 		return "web may not reverse import root facade (design §9 guard #11)"
+	}
+	if dep == "github.com/xbcio/xbc/internal/autoload" && strings.HasSuffix(importer, "/autoload") {
+		return ""
 	}
 	for _, forbidden := range []struct {
 		prefix string
 		reason string
 	}{
-		{"github.com/xbcio/xbc/runtime", "web may not directly depend on runtime orchestration implementation"},
-		{"github.com/xbcio/xbc/assembly", "web may not directly depend on instance assembly implementation"},
-		{"github.com/xbcio/xbc/cli", "web may not directly depend on command parsing implementation"},
+		{"github.com/xbcio/xbc/internal/runtime", "web may not directly depend on runtime orchestration implementation"},
+		{"github.com/xbcio/xbc/internal/assembly", "web may not directly depend on instance assembly implementation"},
+		{"github.com/xbcio/xbc/internal/cli", "web may not directly depend on command parsing implementation"},
 		{"github.com/xbcio/xbc/internal", "web may not import core internal/*"},
 	} {
 		if dep == forbidden.prefix || strings.HasPrefix(dep, forbidden.prefix+"/") {
@@ -58,13 +60,11 @@ func forbiddenDirectImport(dep string) string {
 	return ""
 }
 
-// TestWebDoesNotDirectlyImportFacadeOrHigherLevelOwners is the
-// package-layout design §9 architecture guard for the complete web module:
-// neither web, autoload, nor a future subpackage's production/test sources may
-// directly import the root facade, runtime, assembly, cli, or core internal
-// packages. See packageJSON's doc comment for why this reads direct imports
-// rather than Deps.
-func TestWebDoesNotDirectlyImportFacadeOrHigherLevelOwners(t *testing.T) {
+// TestWebDoesNotDirectlyImportFacadeOrCoreInternal is the package-layout
+// architecture guard for the complete Web module. Only leaf autoload packages
+// may import the exact internal/autoload adapter; all other internal edges and
+// reverse imports of the root facade remain forbidden.
+func TestWebDoesNotDirectlyImportFacadeOrCoreInternal(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go command is unavailable, skipping dependency direction check")
 	}
@@ -89,7 +89,7 @@ func TestWebDoesNotDirectlyImportFacadeOrHigherLevelOwners(t *testing.T) {
 		}
 		for _, c := range checks {
 			for _, dep := range c.imports {
-				if reason := forbiddenDirectImport(dep); reason != "" {
+				if reason := forbiddenDirectImport(pkg.ImportPath, dep); reason != "" {
 					assert.Fail(t, "forbidden direct dependency",
 						"%s's %s contains %q: %s", pkg.ImportPath, c.label, dep, reason)
 				}

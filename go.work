@@ -1,17 +1,35 @@
 go 1.25.0
 
-// go.work is committed on purpose. The three modules in this repository
-// depend on each other (transport/web -> core and examples -> transport/web ->
-// core), and none is published yet. Without a workspace, neither transport/web
-// nor examples can resolve core -- `go build ./...` in transport/web fails.
-// The alternative, a local `replace` in each sub-module, is exactly what must
-// not happen: a replace directive travels with the published module and would
-// break every downstream consumer, and it would also hide the one property
-// these modules have to keep proving, that they resolve as ordinary tagged
-// dependencies. Once core and transport/web are tagged this file stops being
-// load-bearing and becomes a convenience for local development.
+// go.work is committed on purpose. This repository contains independently
+// publishable core, transport, transport-owned integration, protocol-neutral
+// integration, and example modules. Web built-ins are packages inside the
+// transport/web module; third-party Web integrations live below
+// transport/web/integrations; protocol-neutral integrations live below the
+// top-level integrations namespace.
+// Local development resolves unpublished XBC imports through this workspace;
+// publishable child manifests must not use filesystem replaces, v0.0.0
+// requirements, or synthetic pseudo-versions. Once upstream modules have real
+// tags, the workspace remains a convenience rather than a consumer dependency.
 use (
 	.
 	./examples
+	./integrations/asynq
+	./integrations/cron
+	./integrations/elasticsearch
+	./integrations/gorm
+	./integrations/kafka
+	./integrations/objectstorage
+	./integrations/outbox
+	./integrations/raft
+	./integrations/redis
+	./integrations/webhook
+	./scripts/plugin-snapshots
 	./transport/web
+	./transport/web/integrations/casbin
+	./transport/web/integrations/idempotency
+	./transport/web/integrations/jwt
+	./transport/web/integrations/metrics
+	./transport/web/integrations/session
+	./transport/web/integrations/swagger
+	./transport/web/integrations/tracing
 )

@@ -1,107 +1,53 @@
-// Package xbc is the core of a protocol-agnostic plugin framework.
+// Package xbc is the narrow application facade for the XBC Plugin runtime.
 //
-// # The entry point
+// Explicit Bundle composition is the primary entry point:
 //
-// An application is a list of blank imports and one call:
+//	app, err := xbc.New(xbc.WithBundles(
+//		webprelude.Bundle(),
+//		orders.Bundle(),
+//	))
+//	if err != nil { /* handle */ }
+//	code, err := app.Execute(context.Background(), os.Args[1:])
 //
-//	import (
-//		_ "example.com/order-service/internal/order"
-//		"github.com/xbcio/xbc"
-//		_ "github.com/xbcio/xbc/transport/web/autoload"
-//	)
+// A Bundle is side-effect-free composition data. Definitions are immutable
+// canonical handles; planning freezes configuration, contracts, typed inputs,
+// lifecycle descriptors, and the dependency graph before any factory runs.
 //
-//	func main() { xbc.Run() }
-//
-// Each imported autoload package declares its plugins from init() into the
-// default catalog. Run freezes that catalog, loads configuration, decides
-// which plugins are enabled, orders them by their declared dependencies, and
-// drives them through their lifecycle until something asks the process to
-// stop. Ordinary library packages such as web remain safe to import without
-// mutating process state.
-//
-// There is no registration call in main. A plugin is declared where it is
-// defined, by the package that owns it, and the import list is the whole of
-// what an application chooses to include.
-//
-// # What this package knows nothing about
-//
-// The core has no HTTP server, no gRPC server, and no dependency on either.
-// It cannot import github.com/xbcio/xbc/transport/web -- that is an independent module
-// which depends on this one, never the reverse -- and it contains no
-// special-casing for it. A protocol module participates through the same
-// interfaces any other plugin uses:
-//
-//   - plugin.Runner prepares and binds, and must return without serving.
-//   - plugin.TrafficOpener starts accepting, and is called only once every
-//     Runner in the application has bound successfully.
-//   - plugin.Closer stops, within a shared budget the core enforces.
-//
-// That is the entire contract between the core and anything that serves
-// traffic. It is why the core never sorts plugins by name, never checks
-// whether "web" is present, and needs no change to accommodate a protocol it
-// has not seen.
-//
-// # Identity
-//
-// A plugin's identity is its Definition.Key, and nothing else. That single
-// string is the key for its configuration section, its dependency edges, its
-// log fields and its Identity in the extension system. Nothing is derived
-// from the Go type or package path, so renaming a package cannot silently
-// change which configuration section a plugin reads.
-//
-// # Isolation
-//
-// Only immutable Definitions are process-global. Everything a run mutates --
-// plugin instances, Contexts, the value registry, the managed task group --
-// belongs to one App. A private catalog (see WithDefinitions) isolates those
-// runtime values. Process facilities such as environment variables, OS
-// signals, the configured global logger, and protocol-library globals may
-// still be shared, so multiple Apps are not a complete process-isolation
-// boundary.
+// Applications that deliberately prefer blank imports may use leaf autoload
+// adapters and Run. Ordinary implementation and Prelude imports never mutate
+// process state.
 package xbc
 
 import (
 	"context"
 
-	"github.com/xbcio/xbc/plugin/catalog"
-	appruntime "github.com/xbcio/xbc/runtime"
+	appruntime "github.com/xbcio/xbc/internal/runtime"
+	"github.com/xbcio/xbc/plugin"
 )
 
-// App is an assembled application exposed through the root package's narrow
-// high-level API. Lower-level lifecycle and process control remain available
-// from package runtime.
-type App struct {
-	impl *appruntime.App
-}
+// App is a single-use assembled application with a deliberately narrow public
+// surface. Runtime and construction details remain private.
+type App struct{ impl *appruntime.App }
 
 // Option configures New.
 type Option = appruntime.Option
 
-// WithDefinitions builds an App from an explicitly frozen plugin snapshot.
-func WithDefinitions(snapshot catalog.Snapshot) Option {
-	return appruntime.WithDefinitions(snapshot)
-}
+// WithBundles explicitly composes the application's canonical Definitions.
+func WithBundles(bundles ...plugin.Bundle) Option { return appruntime.WithBundles(bundles...) }
 
-// New creates a single-use App without performing I/O or starting plugins.
+// New creates an App without loading configuration or constructing resources.
 func New(options ...Option) (*App, error) {
-	impl, err := appruntime.New(options...)
+	implementation, err := appruntime.New(options...)
 	if err != nil {
 		return nil, err
 	}
-	return &App{impl: impl}, nil
+	return &App{impl: implementation}, nil
 }
 
-// Execute runs the application once with the supplied process-independent
-// arguments and context.
-func (a *App) Execute(ctx context.Context, args []string) (int, error) {
-	return a.impl.Execute(ctx, args)
+// Execute plans, constructs, starts, and eventually unwinds the App once.
+func (app *App) Execute(ctx context.Context, args []string) (int, error) {
+	return app.impl.Execute(ctx, args)
 }
 
-// Run is the process entry point for the common case:
-//
-//	func main() { xbc.Run() }
-//
-// Embedded callers should use New and App.Execute instead.
-func Run() {
-	appruntime.Run()
-}
+// Run is the process-owned entry point for optional autoload composition.
+func Run() { appruntime.Run() }

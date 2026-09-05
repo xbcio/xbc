@@ -5,13 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc"
-	"github.com/xbcio/xbc/plugin/catalog"
+	"github.com/xbcio/xbc/plugin"
 )
 
 func quietConfig(t *testing.T) string {
@@ -28,18 +29,21 @@ log:
 	return path
 }
 
-// TestPublicAPIExecutesPrivateSnapshot exercises the API exactly as an
+// TestPublicAPIExecutesPrivateBundle exercises the API exactly as an
 // external importer sees it: only exported identifiers, no access to package
 // xbc's internals. The package's own white-box tests all live inside package
 // xbc, where an unexported helper is as reachable as an exported one, so none
 // of them can tell whether the path an external caller actually takes --
-// xbc.New with an xbc.Option, then App.Execute -- still works end to end.
-func TestPublicAPIExecutesPrivateSnapshot(t *testing.T) {
-	privateCatalog := catalog.New()
-	snapshot, err := privateCatalog.Freeze()
-	require.NoError(t, err)
+// xbc.New with an explicit Bundle, then App.Execute -- still works end to end.
+func TestPublicAPIExecutesPrivateBundle(t *testing.T) {
+	var factories atomic.Int32
+	definition := plugin.Define("public-api-fixture", func(plugin.BuildContext) (*int, error) {
+		factories.Add(1)
+		value := 1
+		return &value, nil
+	})
 
-	app, err := xbc.New(xbc.WithDefinitions(snapshot))
+	app, err := xbc.New(xbc.WithBundles(plugin.BundleOf(definition)))
 	require.NoError(t, err)
 
 	code, err := app.Execute(context.Background(), []string{
@@ -47,6 +51,7 @@ func TestPublicAPIExecutesPrivateSnapshot(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 0, code)
+	assert.Zero(t, factories.Load(), "doctor must validate the plan without invoking factories")
 
 	code, err = app.Execute(context.Background(), []string{"doctor"})
 	assert.Equal(t, 1, code)

@@ -2,11 +2,9 @@ package architecture_test
 
 import (
 	"encoding/json"
-	"go/ast"
 	"go/parser"
 	"go/token"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -140,9 +138,8 @@ func TestArchCoreGoModDoesNotRequireOptionalStacks(t *testing.T) {
 		for _, forbidden := range []string{
 			"github.com/gin-gonic/gin",
 			"google.golang.org/grpc",
+			"github.com/xbcio/xbc/integrations",
 			"github.com/xbcio/xbc/transport",
-			"github.com/xbcio/xbc/management",
-			"github.com/xbcio/xbc/integration",
 		} {
 			if archPathAtOrBelow(req.Path, forbidden) {
 				t.Errorf("core's go.mod must not require optional runtime stack or implementation module %q; these dependencies can only be owned by standalone module", req.Path)
@@ -151,13 +148,13 @@ func TestArchCoreGoModDoesNotRequireOptionalStacks(t *testing.T) {
 	}
 }
 
-// ── guard 2: core must never directly import transport stacks ─────────────
+// ── guard 2: core must never directly import transport plugins ────────────
 
 // TestArchCorePackagesDoNotImportTransportStacks is the package-layout design
-// §9 rule 1 guard for every optional transport module: transports depend on
+// §9 rule 1 guard for every optional transport stack: transports depend on
 // core, never the reverse. Guarding the parent namespace means a future
-// transport/grpc module is covered as soon as it appears, without extending an
-// implementation-name allowlist here.
+// transport/grpc module is covered as soon as it appears, without
+// extending an implementation-name allowlist here.
 //
 // Checked across every package this module builds (`./...`), not just the root
 // package, so a future core subpackage cannot reach sideways into a transport
@@ -167,7 +164,7 @@ func TestArchCorePackagesDoNotImportTransportStacks(t *testing.T) {
 	for _, pkg := range pkgs {
 		for _, dep := range archDirectImports(pkg) {
 			if archPathAtOrBelow(dep, "github.com/xbcio/xbc/transport") {
-				t.Errorf("%s contains direct import of %q: transport/* is standalone module, dependency direction must be transport → core, cannot be reversed", pkg.ImportPath, dep)
+				t.Errorf("%s contains direct import of %q: transport/* is a standalone module, dependency direction must be transport → core, cannot be reversed", pkg.ImportPath, dep)
 			}
 		}
 	}
@@ -196,35 +193,44 @@ func TestArchRootPackageDoesNotImportExamples(t *testing.T) {
 
 // ── lower-layer direction versus public capability owners ──────────────
 //
-// The root package is a narrow application-facing facade. Package runtime owns
-// lifecycle and process orchestration, assembly owns plugin assembly, and cli owns
-// command parsing. plugin remains the protocol-neutral SPI beneath all three;
-// it must not reach upward into the facade or higher-level owners.
+// The root package is a narrow application-facing facade. The internal runtime
+// owns lifecycle and process orchestration, internal assembly owns Plugin
+// assembly, and internal cli owns command parsing. The public plugin package may
+// delegate opaque representation to internal/pluginmodel, but that private model
+// remains below all three orchestration owners and must not pull them back in.
 
-// ── guard 5: plugin must not import the facade or higher-level owners ──
+// ── guard 5: plugin may use only its private model below internal ───────
 
-// TestArchPluginPackagesDoNotImportHigherLevelOwners walks every package
-// under ./plugin/... and checks all three direct-import lists. The production
-// closure guard in plugin/arch_test.go cannot see a forbidden import written
-// only in a _test.go file, so this direct check is deliberately complementary.
+// TestArchPluginPackagesDoNotImportHigherLevelOwners checks direct imports from
+// production and test files, then checks the production closure. The direct
+// check catches a forbidden test-only edge; the closure check prevents the
+// allowed internal/pluginmodel delegation from becoming an indirect bridge to
+// assembly, runtime, autoload, CLI, or another private implementation package.
 func TestArchPluginPackagesDoNotImportHigherLevelOwners(t *testing.T) {
-	pkgs := archGoList(t, "./plugin/...")
-	for _, pkg := range pkgs {
-		for _, dep := range archDirectImports(pkg) {
-			if dep == "github.com/xbcio/xbc" {
-				t.Errorf("%s contains direct import of root package: plugin is protocol-agnostic SPI, must not be reverse depended by application entry", pkg.ImportPath)
-			}
-			for _, forbidden := range []string{
-				"github.com/xbcio/xbc/runtime",
-				"github.com/xbcio/xbc/assembly",
-				"github.com/xbcio/xbc/cli",
-				"github.com/xbcio/xbc/internal",
-			} {
-				if archPathAtOrBelow(dep, forbidden) {
-					t.Errorf("%s contains direct import of %q: plugin must be located under runtime/assembly/cli, must not be reverse depended by upper layer capability owner", pkg.ImportPath, dep)
-				}
-			}
+	const (
+		rootPackage        = "github.com/xbcio/xbc"
+		internalRoot       = rootPackage + "/internal"
+		privatePluginModel = internalRoot + "/pluginmodel"
+	)
+
+	assertAllowed := func(owner, dep, evidence string) {
+		t.Helper()
+		if dep == rootPackage {
+			t.Errorf("%s %s root package: plugin is the protocol-neutral SPI below the application facade", owner, evidence)
+			return
 		}
+		if archPathAtOrBelow(dep, internalRoot) && !archPathAtOrBelow(dep, privatePluginModel) {
+			t.Errorf("%s %s %q: public plugin may delegate only to %s; private assembly/runtime/autoload/CLI must not leak into the SPI", owner, evidence, dep, privatePluginModel)
+		}
+	}
+
+	for _, pkg := range archGoList(t, "./plugin/...") {
+		for _, dep := range archDirectImports(pkg) {
+			assertAllowed(pkg.ImportPath, dep, "directly imports")
+		}
+	}
+	for _, dep := range archDeps(t, "./plugin/...") {
+		assertAllowed("plugin production closure", dep, "contains")
 	}
 }
 
@@ -306,9 +312,8 @@ func TestArchCoreDependencyClosureExcludesOptionalStacks(t *testing.T) {
 		for _, forbidden := range []string{
 			"github.com/gin-gonic/gin",
 			"google.golang.org/grpc",
+			"github.com/xbcio/xbc/integrations",
 			"github.com/xbcio/xbc/transport",
-			"github.com/xbcio/xbc/management",
-			"github.com/xbcio/xbc/integration",
 		} {
 			if archPathAtOrBelow(dep, forbidden) {
 				t.Errorf("core's production dependency closure contains optional runtime stack %q; protocol implementation must remain in standalone module", dep)
@@ -329,8 +334,7 @@ func TestArchLeafPackagesDependOnStdlibOnly(t *testing.T) {
 		owner   string
 	}{
 		{pattern: "./plugin/ordering/...", owner: "github.com/xbcio/xbc/plugin/ordering"},
-		{pattern: "./assembly/inject/...", owner: "github.com/xbcio/xbc/assembly/inject"},
-		{pattern: "./cli/...", owner: "github.com/xbcio/xbc/cli"},
+		{pattern: "./internal/cli/...", owner: "github.com/xbcio/xbc/internal/cli"},
 	}
 
 	for _, tc := range cases {
@@ -365,65 +369,26 @@ func TestArchConfigAndLogAreMutuallyIndependent(t *testing.T) {
 		"log's dependency closure cannot contain config: reading configuration from logger is the direction more likely to violate this rule")
 }
 
-// ── guard 9: assembly must not read the process-wide default catalog ─
+// ── guard 9: assembly must not read optional process-wide autoload state ─
 
-// TestArchAssemblyDoesNotReadDefaultCatalog checks the API-level distinction
-// imports alone cannot express. Package assembly may consume catalog.Snapshot,
-// but it must never call catalog.Declare or catalog.Freeze and thereby reach the
-// process-wide default catalog. Only runtime chooses and freezes a definition
-// set; assembly assembles exactly the snapshot supplied in Options.
-func TestArchAssemblyDoesNotReadDefaultCatalog(t *testing.T) {
+// TestArchAssemblyDoesNotReadDefaultAutoload keeps explicit Bundle assembly
+// deterministic. Only the runtime adapter may select the optional global
+// composition; assembly must consume exactly the Bundles in PlanOptions.
+func TestArchAssemblyDoesNotReadDefaultAutoload(t *testing.T) {
 	root := archRepositoryRoot(t)
-	assemblyDir := filepath.Join(root, "assembly")
-	forbidden := map[string]bool{"Declare": true, "Freeze": true}
-
-	fset := token.NewFileSet()
+	assemblyDir := filepath.Join(root, "internal", "assembly")
 	checked := 0
 	for _, name := range archProductionGoFilesInDir(t, assemblyDir) {
 		filePath := filepath.Join(assemblyDir, name)
-		file, err := parser.ParseFile(fset, filePath, nil, parser.SkipObjectResolution)
+		file, err := parser.ParseFile(token.NewFileSet(), filePath, nil, parser.ImportsOnly)
 		require.NoError(t, err, "Parsing %s failed", filePath)
 		checked++
-
-		catalogAliases := make(map[string]bool)
-		for _, spec := range file.Imports {
-			importPath, err := strconv.Unquote(spec.Path.Value)
-			require.NoError(t, err, "Parsing %s's import path failed", filePath)
-			if importPath != "github.com/xbcio/xbc/plugin/catalog" {
-				continue
-			}
-			alias := path.Base(importPath)
-			if spec.Name != nil {
-				alias = spec.Name.Name
-			}
-			if alias == "." {
-				assert.Fail(t, "assembly must not dot-import catalog",
-					"%s dot-imported plugin/catalog, default Catalog guard cannot reliably identify caller", filePath)
-				continue
-			}
-			if alias != "_" {
-				catalogAliases[alias] = true
-			}
+		for _, specification := range file.Imports {
+			importPath, err := strconv.Unquote(specification.Path.Value)
+			require.NoError(t, err, "Parsing %s import failed", filePath)
+			assert.NotEqual(t, "github.com/xbcio/xbc/internal/autoload", importPath,
+				"assembly must not read optional process-wide autoload state")
 		}
-
-		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			ident, ok := sel.X.(*ast.Ident)
-			if !ok || !catalogAliases[ident.Name] || !forbidden[sel.Sel.Name] {
-				return true
-			}
-			assert.Fail(t, "assembly layer read process-level default catalog",
-				"%s line %d called %s.%s: assembly can only assemble calls made to its frozen Snapshot",
-				filePath, fset.Position(call.Pos()).Line, ident.Name, sel.Sel.Name)
-			return true
-		})
 	}
-	require.NotZero(t, checked, "assembly/ did not scan production Go files, default Catalog guard actually did not take effect")
+	require.NotZero(t, checked, "internal/assembly did not scan production Go files")
 }

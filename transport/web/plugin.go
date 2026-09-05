@@ -2,21 +2,61 @@ package web
 
 import "github.com/xbcio/xbc/plugin"
 
-// Key is the stable catalog and configuration identity of the HTTP server
-// plugin. Applications that assemble a private catalog can use it to inspect
-// or replace the definition without depending on the Server implementation
-// type.
-const Key plugin.Key = "web"
+const (
+	// Key is the stable identity of the HTTP server Plugin.
+	Key plugin.Key = "web"
 
-// Definition returns the immutable catalog entry for the HTTP server plugin.
-// Calling Definition has no side effects; use package transport/web/autoload when an
-// application intentionally wants import-time registration in the default
-// catalog.
-func Definition() plugin.Definition {
-	return plugin.Definition{
-		Key:        Key,
-		Factory:    func() plugin.Plugin { return new(Server) },
-		Instances:  plugin.SingleInstance,
-		Activation: plugin.Always,
-	}
-}
+	// ErrorBoundaryKey identifies the independently ordered error boundary.
+	ErrorBoundaryKey plugin.Key = "web-error-boundary"
+
+	// AuthenticationMiddlewareKey is the canonical producer identity expected
+	// for the Web authentication middleware. RequiresPrincipal entries are
+	// framework-pinned after this key.
+	AuthenticationMiddlewareKey plugin.Key = "authentication-middleware"
+
+	// ConfigPath is the canonical configuration section for the HTTP server.
+	ConfigPath = "web"
+)
+
+var (
+	middlewareInput = plugin.Collect[Middleware]()
+	routeInput      = plugin.Collect[RouteContributor]()
+	listenerInput   = plugin.Collect[RouteCatalogListener]()
+
+	definition = plugin.DefineConfigured(
+		Key,
+		plugin.ConfigSpec[Config]{
+			Defaults: DefaultConfig,
+			Prepare:  normalizeConfig,
+		},
+		func(ctx plugin.BuildContext, cfg Config) (*Server, error) {
+			return newServer(
+				cfg,
+				middlewareInput.Get(ctx),
+				routeInput.Get(ctx),
+				listenerInput.Get(ctx),
+			), nil
+		},
+		plugin.Options[*Server]{
+			ConfigPath: ConfigPath,
+			Inputs: plugin.Inputs(
+				middlewareInput,
+				routeInput,
+				listenerInput,
+			),
+		},
+	)
+
+	bundle = plugin.BundleOf(definition, errorBoundaryDefinition)
+)
+
+// New constructs a side-effect-free server with production-safe defaults.
+// Contributions are normally injected by Definition; tests and embedding hosts
+// can use the unexported constructor in this package.
+func New() *Server { return newServer(DefaultConfig(), nil, nil, nil) }
+
+// Definition returns the canonical HTTP server declaration handle.
+func Definition() plugin.Definition { return definition }
+
+// Bundle returns Web's server and independently ordered error boundary.
+func Bundle() plugin.Bundle { return bundle }

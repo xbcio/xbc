@@ -5,6 +5,20 @@ XBC is an actively developed Go framework for composing applications from plugin
 
 The architecture, module layout, and public APIs are still evolving. Prefer long-term clarity and coherent boundaries over compatibility with an interim design.
 
+## Product Goal
+Build XBC into a plugin-assembled Go service framework that lets an application select explicit Bundles and obtain a production-ready Web service, gRPC service, background service, or a deliberate combination of them with minimal bootstrap code. The same plugin model must cover application components, transports, infrastructure integrations, lifecycle, configuration, security, health, and observability without turning Core into a Web- or gRPC-specific framework.
+
+“Plugin” means a statically linked, compile-time Go component described by an immutable Definition and selected at the application composition root. Runtime installation of binaries, hot plug/unplug, package scanning, and hidden discovery are not product goals.
+
+The product is successful when:
+- A new service can start from a small composition root plus environment-driven configuration and receive safe operational defaults, strict validation, diagnostics, health/readiness, observability hooks, and deterministic shutdown.
+- Web and gRPC own their native route/service registration and middleware/interceptor models while sharing only proven protocol-neutral capabilities.
+- Plugins remain independently selectable, explicitly dependent, testable, and lifecycle-owned; optional transports and heavy integrations do not enter the Core dependency closure.
+- Published modules work outside this repository without `go.work`, local replacements, placeholder versions, or unpublished sibling assumptions.
+- Microservice capabilities are added from concrete deployment requirements after the single-service Web and gRPC paths are reliable, rather than through speculative common SPIs.
+
+The staged improvement plan and acceptance gates are recorded in [`.claude/specs/2026-09-05-service-framework-improvement-plan.md`](.claude/specs/2026-09-05-service-framework-improvement-plan.md).
+
 ## Decision Rules
 Define a change by the outcome it must achieve and the behavior it must not violate, not by the current implementation. Prescribe a specific implementation only when that implementation is itself a deliberate project constraint.
 

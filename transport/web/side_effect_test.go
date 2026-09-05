@@ -1,24 +1,22 @@
 package web_test
 
 import (
+	"reflect"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	"github.com/xbcio/xbc/plugin/catalog"
+	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
 
-func TestOrdinaryImportAndDefinitionAreSideEffectFree(t *testing.T) {
-	// Calling Definition exercises the ordinary package's public assembly API;
-	// neither importing web nor obtaining its Definition may mutate the default
-	// catalog. Executables opt in explicitly through transport/web/autoload.
-	def := web.Definition()
-	assert.Equal(t, web.Key, def.Key)
-
-	snapshot, err := catalog.Freeze()
-	require.NoError(t, err)
-	assert.Zero(t, snapshot.Len(),
-		"importing web must be side-effect free; executables opt in through transport/web/autoload")
+func TestOrdinaryImportExposesOnlyExplicitCanonicalComposition(t *testing.T) {
+	var zeroDefinition plugin.Definition
+	if web.Definition() == zeroDefinition || web.Definition() != web.Definition() {
+		t.Fatal("Definition() must return one non-zero canonical handle")
+	}
+	if reflect.DeepEqual(web.Bundle(), plugin.Bundle{}) {
+		t.Fatal("Bundle() returned an empty composition")
+	}
+	if !reflect.DeepEqual(web.Bundle(), web.Bundle()) {
+		t.Fatal("Bundle() returned different canonical composition content")
+	}
 }

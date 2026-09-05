@@ -1,0 +1,11 @@
+// Package autoload adds the Asynq integration Bundle to XBC's optional
+// process-wide composition. Libraries should import the side-effect-free parent
+// package and compose its Bundle explicitly.
+package autoload
+
+import (
+	"github.com/xbcio/xbc/integrations/asynq"
+	"github.com/xbcio/xbc/internal/autoload"
+)
+
+func init() { autoload.Declare(asynq.Bundle()) }
