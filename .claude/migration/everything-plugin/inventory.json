@@ -92,7 +92,7 @@
   },
   "summary": {
     "modules": 21,
-    "go_files": 518,
+    "go_files": 529,
     "migration_blockers": 0,
     "retired_api_uses": 0,
     "context_retentions": 0,
@@ -106,7 +106,7 @@
     {
       "module": "github.com/xbcio/xbc",
       "root": ".",
-      "go_files": 94,
+      "go_files": 105,
       "migration_blockers": 0,
       "retired_api_uses": 0,
       "context_retentions": 0,

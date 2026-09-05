@@ -44,8 +44,12 @@ func planFor(t *testing.T, values map[string]any, definitions ...plugin.Definiti
 
 func TestFreezeRejectsZeroDefinitionsAndMalformedDeclarations(t *testing.T) {
 	t.Parallel()
+	// Definition is an opaque handle produced by plugin.Define, so the only
+	// way an application can present an unbuilt one is by declaring the zero
+	// value -- never by writing a struct literal.
+	var unbuilt plugin.Definition
 	_, err := BuildPlan(PlanOptions{
-		Bundles: []plugin.Bundle{plugin.BundleOf(plugin.Definition{})},
+		Bundles: []plugin.Bundle{plugin.BundleOf(unbuilt)},
 		Env:     testEnvironment(t, nil),
 	})
 	require.Error(t, err)
