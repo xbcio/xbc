@@ -68,6 +68,39 @@ func TestRefResolutionTargetsOneEnabledExporter(t *testing.T) {
 	assert.Contains(t, err.Error(), "does not export that contract")
 }
 
+// TestRefBindsByKeyNotByImplementationType pins that a dependency's identity is
+// the plugin key and nothing else. "decoy" is backed by the very same concrete
+// Go type as "target" and exports the very same contract, so an implementation
+// that resolved on either of those would happily bind it -- and an application
+// would silently receive a different plugin than the one it named.
+func TestRefBindsByKeyNotByImplementationType(t *testing.T) {
+	t.Parallel()
+	target := storeDefinition("target", plugin.SingleInstance)
+	decoy := storeDefinition("decoy", plugin.SingleInstance)
+	named := plugin.RefTo[storeContract]("target")
+	consumer := plugin.Define("consumer", func(context plugin.BuildContext) (*validationValue, error) {
+		assert.Equal(t, "target", named.Get(context).Value.Name(),
+			"the ref bound the decoy, which merely shares target's implementation type")
+		return &validationValue{}, nil
+	}, plugin.Options[*validationValue]{Inputs: plugin.Inputs(named)})
+
+	// Without target, an identical decoy must not stand in for it.
+	_, err := planFor(t, nil, decoy, consumer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(),
+		"xbc: plugin consumer requires assembly.storeContract from exact producer target, but it is not enabled or does not export that contract")
+
+	// With both present the key still decides, and the decoy is built as an
+	// unrelated peer rather than being skipped as a duplicate.
+	plan, err := planFor(t, nil, target, decoy, consumer)
+	require.NoError(t, err)
+	constructed, err := Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+	instance, ok := constructed.Instance(plugin.Identity{Plugin: "decoy"})
+	require.True(t, ok, "the decoy is a plugin in its own right, not a shadow of target")
+	assert.Equal(t, "decoy", instance.Primary().(*store).Name())
+}
+
 func TestCollectBindsEveryExporterInGraphOrderAndToleratesNone(t *testing.T) {
 	t.Parallel()
 	all := plugin.Collect[storeContract]()
