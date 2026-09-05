@@ -404,7 +404,7 @@ func slowRoute(entered chan<- struct{}, release <-chan struct{}, completed *atom
 	}
 }
 
-// TestStopDrainsAnInFlightRequestBeforeReturning pins the graceful half of the
+// TestShutdownDrainsAnInFlightRequestBeforeReturning pins the graceful half of the
 // drain contract: Stop with budget to spare must not return until the request
 // that was already executing has produced its response.
 //
@@ -414,7 +414,7 @@ func slowRoute(entered chan<- struct{}, release <-chan struct{}, completed *atom
 // with completed still false. Asserting only the client's body would pass
 // against that broken implementation too, because the test waits for the
 // client either way.
-func TestStopDrainsAnInFlightRequestBeforeReturning(t *testing.T) {
+func TestShutdownDrainsAnInFlightRequestBeforeReturning(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var completed atomic.Bool
@@ -475,17 +475,19 @@ func TestStopDrainsAnInFlightRequestBeforeReturning(t *testing.T) {
 	require.NoError(t, listener.Close())
 }
 
-// TestStopIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline pins
+// TestShutdownIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline pins
 // the other half: a handler that outlives the shutdown deadline must not make
 // Stop unbounded. Stop force-closes, reports the deadline, and releases the
 // port — an unbounded Stop is exactly what burns the whole shared shutdown
 // budget on one plugin and starves every plugin below it.
 //
 // The elapsed-time bound is the discriminating assertion: a Stop that waited
-// for the handler would take the full hold time (or never return at all),
-// while re-binding the port immediately afterwards is what proves the forced
-// close actually happened rather than being merely reported.
-func TestStopIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline(t *testing.T) {
+// for the handler would take the full hold time, while re-binding the port
+// immediately afterwards is what proves the forced close actually happened
+// rather than being merely reported. Stop is called on its own goroutine so
+// that a Stop which never returns at all is reported as this test's own named
+// failure rather than as a package-wide go test timeout.
+func TestShutdownIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -514,8 +516,18 @@ func TestStopIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline(t *te
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
+	// Stop runs on its own goroutine so that a Stop which ignores its deadline
+	// fails here by name instead of wedging the whole package until go test's
+	// own timeout fires.
+	stopped := make(chan error, 1)
 	started := time.Now()
-	err := server.Stop(stopCtx)
+	go func() { stopped <- server.Stop(stopCtx) }()
+	var err error
+	select {
+	case err = <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop ignored its deadline and is still draining the stuck handler")
+	}
 	elapsed := time.Since(started)
 
 	require.Error(t, err, "a drain that exceeds its deadline must be reported, not swallowed")
