@@ -5,12 +5,14 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/internal/assembly"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -280,4 +282,135 @@ func TestConcurrentSignalAndCriticalFailureUnwindExactlyOnce(t *testing.T) {
 	require.Error(t, completed.err, "the panicking critical task must be reported whichever trigger won")
 	assert.Equal(t, 1, completed.code)
 	assert.Contains(t, completed.err.Error(), "critical exploded")
+}
+
+// TestShutdownIsBoundedWhenStopNeverReturnsAndSkipsTheDependency is the
+// inverted port of the pre-migration TestShutdownBoundedWhenStopNeverReturns.
+//
+// The original asserted that the dependency's Stop is still *called* after the
+// hanging consumer burned the shared budget. The §6.2 ruling reverses that
+// clause: after the budget is spent no new Stop is started, and the remaining
+// identities are reported as not-attempted. Everything else the original
+// pinned is kept — the whole run stays bounded, and the diagnostic names the
+// stalled plugin rather than reporting one anonymous shutdown failure.
+//
+// `stopCalls` is the discriminating assertion. Reverting to the old behaviour
+// would raise it to one and empty NotAttempted; a report-only check would not
+// notice the dependency's Stop body running concurrently with the abandoned
+// one, which is exactly what made reverse order unobservable before.
+func TestShutdownIsBoundedWhenStopNeverReturnsAndSkipsTheDependency(t *testing.T) {
+	recorder := &readinessRecorder{}
+	dependency := plugin.RefTo[readinessContract]("dependency")
+
+	var stopCalls atomic.Int32
+	provider := readinessStages(recorder, "dependency")
+	provider.Stop = func(*readinessValue, context.Context) error {
+		stopCalls.Add(1)
+		recorder.record("stop:dependency")
+		return nil
+	}
+	hangEntered := make(chan struct{})
+	releaseHang := make(chan struct{})
+	defer close(releaseHang)
+	hanger := readinessStages(recorder, "hanger")
+	hanger.Stop = func(*readinessValue, context.Context) error {
+		recorder.record("stop:hanger")
+		close(hangEntered)
+		// Ignore the deadline context entirely: this models the plugin
+		// contract violation the runtime, not the plugin, has to survive.
+		<-releaseHang
+		return nil
+	}
+	app := newRuntimeTestApp(
+		readinessDefinition(recorder, "dependency", nil, provider),
+		readinessDefinition(recorder, "hanger", &dependency, hanger),
+	)
+
+	result := executeRuntimeTest(app, runtimeTestConfig(t, 200*time.Millisecond)...)
+	awaitRuntimeTestReady(t, app)
+	app.requestStop(stopReasonSignal)
+	select {
+	case <-hangEntered:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the reverse walk never reached the hanging consumer")
+	}
+	// awaitRuntimeTestResult's own bound is what turns "the run wedged on a
+	// Stop that never returns" into a reported failure instead of a hung
+	// test binary.
+	completed := awaitRuntimeTestResult(t, result)
+
+	assert.Equal(t, 1, completed.code, "a Stop that outlives the budget must not exit zero")
+	require.Error(t, completed.err)
+	assert.Contains(t, completed.err.Error(), "xbc: plugin hanger Stop did not return within shutdown budget",
+		"the diagnostic must name the stalled plugin")
+	assert.Contains(t, completed.err.Error(), "xbc: plugin dependency Stop was not attempted",
+		"the skipped cleanup must be named, not silently dropped")
+
+	assert.Equal(t, []plugin.Identity{{Plugin: "hanger", Instance: plugin.DefaultInstance}},
+		app.shutdownReport.Identities(assembly.StopAbandoned))
+	assert.Equal(t, []plugin.Identity{{Plugin: "dependency", Instance: plugin.DefaultInstance}},
+		app.shutdownReport.Identities(assembly.StopNotAttempted))
+	assert.Zero(t, stopCalls.Load(),
+		"no Stop may start after the shared budget is spent, so the dependency is never entered")
+	assert.NotContains(t, recorder.snapshot(), "stop:dependency")
+}
+
+// TestShutdownIsStrictlySerialInReverseDependencyOrder pins that the normal
+// path completes each Stop before the next one begins. The `inside` counter
+// fails the moment two Stop bodies overlap, which is what an implementation
+// that launched every Stop hook concurrently would produce; asserting only the
+// final order would let such an implementation pass whenever the scheduler
+// happened to run the goroutines in the right sequence.
+func TestShutdownIsStrictlySerialInReverseDependencyOrder(t *testing.T) {
+	recorder := &readinessRecorder{}
+	var (
+		mu      sync.Mutex
+		inside  int
+		overlap bool
+	)
+	stages := func(key plugin.Key) plugin.Lifecycle[*readinessValue] {
+		lifecycle := readinessStages(recorder, key)
+		lifecycle.Stop = func(*readinessValue, context.Context) error {
+			mu.Lock()
+			inside++
+			overlap = overlap || inside > 1
+			mu.Unlock()
+			recorder.record("stop:" + string(key))
+			time.Sleep(2 * time.Millisecond)
+			mu.Lock()
+			inside--
+			mu.Unlock()
+			return nil
+		}
+		return lifecycle
+	}
+	first := plugin.RefTo[readinessContract]("serial-first")
+	second := plugin.RefTo[readinessContract]("serial-second")
+	app := newRuntimeTestApp(
+		readinessDefinition(recorder, "serial-first", nil, stages("serial-first")),
+		readinessDefinition(recorder, "serial-second", &first, stages("serial-second")),
+		readinessDefinition(recorder, "serial-third", &second, stages("serial-third")),
+	)
+
+	result := executeRuntimeTest(app, runtimeTestConfig(t, 5*time.Second)...)
+	awaitRuntimeTestReady(t, app)
+	app.requestStop(stopReasonSignal)
+	completed := awaitRuntimeTestResult(t, result)
+	require.NoError(t, completed.err)
+	assert.Equal(t, 0, completed.code)
+
+	events := recorder.snapshot()
+	assert.Equal(t, []string{"stop:serial-third", "stop:serial-second", "stop:serial-first"},
+		events[len(events)-3:])
+	want := []plugin.Identity{
+		{Plugin: "serial-third", Instance: plugin.DefaultInstance},
+		{Plugin: "serial-second", Instance: plugin.DefaultInstance},
+		{Plugin: "serial-first", Instance: plugin.DefaultInstance},
+	}
+	assert.Equal(t, want, app.shutdownReport.Attempted)
+	assert.Equal(t, want, app.shutdownReport.Completed,
+		"completion order must match invocation order on the normal path")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.False(t, overlap, "two Stop bodies must never run at the same time")
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/internal/assembly"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -368,7 +369,17 @@ func TestLifecyclePanicAndStopPanicAreAggregated(t *testing.T) {
 	assert.Contains(t, err.Error(), "Stop panic: stop exploded")
 }
 
-func TestShutdownBudgetDoesNotTruncateReverseUnwind(t *testing.T) {
+// TestShutdownBudgetAbandonsTheStuckStopAndAttemptsNoFurtherStop replaces the
+// earlier "budget does not truncate reverse unwind" contract. That contract
+// required the walk to keep calling Stop after the shared budget was spent,
+// which left the abandoned Stop running concurrently with the next one and
+// made the recorded order a scheduling outcome rather than a guarantee. The
+// ruling is now the opposite: once the budget is spent, no new Stop starts.
+//
+// Every assertion below fails if that regresses. `stopped` would grow past the
+// stuck plugin; report.Attempted would name more than the stuck plugin; and
+// NotAttempted would come back empty.
+func TestShutdownBudgetAbandonsTheStuckStopAndAttemptsNoFurtherStop(t *testing.T) {
 	var (
 		mu      sync.Mutex
 		stopped []string
@@ -403,7 +414,7 @@ func TestShutdownBudgetDoesNotTruncateReverseUnwind(t *testing.T) {
 			<-releaseStuck
 		}),
 	)
-	result := executeRuntimeTest(app, runtimeTestConfig(t, 40*time.Millisecond)...)
+	result := executeRuntimeTest(app, runtimeTestConfig(t, 200*time.Millisecond)...)
 	awaitRuntimeTestReady(t, app)
 	app.requestStop(stopReasonSignal)
 	select {
@@ -416,13 +427,89 @@ func TestShutdownBudgetDoesNotTruncateReverseUnwind(t *testing.T) {
 
 	assert.Equal(t, 1, completed.code)
 	require.Error(t, completed.err)
-	assert.Contains(t, completed.err.Error(), "did not return within shutdown budget")
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(stopped) == 3
-	}, runtimeTestTimeout, time.Millisecond)
+	assert.Contains(t, completed.err.Error(), "xbc: plugin c-stuck Stop did not return within shutdown budget")
+	assert.Contains(t, completed.err.Error(), "xbc: plugin b-next Stop was not attempted")
+	assert.Contains(t, completed.err.Error(), "xbc: plugin a-live Stop was not attempted")
+
+	stuck := plugin.Identity{Plugin: "c-stuck", Instance: plugin.DefaultInstance}
+	assert.Equal(t, []plugin.Identity{stuck}, app.shutdownReport.Attempted)
+	assert.Equal(t, []plugin.Identity{stuck}, app.shutdownReport.Identities(assembly.StopAbandoned))
+	assert.Equal(t, []plugin.Identity{
+		{Plugin: "b-next", Instance: plugin.DefaultInstance},
+		{Plugin: "a-live", Instance: plugin.DefaultInstance},
+	}, app.shutdownReport.Identities(assembly.StopNotAttempted))
+
 	mu.Lock()
-	assert.Equal(t, []string{"c-stuck", "b-next", "a-live"}, stopped)
-	mu.Unlock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"c-stuck"}, stopped,
+		"no Stop body below the stuck plugin may be entered after the budget is spent")
+}
+
+// TestShutdownCancelsTaskScopesTheSpentBudgetNeverReached closes the leak
+// hole opened by the "start no further Stop" ruling: a plugin whose Stop is
+// never attempted also never gets its afterStop, so its managed task scope can
+// only be reclaimed by the drain that follows the walk.
+//
+// The assertion discriminates because the task blocks on its own context and
+// nothing else ever cancels it: if the drain stopped reclaiming scopes the walk
+// did not reach, taskCanceled would never close and the goroutine would outlive
+// the process shutdown.
+func TestShutdownCancelsTaskScopesTheSpentBudgetNeverReached(t *testing.T) {
+	taskStarted := make(chan struct{})
+	taskCanceled := make(chan struct{})
+	stuckEntered := make(chan struct{})
+	releaseStuck := make(chan struct{})
+	defer close(releaseStuck)
+
+	leaky := plugin.Define("leaky-first", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Start: func(_ *runtimeTestValue, ctx *plugin.Context) error {
+			require.True(t, ctx.Go(func(taskContext context.Context) {
+				close(taskStarted)
+				<-taskContext.Done()
+				close(taskCanceled)
+			}))
+			return nil
+		},
+		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
+	}})
+	stuck := plugin.Define("z-stuck", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Stop: func(*runtimeTestValue, context.Context) error {
+			close(stuckEntered)
+			<-releaseStuck
+			return nil
+		},
+	}})
+
+	app := newRuntimeTestApp(leaky, stuck)
+	result := executeRuntimeTest(app, runtimeTestConfig(t, 200*time.Millisecond)...)
+	awaitRuntimeTestReady(t, app)
+	select {
+	case <-taskStarted:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the managed task never started")
+	}
+
+	app.requestStop(stopReasonSignal)
+	select {
+	case <-stuckEntered:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the reverse unwind never reached the stuck plugin")
+	}
+	completed := awaitRuntimeTestResult(t, result)
+
+	assert.Equal(t, 1, completed.code)
+	require.Error(t, completed.err)
+	assert.Equal(t, []plugin.Identity{{Plugin: "leaky-first", Instance: plugin.DefaultInstance}},
+		app.shutdownReport.Identities(assembly.StopNotAttempted),
+		"the plugin owning the task is the one the spent budget skipped")
+
+	select {
+	case <-taskCanceled:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("a task scope the reverse walk never reached was left running")
+	}
 }
