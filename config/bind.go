@@ -15,9 +15,11 @@ import (
 )
 
 // envName maps a config path to its environment variable name:
-// "plugins.gorm.default.dsn" -> "XBC_PLUGINS_GORM_DEFAULT_DSN".
+// "plugins.gorm.default.dsn" -> "XBC_PLUGINS_GORM_DEFAULT_DSN". Dashes become
+// underscores too, so that a hyphenated plugin key stays addressable and
+// agrees with the spelling Universe resolves against.
 func envName(prefix, path string) string {
-	return prefix + strings.ToUpper(strings.ReplaceAll(path, ".", "_"))
+	return prefix + envSegment(path)
 }
 
 // bind performs the strict configuration-binding chain for one subtree:
@@ -83,7 +85,11 @@ func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...str
 			return fmt.Errorf("xbc: cannot locate configuration field %s", item.Path)
 		}
 		if err := setScalar(field, item.Type, raw); err != nil {
-			return fmt.Errorf("xbc: environment variable %s value %q cannot be parsed as %s: %w", name, raw, item.Type, err)
+			// Neither the offending value nor the underlying parse error is
+			// echoed: environment variables are where secrets live, every
+			// strconv error quotes the input it rejected, and the variable
+			// name plus the expected type is enough to act on.
+			return fmt.Errorf("xbc: environment variable %s cannot be parsed as %s", name, item.Type)
 		}
 	}
 

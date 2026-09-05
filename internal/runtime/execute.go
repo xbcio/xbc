@@ -74,10 +74,11 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	}
 	a.plan = plan
 	migrate := command.WantsMigration(a.settings.AutoMigrate)
-	if command.Subcommand == "doctor" {
-		a.reportPlan(plan, migrate)
+	if command.Subcommand == doctorSubcommand {
+		a.reportDoctor(plan, migrate)
 		return 0, nil
 	}
+	a.reportDisabled(plan)
 	if len(plan.Order()) == 0 {
 		return 1, a.errNothingEnabled(plan)
 	}

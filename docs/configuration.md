@@ -15,7 +15,19 @@ XBC 的配置由 core 统一加载，但每个配置节只由对应能力 owner 
 go run ./examples/quickstart --config examples/quickstart/application.yml --profile prod
 ```
 
-对应 overlay 是 `examples/quickstart/application-prod.yml`。最终优先级从低到高为：字段 `default` 标签、基础 YAML、profile YAML、嵌入式调用方传入的 `config.Options.Overrides`、环境变量。CLI 当前不暴露 `--set`；`Overrides` 只用于自行嵌入配置加载器的程序。
+对应 overlay 是 `examples/quickstart/application-prod.yml`。最终优先级从低到高为：
+
+1. 字段 `default` 标签
+2. 基础 YAML
+3. profile YAML
+4. 嵌入式调用方传入的 `config.Options.Overrides`
+5. 环境变量
+
+环境变量位于最高层，并且是合并进统一配置视图的**一层**，而不只是绑定阶段的逐字段覆盖。这意味着环境变量可以让一个配置节**从无到有地存在**：`Activation` 为 `WhenConfigured` 的插件可以只靠环境变量打开，多实例插件的实例名也可以完全由环境变量枚举得出，无需挂载任何配置文件。
+
+配置只能打开已经在 composition root 选入的 Definition。环境变量不会、也不能激活没有编译进二进制的代码。
+
+CLI 当前不暴露 `--set`；`Overrides` 只用于自行嵌入配置加载器的程序。
 
 YAML 字符串不会展开 `${VAR}`。不要写 `secret: ${JWT_SECRET}`，应直接使用下文的环境变量覆盖或由应用注入专用 secret 组件。
 
@@ -57,16 +69,29 @@ app:
 - `xbc`：核心运行时设置，例如整轮关闭预算和是否自动迁移。
 - `log`：日志模块设置。
 - `web`：HTTP transport 运行栈的唯一配置节。
+- `plugins`：插件命名空间本身，只占位不接受自有字段。
 - `plugins.<key>`：插件的默认配置位置；`key` 必须等于插件的 `Definition.Key`。
 - `app`：业务自由配置，框架不解释其结构。
 
 HTTP 地址属于 `transport/web`，因此没有含糊的全局 `server` 节；Web Definition 通过静态 `ConfigPath` 把根级 `web` 声明为唯一 canonical path。
 
-其他插件未声明自定义 `ConfigPath` 时仍使用 `plugins.<key>`。`enabled: false` 可以显式关闭插件；具体插件是始终参与装配还是只在配置节存在时启用，由其 Definition 的 Activation 决定。配置了 `plugins.<key>` 却没有在 composition root 加入对应 Bundle，会作为 orphan configuration 拒绝启动；已知结构中的拼写错误也会被严格校验拒绝。
+### 顶级键必须有 owner
+
+启动时，composition root 选入的每个 Definition 都会声明自己的 `ConfigPath`，连同框架保留的 `xbc`、`log` 和应用自由区 `app`，构成一份完整的顶级 owner 清单。**任何没有 owner 的顶级键都会让启动失败**，错误会点名该键并列出被接受的顶级 section：
+
+```
+xbc: configuration contains a top-level key that no plugin or framework section owns
+  wbe
+  declared top-level sections: app, log, plugins, web, xbc
+```
+
+这条规则专门用来抓住 `wbe:` 这类拼写错误——在此之前它只会被静默忽略，表现为「配置写了但完全没生效」。`app` 是被显式声明的 freeform 根：框架从不解释它的结构，因此 `app` 下面可以放任意内容而不触发校验。
+
+其他插件未声明自定义 `ConfigPath` 时仍使用 `plugins.<key>`。`enabled: false` 可以显式关闭插件；具体插件是始终参与装配还是只在配置节存在时启用，由其 Definition 的 Activation 决定。配置了 `plugins.<key>` 却没有在 composition root 加入对应 Bundle，会作为 orphan configuration 拒绝启动；已知结构中的拼写错误也会被严格校验拒绝。声明了自定义 `ConfigPath` 的插件同样参与这项检查：它拥有的是自己声明的路径，而不是 `plugins.<key>` 这个约定名，约定名不再是 fallback。
 
 ## 环境变量映射
 
-环境变量名由完整绑定路径生成：加 `XBC_` 前缀，将点号转换为下划线，再转成大写。
+环境变量名由完整绑定路径生成：加 `XBC_` 前缀，将点号和连字符转换为下划线，再转成大写。
 
 | 配置路径 | 环境变量 |
 | --- | --- |
@@ -74,11 +99,54 @@ HTTP 地址属于 `transport/web`，因此没有含糊的全局 `server` 节；W
 | `log.level` | `XBC_LOG_LEVEL` |
 | `web.addr` | `XBC_WEB_ADDR` |
 | `plugins.jwt.secret` | `XBC_PLUGINS_JWT_SECRET` |
+| `plugins.request-id.header` | `XBC_PLUGINS_REQUEST_ID_HEADER` |
 | `plugins.redis.cache.password` | `XBC_PLUGINS_REDIS_CACHE_PASSWORD` |
 
-布尔值、数字、duration、字符串及 `[]string` 可直接覆盖；字符串切片使用逗号分隔，例如 `XBC_PLUGINS_JWT_AUDIENCE=admin-api,worker-api`。复杂对象、对象切片和动态 map 不适合通过单个环境变量表达，应放在 YAML、应用私有配置源或通过插件的程序化选项注入。
+反向解析不是按下划线切分完成的——配置键本身就含下划线（`base_path`、`shutdown_timeout`、`max_open_conn`），任何按 `_` 拆分的规则都会产生歧义。环境变量层改为**对着已声明的 schema 解析**：先匹配 section 前缀，再在该 section 的字段表中查找剩余后缀。因此 `XBC_WEB_BASE_PATH` 正确落在 `web.base_path`，`XBC_PLUGINS_GORM_PRIMARY_MAX_OPEN_CONN` 正确落在 `plugins.gorm.primary.max_open_conn`，都不需要额外分隔符。
+
+### 单实例与多实例的拼写
+
+- 单实例 / 有 schema 的 section：`XBC_<SECTION>_<LEAF>`，例如 `XBC_WEB_ADDR`、`XBC_PLUGINS_JWT_SECRET`。
+- section 级开关：`XBC_<SECTION>_ENABLED`，例如 `XBC_PLUGINS_PPROF_ENABLED=true`。
+- 多实例 section：`XBC_<SECTION>_<INSTANCE>_<LEAF>`，实例开关是 `XBC_<SECTION>_<INSTANCE>_ENABLED`。
+
+实例名完全由变量名发现，不依赖任何 schema，也不需要文件里先写出这个实例。下面两行就足以声明两个 GORM 实例：
+
+```bash
+export XBC_PLUGINS_GORM_PRIMARY_DSN="host=db.internal user=app dbname=orders sslmode=require"
+export XBC_PLUGINS_GORM_REPORTING_DSN="app:pw@tcp(reporting.internal:3306)/reporting?parseTime=true"
+```
+
+实例名只允许小写字母、数字和下划线。发现出来的实例名归属于声明该路径的 Definition，不会再被当作「无人认领的键」拒绝。
+
+### 无法表达的形状会报错，而不是静默丢失
+
+布尔值、数字、duration、字符串、实现了 `encoding.TextUnmarshaler` 的类型以及 `[]string` 可直接覆盖；`[]string` 使用逗号分隔，例如 `XBC_PLUGINS_JWT_AUDIENCE=admin-api,worker-api`，空字符串表示显式清空。复杂对象、对象切片和动态 map 无法由单个环境变量无歧义地表达，此时不会静默忽略，而是给出可操作的错误，指明该去文件里配置。
+
+四类错误：
+
+- **落在多实例 section 却漏了实例段**：`XBC_PLUGINS_GORM_DSN` 会提示 `plugins.gorm holds one section per instance; insert the instance name, as in XBC_PLUGINS_GORM_<INSTANCE>_DSN`。
+- **类型无法由单个变量承载**：点名路径与类型，并要求改用文件。
+- **同一变量名可以落到两个路径**：报告两个候选路径，要求改用文件消歧，绝不猜测。
+- **占用了 `XBC_` 前缀却不属于任何已声明 section**：视同顶级拼写错误，错误里列出已声明的顶级 section。
+
+最后一条意味着 `XBC_` 是框架保留前缀：进程里其他用途的变量请不要使用它。`XBC_PROFILE` 是唯一的例外，它由加载器本身消费（等价于 `--profile`），不参与配置解析。
+
+错误信息只包含变量名和期望类型，绝不回显变量的值：`strconv` 的原生错误会把被拒绝的输入原样引用出来，而环境变量正是 secret 的常见落点，因此这里不做错误包装。
 
 Web 环境变量统一使用 `XBC_WEB_*`。
+
+## doctor 子命令
+
+配置分层之后，「这个插件为什么没起来」不再能靠读一个文件回答。`doctor` 子命令把最终结果打印出来：
+
+```bash
+go run ./examples/quickstart doctor --config examples/quickstart/application.yml
+```
+
+它报告四件事：配置来源（每一层的标签与已声明的顶级 section）、最终插件图（declared / enabled instances / disabled 计数）、按启动顺序排列的启用实例及其绑定的配置节和取值来源，以及每个被禁用插件的**具体原因**（activation 路径未配置、`enabled` 为 false、或多实例下所有实例都已关闭）。
+
+doctor 是严格只读的：它不初始化日志（因此不会输出任何日志行、不会打开日志文件、不会启动 flush goroutine，也不会替换进程全局 logger），不建立任何连接，不启动 goroutine 或监听端口，也不修改任何进程全局状态。它只打印路径、身份和来源标签，**从不打印配置值**——DSN、token 和密码不会出现在 doctor 输出里。同样地，它们也不会出现在错误信息和启动报告里。
 
 ## Web 生产基线
 
@@ -139,6 +207,17 @@ plugins:
 ```
 
 多实例 section 下的每个直接子项都是一个实例，不要把连接字段直接写到 `plugins.redis.addr` 或 `plugins.gorm.dsn`。
+
+同一组实例也可以完全由环境变量声明，不需要文件里预先出现实例名：
+
+```bash
+export XBC_PLUGINS_REDIS_CACHE_ADDR="redis-cache.internal:6379"
+export XBC_PLUGINS_REDIS_CACHE_DB=0
+export XBC_PLUGINS_REDIS_LOCKS_ADDR="redis-locks.internal:6379"
+export XBC_PLUGINS_REDIS_LOCKS_DB=1
+```
+
+两种来源可以混用：文件给出实例的基线配置，环境变量补上 secret 或按环境变化的字段。想临时停掉某个实例用 `XBC_PLUGINS_REDIS_LOCKS_ENABLED=false`；一个多实例 section 下所有实例都被关闭时，该插件整体进入 disabled，并在启动报告和 doctor 中给出原因。
 
 ## 默认 Quickstart 组合
 
@@ -394,4 +473,4 @@ plugins:
       # token 由 XBC_PLUGINS_GRACEFULSHUTDOWN_HTTP_TOKEN 提供。
 ```
 
-先在 composition root 加入相应 Bundle，再配置这些 section。不要把 JWT secret、Redis/数据库密码、API key 明文或运维 token 提交到仓库；环境变量只是最低限度的部署接口，生产环境宜由 secret manager 注入。不要信任公网传入的 forwarded headers，除非请求先经过会清洗这些 header 的可信反向代理。远程关机最终复用 core 的统一取消、HTTP drain 和逆序插件关闭路径，不应另行调用 `os.Exit`。
+先在 composition root 加入相应 Bundle，再配置这些 section。不要把 JWT secret、Redis/数据库密码、API key 明文或运维 token 提交到仓库；环境变量只是最低限度的部署接口，生产环境宜由 secret manager 注入。框架自身不会回显这些值：doctor 输出、配置错误信息和启动报告都只包含路径、身份和来源标签。不要信任公网传入的 forwarded headers，除非请求先经过会清洗这些 header 的可信反向代理。远程关机最终复用 core 的统一取消、HTTP drain 和逆序插件关闭路径，不应另行调用 `os.Exit`。

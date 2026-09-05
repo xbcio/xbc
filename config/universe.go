@@ -1,0 +1,445 @@
+package config
+
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/knadh/koanf/v2"
+)
+
+// SectionKind classifies how the framework interprets one owned configuration
+// section. It decides both how environment variables under the section are
+// spelled and whether the section accepts keys the framework does not know.
+type SectionKind int
+
+const (
+	// SectionTyped is a section decoded from a single struct schema. Every
+	// environment variable under it must name a leaf of that schema.
+	SectionTyped SectionKind = iota
+	// SectionInstanced repeats one struct schema under instance names that
+	// only the configuration itself knows, so every environment variable
+	// under it must carry an instance segment.
+	SectionInstanced
+	// SectionFreeform is a section the framework never interprets. It has no
+	// schema and therefore no environment-variable spelling.
+	SectionFreeform
+	// SectionNamespace owns a path whose children are declared as sections in
+	// their own right. It claims the prefix without accepting any key itself.
+	SectionNamespace
+)
+
+// Section declares one owned configuration path. Declaring the complete set of
+// Sections up front is what lets Load reject an unowned top-level key and what
+// gives the environment layer a schema to resolve variable names against.
+type Section struct {
+	// Path is the dotted configuration path this section owns, for example
+	// "log", "plugins" or "plugins.gorm".
+	Path string
+	// Owner names whoever claims Path, for diagnostics only.
+	Owner string
+	// Kind decides how Path is interpreted.
+	Kind SectionKind
+	// Schema is the struct type backing a SectionTyped or SectionInstanced
+	// section. A nil Schema declares a section that carries no fields of its
+	// own, which is legal for a plugin without a configuration struct.
+	Schema reflect.Type
+	// Toggle marks a section that carries the framework-owned "enabled" flag
+	// beside its own schema.
+	Toggle bool
+}
+
+// Universe is the frozen set of configuration sections a composition root
+// owns. It is built once, before the configuration tree is assembled.
+type Universe struct {
+	sections []resolvedSection
+	roots    []string
+	rootSet  map[string]string
+}
+
+// resolvedSection is a Section with its environment-variable tables computed.
+type resolvedSection struct {
+	Section
+	prefix string // environment name prefix, without the process prefix
+	leaves []envLeaf
+}
+
+// envLeaf is one schema leaf addressable through an environment variable.
+type envLeaf struct {
+	suffix      string // "DSN", "POOL_MAX_IDLE"
+	path        string // "dsn", "pool.max_idle", relative to the section
+	typ         reflect.Type
+	expressible bool
+}
+
+const enabledKey = "enabled"
+
+var boolType = reflect.TypeOf(false)
+
+// reservedEnvSuffixes are process-level variables that live under the same
+// prefix as configuration but address the loader itself rather than a section.
+var reservedEnvSuffixes = map[string]bool{"PROFILE": true}
+
+// NewUniverse validates and freezes the declared sections.
+func NewUniverse(sections ...Section) (*Universe, error) {
+	universe := &Universe{rootSet: make(map[string]string)}
+	byPath := make(map[string]Section, len(sections))
+
+	for _, section := range sections {
+		if err := validateSectionPath(section.Path); err != nil {
+			return nil, err
+		}
+		if previous, exists := byPath[section.Path]; exists {
+			return nil, fmt.Errorf("xbc: configuration section %s is claimed by both %s and %s",
+				section.Path, previous.Owner, section.Owner)
+		}
+		byPath[section.Path] = section
+	}
+
+	for _, section := range sections {
+		if err := checkSectionParent(section, byPath); err != nil {
+			return nil, err
+		}
+		resolved, err := resolveSection(section)
+		if err != nil {
+			return nil, err
+		}
+		universe.sections = append(universe.sections, resolved)
+
+		root := section.Path
+		if index := strings.IndexByte(root, '.'); index >= 0 {
+			root = root[:index]
+			continue // the root itself is claimed by the ancestor section
+		}
+		universe.rootSet[root] = section.Owner
+	}
+
+	for root := range universe.rootSet {
+		universe.roots = append(universe.roots, root)
+	}
+	sort.Strings(universe.roots)
+	sort.Slice(universe.sections, func(i, j int) bool {
+		return universe.sections[i].Path < universe.sections[j].Path
+	})
+	return universe, nil
+}
+
+func validateSectionPath(path string) error {
+	if path == "" || strings.HasPrefix(path, ".") || strings.HasSuffix(path, ".") || strings.Contains(path, "..") {
+		return fmt.Errorf("xbc: configuration section path must be a non-empty dotted path, got %q", path)
+	}
+	return nil
+}
+
+// checkSectionParent keeps nested sections confined to declared namespaces, so
+// that a plugin cannot quietly graft a custom ConfigPath onto a closed schema.
+func checkSectionParent(section Section, byPath map[string]Section) error {
+	index := strings.LastIndexByte(section.Path, '.')
+	if index < 0 {
+		return nil
+	}
+	for parent := section.Path[:index]; ; {
+		if owner, exists := byPath[parent]; exists {
+			if owner.Kind != SectionNamespace {
+				return fmt.Errorf("xbc: configuration section %s cannot nest inside %s, which is owned by %s",
+					section.Path, parent, owner.Owner)
+			}
+			return nil
+		}
+		cut := strings.LastIndexByte(parent, '.')
+		if cut < 0 {
+			return fmt.Errorf("xbc: configuration section %s has no declared owner for its root %q",
+				section.Path, parent)
+		}
+		parent = parent[:cut]
+	}
+}
+
+func resolveSection(section Section) (resolvedSection, error) {
+	resolved := resolvedSection{Section: section, prefix: envSegment(section.Path) + "_"}
+	if section.Schema == nil {
+		return resolved, nil
+	}
+	if section.Kind != SectionTyped && section.Kind != SectionInstanced {
+		return resolvedSection{}, fmt.Errorf("xbc: configuration section %s declares a schema but is not a typed section",
+			section.Path)
+	}
+	schema, err := schemaForType(section.Schema)
+	if err != nil {
+		return resolvedSection{}, fmt.Errorf("xbc: configuration section %s: %w", section.Path, err)
+	}
+	for _, item := range schema.Leaves {
+		resolved.leaves = append(resolved.leaves, envLeaf{
+			suffix:      envSegment(item.Path),
+			path:        item.Path,
+			typ:         item.Type,
+			expressible: envExpressible(item.Type),
+		})
+	}
+	return resolved, nil
+}
+
+// envSegment maps a configuration path fragment onto its environment-variable
+// spelling. Dots and dashes both become underscores, which is what makes a
+// hyphenated plugin key such as "plugins.request-id" addressable at all.
+func envSegment(path string) string {
+	return strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(path))
+}
+
+// envExpressible reports whether a single environment variable can carry a
+// complete value of typ. Anything else has to be configured in a file.
+func envExpressible(typ reflect.Type) bool {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ == reflect.TypeOf(time.Duration(0)) {
+		return true
+	}
+	if typ.Implements(textUnmarshalerType) || reflect.PointerTo(typ).Implements(textUnmarshalerType) {
+		return true
+	}
+	switch typ.Kind() {
+	case reflect.String, reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	case reflect.Slice:
+		return typ.Elem().Kind() == reflect.String
+	default:
+		return false
+	}
+}
+
+// Roots returns the declared top-level configuration keys, sorted.
+func (u *Universe) Roots() []string {
+	if u == nil {
+		return nil
+	}
+	return append([]string(nil), u.roots...)
+}
+
+// checkRoots rejects every top-level key no declared Section claims.
+func (u *Universe) checkRoots(k *koanf.Koanf) error {
+	if u == nil || k == nil {
+		return nil
+	}
+	var unowned []string
+	for key := range k.Raw() {
+		if _, owned := u.rootSet[key]; !owned {
+			unowned = append(unowned, key)
+		}
+	}
+	if len(unowned) == 0 {
+		return nil
+	}
+	sort.Strings(unowned)
+
+	var b strings.Builder
+	b.WriteString("xbc: configuration contains a top-level key that no plugin or framework section owns")
+	for _, key := range unowned {
+		fmt.Fprintf(&b, "\n  %s", key)
+	}
+	fmt.Fprintf(&b, "\n  declared top-level sections: %s", strings.Join(u.roots, ", "))
+	return errors.New(b.String())
+}
+
+// envCandidate is one configuration path an environment variable could name.
+type envCandidate struct {
+	path        string
+	typ         reflect.Type
+	expressible bool
+	hint        string // set when the shape cannot be expressed at this spelling
+}
+
+// envOverlay resolves every variable in environ that carries prefix into the
+// configuration path it names. A variable that lands inside a declared section
+// but matches no field, or whose shape has no unambiguous single-variable
+// spelling, is an error rather than a silent no-op.
+func (u *Universe) envOverlay(prefix string, environ []string) (map[string]any, map[string]string, error) {
+	values := make(map[string]any)
+	names := make(map[string]string)
+	var failures []error
+
+	for _, entry := range environ {
+		separator := strings.IndexByte(entry, '=')
+		if separator < 0 || !strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		name, raw := entry[:separator], entry[separator+1:]
+		rest := name[len(prefix):]
+		if rest == "" || reservedEnvSuffixes[rest] {
+			continue
+		}
+
+		candidates, claimed := u.resolve(prefix, rest)
+		if !claimed {
+			failures = append(failures, fmt.Errorf(
+				"xbc: environment variable %s uses the reserved %s prefix but names no declared configuration section (%s)",
+				name, prefix, strings.Join(u.roots, ", ")))
+			continue
+		}
+		value, err := interpret(name, raw, candidates)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		values[candidates[0].path] = value
+		names[candidates[0].path] = name
+	}
+
+	if len(failures) > 0 {
+		sort.Slice(failures, func(i, j int) bool { return failures[i].Error() < failures[j].Error() })
+		return nil, nil, errors.Join(failures...)
+	}
+	return values, names, nil
+}
+
+// interpret turns one raw environment value into a typed configuration value,
+// once exactly one candidate path survives.
+func interpret(name, raw string, candidates []envCandidate) (any, error) {
+	switch {
+	case len(candidates) == 0:
+		return nil, fmt.Errorf("xbc: environment variable %s names no configuration field", name)
+	case len(candidates) > 1:
+		paths := make([]string, len(candidates))
+		for index, candidate := range candidates {
+			paths[index] = candidate.path
+		}
+		sort.Strings(paths)
+		return nil, fmt.Errorf("xbc: environment variable %s is ambiguous, it could name %s; configure it in a file instead",
+			name, strings.Join(paths, " or "))
+	}
+
+	candidate := candidates[0]
+	if candidate.hint != "" {
+		return nil, fmt.Errorf("xbc: environment variable %s names %s, %s", name, candidate.path, candidate.hint)
+	}
+	if !candidate.expressible {
+		return nil, fmt.Errorf(
+			"xbc: environment variable %s names %s, whose type %s cannot be carried by a single environment variable; configure it in a file instead",
+			name, candidate.path, candidate.typ)
+	}
+
+	typ := candidate.typ
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	target := reflect.New(typ).Elem()
+	if err := setScalar(target, typ, raw); err != nil {
+		// Neither the raw value nor the underlying parse error is included:
+		// environment variables are the usual home of secrets, and every
+		// strconv error quotes the input it rejected. Name plus expected type
+		// is enough to diagnose the mistake.
+		return nil, fmt.Errorf("xbc: environment variable %s cannot be parsed as %s", name, typ)
+	}
+	return target.Interface(), nil
+}
+
+// resolve maps a prefix-stripped variable name onto the configuration paths it
+// could name, and reports whether it fell inside any declared section at all.
+// prefix is the process-level environment prefix, carried only so that a
+// diagnostic can spell a variable the way an operator would actually set it.
+func (u *Universe) resolve(prefix, rest string) ([]envCandidate, bool) {
+	var candidates []envCandidate
+	claimed := false
+	seen := make(map[string]bool)
+	add := func(candidate envCandidate) {
+		if seen[candidate.path] {
+			return
+		}
+		seen[candidate.path] = true
+		candidates = append(candidates, candidate)
+	}
+
+	for _, section := range u.sections {
+		if !strings.HasPrefix(rest, section.prefix) {
+			continue
+		}
+		claimed = true
+		tail := rest[len(section.prefix):]
+		if tail == "" {
+			continue
+		}
+		switch section.Kind {
+		case SectionNamespace:
+			// The namespace claims the prefix; its children answer for it.
+		case SectionFreeform:
+			add(envCandidate{
+				path: section.Path + "." + strings.ToLower(tail),
+				hint: "which is a freeform section the framework never interprets; configure it in a file instead",
+			})
+		case SectionTyped:
+			section.matchTyped(tail, add)
+		case SectionInstanced:
+			section.matchInstanced(prefix, tail, add)
+		}
+	}
+	return candidates, claimed
+}
+
+func (section resolvedSection) matchTyped(tail string, add func(envCandidate)) {
+	for _, item := range section.leaves {
+		if tail == item.suffix {
+			add(envCandidate{path: section.Path + "." + item.path, typ: item.typ, expressible: item.expressible})
+		}
+	}
+	if section.Toggle && tail == "ENABLED" {
+		add(envCandidate{path: section.Path + "." + enabledKey, typ: boolType, expressible: true})
+	}
+}
+
+func (section resolvedSection) matchInstanced(prefix, tail string, add func(envCandidate)) {
+	if section.Toggle && tail == "ENABLED" {
+		add(envCandidate{path: section.Path + "." + enabledKey, typ: boolType, expressible: true})
+	}
+	if section.Toggle {
+		if instance, ok := instanceOf(tail, "ENABLED"); ok {
+			add(envCandidate{
+				path:        section.Path + "." + instance + "." + enabledKey,
+				typ:         boolType,
+				expressible: true,
+			})
+		}
+	}
+	for _, item := range section.leaves {
+		if tail == item.suffix {
+			add(envCandidate{
+				path: section.Path + "." + item.path,
+				typ:  item.typ,
+				hint: fmt.Sprintf(
+					"but %s holds one section per instance; insert the instance name, as in %s%s<INSTANCE>_%s",
+					section.Path, prefix, section.prefix, item.suffix),
+			})
+			continue
+		}
+		if instance, ok := instanceOf(tail, item.suffix); ok {
+			add(envCandidate{
+				path:        section.Path + "." + instance + "." + item.path,
+				typ:         item.typ,
+				expressible: item.expressible,
+			})
+		}
+	}
+}
+
+// instanceOf splits "PRIMARY_POOL_MAX_IDLE" into instance "primary" for the
+// leaf suffix "POOL_MAX_IDLE". This is the schema-independent enumeration
+// channel: instance names are discovered from the environment, never from a
+// static schema, which is what makes an ENV-only multi-instance deployment
+// expressible at all.
+func instanceOf(tail, suffix string) (string, bool) {
+	if len(tail) <= len(suffix)+1 || !strings.HasSuffix(tail, "_"+suffix) {
+		return "", false
+	}
+	instance := strings.ToLower(tail[:len(tail)-len(suffix)-1])
+	for _, r := range instance {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return "", false
+		}
+	}
+	return instance, true
+}

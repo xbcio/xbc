@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sync"
@@ -16,6 +17,11 @@ import (
 // exitFunc, so same-package tests can observe the process tail in-process
 // without forking a subprocess.
 var osExit = os.Exit
+
+// stdout is the process stream read-only commands write to. Like osExit it is
+// owned here rather than by the command itself, so that no other file in the
+// package needs to reach for the process.
+var stdout io.Writer = os.Stdout
 
 // runProcess runs an assembled App as the current process. It is the sole
 // owner of process arguments, signal registration, diagnostics, logger
