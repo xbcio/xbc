@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,23 +18,21 @@ import (
 	"github.com/xbcio/xbc/plugin"
 )
 
-// fakeMiddlewareProvider/fakeRouteProvider/fakeRouteCatalogConsumer are
-// web's own MiddlewareProvider/RouteProvider/RouteCatalogConsumer test
-// doubles -- design §9 guard #10 forbids reaching into core's internal/*
-// for shared fixtures, and there is no reason to anyway: these three
-// interfaces are tiny enough that a closure-backed local fake is simpler
-// than importing anything.
-type fakeMiddlewareProvider struct{ mws []Middleware }
+type fakeMiddleware struct {
+	handler gin.HandlerFunc
+	order   Order
+}
 
-func (f fakeMiddlewareProvider) Middlewares() []Middleware { return f.mws }
+func (m fakeMiddleware) Handler() gin.HandlerFunc { return m.handler }
+func (m fakeMiddleware) Order() Order             { return m.order }
 
-type fakeRouteProvider struct{ register func(r *Router) }
+type fakeRouteContributor struct{ register func(*Router) }
 
-func (f fakeRouteProvider) RegisterRoutes(r *Router) { f.register(r) }
+func (f fakeRouteContributor) RegisterRoutes(router *Router) { f.register(router) }
 
-type fakeRouteCatalogConsumer struct{ fn func(RouteCatalog) error }
+type fakeRouteCatalogListener struct{ ready func(RouteCatalog) error }
 
-func (f fakeRouteCatalogConsumer) RoutesReady(routes RouteCatalog) error { return f.fn(routes) }
+func (f fakeRouteCatalogListener) RoutesReady(catalog RouteCatalog) error { return f.ready(catalog) }
 
 type modeLogger struct {
 	log.Logger
@@ -41,6 +41,13 @@ type modeLogger struct {
 
 func (l modeLogger) Enabled(level log.Level) bool {
 	return l.debug && level == log.DebugLevel
+}
+
+type serverInputs struct {
+	middlewares []plugin.Entry[Middleware]
+	routes      []plugin.Entry[RouteContributor]
+	listeners   []plugin.Entry[RouteCatalogListener]
+	mappers     []ErrorMapper
 }
 
 func TestSetGinModeUsesLoggerCapabilityNotGlobalConfig(t *testing.T) {
@@ -54,198 +61,308 @@ func TestSetGinModeUsesLoggerCapabilityNotGlobalConfig(t *testing.T) {
 	assert.Equal(t, gin.ReleaseMode, gin.Mode())
 }
 
-// newPingServer builds a *Server wired to a fakeHost that contributes one
-// RouteProvider registering "GET /ping" -> 200, plus whatever extra
-// extensions the caller supplies (e.g. a failing RouteCatalogConsumer). cfg
-// defaults to an ephemeral loopback address so parallel test runs never
-// collide on a fixed port.
-func newPingServer(t *testing.T, cfg Config, extra ...plugin.Extension[any]) (*Server, *plugin.Context) {
+func TestStartAppliesProductionHTTPServerSettings(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.ReadTimeout = 11 * time.Second
+	cfg.ReadHeaderTimeout = 7 * time.Second
+	cfg.WriteTimeout = 29 * time.Second
+	cfg.IdleTimeout = 71 * time.Second
+	cfg.MaxHeaderBytes = 256 << 10
+	cfg.MaxRequestBodyBytes = 2 << 20
+	cfg.MaxMultipartMemory = 3 << 20
+
+	server, ctx, _ := newPingServer(t, cfg, serverInputs{})
+	require.NoError(t, server.Start(ctx))
+
+	require.NotNil(t, server.srv)
+	assert.Equal(t, cfg.ReadTimeout, server.srv.ReadTimeout)
+	assert.Equal(t, cfg.ReadHeaderTimeout, server.srv.ReadHeaderTimeout)
+	assert.Equal(t, cfg.WriteTimeout, server.srv.WriteTimeout)
+	assert.Equal(t, cfg.IdleTimeout, server.srv.IdleTimeout)
+	assert.Equal(t, cfg.MaxHeaderBytes, server.srv.MaxHeaderBytes)
+	assert.Equal(t, cfg.MaxMultipartMemory, server.engine.MaxMultipartMemory)
+}
+
+func TestTrustedProxiesAreOptIn(t *testing.T) {
+	clientIPRoute := fakeRouteContributor{register: func(router *Router) {
+		router.GET("/client-ip", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
+	}}
+	clientIPEntry := plugin.Entry[RouteContributor]{
+		Identity: plugin.Identity{Plugin: "clientiptest"},
+		Value:    clientIPRoute,
+	}
+
+	tests := []struct {
+		name    string
+		proxies []string
+		want    string
+	}{
+		{name: "forwarded header ignored by default", want: "127.0.0.1"},
+		{name: "explicit proxy accepted", proxies: []string{"127.0.0.1"}, want: "203.0.113.9"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Addr = "127.0.0.1:0"
+			cfg.TrustedProxies = test.proxies
+			server, ctx, _ := newPingServer(t, cfg, serverInputs{
+				routes: []plugin.Entry[RouteContributor]{clientIPEntry},
+			})
+			require.NoError(t, server.Start(ctx))
+
+			request := httptest.NewRequest(http.MethodGet, "/client-ip", nil)
+			request.RemoteAddr = "127.0.0.1:4321"
+			request.Header.Set("X-Forwarded-For", "203.0.113.9")
+			response := httptest.NewRecorder()
+			server.engine.ServeHTTP(response, request)
+
+			assert.Equal(t, http.StatusOK, response.Code)
+			assert.Equal(t, test.want, response.Body.String())
+		})
+	}
+}
+
+func TestServerReturnsProblemDetailsForRoutingAndKnownBodyOverflow(t *testing.T) {
+	bodyRoute := fakeRouteContributor{register: func(router *Router) {
+		router.POST("/body", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	}}
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.MaxRequestBodyBytes = 8
+	server, ctx, _ := newPingServer(t, cfg, serverInputs{
+		routes: []plugin.Entry[RouteContributor]{
+			{Identity: plugin.Identity{Plugin: "bodytest"}, Value: bodyRoute},
+		},
+	})
+	require.NoError(t, server.Start(ctx))
+
+	tests := []struct {
+		name     string
+		method   string
+		path     string
+		body     string
+		status   int
+		code     string
+		instance string
+		allow    string
+	}{
+		{
+			name: "not found", method: http.MethodGet, path: "/missing?secret=query",
+			status: http.StatusNotFound, code: "not_found", instance: "/missing",
+		},
+		{
+			name: "method not allowed", method: http.MethodPost, path: "/ping",
+			status: http.StatusMethodNotAllowed, code: "method_not_allowed", instance: "/ping", allow: http.MethodGet,
+		},
+		{
+			name: "content length exceeds limit", method: http.MethodPost, path: "/body", body: "0123456789",
+			status: http.StatusRequestEntityTooLarge, code: "request_body_too_large", instance: "/body",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			response := httptest.NewRecorder()
+			server.engine.ServeHTTP(response, request)
+
+			assert.Equal(t, test.status, response.Code)
+			problem := decodeProblem(t, response)
+			assert.Equal(t, test.status, problem.Status)
+			assert.Equal(t, test.code, problem.Properties["code"])
+			assert.Equal(t, test.instance, problem.Instance)
+			assert.Equal(t, test.allow, response.Header().Get("Allow"))
+		})
+	}
+}
+
+func newPingServer(t *testing.T, cfg Config, inputs serverInputs) (*Server, *plugin.Context, *fakeHost) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	pingRoute := fakeRouteProvider{register: func(r *Router) {
-		r.GET("/ping", func(gc *gin.Context) { gc.Status(http.StatusOK) })
-	}}
-	id := plugin.Identity{Plugin: "pingtest", Instance: "default"}
-	extensions := append([]plugin.Extension[any]{asAny(id, pingRoute)}, extra...)
+	middlewares := make([]plugin.Entry[Middleware], 0, len(inputs.middlewares)+1)
+	middlewares = append(middlewares, plugin.Entry[Middleware]{
+		Identity: plugin.Identity{Plugin: ErrorBoundaryKey},
+		Value:    &errorBoundary{mappers: append([]ErrorMapper(nil), inputs.mappers...)},
+	})
+	middlewares = append(middlewares, inputs.middlewares...)
 
-	host := newFakeHost(extensions...)
+	routes := make([]plugin.Entry[RouteContributor], 0, len(inputs.routes)+1)
+	routes = append(routes, plugin.Entry[RouteContributor]{
+		Identity: plugin.Identity{Plugin: "pingtest"},
+		Value: fakeRouteContributor{register: func(router *Router) {
+			router.GET("/ping", func(c *gin.Context) { c.Status(http.StatusOK) })
+		}},
+	})
+	routes = append(routes, inputs.routes...)
+
+	host := newFakeHost()
 	ctx := contextFromHost(host)
-
-	s := &Server{cfg: cfg}
-	return s, ctx
+	server := newServer(cfg, middlewares, routes, inputs.listeners)
+	t.Cleanup(func() {
+		if err := server.Stop(context.Background()); err != nil {
+			t.Errorf("stopping test server: %v", err)
+		}
+		host.shutdown()
+	})
+	return server, ctx, host
 }
 
-// pollUntil retries cond every interval until it reports true or deadline
-// has elapsed. The deadline is a failure ceiling, never the success
-// criterion itself -- a passing test always returns well before it, and
-// only a genuinely stuck implementation ever burns the whole budget.
-func pollUntil(deadline time.Duration, interval time.Duration, cond func() bool) bool {
-	timeout := time.After(deadline)
+func pollUntil(deadline, interval time.Duration, condition func() bool) bool {
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		if cond() {
+		if condition() {
 			return true
 		}
 		select {
-		case <-timeout:
+		case <-timer.C:
 			return false
 		case <-ticker.C:
 		}
 	}
 }
 
-// TestStartBindsPortButDoesNotServeUntilOpenTraffic is readiness test #1:
-// Start must bind the listening socket and return, but a request made
-// before OpenTraffic has run must not receive a response -- nothing is
-// calling Accept() on that listener yet. The pre-OpenTraffic probe uses a
-// short request deadline as its *failure* ceiling (it is supposed to time
-// out); the post-OpenTraffic probe polls up to a separate ceiling and is
-// expected to succeed well inside it -- time.Sleep is never the thing that
-// decides pass/fail here.
-func TestStartBindsPortButDoesNotServeUntilOpenTraffic(t *testing.T) {
-	s, ctx := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/", ReadTimeout: time.Second, WriteTimeout: time.Second})
-
-	require.NoError(t, s.Start(ctx))
-	addr := s.Addr()
-	require.NotEmpty(t, addr, "After Start succeeds, Addr() must read the actual bound address")
-
-	probe := func() error {
-		reqCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-		defer cancel()
-		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://"+addr+"/ping", nil)
-		if err != nil {
-			return err
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		return nil
+func probe(addr, path string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+path, nil)
+	if err != nil {
+		return err
 	}
-
-	assert.Error(t, probe(), "OpenTraffic hasn't run yet, listener hasn't started Accept loop, request must timeout instead of getting a response")
-
-	require.NoError(t, s.OpenTraffic(ctx))
-
-	ok := pollUntil(2*time.Second, 20*time.Millisecond, func() bool {
-		return probe() == nil
-	})
-	assert.True(t, ok, "After OpenTraffic, request must successfully get a response within timeout limit")
-
-	require.NoError(t, s.Stop(context.Background()))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	return response.Body.Close()
 }
 
-// TestAddrReturnsRealBoundEphemeralPort is readiness test #2: when Config.Addr
-// asks for an OS-assigned port ("127.0.0.1:0"), Addr() must report the exact
-// address Start actually bound, not the unresolved ":0" config value.
+func TestServerWaitsForRuntimeTrafficGateAfterOpenTraffic(t *testing.T) {
+	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
+
+	require.NoError(t, server.Start(ctx))
+	addr := server.Addr()
+	require.NotEmpty(t, addr)
+
+	assert.Error(t, probe(addr, "/ping", 100*time.Millisecond), "Start must bind without serving")
+	require.NoError(t, server.OpenTraffic(ctx))
+	assert.False(t, host.trafficReleased(), "OpenTraffic must not release the runtime-owned gate")
+	assert.Error(t, probe(addr, "/ping", 100*time.Millisecond), "successful preparation must still wait for the global gate")
+
+	host.releaseTraffic()
+	require.True(t, pollUntil(2*time.Second, 20*time.Millisecond, func() bool {
+		return probe(addr, "/ping", 250*time.Millisecond) == nil
+	}), "closing the runtime gate must let the managed serving task call Serve")
+
+	tasks := host.submittedTasks()
+	require.Len(t, tasks, 1)
+	assert.Equal(t, plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance}, tasks[0].identity)
+	assert.True(t, tasks[0].critical)
+}
+
 func TestAddrReturnsRealBoundEphemeralPort(t *testing.T) {
-	s, ctx := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/", ReadTimeout: time.Second, WriteTimeout: time.Second})
+	server, ctx, _ := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
 
-	require.NoError(t, s.Start(ctx))
-	addr := s.Addr()
+	require.NoError(t, server.Start(ctx))
+	addr := server.Addr()
 
-	assert.NotEqual(t, "127.0.0.1:0", addr, "Addr() must resolve to the real port, can't echo the configured :0 as is")
+	assert.NotEqual(t, "127.0.0.1:0", addr)
 	host, port, err := net.SplitHostPort(addr)
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1", host)
-	assert.NotEqual(t, "0", port, "The port must be the one actually assigned by the operating system")
-
-	require.NoError(t, s.Stop(context.Background()))
+	assert.NotEqual(t, "0", port)
 }
 
-// TestStopWithoutOpenTrafficDoesNotLeakListener is readiness test #3: Start
-// succeeding but OpenTraffic never running (e.g. a later plugin's Start
-// fails and the application aborts before the traffic-opening barrier) must
-// not leak the bound file descriptor. The proof is operational, not an
-// internal-state assertion: successfully rebinding the exact same address
-// right after Stop is the only thing that actually demonstrates the fd was
-// released.
-func TestStopWithoutOpenTrafficDoesNotLeakListener(t *testing.T) {
-	s, ctx := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/", ReadTimeout: time.Second, WriteTimeout: time.Second})
+func TestStopBeforeTrafficGateReleaseDoesNotLeakListener(t *testing.T) {
+	server, ctx, _ := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
 
-	require.NoError(t, s.Start(ctx))
-	addr := s.Addr()
+	require.NoError(t, server.Start(ctx))
+	addr := server.Addr()
+	require.NoError(t, server.Stop(context.Background()))
 
-	require.NoError(t, s.Stop(context.Background()), "When Start succeeds but never OpenTraffic, Stop must cleanly shut down")
-
-	ln, err := net.Listen("tcp", addr)
-	require.NoError(t, err, "Listener must have been released, otherwise the same address will bind: address already in use")
-	require.NoError(t, ln.Close())
+	listener, err := net.Listen("tcp", addr)
+	require.NoError(t, err, "Stop must release a listener whose serving task is still behind the gate")
+	require.NoError(t, listener.Close())
 }
 
-// TestStartPropagatesMiddlewareProviderExtensionsError is readiness test #4:
-// an error from plugin.Extensions[T] must abort Start and surface to the
-// caller, never be silently skipped -- verified here through the shared
-// InitializedPlugins failure path all three Extensions[T] calls share.
-func TestStartPropagatesMiddlewareProviderExtensionsError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	wantErr := errors.New("Host hasn't initialized all plugins yet")
-	host := newFakeHost()
-	host.initializedErr = wantErr
-	ctx := contextFromHost(host)
+func TestStartFailsWhenCriticalServingTaskIsRejected(t *testing.T) {
+	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
+	host.rejectTasks()
 
-	s := &Server{cfg: Config{Addr: "127.0.0.1:0", BasePath: "/"}}
-	err := s.Start(ctx)
+	err := server.Start(ctx)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, wantErr, "Extensions failures must be passed through to the caller as-is, cannot be swallowed")
-	assert.Empty(t, s.Addr(), "Extensions failures must return before net.Listen, the port should not be bound")
+	assert.ErrorContains(t, err, "managed serving task was rejected")
+	assert.Empty(t, server.Addr())
+	assert.Empty(t, host.submittedTasks())
 }
 
-// TestStartAppliesContributedMiddlewareToRoutesUnderBasePath is the
-// server-level counterpart of router_test.go's Group/Use ordering pin: it
-// drives the exact production sequence in (*Server).Start (not a hand
-// rolled newRouter call) end to end over a real HTTP request, so a future
-// change that reorders Start's own steps -- e.g. moving the newRouter call
-// before the middleware-collection loop -- gets caught here even though it
-// would never trip router_test.go's lower-level fixtures at all.
 func TestStartAppliesContributedMiddlewareToRoutesUnderBasePath(t *testing.T) {
 	var ran bool
-	mwID := plugin.Identity{Plugin: "audit", Instance: "default"}
-	mwExt := fakeMiddlewareProvider{mws: []Middleware{{
-		Name:  "audit",
-		Phase: PhaseBusiness,
-		Handler: func(gc *gin.Context) {
+	middleware := fakeMiddleware{
+		order: Order{Phase: PhaseBusiness},
+		handler: func(c *gin.Context) {
 			ran = true
+			c.Next()
 		},
-	}}}
-
-	s, ctx := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/api", ReadTimeout: time.Second, WriteTimeout: time.Second},
-		asAny(mwID, mwExt))
-
-	require.NoError(t, s.Start(ctx))
-	require.NoError(t, s.OpenTraffic(ctx))
-	defer s.Stop(context.Background())
-
-	addr := s.Addr()
-	ok := pollUntil(2*time.Second, 20*time.Millisecond, func() bool {
-		resp, err := http.Get("http://" + addr + "/api/ping")
-		if err != nil {
-			return false
-		}
-		defer resp.Body.Close()
-		return resp.StatusCode == http.StatusOK
+	}
+	server, ctx, _ := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/api"}, serverInputs{
+		middlewares: []plugin.Entry[Middleware]{
+			{Identity: plugin.Identity{Plugin: "audit"}, Value: middleware},
+		},
 	})
-	require.True(t, ok, "/api/ping must respond successfully within the timeout limit")
-	assert.True(t, ran, "MiddlewareProvider contributed middleware must actually apply to routes under basePath, this is a pin test for the Start internal Use-then-Group order")
+
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+	response := httptest.NewRecorder()
+	server.engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/ping", nil))
+
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.True(t, ran, "middleware must be installed before the base-path Router group is created")
 }
 
-// TestStartPropagatesRouteCatalogConsumerError covers the other error shape
-// Start must not swallow: a RouteCatalogConsumer.RoutesReady call that
-// itself returns a business error, distinct from an Extensions[T] lookup
-// failure.
-func TestStartPropagatesRouteCatalogConsumerError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	wantErr := errors.New("Swagger generation failed")
-	consumer := fakeRouteCatalogConsumer{fn: func(RouteCatalog) error { return wantErr }}
-	consumerID := plugin.Identity{Plugin: "swagger", Instance: "default"}
+func TestOpenTrafficPropagatesRouteCatalogListenerErrorWithoutReleasingGate(t *testing.T) {
+	wantErr := errors.New("swagger generation failed")
+	listener := fakeRouteCatalogListener{ready: func(RouteCatalog) error { return wantErr }}
+	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
+		listeners: []plugin.Entry[RouteCatalogListener]{
+			{Identity: plugin.Identity{Plugin: "swagger"}, Value: listener},
+		},
+	})
 
-	s, ctx := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, asAny(consumerID, consumer))
-	err := s.Start(ctx)
+	require.NoError(t, server.Start(ctx))
+	addr := server.Addr()
+	err := server.OpenTraffic(ctx)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, wantErr, "Business errors from RoutesReady must surface, cannot be swallowed")
-	assert.Contains(t, err.Error(), "swagger")
-	assert.Empty(t, s.Addr(), "RoutesReady failure must return before net.Listen, and the port must not be bound")
+	assert.ErrorIs(t, err, wantErr)
+	assert.ErrorContains(t, err, "swagger")
+	assert.False(t, host.trafficReleased())
+	assert.Error(t, probe(addr, "/ping", 100*time.Millisecond), "failed preparation must leave ingress blocked")
+}
+
+func TestOpenTrafficReturnsRouteFreezeErrorWithoutNotifyingListeners(t *testing.T) {
+	listenerCalled := false
+	invalidRoute := fakeRouteContributor{register: func(router *Router) {
+		router.GET("/private", func(*gin.Context) {}).Auth(Accepts())
+	}}
+	listener := fakeRouteCatalogListener{ready: func(RouteCatalog) error {
+		listenerCalled = true
+		return nil
+	}}
+	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
+		routes: []plugin.Entry[RouteContributor]{
+			{Identity: plugin.Identity{Plugin: "invalid-route"}, Value: invalidRoute},
+		},
+		listeners: []plugin.Entry[RouteCatalogListener]{
+			{Identity: plugin.Identity{Plugin: "route-listener"}, Value: listener},
+		},
+	})
+
+	require.NoError(t, server.Start(ctx))
+	err := server.OpenTraffic(ctx)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "accepts no authentication schemes")
+	assert.False(t, listenerCalled)
+	assert.False(t, host.trafficReleased())
 }

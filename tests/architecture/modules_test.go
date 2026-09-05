@@ -76,11 +76,40 @@ type archWorkspaceFile struct {
 	}
 }
 
+// archRepositoryModuleFiles discovers every checked-in module manifest. It
+// intentionally does not trust go.work: this is the source side of the guard
+// that catches a newly created plugin module that was never joined to the
+// workspace and would therefore be skipped by local checks and CI.
+func archRepositoryModuleFiles(t *testing.T) []string {
+	t.Helper()
+	repositoryRoot := archRepositoryRoot(t)
+	var manifests []string
+	err := filepath.WalkDir(repositoryRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if path != repositoryRoot && (entry.Name() == ".git" || entry.Name() == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() == "go.mod" {
+			manifests = append(manifests, filepath.Clean(path))
+		}
+		return nil
+	})
+	require.NoError(t, err, "Failed to discover repository module manifests")
+	require.NotEmpty(t, manifests, "repository contains no go.mod, module coverage guard is inactive")
+	sort.Strings(manifests)
+	return manifests
+}
+
 // archWorkspaceModuleFiles returns every non-root module joined by the
 // checked-in repository go.work. The explicit absolute workspace path makes
 // this independent of cwd and an inherited GOWORK value (including "off").
-// Discovering modules keeps this publication guard effective when a grpc,
-// management or integration module is added without editing this test.
+// Discovering modules keeps publication guards effective as optional modules
+// are added without maintaining a hard-coded list in this test.
 func archWorkspaceModuleFiles(t *testing.T) []string {
 	t.Helper()
 	repositoryRoot := archRepositoryRoot(t)
@@ -109,6 +138,21 @@ func archWorkspaceModuleFiles(t *testing.T) []string {
 	require.NotEmpty(t, manifests, "go.work lists no independent sub module, release boundary guard is effectively inactive")
 	sort.Strings(manifests)
 	return manifests
+}
+
+// TestArchEveryRepositoryModuleBelongsToWorkspace ensures the Makefile and CI
+// actually validate every independently publishable module. A go.mod on disk
+// that is absent from go.work would otherwise be silently skipped.
+func TestArchEveryRepositoryModuleBelongsToWorkspace(t *testing.T) {
+	repositoryRoot := archRepositoryRoot(t)
+	workspaceManifests := append(
+		[]string{filepath.Join(repositoryRoot, "go.mod")},
+		archWorkspaceModuleFiles(t)...,
+	)
+	sort.Strings(workspaceManifests)
+
+	require.Equal(t, archRepositoryModuleFiles(t), workspaceManifests,
+		"every repository go.mod must appear exactly once in go.work so make check and make test-race cover it")
 }
 
 // TestArchWorkspaceModuleDiscoveryIgnoresCWDAndGOWORK is the regression for

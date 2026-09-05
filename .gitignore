@@ -11,9 +11,9 @@
 *.out
 vendor/
 
-# go.work 本身必须入库：仓库内的 transport/web 与 examples 是独立 module，
+# go.work 本身必须入库：仓库内的 plugins/*/* 与 examples 是独立 module，
 # 且按设计禁止本地 replace；core 打出第一个 tag 前它们只能靠 go.work 解析到
-# core。忽略它会让新克隆的仓库连 Web 运行栈都无法编译，CI 同理。
+# core。忽略它会让新克隆的仓库连插件 module 都无法编译，CI 同理。
 
 # 本地配置（含凭据，绝不入库）
 /application.yml

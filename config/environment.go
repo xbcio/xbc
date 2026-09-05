@@ -168,7 +168,7 @@ func (e *Environment) Bind(path string, out any) error {
 // than by out's schema. Such keys are accepted by strict unknown-field checks;
 // if no field in out matches them, the decoder ignores them. The assembly layer
 // can, for example, pass []string{"enabled"} while binding a
-// plugin-owned ConfigPtr.
+// plugin-owned configuration schema.
 type BindOptions struct {
 	AllowedKeys []string
 }

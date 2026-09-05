@@ -4,138 +4,327 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/ordering"
 )
 
-// mwEntry is one middleware after Definition-key qualification. qname is both
-// the graph node ID and the identity used by After/Before references.
-type mwEntry struct {
-	Middleware
-	qname string
+// MiddlewareOrderMiss reports one preferred target that is not present in the
+// frozen middleware set. Missing preferences do not weaken any present edge;
+// they are omitted only because there is no target to order.
+type MiddlewareOrderMiss struct {
+	Middleware plugin.Identity
+	Reference  OrderRef
+	Direction  ordering.Direction
 }
 
-// PhaseConflictError reports a cross-phase After/Before constraint whose
-// direction contradicts Phase order. Phase is a hard boundary (design §5.8
-// rule 1, carried over unchanged from the pre-split kernel): the only two
-// ways to honor a constraint that fights it are to silently reorder the
-// phases (the "wrong onion" the design doc explicitly rejects) or to abort.
-// This type carries both middleware names and both phase names so the
-// startup log can point at the exact contradiction.
+func (m MiddlewareOrderMiss) String() string {
+	return fmt.Sprintf("middleware %s prefers %s %s", m.Middleware, m.Direction, m.Reference)
+}
+
+// MissingMiddlewareOrderTargetError reports an absent required order target.
+type MissingMiddlewareOrderTargetError struct {
+	Middleware plugin.Identity
+	Reference  OrderRef
+	Direction  ordering.Direction
+}
+
+func (e *MissingMiddlewareOrderTargetError) Error() string {
+	if e.Middleware.Plugin == "" {
+		return fmt.Sprintf("xbc: framework middleware pin requires missing target %s", e.Reference)
+	}
+	return fmt.Sprintf(
+		"xbc: middleware %s requires %s=%q, but no matching middleware is present",
+		e.Middleware, e.Direction, e.Reference,
+	)
+}
+
+// PhaseConflictError reports an order constraint whose direction contradicts
+// the hard Phase boundary.
 type PhaseConflictError struct {
-	From, To           string
+	From, To           plugin.Identity
 	FromPhase, ToPhase Phase
-	Dir                ordering.Direction
+	Direction          ordering.Direction
 }
 
 func (e *PhaseConflictError) Error() string {
 	return fmt.Sprintf(
 		"xbc: middleware %s (phase %s) declared %s=%q (phase %s), conflicting with phase order, cannot form a consistent middleware chain",
-		e.From, e.FromPhase, e.Dir, e.To, e.ToPhase,
+		e.From, e.FromPhase, e.Direction, e.To, e.ToPhase,
 	)
 }
 
-// orderMiddlewares groups entries by Phase -- a hard boundary, so the coarse
-// position of every entry is fixed before any After/Before is even looked
-// at -- sorts each group internally with ordering (the same sorter core uses
-// for plugin Init order and Stop order), then concatenates the groups in
-// ascending Phase order.
+// DuplicateMiddlewareIdentityError reports two contributions attributed to the
+// same producer. Plugin Identity is the complete middleware identity, so there
+// is no name field available to disambiguate this condition.
+type DuplicateMiddlewareIdentityError struct {
+	Identity plugin.Identity
+}
+
+func (e *DuplicateMiddlewareIdentityError) Error() string {
+	return fmt.Sprintf("xbc: middleware identity %s is present more than once", e.Identity)
+}
+
+type middlewareOrderOptions struct {
+	outermost []OrderRef
+	after     []middlewareAfterPin
+}
+
+type middlewareAfterPin struct {
+	middleware  plugin.Identity
+	predecessor OrderRef
+}
+
+// middlewareOrderOption adds framework-owned edges without exposing a second
+// public ordering mechanism.
+type middlewareOrderOption func(*middlewareOrderOptions)
+
+// pinMiddlewareOutermost pins every matching entry before every other entry in
+// its phase. Web uses this for the canonical error boundary. The target is made
+// required even if the supplied reference was created with Prefer.
+func pinMiddlewareOutermost(ref OrderRef) middlewareOrderOption {
+	return func(options *middlewareOrderOptions) {
+		options.outermost = append(options.outermost, ref.asRequired())
+	}
+}
+
+// pinMiddlewareAfter adds a framework-owned predecessor edge for one exact
+// middleware identity. Web can use this after detecting a RequiresPrincipal
+// marker, without this package importing an authentication implementation. The
+// predecessor is made required even if ref was created with Prefer.
+func pinMiddlewareAfter(identity plugin.Identity, ref OrderRef) middlewareOrderOption {
+	return func(options *middlewareOrderOptions) {
+		options.after = append(options.after, middlewareAfterPin{
+			middleware:  identity,
+			predecessor: ref.asRequired(),
+		})
+	}
+}
+
+type middlewareNode struct {
+	entry plugin.Entry[Middleware]
+	order Order
+	id    middlewareIdentity
+}
+
+type middlewareIdentity struct {
+	key      plugin.Key
+	instance string
+}
+
+func identityOf(identity plugin.Identity) middlewareIdentity {
+	return middlewareIdentity{
+		key:      identity.Plugin,
+		instance: plugin.NormalizeInstance(identity.Instance),
+	}
+}
+
+func compareMiddlewareIdentity(left, right plugin.Identity) int {
+	return plugin.CompareIdentity(left, right)
+}
+
+func orderRefMatches(ref OrderRef, identity plugin.Identity) bool {
+	if identity.Plugin != ref.Key() {
+		return false
+	}
+	return ref.InstanceName() == "" ||
+		plugin.NormalizeInstance(identity.Instance) == ref.InstanceName()
+}
+
+// orderMiddlewares freezes middleware Order values, groups entries by the hard
+// Phase boundary, and topologically sorts each phase. Canonical plugin Identity,
+// not registration order, is the tie-break between unconstrained entries.
 //
-// A cross-phase After/Before that names a real, resolvable middleware is
-// only ever checked for direction, never turned into a sort edge: adding it
-// as an edge would let a single soft constraint silently override the Phase
-// boundary. A same-direction cross-phase constraint is redundant (Phase
-// order already satisfies it) and is dropped; an opposite-direction one
-// aborts with *PhaseConflictError. A reference to a name that was never
-// registered at all -- same phase or not -- is reported as an ordering.Miss
-// and otherwise ignored, matching the soft-edge semantics of ordering.Graph.
-func orderMiddlewares(entries []mwEntry) (ordered []mwEntry, misses []ordering.Miss, err error) {
-	byName := make(map[string]*mwEntry, len(entries))
-	for i := range entries {
-		e := &entries[i]
-		if _, dup := byName[e.qname]; dup {
-			return nil, nil, fmt.Errorf(
-				"xbc: middleware name %q is registered more than once; After/Before references require unique names", e.qname)
+// Prefer and Require differ only when a target is absent. Every resolved edge
+// is mandatory: a phase contradiction or same-phase cycle always fails.
+func orderMiddlewares(
+	entries []plugin.Entry[Middleware],
+	optionFns ...middlewareOrderOption,
+) (ordered []plugin.Entry[Middleware], misses []MiddlewareOrderMiss, err error) {
+	options := middlewareOrderOptions{}
+	for _, apply := range optionFns {
+		apply(&options)
+	}
+
+	nodes := make([]middlewareNode, len(entries))
+	byIdentity := make(map[middlewareIdentity]*middlewareNode, len(entries))
+	for i, entry := range entries {
+		id := identityOf(entry.Identity)
+		if _, duplicate := byIdentity[id]; duplicate {
+			return nil, nil, &DuplicateMiddlewareIdentityError{Identity: entry.Identity}
 		}
-		byName[e.qname] = e
+		nodes[i] = middlewareNode{
+			entry: entry,
+			order: entry.Value.Order(),
+			id:    id,
+		}
+		byIdentity[id] = &nodes[i]
+	}
+
+	// Canonicalize before adding graph nodes. ordering.Graph uses node insertion
+	// as its stable tie-break, so this makes Identity, rather than collection or
+	// registration order, authoritative.
+	slices.SortFunc(nodes, func(a, b middlewareNode) int {
+		return compareMiddlewareIdentity(a.entry.Identity, b.entry.Identity)
+	})
+
+	// Rebuild after sorting: pointers into a slice cannot be retained while its
+	// elements are being permuted.
+	clear(byIdentity)
+	for i := range nodes {
+		byIdentity[nodes[i].id] = &nodes[i]
 	}
 
 	phaseGraphs := make(map[Phase]*ordering.Graph)
-	var phaseOrder []Phase
-	graphFor := func(ph Phase) *ordering.Graph {
-		g, ok := phaseGraphs[ph]
+	phaseNodes := make(map[Phase]map[string]*middlewareNode)
+	phaseOrder := make([]Phase, 0)
+	graphFor := func(phase Phase) *ordering.Graph {
+		if graph, ok := phaseGraphs[phase]; ok {
+			return graph
+		}
+		graph := ordering.New()
+		phaseGraphs[phase] = graph
+		phaseNodes[phase] = make(map[string]*middlewareNode)
+		phaseOrder = append(phaseOrder, phase)
+		return graph
+	}
+
+	for i := range nodes {
+		node := &nodes[i]
+		name := node.entry.Identity.String()
+		graphFor(node.order.Phase).AddNode(name)
+		phaseNodes[node.order.Phase][name] = node
+	}
+
+	resolve := func(ref OrderRef) []*middlewareNode {
+		matches := make([]*middlewareNode, 0)
+		for i := range nodes {
+			if orderRefMatches(ref, nodes[i].entry.Identity) {
+				matches = append(matches, &nodes[i])
+			}
+		}
+		return matches
+	}
+
+	applyReference := func(
+		from *middlewareNode,
+		ref OrderRef,
+		direction ordering.Direction,
+	) error {
+		targets := resolve(ref)
+		if len(targets) == 0 {
+			if ref.Required() {
+				return &MissingMiddlewareOrderTargetError{
+					Middleware: from.entry.Identity,
+					Reference:  ref,
+					Direction:  direction,
+				}
+			}
+			misses = append(misses, MiddlewareOrderMiss{
+				Middleware: from.entry.Identity,
+				Reference:  ref,
+				Direction:  direction,
+			})
+			return nil
+		}
+
+		for _, target := range targets {
+			fromPhase := from.order.Phase
+			toPhase := target.order.Phase
+			switch direction {
+			case ordering.After:
+				switch {
+				case toPhase > fromPhase:
+					return &PhaseConflictError{
+						From: from.entry.Identity, To: target.entry.Identity,
+						FromPhase: fromPhase, ToPhase: toPhase,
+						Direction: ordering.After,
+					}
+				case toPhase == fromPhase:
+					graphFor(fromPhase).AddHardEdge(
+						target.entry.Identity.String(), from.entry.Identity.String())
+				}
+			case ordering.Before:
+				switch {
+				case toPhase < fromPhase:
+					return &PhaseConflictError{
+						From: from.entry.Identity, To: target.entry.Identity,
+						FromPhase: fromPhase, ToPhase: toPhase,
+						Direction: ordering.Before,
+					}
+				case toPhase == fromPhase:
+					graphFor(fromPhase).AddHardEdge(
+						from.entry.Identity.String(), target.entry.Identity.String())
+				}
+			default:
+				return fmt.Errorf("xbc: unknown middleware order direction %d", direction)
+			}
+		}
+		return nil
+	}
+
+	for i := range nodes {
+		node := &nodes[i]
+		for _, ref := range node.order.After {
+			if err := applyReference(node, ref, ordering.After); err != nil {
+				return nil, nil, err
+			}
+		}
+		for _, ref := range node.order.Before {
+			if err := applyReference(node, ref, ordering.Before); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+
+	for _, pin := range options.after {
+		node, ok := byIdentity[identityOf(pin.middleware)]
 		if !ok {
-			g = ordering.New()
-			phaseGraphs[ph] = g
-			phaseOrder = append(phaseOrder, ph)
+			return nil, nil, fmt.Errorf(
+				"xbc: cannot apply framework order pin to absent middleware %s", pin.middleware)
 		}
-		return g
+		if err := applyReference(node, pin.predecessor, ordering.After); err != nil {
+			return nil, nil, err
+		}
 	}
 
-	// Register every node before any edge, in original registration order,
-	// so the stable tiebreak inside ordering reflects registration order
-	// rather than the order edges happen to be discovered in below.
-	for _, e := range entries {
-		graphFor(e.Phase).AddNode(e.qname)
-	}
-
-	for i := range entries {
-		e := &entries[i]
-		for _, ref := range e.After {
-			other, ok := byName[ref]
-			if !ok {
-				misses = append(misses, ordering.Miss{Node: e.qname, Ref: ref, Dir: ordering.After})
-				continue
-			}
-			switch {
-			case other.Phase == e.Phase:
-				// Same group: a real ordering edge for the intra-group sort below.
-				graphFor(e.Phase).AddSoftEdge(other.qname, e.qname)
-			case other.Phase > e.Phase:
-				// e wants "other" before it, but other's Phase already
-				// places it after e -- direction contradicts Phase order.
-				return nil, nil, &PhaseConflictError{
-					From: e.qname, To: other.qname,
-					FromPhase: e.Phase, ToPhase: other.Phase, Dir: ordering.After,
-				}
-			}
-			// other.Phase < e.Phase: Phase order already puts other first;
-			// the constraint is redundant, and is dropped here.
+	for _, ref := range options.outermost {
+		targets := resolve(ref)
+		if len(targets) == 0 {
+			return nil, nil, &MissingMiddlewareOrderTargetError{Reference: ref}
 		}
-		for _, ref := range e.Before {
-			other, ok := byName[ref]
-			if !ok {
-				misses = append(misses, ordering.Miss{Node: e.qname, Ref: ref, Dir: ordering.Before})
-				continue
-			}
-			switch {
-			case other.Phase == e.Phase:
-				graphFor(e.Phase).AddSoftEdge(e.qname, other.qname)
-			case other.Phase < e.Phase:
-				// e wants to come before "other", but other's Phase
-				// already places it before e -- direction contradicts.
-				return nil, nil, &PhaseConflictError{
-					From: e.qname, To: other.qname,
-					FromPhase: e.Phase, ToPhase: other.Phase, Dir: ordering.Before,
+
+		// A bare key can match multiple instances. They form one canonically
+		// ordered outer group rather than pinning each other into a cycle.
+		targetIDs := make(map[middlewareIdentity]struct{}, len(targets))
+		for _, target := range targets {
+			targetIDs[target.id] = struct{}{}
+		}
+		for _, target := range targets {
+			graph := graphFor(target.order.Phase)
+			for i := range nodes {
+				other := &nodes[i]
+				if other.order.Phase != target.order.Phase {
+					continue
 				}
+				if _, isPinned := targetIDs[other.id]; isPinned {
+					continue
+				}
+				graph.AddHardEdge(
+					target.entry.Identity.String(), other.entry.Identity.String())
 			}
-			// other.Phase > e.Phase: Phase order already puts e first;
-			// the constraint is redundant, and is dropped here.
 		}
 	}
 
 	slices.Sort(phaseOrder)
-
-	ordered = make([]mwEntry, 0, len(entries))
-	for _, ph := range phaseOrder {
-		// Every node and edge in this graph belongs to entries already
-		// known to exist in byName, so Sort's own miss-reporting never
-		// fires here; a non-nil err can only be a cycle within this phase.
-		order, _, sortErr := phaseGraphs[ph].Sort()
+	ordered = make([]plugin.Entry[Middleware], 0, len(nodes))
+	for _, phase := range phaseOrder {
+		names, _, sortErr := phaseGraphs[phase].Sort()
 		if sortErr != nil {
-			return nil, nil, fmt.Errorf("xbc: middleware ordering failed in phase %s: %w", ph, sortErr)
+			return nil, nil, fmt.Errorf(
+				"xbc: middleware ordering failed in phase %s: %w", phase, sortErr)
 		}
-		for _, name := range order {
-			ordered = append(ordered, *byName[name])
+		for _, name := range names {
+			ordered = append(ordered, phaseNodes[phase][name].entry)
 		}
 	}
 	return ordered, misses, nil

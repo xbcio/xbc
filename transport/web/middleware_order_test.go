@@ -1,283 +1,573 @@
 package web
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/ordering"
 )
 
-// newFixtureEntry builds an mwEntry the way Start would: a raw Middleware
-// plus the owning Definition key that qualify needs. The Handler is a bare
-// placeholder -- this file never dispatches an HTTP request, it only orders
-// entries by name.
-func newFixtureEntry(pluginKey, name string, phase Phase, after, before []string) mwEntry {
-	return mwEntry{
-		Middleware: Middleware{
-			Name:    name,
-			Phase:   phase,
-			After:   after,
-			Before:  before,
-			Handler: func(*gin.Context) {},
+type fixtureMiddleware struct {
+	handler gin.HandlerFunc
+	order   Order
+}
+
+func (m fixtureMiddleware) Handler() gin.HandlerFunc { return m.handler }
+func (m fixtureMiddleware) Order() Order             { return m.order }
+
+func middlewareEntry(key plugin.Key, instance string, order Order) plugin.Entry[Middleware] {
+	return plugin.Entry[Middleware]{
+		Identity: plugin.Identity{Plugin: key, Instance: instance},
+		Value: fixtureMiddleware{
+			handler: func(*gin.Context) {},
+			order:   order,
 		},
-		qname: qualify(pluginKey, name),
 	}
 }
 
-func qnames(entries []mwEntry) []string {
-	out := make([]string, len(entries))
-	for i, e := range entries {
-		out[i] = e.qname
+func middlewareIdentities(entries []plugin.Entry[Middleware]) []string {
+	identities := make([]string, len(entries))
+	for i, entry := range entries {
+		identities[i] = entry.Identity.String()
 	}
-	return out
+	return identities
 }
 
-func TestPhaseStringKnownAndOutOfRange(t *testing.T) {
-	cases := []struct {
+// Fixture identity keys shared by the ordering test cases below keep every
+// Prefer/Require/PreferInstance/RequireInstance call site free of ad hoc
+// string literals.
+const (
+	authenticationKey           plugin.Key = "authentication"
+	authenticationMiddlewareKey plugin.Key = "authentication-middleware"
+	authorizationKey            plugin.Key = "authorization"
+	metricsKey                  plugin.Key = "metrics"
+	producerKey                 plugin.Key = "producer"
+	requestIDKey                plugin.Key = "request-id"
+	securityKey                 plugin.Key = "security"
+	tracingKey                  plugin.Key = "tracing"
+	webErrorBoundaryKey         plugin.Key = "web-error-boundary"
+	fixtureKeyA                 plugin.Key = "a"
+	fixtureKeyB                 plugin.Key = "b"
+)
+
+func TestPhaseString(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
 		phase Phase
 		want  string
 	}{
 		{PhaseRecover, "recover"},
 		{PhaseObserve, "observe"},
+		{PhaseError, "error"},
 		{PhaseSecurity, "security"},
 		{PhaseAuth, "auth"},
 		{PhaseBusiness, "business"},
-		{Phase(150), "phase(150)"},
+		{Phase(175), "phase(175)"},
+	} {
+		assert.Equal(t, test.want, test.phase.String())
 	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, c.phase.String(), "String form of Phase(%d)", int(c.phase))
+}
+
+func TestOrderRefConstructorsCarryTypedKeyInstanceAndStrictness(t *testing.T) {
+	t.Parallel()
+
+	const key plugin.Key = "authentication-middleware"
+
+	tests := []struct {
+		name         string
+		ref          OrderRef
+		instance     string
+		required     bool
+		stringRender string
+	}{
+		{
+			name:         "prefer all instances",
+			ref:          Prefer(key),
+			stringRender: "authentication-middleware",
+		},
+		{
+			name:         "require all instances",
+			ref:          Require(key),
+			required:     true,
+			stringRender: "authentication-middleware",
+		},
+		{
+			name:         "prefer exact named instance",
+			ref:          PreferInstance(key, "admin"),
+			instance:     "admin",
+			stringRender: "authentication-middleware[admin]",
+		},
+		{
+			name:         "require exact named instance",
+			ref:          RequireInstance(key, "admin"),
+			instance:     "admin",
+			required:     true,
+			stringRender: "authentication-middleware[admin]",
+		},
+		{
+			name:         "empty exact instance means canonical default",
+			ref:          PreferInstance(key, ""),
+			instance:     plugin.DefaultInstance,
+			stringRender: "authentication-middleware[default]",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, key, test.ref.Key())
+			assert.Equal(t, test.instance, test.ref.InstanceName())
+			assert.Equal(t, test.required, test.ref.Required())
+			assert.Equal(t, test.stringRender, test.ref.String())
+		})
 	}
 }
 
-// spec §4.4's startup log, cors plugin's cors middleware, ratelimit plugin's ratelimit
-// Middleware are rendered as bare names without prefixes — these are two real examples of the "no prefix for same name" rule.
-func TestQualifySameNameAsPluginIsNotPrefixed(t *testing.T) {
-	assert.Equal(t, "cors", qualify("cors", "cors"),
-		"spec §4.4 Example: the cors middleware of the cors plugin should not be displayed as cors.cors")
-	assert.Equal(t, "ratelimit", qualify("ratelimit", "ratelimit"),
-		"spec §4.4 Example: the ratelimit middleware of the ratelimit plugin follows the same rule")
-}
+func TestOrderMiddlewaresUsesPhaseThenCanonicalIdentityNotCollectionOrder(t *testing.T) {
+	t.Parallel()
 
-// In the spec §4.4 startup log, the jwt plugin's auth middleware is rendered as jwt.auth—this is a real
-// example of the "prefix a different name with the plugin key" rule.
-func TestQualifyDifferentNameGetsPluginPrefix(t *testing.T) {
-	assert.Equal(t, "jwt.auth", qualify("jwt", "auth"),
-		"spec §4.4 Example: the auth middleware of the jwt plugin should be displayed as jwt.auth")
-}
-
-// The spec gives no real example of a name that already contains a dot, so this synthetic case verifies
-// that qualify returns an already qualified name unchanged and never adds another plugin-key prefix.
-func TestQualifyDottedNamePassesThroughUnchanged(t *testing.T) {
-	assert.Equal(t, "jwt.auth", qualify("audit", "jwt.auth"),
-		"A name that already contains a dot indicates that the caller has already qualified it once, and it cannot be wrapped with another plugin key prefix")
-}
-
-func TestOrderMiddlewaresGroupsByPhaseAscendingRegardlessOfRegistrationOrder(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("business", "business", PhaseBusiness, nil, nil),
-		newFixtureEntry("recover", "recover", PhaseRecover, nil, nil),
-		newFixtureEntry("security", "security", PhaseSecurity, nil, nil),
-		newFixtureEntry("auth", "auth", PhaseAuth, nil, nil),
-		newFixtureEntry("observe", "observe", PhaseObserve, nil, nil),
+	base := []plugin.Entry[Middleware]{
+		middlewareEntry("z-business", "", Order{Phase: PhaseBusiness}),
+		middlewareEntry("z-security", "", Order{Phase: PhaseSecurity}),
+		middlewareEntry("a-security", "red", Order{Phase: PhaseSecurity}),
+		middlewareEntry("a-security", "", Order{Phase: PhaseSecurity}),
+		middlewareEntry("a-security", "blue", Order{Phase: PhaseSecurity}),
+		middlewareEntry("recover", "", Order{Phase: PhaseRecover}),
+	}
+	want := []string{
+		"recover",
+		"a-security[blue]",
+		"a-security",
+		"a-security[red]",
+		"z-security",
+		"z-business",
 	}
 
-	ordered, misses, err := orderMiddlewares(entries)
-	require.NoError(t, err)
-	assert.Empty(t, misses)
-	assert.Equal(t, []string{"recover", "observe", "security", "auth", "business"}, qnames(ordered),
-		"Phase is a hard boundary; the final order must be sorted in ascending Phase order, regardless of registration order")
-}
+	for rotation := range len(base) {
+		entries := slices.Clone(base)
+		entries = append(entries[rotation:], entries[:rotation]...)
 
-func TestOrderMiddlewaresWithinGroupRegistrationOrderIsStableAcrossManyRuns(t *testing.T) {
-	build := func() []mwEntry {
-		return []mwEntry{
-			newFixtureEntry("c", "c", PhaseSecurity, nil, nil),
-			newFixtureEntry("a", "a", PhaseSecurity, nil, nil),
-			newFixtureEntry("b", "b", PhaseSecurity, nil, nil),
-		}
-	}
-	want := []string{"c", "a", "b"}
-	for i := 0; i < 100; i++ {
-		ordered, misses, err := orderMiddlewares(build())
+		ordered, misses, err := orderMiddlewares(entries)
 		require.NoError(t, err)
 		assert.Empty(t, misses)
-		assert.Equal(t, want, qnames(ordered), "The %d-th run: middleware without constraints within the group must be stably ordered in the registration order", i)
+		assert.Equal(t, want, middlewareIdentities(ordered), "rotation %d", rotation)
 	}
 }
 
-func TestOrderMiddlewaresWithinGroupAfterConstraintTakesEffect(t *testing.T) {
-	// Registration order is ratelimit first, cors later; if After has no effect, stable sorting will maintain this
-	// Registration order. Once ratelimit declares After=cors, the result must reverse.
-	entries := []mwEntry{
-		newFixtureEntry("ratelimit", "ratelimit", PhaseSecurity, []string{"cors"}, nil),
-		newFixtureEntry("cors", "cors", PhaseSecurity, nil, nil),
+func TestOrderMiddlewaresAppliesBeforeAndAfterWithinPhase(t *testing.T) {
+	t.Parallel()
+
+	entries := []plugin.Entry[Middleware]{
+		middlewareEntry("audit", "", Order{
+			Phase:  PhaseObserve,
+			Before: []OrderRef{Prefer(metricsKey)},
+		}),
+		middlewareEntry(requestIDKey, "", Order{Phase: PhaseObserve}),
+		middlewareEntry(metricsKey, "", Order{
+			Phase: PhaseObserve,
+			After: []OrderRef{Require(requestIDKey)},
+		}),
 	}
+
 	ordered, misses, err := orderMiddlewares(entries)
 	require.NoError(t, err)
 	assert.Empty(t, misses)
-	assert.Equal(t, []string{"cors", "ratelimit"}, qnames(ordered),
-		"ratelimit declares After=cors, even if registration order is ratelimit first, the sorted result must place cors first")
+	assert.Equal(t,
+		[]string{"audit", "request-id", "metrics"},
+		middlewareIdentities(ordered),
+	)
 }
 
-func TestOrderMiddlewaresWithinGroupBeforeConstraintTakesEffect(t *testing.T) {
-	// Registration order is ratelimit first, cors later; cors declares Before=ratelimit, the result must move
-	// cors to before ratelimit, opposite to registration order.
-	entries := []mwEntry{
-		newFixtureEntry("ratelimit", "ratelimit", PhaseSecurity, nil, nil),
-		newFixtureEntry("cors", "cors", PhaseSecurity, nil, []string{"ratelimit"}),
+func TestOrderMiddlewaresBareKeyTargetsEveryEnabledInstance(t *testing.T) {
+	t.Parallel()
+
+	entries := []plugin.Entry[Middleware]{
+		middlewareEntry("consumer", "", Order{
+			Phase: PhaseSecurity,
+			After: []OrderRef{Require(producerKey)},
+		}),
+		middlewareEntry(producerKey, "west", Order{Phase: PhaseSecurity}),
+		middlewareEntry(producerKey, "east", Order{Phase: PhaseSecurity}),
 	}
+
 	ordered, misses, err := orderMiddlewares(entries)
 	require.NoError(t, err)
 	assert.Empty(t, misses)
-	assert.Equal(t, []string{"cors", "ratelimit"}, qnames(ordered),
-		"cors declares Before=ratelimit, even if registration order is ratelimit first, the sorted result must place cors first")
+	assert.Equal(t,
+		[]string{"producer[east]", "producer[west]", "consumer"},
+		middlewareIdentities(ordered),
+	)
 }
 
-// spec §5.8's audit example: audit (PhaseBusiness) declares After: "jwt.auth"
-// (PhaseAuth). 300 < 400, jwt.auth is already before audit, this cross-phase constraint is consistent with
-// Phase order, it is a redundant declaration and must be silently ignored—neither error nor miss.
-func TestOrderMiddlewaresCrossPhaseConsistentConstraintIsRedundantAndIgnored(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("audit", "audit", PhaseBusiness, []string{"jwt.auth"}, nil),
-		newFixtureEntry("jwt", "auth", PhaseAuth, nil, nil),
+func TestOrderMiddlewaresInstanceRefTargetsExactlyOneInstance(t *testing.T) {
+	t.Parallel()
+
+	entries := []plugin.Entry[Middleware]{
+		middlewareEntry(producerKey, "z", Order{Phase: PhaseSecurity}),
+		middlewareEntry("consumer", "", Order{
+			Phase:  PhaseSecurity,
+			Before: []OrderRef{RequireInstance(producerKey, "a")},
+		}),
+		middlewareEntry(producerKey, "a", Order{Phase: PhaseSecurity}),
 	}
+
 	ordered, misses, err := orderMiddlewares(entries)
-	require.NoError(t, err, "audit(business) After jwt.auth(auth) aligns with Phase order, it is a redundant constraint and should not abort startup")
+	require.NoError(t, err)
 	assert.Empty(t, misses)
-	assert.Equal(t, []string{"jwt.auth", "audit"}, qnames(ordered))
+	assert.Equal(t,
+		[]string{"consumer", "producer[a]", "producer[z]"},
+		middlewareIdentities(ordered),
+	)
 }
 
-// The reverse scenario: a PhaseSecurity middleware declares After: "jwt.auth" (PhaseAuth).
-// security(200) is originally before auth(300), but After requires jwt.auth to come before it—
-// the direction conflicts with Phase order, startup must be aborted, and the error must include both middleware names and their Phase names.
-func TestOrderMiddlewaresCrossPhaseReversedConstraintAbortsWithPhaseConflictError(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("early", "check", PhaseSecurity, []string{"jwt.auth"}, nil),
-		newFixtureEntry("jwt", "auth", PhaseAuth, nil, nil),
-	}
-	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "early.check(security) After jwt.auth(auth) contradicts Phase order, startup must be aborted")
+func TestOrderMiddlewaresReportsSoftMissesWithoutFailing(t *testing.T) {
+	t.Parallel()
 
-	var conflict *PhaseConflictError
-	require.ErrorAs(t, err, &conflict, "Conflict must be convertible into *PhaseConflictError, allowing upper layers to distinguish from other failure causes")
-	assert.Equal(t, "early.check", conflict.From)
-	assert.Equal(t, "jwt.auth", conflict.To)
-	assert.Equal(t, PhaseSecurity, conflict.FromPhase)
-	assert.Equal(t, PhaseAuth, conflict.ToPhase)
-	assert.Contains(t, err.Error(), "early.check", "Error message must include the middleware name declaring the constraint")
-	assert.Contains(t, err.Error(), "jwt.auth", "Error message must include the referenced middleware name")
-	assert.Contains(t, err.Error(), "security", "Error message must include the declared Phase name")
-	assert.Contains(t, err.Error(), "auth", "Error message must include the referenced Phase name")
-}
-
-// The original test covered only the After branch's consistency check. The Before branch (the second
-// loop in orderMiddlewares) has separate comparison logic and needs its own fixture: a PhaseSecurity middleware
-// declares Before a PhaseAuth middleware. security(200) already precedes auth(300), matching
-// Phase order, so the redundant constraint must be ignored through the other half of the code.
-func TestOrderMiddlewaresCrossPhaseConsistentBeforeConstraintIsRedundantAndIgnored(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("security", "check", PhaseSecurity, nil, []string{"jwt.auth"}),
-		newFixtureEntry("jwt", "auth", PhaseAuth, nil, nil),
+	entries := []plugin.Entry[Middleware]{
+		middlewareEntry("audit", "", Order{
+			Phase:  PhaseObserve,
+			After:  []OrderRef{Prefer(tracingKey)},
+			Before: []OrderRef{PreferInstance(metricsKey, "regional")},
+		}),
 	}
+
 	ordered, misses, err := orderMiddlewares(entries)
-	require.NoError(t, err, "security.check(security) Before jwt.auth(auth) aligns with Phase order, is a redundant constraint, and should not abort startup")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"audit"}, middlewareIdentities(ordered))
+	require.Equal(t, []MiddlewareOrderMiss{
+		{
+			Middleware: plugin.Identity{Plugin: "audit"},
+			Reference:  Prefer(tracingKey),
+			Direction:  ordering.After,
+		},
+		{
+			Middleware: plugin.Identity{Plugin: "audit"},
+			Reference:  PreferInstance(metricsKey, "regional"),
+			Direction:  ordering.Before,
+		},
+	}, misses)
+	assert.Contains(t, misses[0].String(), "audit")
+	assert.Contains(t, misses[0].String(), "tracing")
+}
+
+func TestOrderMiddlewaresRequiredMissingTargetFails(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		order     Order
+		direction ordering.Direction
+		ref       OrderRef
+	}{
+		{
+			name:      "after bare key",
+			order:     Order{Phase: PhaseAuth, After: []OrderRef{Require(authenticationMiddlewareKey)}},
+			direction: ordering.After,
+			ref:       Require(authenticationMiddlewareKey),
+		},
+		{
+			name:      "before exact instance",
+			order:     Order{Phase: PhaseAuth, Before: []OrderRef{RequireInstance(authorizationKey, "admin")}},
+			direction: ordering.Before,
+			ref:       RequireInstance(authorizationKey, "admin"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, misses, err := orderMiddlewares([]plugin.Entry[Middleware]{
+				middlewareEntry("consumer", "", test.order),
+			})
+			assert.Nil(t, misses)
+
+			var missing *MissingMiddlewareOrderTargetError
+			require.ErrorAs(t, err, &missing)
+			assert.Equal(t, plugin.Identity{Plugin: "consumer"}, missing.Middleware)
+			assert.Equal(t, test.ref, missing.Reference)
+			assert.Equal(t, test.direction, missing.Direction)
+			assert.Contains(t, err.Error(), test.ref.String())
+		})
+	}
+}
+
+func TestOrderMiddlewaresExactRequiredTargetDoesNotMatchAnotherInstance(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := orderMiddlewares([]plugin.Entry[Middleware]{
+		middlewareEntry("consumer", "", Order{
+			Phase: PhaseAuth,
+			After: []OrderRef{RequireInstance(authenticationMiddlewareKey, "admin")},
+		}),
+		middlewareEntry(authenticationMiddlewareKey, "public", Order{Phase: PhaseAuth}),
+	})
+
+	var missing *MissingMiddlewareOrderTargetError
+	require.ErrorAs(t, err, &missing)
+	assert.Equal(t, "admin", missing.Reference.InstanceName())
+}
+
+func TestOrderMiddlewaresConsistentCrossPhaseReferenceIsRedundant(t *testing.T) {
+	t.Parallel()
+
+	entries := []plugin.Entry[Middleware]{
+		middlewareEntry(authenticationKey, "", Order{Phase: PhaseAuth}),
+		middlewareEntry(securityKey, "", Order{
+			Phase:  PhaseSecurity,
+			Before: []OrderRef{Require(authenticationKey)},
+		}),
+		middlewareEntry("business", "", Order{
+			Phase: PhaseBusiness,
+			After: []OrderRef{Prefer(authenticationKey)},
+		}),
+	}
+
+	ordered, misses, err := orderMiddlewares(entries)
+	require.NoError(t, err)
 	assert.Empty(t, misses)
-	assert.Equal(t, []string{"security.check", "jwt.auth"}, qnames(ordered))
+	assert.Equal(t,
+		[]string{"security", "authentication", "business"},
+		middlewareIdentities(ordered),
+	)
 }
 
-// Reverse case: a PhaseAuth middleware declares Before a PhaseSecurity middleware.
-// auth(300) naturally follows security(200), so moving it ahead would conflict with Phase
-// order and must abort startup, mirroring the reverse After case through the Before branch.
-func TestOrderMiddlewaresCrossPhaseReversedBeforeConstraintAbortsWithPhaseConflictError(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("jwt", "audit", PhaseAuth, nil, []string{"security.gate"}),
-		newFixtureEntry("security", "gate", PhaseSecurity, nil, nil),
-	}
-	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "jwt.audit(auth) Before security.gate(security) contradicts Phase order and must abort startup")
+func TestOrderMiddlewaresPhaseContradictionAlwaysFails(t *testing.T) {
+	t.Parallel()
 
-	var conflict *PhaseConflictError
-	require.ErrorAs(t, err, &conflict, "Conflict must be recoverable as *PhaseConflictError")
-	assert.Equal(t, "jwt.audit", conflict.From)
-	assert.Equal(t, "security.gate", conflict.To)
-	assert.Equal(t, PhaseAuth, conflict.FromPhase)
-	assert.Equal(t, PhaseSecurity, conflict.ToPhase)
-	assert.Equal(t, ordering.Before, conflict.Dir)
-	assert.Contains(t, err.Error(), "jwt.audit")
-	assert.Contains(t, err.Error(), "security.gate")
-	assert.Contains(t, err.Error(), "auth")
-	assert.Contains(t, err.Error(), "security")
+	for _, test := range []struct {
+		name      string
+		order     Order
+		direction ordering.Direction
+	}{
+		{
+			name: "soft after later phase",
+			order: Order{
+				Phase: PhaseSecurity,
+				After: []OrderRef{Prefer(authenticationKey)},
+			},
+			direction: ordering.After,
+		},
+		{
+			name: "required before earlier phase",
+			order: Order{
+				Phase:  PhaseAuth,
+				Before: []OrderRef{Require(securityKey)},
+			},
+			direction: ordering.Before,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			entries := []plugin.Entry[Middleware]{
+				middlewareEntry(securityKey, "", Order{Phase: PhaseSecurity}),
+				middlewareEntry(authenticationKey, "", Order{Phase: PhaseAuth}),
+			}
+			if test.direction == ordering.After {
+				entries[0] = middlewareEntry(securityKey, "", test.order)
+			} else {
+				entries[1] = middlewareEntry(authenticationKey, "", test.order)
+			}
+
+			_, _, err := orderMiddlewares(entries)
+			var conflict *PhaseConflictError
+			require.ErrorAs(t, err, &conflict)
+			assert.Equal(t, test.direction, conflict.Direction)
+			assert.Contains(t, err.Error(), "security")
+			assert.Contains(t, err.Error(), "authentication")
+		})
+	}
 }
 
-// Guard against merging Phase order and After/Before into one graph that checks boundaries only between
-// adjacent Phase groups. Each Phase has two entries here, and the reverse constraint targets the second
-// (interior) node auth.a2 of the later group rather than its first node. A boundary-only implementation
-// might miss the conflict and silently move auth.a2 before sec.s2. The correct Phase-grouped
-// implementation checks every cross-phase reference by Phase value, regardless of position within
-// the group, so startup must still abort.
-func TestOrderMiddlewaresCrossPhaseReversedConstraintOnInteriorNodeAbortsEvenWithMultipleEntriesPerPhase(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("sec", "s1", PhaseSecurity, nil, nil),
-		newFixtureEntry("sec", "s2", PhaseSecurity, []string{"auth.a2"}, nil),
-		newFixtureEntry("auth", "a1", PhaseAuth, nil, nil),
-		newFixtureEntry("auth", "a2", PhaseAuth, nil, nil),
+func TestOrderMiddlewaresSamePhaseCycleAlwaysFails(t *testing.T) {
+	t.Parallel()
+
+	for _, required := range []bool{false, true} {
+		ref := Prefer(fixtureKeyB)
+		back := Prefer(fixtureKeyA)
+		if required {
+			ref = Require(fixtureKeyB)
+			back = Require(fixtureKeyA)
+		}
+
+		_, _, err := orderMiddlewares([]plugin.Entry[Middleware]{
+			middlewareEntry(fixtureKeyA, "", Order{Phase: PhaseSecurity, After: []OrderRef{ref}}),
+			middlewareEntry(fixtureKeyB, "", Order{Phase: PhaseSecurity, After: []OrderRef{back}}),
+		})
+		require.Error(t, err)
+
+		var cycle *ordering.CycleError
+		require.ErrorAs(t, err, &cycle)
+		assert.Equal(t, []string{"a", "b", "a"}, cycle.Path)
 	}
-	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "sec.s2(security) After auth.a2(auth) attempts to pull the middleware of a later Phase before the previous Phase, even if the target is not the first node in the group, it must still stop startup")
+}
+
+func TestOrderMiddlewaresRejectsDuplicateProducerIdentity(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := orderMiddlewares([]plugin.Entry[Middleware]{
+		middlewareEntry("cors", "", Order{Phase: PhaseSecurity}),
+		middlewareEntry("cors", plugin.DefaultInstance, Order{Phase: PhaseSecurity}),
+	})
+
+	var duplicate *DuplicateMiddlewareIdentityError
+	require.ErrorAs(t, err, &duplicate)
+	assert.Equal(t, plugin.Identity{Plugin: "cors", Instance: plugin.DefaultInstance}, duplicate.Identity)
+}
+
+func TestOrderMiddlewaresFrameworkOutermostPin(t *testing.T) {
+	t.Parallel()
+
+	entries := []plugin.Entry[Middleware]{
+		middlewareEntry("focused-boundary", "", Order{Phase: PhaseError}),
+		middlewareEntry(webErrorBoundaryKey, "", Order{Phase: PhaseError}),
+		middlewareEntry("observer", "", Order{Phase: PhaseObserve}),
+		middlewareEntry(securityKey, "", Order{Phase: PhaseSecurity}),
+	}
+
+	ordered, misses, err := orderMiddlewares(
+		entries,
+		pinMiddlewareOutermost(Require(webErrorBoundaryKey)),
+	)
+	require.NoError(t, err)
+	assert.Empty(t, misses)
+	assert.Equal(t,
+		[]string{"observer", "web-error-boundary", "focused-boundary", "security"},
+		middlewareIdentities(ordered),
+	)
+}
+
+func TestOrderMiddlewaresOutermostBareKeyPinsAllInstancesAsOneOuterGroup(t *testing.T) {
+	t.Parallel()
+
+	ordered, misses, err := orderMiddlewares(
+		[]plugin.Entry[Middleware]{
+			middlewareEntry("focused-boundary", "", Order{Phase: PhaseError}),
+			middlewareEntry(webErrorBoundaryKey, "secondary", Order{Phase: PhaseError}),
+			middlewareEntry(webErrorBoundaryKey, "", Order{Phase: PhaseError}),
+		},
+		pinMiddlewareOutermost(Require(webErrorBoundaryKey)),
+	)
+	require.NoError(t, err)
+	assert.Empty(t, misses)
+	assert.Equal(t,
+		[]string{"web-error-boundary", "web-error-boundary[secondary]", "focused-boundary"},
+		middlewareIdentities(ordered),
+	)
+}
+
+func TestOrderMiddlewaresOutermostPinContradictionBecomesCycle(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := orderMiddlewares(
+		[]plugin.Entry[Middleware]{
+			middlewareEntry("focused-boundary", "", Order{
+				Phase:  PhaseError,
+				Before: []OrderRef{Prefer(webErrorBoundaryKey)},
+			}),
+			middlewareEntry(webErrorBoundaryKey, "", Order{Phase: PhaseError}),
+		},
+		pinMiddlewareOutermost(Require(webErrorBoundaryKey)),
+	)
+
+	var cycle *ordering.CycleError
+	require.ErrorAs(t, err, &cycle)
+	assert.Equal(t,
+		[]string{"focused-boundary", "web-error-boundary", "focused-boundary"},
+		cycle.Path,
+	)
+}
+
+func TestOrderMiddlewaresOutermostPinRequiresKnownTarget(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := orderMiddlewares(
+		[]plugin.Entry[Middleware]{
+			middlewareEntry("focused-boundary", "", Order{Phase: PhaseError}),
+		},
+		pinMiddlewareOutermost(Prefer(webErrorBoundaryKey)),
+	)
+
+	var missing *MissingMiddlewareOrderTargetError
+	require.ErrorAs(t, err, &missing)
+	assert.True(t, missing.Reference.Required(), "framework pins are required")
+	assert.Equal(t, webErrorBoundaryKey, missing.Reference.Key())
+}
+
+func TestOrderMiddlewaresFrameworkAfterPinModelsRequiresPrincipalEdge(t *testing.T) {
+	t.Parallel()
+
+	authorizationIdentity := plugin.Identity{Plugin: authorizationKey}
+
+	ordered, misses, err := orderMiddlewares(
+		[]plugin.Entry[Middleware]{
+			middlewareEntry(authorizationKey, "", Order{Phase: PhaseAuth}),
+			middlewareEntry(authenticationMiddlewareKey, "", Order{Phase: PhaseAuth}),
+		},
+		pinMiddlewareAfter(authorizationIdentity, Require(authenticationMiddlewareKey)),
+	)
+	require.NoError(t, err)
+	assert.Empty(t, misses)
+	assert.Equal(t,
+		[]string{"authentication-middleware", "authorization"},
+		middlewareIdentities(ordered),
+	)
+}
+
+func TestOrderMiddlewaresFrameworkAfterPinRejectsAuthorWrittenInverse(t *testing.T) {
+	t.Parallel()
+
+	authorizationIdentity := plugin.Identity{Plugin: authorizationKey}
+
+	_, _, err := orderMiddlewares(
+		[]plugin.Entry[Middleware]{
+			middlewareEntry(authorizationKey, "", Order{
+				Phase:  PhaseAuth,
+				Before: []OrderRef{Prefer(authenticationMiddlewareKey)},
+			}),
+			middlewareEntry(authenticationMiddlewareKey, "", Order{Phase: PhaseAuth}),
+		},
+		pinMiddlewareAfter(authorizationIdentity, Require(authenticationMiddlewareKey)),
+	)
+
+	var cycle *ordering.CycleError
+	require.ErrorAs(t, err, &cycle)
+}
+
+func TestOrderMiddlewaresFrameworkAfterPinRequiresPredecessor(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := orderMiddlewares(
+		[]plugin.Entry[Middleware]{
+			middlewareEntry(authorizationKey, "", Order{Phase: PhaseAuth}),
+		},
+		pinMiddlewareAfter(
+			plugin.Identity{Plugin: authorizationKey},
+			Prefer(authenticationMiddlewareKey),
+		),
+	)
+
+	var missing *MissingMiddlewareOrderTargetError
+	require.ErrorAs(t, err, &missing)
+	assert.Equal(t, plugin.Identity{Plugin: authorizationKey}, missing.Middleware)
+	assert.True(t, missing.Reference.Required(), "framework marker edges are required")
+}
+
+func TestOrderMiddlewaresFrameworkAfterPinHonorsHardPhaseBoundary(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := orderMiddlewares(
+		[]plugin.Entry[Middleware]{
+			middlewareEntry(authorizationKey, "", Order{Phase: PhaseSecurity}),
+			middlewareEntry(authenticationMiddlewareKey, "", Order{Phase: PhaseAuth}),
+		},
+		pinMiddlewareAfter(
+			plugin.Identity{Plugin: authorizationKey},
+			Require(authenticationMiddlewareKey),
+		),
+	)
 
 	var conflict *PhaseConflictError
 	require.ErrorAs(t, err, &conflict)
-	assert.Equal(t, "sec.s2", conflict.From)
-	assert.Equal(t, "auth.a2", conflict.To)
-	assert.Equal(t, PhaseSecurity, conflict.FromPhase)
-	assert.Equal(t, PhaseAuth, conflict.ToPhase)
-}
-
-func TestOrderMiddlewaresMissingReferenceIsRecordedAsMiss(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("audit", "audit", PhaseBusiness, []string{"tracing"}, nil),
-	}
-	ordered, misses, err := orderMiddlewares(entries)
-	require.NoError(t, err, "Reference to a non-existent name is a soft constraint miss, startup should not be stopped")
-	require.Len(t, misses, 1)
-	assert.Equal(t, ordering.Miss{Node: "audit", Ref: "tracing", Dir: ordering.After}, misses[0])
-	assert.Equal(t, []string{"audit"}, qnames(ordered))
-}
-
-// Mirror the above After missing reference fixture, verifying that the Before branch is also recorded as miss—this file
-// originally had no use cases covering Before's dangling references.
-func TestOrderMiddlewaresMissingBeforeReferenceIsRecordedAsMiss(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("audit", "audit", PhaseBusiness, nil, []string{"tracing"}),
-	}
-	ordered, misses, err := orderMiddlewares(entries)
-	require.NoError(t, err, "A missing name is a soft constraint miss, should not abort startup")
-	require.Len(t, misses, 1)
-	assert.Equal(t, ordering.Miss{Node: "audit", Ref: "tracing", Dir: ordering.Before}, misses[0])
-	assert.Equal(t, []string{"audit"}, qnames(ordered))
-}
-
-func TestOrderMiddlewaresDuplicateQualifiedNameFails(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("cors", "cors", PhaseSecurity, nil, nil),
-		newFixtureEntry("cors", "cors", PhaseSecurity, nil, nil),
-	}
-	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "Name collision after qualification, referencing After/Before by name loses uniqueness, must error")
-	assert.Contains(t, err.Error(), "cors")
-}
-
-func TestOrderMiddlewaresCycleWithinGroupFails(t *testing.T) {
-	entries := []mwEntry{
-		newFixtureEntry("a", "a", PhaseSecurity, []string{"b"}, nil),
-		newFixtureEntry("b", "b", PhaseSecurity, []string{"a"}, nil),
-	}
-	_, _, err := orderMiddlewares(entries)
-	require.Error(t, err, "a After b and b After a, cycle appears within group, must error")
-
-	var cycleErr *ordering.CycleError
-	assert.ErrorAs(t, err, &cycleErr, "Cyclic group should be recoverable as ordering.CycleError")
+	assert.Equal(t, ordering.After, conflict.Direction)
 }

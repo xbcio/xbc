@@ -1,16 +1,12 @@
-// Package autoload registers the web plugin in xbc's process-wide default
-// catalog. Import it for side effects from an executable:
-//
-//	import _ "github.com/xbcio/xbc/transport/web/autoload"
-//
-// Libraries should import package web normally; doing so is side-effect free.
+// Package autoload declares the curated Web prelude Bundle in XBC's optional
+// process-wide composition. Import it only for side effects from an executable.
 package autoload
 
 import (
-	"github.com/xbcio/xbc/plugin/catalog"
-	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/internal/autoload"
+	"github.com/xbcio/xbc/transport/web/prelude"
 )
 
 func init() {
-	catalog.Declare(web.Definition())
+	autoload.Declare(prelude.Bundle())
 }

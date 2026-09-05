@@ -1,28 +1,49 @@
-// Command quickstart is the smallest complete xbc application: an import
-// list and one call.
+// Command quickstart demonstrates explicit, side-effect-free XBC composition.
 //
-// Everything the application is made of is expressed as an import. The web
-// module's autoload package contributes an HTTP server; the greeter package
-// contributes a route. Neither is named again below, and neither is passed to
-// anything -- their registration packages declare them into the catalog, and
-// xbc.Run freezes that catalog, loads configuration, orders the plugins by
-// their declared dependencies and drives their lifecycle.
+// Run from the repository root with:
 //
-// Run these commands from the examples module directory:
-//
-//	go run ./quickstart --config quickstart/application.yml
+//	go run ./examples/quickstart --config examples/quickstart/application.yml
 //	curl localhost:8080/api/v1/hello
 //
-// To see what would be assembled without starting anything -- no port bound,
-// no connection opened -- use the built-in doctor subcommand:
-//
-//	go run ./quickstart doctor --config quickstart/application.yml
+// Use the doctor subcommand to validate the complete plan without constructing
+// resources or opening a listener.
 package main
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/xbcio/xbc"
-	_ "github.com/xbcio/xbc/examples/quickstart/internal/greeter"
-	_ "github.com/xbcio/xbc/transport/web/autoload"
+	"github.com/xbcio/xbc/examples/quickstart/internal/greeter"
+	"github.com/xbcio/xbc/transport/web/biz"
+	"github.com/xbcio/xbc/transport/web/cors"
+	"github.com/xbcio/xbc/transport/web/integrations/swagger"
+	"github.com/xbcio/xbc/transport/web/prelude"
 )
 
-func main() { xbc.Run() }
+func main() {
+	app, err := xbc.New(xbc.WithBundles(
+		prelude.Bundle(),
+		biz.Bundle(),
+		cors.Bundle(),
+		swagger.Bundle(),
+		greeter.Bundle(),
+	))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code, err := app.Execute(ctx, os.Args[1:])
+	stop()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	if code != 0 {
+		os.Exit(code)
+	}
+}

@@ -18,10 +18,11 @@ jobs:
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.work
+          # Hash every independently publishable workspace module. The
+          # architecture test fails if a new go.mod is omitted from go.work.
           cache-dependency-path: |
             go.sum
-            transport/web/go.sum
-            examples/go.sum
+            **/go.sum
 
       - name: Check all workspace modules
         run: make check

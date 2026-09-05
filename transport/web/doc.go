@@ -1,73 +1,110 @@
-// Package web provides xbc's optional Gin-backed HTTP transport.
+// Package web provides XBC's optional Gin-backed HTTP transport.
 //
-// The package owns the HTTP server plugin, route registration, middleware
-// ordering, and the frozen route catalog. It deliberately exposes Gin types:
-// web is a concrete application runtime, not a protocol-neutral abstraction.
-// Applications that do not enable it do not pull Gin into the xbc core module.
+// Web owns the HTTP server Plugin, route registration, domain-specific
+// middleware and error-mapper ordering, and the immutable route catalog. It
+// deliberately exposes Gin types: this module is a concrete transport runtime,
+// not a protocol-neutral abstraction.
 //
-// # Enabling the server
+// # Composition
 //
-// Importing web has no registration side effects. Plugin and library packages
-// should import it normally when they implement RouteProvider,
-// MiddlewareProvider, or RouteCatalogConsumer. An executable that uses xbc's
-// process-wide default catalog enables the server explicitly through autoload:
+// Ordinary imports are side-effect free. Explicit Bundle composition is the
+// primary application API:
 //
-//	import (
-//		"github.com/xbcio/xbc"
-//		_ "github.com/xbcio/xbc/transport/web/autoload"
-//	)
+//	app, err := xbc.New(xbc.WithBundles(
+//		webprelude.Bundle(),
+//		orders.Bundle(),
+//	))
 //
-//	func main() { xbc.Run() }
+// Web's Bundle contains the server and its independently identified error
+// boundary. The prelude adds the lightweight production baseline: recovery,
+// request IDs, access logging, security headers, gzip, cooperative request
+// timeouts, and health probes. Features that require application policy, such
+// as CORS and authentication, remain explicit Bundles.
 //
-// A host that assembles a private plugin catalog should add Definition() to
-// that catalog instead of importing autoload.
+// Executables that deliberately prefer process-global composition can blank
+// import the leaf transport/web/autoload adapter and call xbc.Run. Prelude and
+// implementation packages themselves never register from init.
 //
-// # Routes
+// # Contributions
 //
-// Application plugins contribute routes by implementing RouteProvider:
+// A Plugin contributes routes by exporting RouteContributor and contributes one
+// independently ordered middleware by exporting Middleware. Factories receive
+// dependencies through typed plugin input tokens; the server receives complete
+// []plugin.Entry[T] collections at construction. There is no lifecycle-time
+// capability scan or provider slice.
 //
-//	type Greeter struct{}
+// A route contributor registers metadata beside each Gin handler:
 //
-//	var _ web.RouteProvider = (*Greeter)(nil)
-//
-//	func (*Greeter) RegisterRoutes(r *web.Router) {
-//		r.GET("/hello", func(c *gin.Context) {
+//	func (*Greeter) RegisterRoutes(router *web.Router) {
+//		router.GET("/hello", func(c *gin.Context) {
 //			c.String(http.StatusOK, "hello")
-//		})
+//		}).Name("greeting").Auth(web.Public())
 //	}
 //
-// Server discovers every provider after plugin initialization, invokes them in
-// dependency order, and then freezes the route table before traffic is
-// accepted. Router.Group creates nested route groups, and all registered paths
-// are relative to Config.BasePath. Routes cannot be added after the table has
-// been frozen.
+// Route authentication has three distinct states. Omitting Auth selects the
+// authentication manager's restrictive default, Auth(Public()) explicitly
+// bypasses authentication, and Auth(Accepts(...)) selects explicit schemes.
+// The frozen RouteInfo.Auth pointer preserves those states; absence is never
+// interpreted as public access.
 //
-// # Middleware and route metadata
+// Middleware identity is the producing plugin.Entry Identity. Phase is a hard
+// outer-to-inner boundary, while typed Before and After references refine
+// domain execution order. Missing preferred targets are reported; missing
+// required targets, phase contradictions, and cycles fail startup. Middleware
+// implementing security.RequiresPrincipal is framework-pinned after the
+// canonical authentication middleware.
 //
-// MiddlewareProvider contributes named Gin handlers. Phase establishes the
-// hard outer-to-inner order of the middleware chain; After and Before refine
-// ordering within a phase and must not contradict phase order.
+// ErrorMapper Plugins declare a separate ErrorOrder. The web-error-boundary
+// Plugin consumes and sorts all mapper entries, exports Middleware, and is
+// pinned outermost in PhaseError. The first mapper that recognizes an error
+// wins; safe non-leaking built-in mappings remain the fallback.
 //
-// RouteCatalogConsumer receives the complete, read-only RouteCatalog after all
-// RouteProvider calls finish. Within a request handler or middleware,
-// CurrentRoute reports the matching frozen RouteInfo, including its HTTP method
-// and route-template path; it returns false for unmatched requests.
+// RouteCatalogListener receives the complete immutable catalog during traffic
+// preparation, after every contributor has run and authentication metadata has
+// validated. CurrentRoute exposes the matching frozen RouteInfo to handlers and
+// middleware.
 //
-// # Configuration and lifecycle
+// # Lifecycle and traffic gate
 //
-// Config is bound below the plugin's stable key, "web":
+// Server.Start assembles the pipeline, registers routes, binds the listener,
+// and submits one managed critical serving task. That task waits for either the
+// runtime-owned traffic gate or task cancellation before calling Serve.
+// Server.OpenTraffic performs only fallible preparation: it freezes the route
+// table and notifies listeners. It neither starts a task nor releases traffic.
+// Runtime closes the single gate only after every Plugin's preparation succeeds,
+// so one failure leaves every ingress blocked. Stop drains a serving server or
+// closes a listener that never crossed the gate.
 //
-//	plugins:
-//	  web:
-//	    addr: ":8080"
-//	    base_path: "/api/v1"
-//	    read_timeout: 10s
-//	    write_timeout: 30s
+// Config is bound from the root-level "web" section:
 //
-// During xbc's first readiness phase, Server assembles the Gin engine, freezes
-// the route table, and binds the listener without serving requests. Traffic is
-// opened only after every application runner has started successfully. On
-// shutdown, Server drains HTTP connections using the deadline supplied by the
-// core runtime; the application-wide shutdown budget therefore belongs to
-// xbc.shutdown_timeout, not to Config.
+//	web:
+//	  addr: ":8080"
+//	  base_path: "/api/v1"
+//	  read_timeout: 10s
+//	  read_header_timeout: 5s
+//	  write_timeout: 30s
+//	  idle_timeout: 60s
+//	  max_header_bytes: 1048576
+//	  max_request_body_bytes: 10485760
+//	  max_multipart_memory: 8388608
+//	  trusted_proxies: []
+//
+// # Request errors
+//
+// Use a Gin ShouldBind method and adapt failures with ParamError; Web does not
+// duplicate Gin's binder APIs:
+//
+//	router.POST("/orders", web.Handle(func(c *gin.Context) error {
+//		var request CreateOrderRequest
+//		if err := c.ShouldBindJSON(&request); err != nil {
+//			return web.ParamError(err, &request)
+//		}
+//		c.JSON(http.StatusCreated, createOrder(request))
+//		return nil
+//	}))
+//
+// Handle and AbortError resolve failures through the active mapper chain.
+// Unknown errors become a fixed 500 response and context deadlines become 504.
+// All built-in failures use RFC 9457 application/problem+json responses; domain
+// packages should remain transport-neutral and be adapted at the Web boundary.
 package web

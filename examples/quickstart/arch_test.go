@@ -14,8 +14,8 @@ import (
 // full transitive closure.
 //
 // The distinction is the entire point of this guard. What must never happen
-// is an example bypassing the root application facade to import runtime,
-// assembly, cli, or a core internal package directly. A transitive dependency
+// is an example bypassing the root application facade to import private core
+// implementation directly. A transitive dependency
 // could still be legitimate if the facade or another public owner used it, so
 // only the direct-import lists answer the question this guard asks.
 type packageJSON struct {
@@ -38,9 +38,9 @@ func forbiddenDirectImport(dep string) string {
 		prefix string
 		reason string
 	}{
-		{"github.com/xbcio/xbc/runtime", "Example should start through the root facade, and must not directly orchestrate runtime"},
-		{"github.com/xbcio/xbc/assembly", "Example should start through the root facade, and must not directly depend on assembly"},
-		{"github.com/xbcio/xbc/cli", "Example should start through the root facade, and must not directly call cli"},
+		{"github.com/xbcio/xbc/internal/runtime", "Example should start through the root facade, and must not directly orchestrate runtime"},
+		{"github.com/xbcio/xbc/internal/assembly", "Example should start through the root facade, and must not directly depend on assembly"},
+		{"github.com/xbcio/xbc/internal/cli", "Example should start through the root facade, and must not directly call cli"},
 		{"github.com/xbcio/xbc/internal", "Example can only use public API, and must not directly import core internal/*"},
 	} {
 		if dep == forbidden.prefix || strings.HasPrefix(dep, forbidden.prefix+"/") {
@@ -53,7 +53,7 @@ func forbiddenDirectImport(dep string) string {
 // TestExamplesDoNotDirectlyImportCoreImplementationPackages is the
 // package-layout design §9 guard #10 as it applies to the examples module: an
 // example may consume the root facade, plugin-owned contracts, and optional
-// modules, but this quickstart must not bypass the facade for lower-level core APIs. See
+// modules, but this quickstart must not bypass the facade for private core implementation. See
 // packageJSON's doc comment for why this reads direct imports rather than Deps.
 //
 // It walks every package in the module, not just this one, so adding a second

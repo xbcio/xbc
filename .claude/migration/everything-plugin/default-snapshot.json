@@ -1,0 +1,595 @@
+{
+  "plugins": [
+    {
+      "key": "accesslog",
+      "config_type": "github.com/xbcio/xbc/transport/web/accesslog.Config",
+      "defaults": {
+        "SkipPaths": null,
+        "RequestIDHeader": "X-Request-ID",
+        "TrustProxyHeaders": false,
+        "SlowRequest": 0
+      }
+    },
+    {
+      "key": "apikey",
+      "config_type": "github.com/xbcio/xbc/transport/web/apikey.Config",
+      "defaults": {
+        "Header": "X-API-Key",
+        "AppIDHeader": "X-App-ID",
+        "AllowBearer": true,
+        "BearerScheme": "Bearer",
+        "RequireAppID": false,
+        "MinKeyBytes": 32,
+        "Static": null
+      }
+    },
+    {
+      "key": "asynq",
+      "config_type": "github.com/xbcio/xbc/integrations/asynq.Config",
+      "defaults": {
+        "Redis": {
+          "Addr": "127.0.0.1:6379",
+          "Username": "",
+          "Password": "",
+          "DB": 0,
+          "DialTimeout": 5000000000,
+          "ReadTimeout": 3000000000,
+          "WriteTimeout": 3000000000,
+          "PoolSize": 10,
+          "MaxRetries": 3
+        },
+        "Queues": {
+          "default": 1
+        },
+        "StrictPriority": false,
+        "Concurrency": 10,
+        "DefaultQueue": "default",
+        "DefaultMaxRetries": 25,
+        "DefaultTimeout": 1800000000000,
+        "TaskCheckInterval": 1000000000,
+        "ShutdownTimeout": 8000000000
+      }
+    },
+    {
+      "key": "auditlog",
+      "config_type": "github.com/xbcio/xbc/transport/web/auditlog.Config",
+      "defaults": {
+        "Async": false,
+        "QueueSize": 1024,
+        "Overflow": "drop_newest",
+        "SinkTimeout": 2000000000,
+        "RequestIDHeader": "X-Request-ID",
+        "IdempotencyHeader": "Idempotency-Key",
+        "SkipPaths": null
+      }
+    },
+    {
+      "key": "biz",
+      "config_type": "github.com/xbcio/xbc/transport/web/biz.Config",
+      "defaults": {}
+    },
+    {
+      "key": "casbin",
+      "config_type": "github.com/xbcio/xbc/transport/web/integrations/casbin.Config",
+      "defaults": {
+        "Model": "",
+        "ModelFile": "",
+        "Policy": "",
+        "PolicyFile": "",
+        "RequestConvention": "route_permission",
+        "MissingPermission": "deny",
+        "ReloadInterval": 0
+      }
+    },
+    {
+      "key": "cors",
+      "config_type": "github.com/xbcio/xbc/transport/web/cors.Config",
+      "defaults": {
+        "AllowOrigins": [
+          "*"
+        ],
+        "AllowMethods": [
+          "GET",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE",
+          "HEAD",
+          "OPTIONS"
+        ],
+        "AllowHeaders": [
+          "Origin",
+          "Content-Type",
+          "Accept",
+          "Authorization"
+        ],
+        "ExposeHeaders": null,
+        "AllowCredentials": false,
+        "MaxAge": 43200000000000
+      }
+    },
+    {
+      "key": "cron",
+      "config_type": "github.com/xbcio/xbc/integrations/cron.Config",
+      "defaults": {
+        "Seconds": false,
+        "Timezone": "Local",
+        "RunImmediately": false,
+        "Concurrency": "skip",
+        "Distributed": {
+          "Enabled": false,
+          "KeyPrefix": "xbc:cron",
+          "TTL": 30000000000,
+          "RenewInterval": 0,
+          "RedisInstance": "",
+          "Redis": {
+            "Addr": "",
+            "Username": "",
+            "Password": "",
+            "DB": 0,
+            "DialTimeout": 5000000000,
+            "ReadTimeout": 3000000000,
+            "WriteTimeout": 3000000000
+          }
+        }
+      }
+    },
+    {
+      "key": "elasticsearch",
+      "config_type": "github.com/xbcio/xbc/integrations/elasticsearch.Config",
+      "defaults": {
+        "Addresses": null,
+        "CloudID": "",
+        "APIKey": "",
+        "Username": "",
+        "Password": "",
+        "TLS": {
+          "CAFile": ""
+        },
+        "Timeout": 10000000000,
+        "HealthProbe": true,
+        "Bulk": {
+          "QueueCapacity": 1000,
+          "Backpressure": "block",
+          "FlushInterval": 1000000000,
+          "FlushActions": 500,
+          "FlushBytes": 5242880
+        }
+      }
+    },
+    {
+      "key": "gorm",
+      "config_type": "github.com/xbcio/xbc/integrations/gorm.Config",
+      "defaults": {
+        "Driver": "mysql",
+        "DSN": "",
+        "MaxOpenConn": 20,
+        "MaxIdleConn": 10,
+        "ConnMaxLifetime": 3600000000000,
+        "ConnMaxIdleTime": 1800000000000,
+        "PrepareStmt": false,
+        "SkipDefaultTransaction": false
+      }
+    },
+    {
+      "key": "gzip",
+      "config_type": "github.com/xbcio/xbc/transport/web/gzip.Config",
+      "defaults": {
+        "Level": -1,
+        "MinLength": 1024,
+        "ContentTypes": [
+          "text/*",
+          "application/json",
+          "application/javascript",
+          "application/xml",
+          "application/xhtml+xml",
+          "application/wasm",
+          "image/svg+xml",
+          "font/ttf",
+          "font/otf",
+          "application/vnd.ms-fontobject"
+        ],
+        "ExcludePaths": null
+      }
+    },
+    {
+      "key": "health",
+      "config_type": "github.com/xbcio/xbc/transport/web/health.Config",
+      "defaults": {
+        "Timeout": 2000000000,
+        "LivenessPath": "/healthz",
+        "ReadinessPath": "/readyz",
+        "DetailPolicy": "never"
+      }
+    },
+    {
+      "key": "idempotency",
+      "config_type": "github.com/xbcio/xbc/transport/web/integrations/idempotency.Config",
+      "defaults": {
+        "Header": "Idempotency-Key",
+        "Backend": "memory",
+        "RedisInstance": "default",
+        "RedisPrefix": "xbc:idempotency:",
+        "TTL": 86400000000000,
+        "PendingTTL": 30000000000,
+        "OperationTimeout": 2000000000,
+        "PendingStatus": 425,
+        "MinKeyLength": 8,
+        "MaxKeyLength": 128,
+        "MaxRequestBytes": 1048576,
+        "MaxResponseBytes": 1048576
+      }
+    },
+    {
+      "key": "jwt",
+      "config_type": "github.com/xbcio/xbc/transport/web/integrations/jwt.Config",
+      "defaults": {
+        "Secret": "",
+        "Algorithm": "HS256",
+        "Algorithms": [
+          "HS256",
+          "HS384",
+          "HS512"
+        ],
+        "Issuer": "",
+        "Audience": null,
+        "Leeway": 0,
+        "Header": "Authorization",
+        "Scheme": "Bearer",
+        "Expire": 7200000000000,
+        "Exclude": null
+      }
+    },
+    {
+      "key": "kafka",
+      "config_type": "github.com/xbcio/xbc/integrations/kafka.Config",
+      "defaults": {
+        "Brokers": null,
+        "ClientID": "xbc",
+        "DialTimeout": 10000000000,
+        "TLS": {
+          "Enabled": false,
+          "ServerName": "",
+          "CAFile": "",
+          "CertFile": "",
+          "KeyFile": ""
+        },
+        "SASL": {
+          "Mechanism": "",
+          "Username": "",
+          "Password": ""
+        },
+        "Producer": {
+          "Topic": "",
+          "BatchSize": 100,
+          "BatchBytes": 1048576,
+          "BatchTimeout": 1000000000,
+          "RequiredAcks": "all",
+          "Compression": "none",
+          "ReadTimeout": 10000000000,
+          "WriteTimeout": 10000000000,
+          "MaxAttempts": 10
+        },
+        "Consumers": {}
+      }
+    },
+    {
+      "key": "metrics",
+      "config_type": "github.com/xbcio/xbc/transport/web/integrations/metrics.Config",
+      "defaults": {
+        "Namespace": "xbc",
+        "Subsystem": "",
+        "DurationBuckets": [
+          0.005,
+          0.01,
+          0.025,
+          0.05,
+          0.1,
+          0.25,
+          0.5,
+          1,
+          2.5,
+          5,
+          10
+        ],
+        "HTTP": {
+          "Enabled": false,
+          "Path": "/metrics",
+          "Header": "X-XBC-Metrics-Token",
+          "Token": "",
+          "AllowLoopback": true
+        }
+      }
+    },
+    {
+      "key": "objectstorage",
+      "config_type": "github.com/xbcio/xbc/integrations/objectstorage.Config",
+      "defaults": {
+        "Backend": "local",
+        "MaxObjectBytes": 67108864,
+        "MaxListItems": 1000,
+        "Local": {
+          "Directory": "./data/objectstorage"
+        },
+        "S3": {
+          "Endpoint": "",
+          "TLS": true,
+          "SkipVerify": false,
+          "Region": "us-east-1",
+          "Bucket": "",
+          "PathStyle": true,
+          "AccessKeyID": "",
+          "SecretKey": "",
+          "SessionToken": "",
+          "Prefix": "",
+          "DialTimeout": 5000000000,
+          "TLSHandshakeTimeout": 5000000000,
+          "ResponseHeaderTimeout": 15000000000,
+          "RequestTimeout": 60000000000,
+          "IdleConnTimeout": 90000000000
+        }
+      }
+    },
+    {
+      "key": "outbox",
+      "config_type": "github.com/xbcio/xbc/integrations/outbox.Config",
+      "defaults": {
+        "DBInstance": "default",
+        "Table": "xbc_outbox_events",
+        "Migrate": false,
+        "MaxPayloadBytes": 1048576,
+        "Worker": {
+          "Enabled": false,
+          "PollInterval": 1000000000,
+          "BatchSize": 100,
+          "Concurrency": 4,
+          "LeaseDuration": 30000000000,
+          "RenewInterval": 10000000000,
+          "PublishTimeout": 10000000000,
+          "DatabaseTimeout": 5000000000,
+          "MaxAttempts": 10,
+          "InitialBackoff": 1000000000,
+          "MaxBackoff": 300000000000,
+          "Jitter": 0.2
+        }
+      }
+    },
+    {
+      "key": "pprof",
+      "config_type": "github.com/xbcio/xbc/transport/web/pprof.Config",
+      "defaults": {
+        "Enabled": false,
+        "Path": "/debug/pprof",
+        "Header": "X-XBC-Pprof-Token",
+        "Token": "",
+        "AllowLoopback": true
+      }
+    },
+    {
+      "key": "raft",
+      "config_type": "github.com/xbcio/xbc/integrations/raft.Config",
+      "defaults": {
+        "NodeID": "",
+        "BindAddr": "127.0.0.1:7000",
+        "AdvertiseAddr": "",
+        "Storage": "file",
+        "DataDir": "data/raft",
+        "Bootstrap": false,
+        "InitialPeers": null,
+        "TransportPool": 3,
+        "TransportTimeout": 10000000000,
+        "HeartbeatTimeout": 1000000000,
+        "ElectionTimeout": 1000000000,
+        "CommitTimeout": 50000000,
+        "LeaderLeaseTimeout": 500000000,
+        "MaxAppendEntries": 64,
+        "TrailingLogs": 10240,
+        "SnapshotInterval": 120000000000,
+        "SnapshotThreshold": 8192,
+        "SnapshotRetain": 2,
+        "ApplyTimeout": 5000000000,
+        "OperationTimeout": 10000000000,
+        "ShutdownTimeout": 10000000000
+      }
+    },
+    {
+      "key": "ratelimit",
+      "config_type": "github.com/xbcio/xbc/transport/web/ratelimit.Config",
+      "defaults": {
+        "Rate": 100,
+        "Burst": 200,
+        "Scope": "global"
+      }
+    },
+    {
+      "key": "recovery",
+      "config_type": "github.com/xbcio/xbc/transport/web/recovery.Config",
+      "defaults": {
+        "Stack": true
+      }
+    },
+    {
+      "key": "redis",
+      "config_type": "github.com/xbcio/xbc/integrations/redis.Config",
+      "defaults": {
+        "Addr": "",
+        "Username": "",
+        "Password": "",
+        "DB": 0,
+        "DialTimeout": 0,
+        "ReadTimeout": 0,
+        "WriteTimeout": 0,
+        "PoolTimeout": 0,
+        "PoolSize": 0,
+        "MinIdleConns": 0,
+        "MaxIdleConns": 0,
+        "MaxActiveConns": 0,
+        "ConnMaxIdleTime": 0,
+        "ConnMaxLifetime": 0,
+        "MaxRetries": 0,
+        "Ping": false
+      }
+    },
+    {
+      "key": "requestid",
+      "config_type": "github.com/xbcio/xbc/transport/web/requestid.Config",
+      "defaults": {
+        "Header": "X-Request-ID",
+        "TrustIncoming": true,
+        "MaxLength": 128
+      }
+    },
+    {
+      "key": "securityheaders",
+      "config_type": "github.com/xbcio/xbc/transport/web/securityheaders.Config",
+      "defaults": {
+        "ContentTypeNosniff": true,
+        "FrameOptions": "DENY",
+        "ContentSecurityPolicy": "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'",
+        "ReferrerPolicy": "no-referrer",
+        "PermissionsPolicy": "camera=(), geolocation=(), microphone=()",
+        "CrossOriginOpenerPolicy": "same-origin",
+        "XSSProtection": "0",
+        "HSTSEnabled": true,
+        "HSTSMaxAge": 31536000,
+        "HSTSIncludeSubdomains": true,
+        "HSTSPreload": false,
+        "HSTSOnlyHTTPS": true,
+        "HSTSTrustForwardedProto": false
+      }
+    },
+    {
+      "key": "session",
+      "config_type": "github.com/xbcio/xbc/transport/web/integrations/session.Config",
+      "defaults": {
+        "Backend": "memory",
+        "RedisInstance": "default",
+        "RedisPrefix": "xbc:session:",
+        "Name": "xbc_session",
+        "Path": "/",
+        "Domain": "",
+        "HTTPOnly": true,
+        "Secure": true,
+        "SameSite": "lax",
+        "TTL": 86400000000000,
+        "IdleTTL": 1800000000000,
+        "TouchInterval": 300000000000,
+        "CleanupInterval": 60000000000,
+        "OperationTimeout": 2000000000,
+        "IDBytes": 32
+      }
+    },
+    {
+      "key": "swagger",
+      "config_type": "github.com/xbcio/xbc/transport/web/integrations/swagger.Config",
+      "defaults": {
+        "Title": "XBC API",
+        "Version": "dev",
+        "Description": "",
+        "JSONPath": "/openapi.json",
+        "UIPath": "/docs",
+        "UIEnabled": true,
+        "Servers": null,
+        "BearerAuth": true
+      }
+    },
+    {
+      "key": "tenant",
+      "config_type": "github.com/xbcio/xbc/transport/web/tenant.Config",
+      "defaults": {
+        "Required": true,
+        "Header": "X-Tenant-ID",
+        "TenantIDAttribute": "tenant_id",
+        "TenantIDsAttribute": "tenant_ids",
+        "TenantAttributesAttribute": "tenant_attributes",
+        "AutoSelectSingle": true,
+        "MinIDLength": 1,
+        "MaxIDLength": 128
+      }
+    },
+    {
+      "key": "timeout",
+      "config_type": "github.com/xbcio/xbc/transport/web/timeout.Config",
+      "defaults": {
+        "Duration": 15000000000,
+        "ExcludePaths": null,
+        "ExcludeRoutes": null
+      }
+    },
+    {
+      "key": "tracing",
+      "config_type": "github.com/xbcio/xbc/transport/web/integrations/tracing.Config",
+      "defaults": {
+        "ServiceName": "xbc",
+        "ServiceVersion": "",
+        "Environment": "",
+        "ResourceAttributes": null,
+        "SampleRatio": 1,
+        "Exporter": {
+          "Protocol": "grpc",
+          "Endpoint": "localhost:4317",
+          "Headers": null,
+          "Insecure": false,
+          "Timeout": 10000000000,
+          "TLS": {
+            "ServerName": "",
+            "CAFile": "",
+            "CertFile": "",
+            "KeyFile": ""
+          }
+        },
+        "Batch": {
+          "MaxQueueSize": 2048,
+          "MaxExportBatchSize": 512,
+          "BatchTimeout": 5000000000,
+          "ExportTimeout": 30000000000,
+          "BlockOnQueueFull": false
+        },
+        "Propagation": [
+          "tracecontext",
+          "baggage"
+        ],
+        "ResponseHeaders": {
+          "Enabled": true,
+          "TraceIDHeader": "X-Trace-ID",
+          "SpanIDHeader": "X-Span-ID"
+        }
+      }
+    },
+    {
+      "key": "web",
+      "config_type": "github.com/xbcio/xbc/transport/web.Config",
+      "defaults": {
+        "Addr": ":8080",
+        "BasePath": "/",
+        "ReadTimeout": 10000000000,
+        "ReadHeaderTimeout": 5000000000,
+        "WriteTimeout": 30000000000,
+        "IdleTimeout": 60000000000,
+        "MaxHeaderBytes": 1048576,
+        "MaxRequestBodyBytes": 10485760,
+        "MaxMultipartMemory": 8388608,
+        "TrustedProxies": null
+      }
+    },
+    {
+      "key": "webhook",
+      "config_type": "github.com/xbcio/xbc/integrations/webhook.Config",
+      "defaults": {
+        "Workers": 4,
+        "QueueSize": 1024,
+        "Backpressure": "block",
+        "MaxAttempts": 5,
+        "RequestTimeout": 10000000000,
+        "MaxPayloadBytes": 1048576,
+        "MaxResponseBytes": 65536,
+        "AllowHTTP": false,
+        "MaxRedirects": 5,
+        "InitialBackoff": 500000000,
+        "MaxBackoff": 30000000000,
+        "Jitter": 0.2,
+        "MaxRetryAfter": 30000000000
+      }
+    }
+  ]
+}

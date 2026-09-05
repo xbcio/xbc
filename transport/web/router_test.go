@@ -18,11 +18,61 @@ func newTestEngineAndRouter(basePath string) (*gin.Engine, *Router, *bool, *map[
 	return engine, router, frozen, index
 }
 
+func TestRouteMetadataChainIsFrozenIntoCatalogAndCurrentRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	routes, frozen, index := newRouteTable()
+	engine.Use(recordCurrentRoute(frozen, index))
+	router := newRouter(engine, "/api", routes, frozen, index)
+
+	var current RouteInfo
+	router.Group("/users").POST("", func(gc *gin.Context) {
+		current, _ = CurrentRoute(gc)
+	}).Name("create user").Perm("user:write").Idempotent()
+	router.POST("/login", func(*gin.Context) {}).Name("login").Auth(Public())
+	catalog, err := router.freeze()
+	require.NoError(t, err)
+
+	create, ok := catalog.Lookup(http.MethodPost, "/api/users")
+	require.True(t, ok)
+	assert.Equal(t, RouteInfo{
+		Method:     http.MethodPost,
+		Path:       "/api/users",
+		Name:       "create user",
+		Perm:       "user:write",
+		Idempotent: true,
+	}, create)
+
+	login, ok := catalog.Lookup(http.MethodPost, "/api/login")
+	require.True(t, ok)
+	assert.Equal(t, "login", login.Name)
+	require.NotNil(t, login.Auth)
+	assert.True(t, login.Auth.IsPublic())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/users", nil)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+	assert.Equal(t, create, current, "request-time lookup must expose the final frozen metadata")
+}
+
+func TestRouteMetadataCannotChangeAfterFreeze(t *testing.T) {
+	_, router, _, _ := newTestEngineAndRouter("/")
+	route := router.GET("/users", func(*gin.Context) {})
+	_, err := router.freeze()
+	require.NoError(t, err)
+
+	assert.PanicsWithValue(t,
+		"xbc: route table is frozen, RouteCatalogListener phase cannot change route metadata",
+		func() { route.Auth(Public()) },
+	)
+}
+
 func TestRouteCatalogAllReturnsDefensiveCopy(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/")
 	router.GET("/a", func(*gin.Context) {})
 	router.GET("/b", func(*gin.Context) {})
-	catalog := router.freeze()
+	catalog, err := router.freeze()
+	require.NoError(t, err)
 
 	got := catalog.All()
 	require.Len(t, got, 2)
@@ -35,7 +85,8 @@ func TestRouteCatalogAllReturnsDefensiveCopy(t *testing.T) {
 func TestRouteCatalogLookupHitAndMiss(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	router.GET("/users", func(*gin.Context) {})
-	catalog := router.freeze()
+	catalog, err := router.freeze()
+	require.NoError(t, err)
 
 	info, ok := catalog.Lookup(http.MethodGet, "/api/users")
 	require.True(t, ok, "Registered method+path combination must match")
@@ -62,7 +113,8 @@ func TestCurrentRouteReportsMatchedRouteDuringRequest(t *testing.T) {
 	router.GET("/users/:id", func(gc *gin.Context) {
 		got, ok = CurrentRoute(gc)
 	})
-	router.freeze()
+	_, err := router.freeze()
+	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/users/42", nil)
 	rec := httptest.NewRecorder()
@@ -80,7 +132,8 @@ func TestCurrentRouteReportsFalseForNonMatchingRequest(t *testing.T) {
 	engine.Use(recordCurrentRoute(frozen, index))
 	router := newRouter(engine, "/api", routes, frozen, index)
 	router.GET("/users", func(*gin.Context) {})
-	router.freeze()
+	_, err := router.freeze()
+	require.NoError(t, err)
 
 	var ok bool
 	engine.NoRoute(func(gc *gin.Context) {
@@ -115,7 +168,8 @@ func TestGroupMustBeCreatedAfterUseOrMiddlewareSilentlyNeverApplies(t *testing.T
 	routes, frozen, index := newRouteTable()
 	router := newRouter(engine, "/api", routes, frozen, index)
 	router.GET("/ping", func(gc *gin.Context) { gc.Status(http.StatusOK) })
-	router.freeze()
+	_, err := router.freeze()
+	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
 	rec := httptest.NewRecorder()
@@ -143,7 +197,8 @@ func TestGroupCreatedBeforeUseNeverSeesLaterMiddleware(t *testing.T) {
 	router := newRouter(engine, "/api", routes, frozen, index)
 	engine.Use(mw)
 	router.GET("/ping", func(gc *gin.Context) { gc.Status(http.StatusOK) })
-	router.freeze()
+	_, err := router.freeze()
+	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
 	rec := httptest.NewRecorder()

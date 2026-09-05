@@ -1,23 +1,20 @@
 package autoload
 
 import (
+	"reflect"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
+	internalautoload "github.com/xbcio/xbc/internal/autoload"
 	"github.com/xbcio/xbc/plugin"
-	"github.com/xbcio/xbc/plugin/catalog"
-	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/prelude"
 )
 
-func TestImportRegistersWebDefinition(t *testing.T) {
-	snapshot, err := catalog.Freeze()
-	require.NoError(t, err)
-
-	def, ok := snapshot.Lookup(web.Key)
-	require.True(t, ok)
-	assert.Equal(t, web.Key, def.Key)
-	assert.Equal(t, plugin.SingleInstance, def.Instances)
-	assert.Equal(t, plugin.Always, def.Activation)
+func TestImportDeclaresCanonicalPreludeBundle(t *testing.T) {
+	got := internalautoload.Freeze()
+	if reflect.DeepEqual(got, plugin.Bundle{}) {
+		t.Fatal("autoload import did not declare a Bundle")
+	}
+	if !reflect.DeepEqual(got, prelude.Bundle()) {
+		t.Fatal("autoload declared composition other than prelude.Bundle()")
+	}
 }

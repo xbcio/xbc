@@ -1,0 +1,263 @@
+{
+  "plugins": [
+    {
+      "key": "accesslog",
+      "config_path": "plugins.accesslog",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "apikey",
+      "config_path": "plugins.apikey",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "asynq",
+      "config_path": "plugins.asynq",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/integrations/asynq.Enqueuer"
+      ]
+    },
+    {
+      "key": "auditlog",
+      "config_path": "plugins.auditlog",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "biz",
+      "config_path": "plugins.biz",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "casbin",
+      "config_path": "plugins.casbin",
+      "cardinality": "single",
+      "contracts": [
+        "*github.com/casbin/casbin/v2.SyncedEnforcer",
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "cors",
+      "config_path": "plugins.cors",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "cron",
+      "config_path": "plugins.cron",
+      "cardinality": "single",
+      "contracts": []
+    },
+    {
+      "key": "elasticsearch",
+      "config_path": "plugins.elasticsearch",
+      "cardinality": "multiple",
+      "contracts": [
+        "github.com/xbcio/xbc/integrations/elasticsearch.BulkIndexer"
+      ]
+    },
+    {
+      "key": "gorm",
+      "config_path": "plugins.gorm",
+      "cardinality": "multiple",
+      "contracts": []
+    },
+    {
+      "key": "gracefulshutdown",
+      "config_path": "plugins.gracefulshutdown",
+      "cardinality": "single",
+      "contracts": []
+    },
+    {
+      "key": "gzip",
+      "config_path": "plugins.gzip",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "health",
+      "config_path": "plugins.health",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
+      "key": "idempotency",
+      "config_path": "plugins.idempotency",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "jwt",
+      "config_path": "plugins.jwt",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "kafka",
+      "config_path": "plugins.kafka",
+      "cardinality": "multiple",
+      "contracts": [
+        "github.com/xbcio/xbc/integrations/kafka.Producer"
+      ]
+    },
+    {
+      "key": "metrics",
+      "config_path": "plugins.metrics",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware",
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
+      "key": "objectstorage",
+      "config_path": "plugins.objectstorage",
+      "cardinality": "multiple",
+      "contracts": [
+        "github.com/xbcio/xbc/integrations/objectstorage.Store"
+      ]
+    },
+    {
+      "key": "outbox",
+      "config_path": "plugins.outbox",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/integrations/outbox.Dispatcher"
+      ]
+    },
+    {
+      "key": "pprof",
+      "config_path": "plugins.pprof",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
+      "key": "raft",
+      "config_path": "plugins.raft",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/integrations/raft.Node"
+      ]
+    },
+    {
+      "key": "ratelimit",
+      "config_path": "plugins.ratelimit",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "recovery",
+      "config_path": "plugins.recovery",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "redis",
+      "config_path": "plugins.redis",
+      "cardinality": "multiple",
+      "contracts": []
+    },
+    {
+      "key": "requestid",
+      "config_path": "plugins.requestid",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "securityheaders",
+      "config_path": "plugins.securityheaders",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "session",
+      "config_path": "plugins.session",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware",
+        "github.com/xbcio/xbc/transport/web/integrations/session.Manager"
+      ]
+    },
+    {
+      "key": "swagger",
+      "config_path": "plugins.swagger",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteCatalogListener",
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
+      "key": "tenant",
+      "config_path": "plugins.tenant",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "timeout",
+      "config_path": "plugins.timeout",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "tracing",
+      "config_path": "plugins.tracing",
+      "cardinality": "single",
+      "contracts": [
+        "*github.com/xbcio/xbc/transport/web/integrations/tracing.Handle",
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
+      "key": "web",
+      "config_path": "web",
+      "cardinality": "single",
+      "contracts": []
+    },
+    {
+      "key": "webhook",
+      "config_path": "plugins.webhook",
+      "cardinality": "multiple",
+      "contracts": [
+        "github.com/xbcio/xbc/integrations/webhook.Dispatcher"
+      ]
+    }
+  ]
+}
