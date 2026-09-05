@@ -270,8 +270,14 @@ func TestConcurrentSignalAndCriticalFailureUnwindExactlyOnce(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 1, stops, "two concurrent shutdown triggers must not unwind twice")
-	assert.NotEmpty(t, app.currentStopReason(), "exactly one reason must have been recorded")
-	if completed.err != nil {
-		assert.Equal(t, 1, completed.code)
-	}
+
+	// Either trigger may win the reason, but neither outcome may swallow the
+	// panic: it is recorded against its owning plugin and surfaces through the
+	// unwind regardless. Tolerating a nil error here would let a run that lost
+	// the critical failure pass.
+	assert.Contains(t, []string{stopReasonSignal, stopReasonCritical}, app.currentStopReason(),
+		"exactly one of the two racing triggers must own the shutdown")
+	require.Error(t, completed.err, "the panicking critical task must be reported whichever trigger won")
+	assert.Equal(t, 1, completed.code)
+	assert.Contains(t, completed.err.Error(), "critical exploded")
 }

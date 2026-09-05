@@ -11,9 +11,35 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/internal/assembly"
 	"github.com/xbcio/xbc/internal/autoload"
 	"github.com/xbcio/xbc/plugin"
 )
+
+// processCatalogSentinel is declared into the process-global autoload catalog
+// so that "the implicit composition is the frozen catalog" is an assertion with
+// something to observe. Without it the catalog is empty in this test binary and
+// a freshly constructed Bundle would compare equal to the frozen one, making
+// the claim untestable.
+//
+// The declaration must happen in init: Freeze is irreversible and process-wide,
+// and other tests in this package reach it through Run.
+const processCatalogSentinel plugin.Key = "process-catalog-sentinel"
+
+func init() {
+	autoload.Declare(plugin.BundleOf(plugin.Define(processCatalogSentinel,
+		func(plugin.BuildContext) (*runtimeTestValue, error) { return &runtimeTestValue{}, nil })))
+}
+
+// runtimeTestPlanKeys names every instance a plan resolved, in plan order.
+func runtimeTestPlanKeys(plan *assembly.Plan) []plugin.Key {
+	identities := plan.Order()
+	keys := make([]plugin.Key, len(identities))
+	for index, identity := range identities {
+		keys[index] = identity.Plugin
+	}
+	return keys
+}
 
 // runtimeTestConfigWith writes the quiet base configuration plus extra
 // top-level sections, for the cases whose subject is the configuration file
@@ -50,8 +76,12 @@ func TestNewWithoutBundlesFreezesTheProcessCatalog(t *testing.T) {
 	app, err := New()
 	require.NoError(t, err)
 	require.Len(t, app.bundles, 1)
-	assert.Equal(t, autoload.Freeze(), app.bundles[0],
-		"the implicit composition is the frozen autoload catalog, not a fresh one")
+
+	code, err := app.Execute(context.Background(), append([]string{"doctor"}, runtimeTestConfig(t, time.Second)...))
+	require.NoError(t, err)
+	require.Equal(t, 0, code)
+	assert.Contains(t, runtimeTestPlanKeys(app.plan), processCatalogSentinel,
+		"the implicit composition is the frozen autoload catalog, not a fresh empty Bundle")
 }
 
 func TestNewReportsAFailingOptionByPosition(t *testing.T) {

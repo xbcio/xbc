@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/xbcio/xbc/internal/autoload"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -122,11 +121,15 @@ func TestRunProcessTakesItsArgumentsFromTheProcess(t *testing.T) {
 	assert.Equal(t, 0, code, "runProcess reads os.Args[1:], so the doctor subcommand is honoured")
 }
 
-// TestRunComposesTheProcessCatalogAndExitsThroughIt covers the one-line entry
-// point applications actually call. It freezes the process-wide autoload
-// catalog, which is why it asserts on the exit route rather than on a
-// composition of its own.
-func TestRunComposesTheProcessCatalogAndExitsThroughIt(t *testing.T) {
+// TestRunExitsThroughTheProcessAdapter covers the one-line entry point
+// applications actually call: it must terminate the process rather than return
+// to main, and it must carry the command's exit code out with it.
+//
+// The other half of Run -- that New() with no Bundles composes the frozen
+// process catalog -- is not observable from here, because Run returns no App.
+// It is asserted by TestNewWithoutBundlesFreezesTheProcessCatalog, which
+// inspects the resulting plan against a sentinel declared into that catalog.
+func TestRunExitsThroughTheProcessAdapter(t *testing.T) {
 	previous := os.Args
 	t.Cleanup(func() { os.Args = previous })
 	os.Args = append([]string{"xbc-test", "doctor"}, runtimeTestConfig(t, time.Second)...)
@@ -136,7 +139,6 @@ func TestRunComposesTheProcessCatalogAndExitsThroughIt(t *testing.T) {
 	code, called := exitCode()
 	require.True(t, called, "Run terminates the process instead of returning to main")
 	assert.Equal(t, 0, code)
-	assert.NotNil(t, autoload.Freeze(), "Run composes the frozen process catalog")
 }
 
 func TestSignalDuringRunTriggersACleanShutdown(t *testing.T) {
