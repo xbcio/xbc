@@ -18,7 +18,14 @@ import (
 	"github.com/xbcio/xbc/plugin"
 )
 
-const runtimeTestTimeout = 5 * time.Second
+// runtimeTestTimeout is how long the harness waits before declaring that an
+// application never reached a state it was supposed to reach. It bounds no
+// product behaviour — every discriminating assertion is on recorded outcomes,
+// not on elapsed time — so it is set generously. The mandatory gate now runs
+// three package trees at -count=20 in parallel, and at 5s this bound was
+// occasionally tripped by machine load rather than by a defect, which is
+// exactly the false signal the gate exists to eliminate.
+const runtimeTestTimeout = 30 * time.Second
 
 type runtimeTestResult struct {
 	code int

@@ -218,12 +218,14 @@ make fmt
 make check
 make test
 make test-race
-go test -race -count=20 -run 'Shutdown|Unwind|Order' ./internal/runtime/... ./internal/assembly/...
+go test -race -count=20 -run 'Shutdown|Unwind|Order' ./internal/runtime/... ./internal/assembly/... ./transport/web/...
 go run ./examples/quickstart doctor --config examples/quickstart/application.yml
 go run ./examples/quickstart --config examples/quickstart/application.yml
 ```
 
 顺序敏感的用例必须带 `-count`。`make check` 与 `make test` 使用 `-count=1`，而顺序断言的失败是间歇性的，单次运行可能自己变绿——只跑这两个命令等于放弃了对该类回归的检测，也会架空[实施原则](#4-实施原则)第 8 条。
+
+`./transport/web/...` 是后续加入门禁包列表的：Web 优雅停机的排空与超时用例属于门禁要防的同一类间歇性回归，而该列表是在这些用例存在之前定下的。凡是主题为停机顺序或排空的用例，命名必须能被 `Shutdown|Unwind|Order` 选中，否则它对保护自己的门禁不可见。
 
 阶段 1 未全部通过，不进入 gRPC 或微服务实现。
 
