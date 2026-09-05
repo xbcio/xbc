@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"io"
 	"sync"
 
 	"github.com/xbcio/xbc/config"
@@ -25,6 +26,10 @@ type App struct {
 	plan     *assembly.Plan
 	owned    *assembly.Constructed
 	tasks    *taskRuntime
+
+	// out receives read-only command output. Tests set it; otherwise the
+	// process adapter's stream is used.
+	out io.Writer
 
 	executeMu sync.Mutex
 	executed  bool

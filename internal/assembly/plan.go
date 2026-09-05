@@ -28,13 +28,23 @@ type Plan struct {
 	definitionCount int
 	instances       map[plugin.Identity]*plannedInstance
 	order           []plugin.Identity
-	disabled        []plugin.Key
+	disabled        []DisabledDefinition
 	contractIndex   map[reflect.Type][]plugin.Identity
+}
+
+// DisabledDefinition records a Definition that the configuration expanded to
+// no enabled instance, together with why. Reason names paths and decisions
+// only, never configured values, so a diagnostic may print it verbatim.
+type DisabledDefinition struct {
+	Key    plugin.Key
+	Path   string
+	Reason string
 }
 
 type plannedInstance struct {
 	identity   plugin.Identity
 	definition pluginmodel.DefinitionDescriptor
+	configPath string
 	plan       pluginmodel.InstancePlan
 	bindings   map[uint64][]plugin.Identity
 	logger     log.Logger
@@ -71,7 +81,33 @@ func (plan *Plan) Disabled() []plugin.Key {
 	if plan == nil {
 		return nil
 	}
-	return append([]plugin.Key(nil), plan.disabled...)
+	keys := make([]plugin.Key, len(plan.disabled))
+	for index, entry := range plan.disabled {
+		keys[index] = entry.Key
+	}
+	return keys
+}
+
+// DisabledDetail returns the same Definitions as Disabled, each with the
+// configuration path it watched and the reason it stayed off.
+func (plan *Plan) DisabledDetail() []DisabledDefinition {
+	if plan == nil {
+		return nil
+	}
+	return append([]DisabledDefinition(nil), plan.disabled...)
+}
+
+// InstanceConfigPath returns the configuration path that backs identity, or ""
+// when identity is not part of the plan.
+func (plan *Plan) InstanceConfigPath(identity plugin.Identity) string {
+	if plan == nil {
+		return ""
+	}
+	instance, exists := plan.instances[identity]
+	if !exists {
+		return ""
+	}
+	return instance.configPath
 }
 
 // Contracts returns the identities exporting contract in graph order.
@@ -219,20 +255,29 @@ func validateConfigPath(path string) error {
 	return nil
 }
 
-func expandDefinitions(definitions []pluginmodel.DefinitionDescriptor, env *config.Environment, logger log.Logger) (map[plugin.Identity]*plannedInstance, []plugin.Key, error) {
+func expandDefinitions(definitions []pluginmodel.DefinitionDescriptor, env *config.Environment, logger log.Logger) (map[plugin.Identity]*plannedInstance, []DisabledDefinition, error) {
 	instances := make(map[plugin.Identity]*plannedInstance)
-	var disabled []plugin.Key
+	var disabled []DisabledDefinition
 	for _, definition := range definitions {
+		path := definitionPath(definition)
 		if definition.Activation.Kind == pluginmodel.ActivationConfigured && !env.Exists(definition.Activation.Path) {
-			disabled = append(disabled, plugin.Key(definition.Key))
+			disabled = append(disabled, DisabledDefinition{
+				Key:    plugin.Key(definition.Key),
+				Path:   path,
+				Reason: "activation path " + definition.Activation.Path + " is not configured",
+			})
 			continue
 		}
-		identities, err := expandIdentities(definition, env)
+		identities, reason, err := expandIdentities(definition, env)
 		if err != nil {
 			return nil, nil, err
 		}
 		if len(identities) == 0 {
-			disabled = append(disabled, plugin.Key(definition.Key))
+			disabled = append(disabled, DisabledDefinition{
+				Key:    plugin.Key(definition.Key),
+				Path:   path,
+				Reason: reason,
+			})
 			continue
 		}
 		lifecycle, _ := compileLifecycle(definition)
@@ -256,6 +301,7 @@ func expandDefinitions(definitions []pluginmodel.DefinitionDescriptor, env *conf
 			instances[identity] = &plannedInstance{
 				identity:   identity,
 				definition: definition,
+				configPath: instanceConfigPath(definition, identity),
 				plan:       instancePlan,
 				bindings:   make(map[uint64][]plugin.Identity),
 				logger:     instanceLogger,
@@ -263,12 +309,12 @@ func expandDefinitions(definitions []pluginmodel.DefinitionDescriptor, env *conf
 			}
 		}
 	}
-	sort.Slice(disabled, func(i, j int) bool { return disabled[i] < disabled[j] })
+	sort.Slice(disabled, func(i, j int) bool { return disabled[i].Key < disabled[j].Key })
 	return instances, disabled, nil
 }
 
 func conventionalDefinitionPath(definition pluginmodel.DefinitionDescriptor) string {
-	return "plugins." + definition.Key.String()
+	return pluginsRoot + "." + definition.Key.String()
 }
 
 func definitionPath(definition pluginmodel.DefinitionDescriptor) string {
@@ -278,40 +324,55 @@ func definitionPath(definition pluginmodel.DefinitionDescriptor) string {
 	return conventionalDefinitionPath(definition)
 }
 
-func expandIdentities(definition pluginmodel.DefinitionDescriptor, env *config.Environment) ([]plugin.Identity, error) {
+// instanceConfigPath is the section one concrete instance binds against.
+func instanceConfigPath(definition pluginmodel.DefinitionDescriptor, identity plugin.Identity) string {
+	path := definitionPath(definition)
+	if definition.Cardinality == pluginmodel.MultipleInstances {
+		return path + "." + identity.Instance
+	}
+	return path
+}
+
+// expandIdentities turns one Definition's configuration section into the
+// instances it declares. When it returns no identity, the returned reason
+// explains which flag turned the Definition off.
+func expandIdentities(definition pluginmodel.DefinitionDescriptor, env *config.Environment) ([]plugin.Identity, string, error) {
 	path := definitionPath(definition)
 	if definition.Cardinality == pluginmodel.SingleInstance {
 		enabled, err := sectionEnabled(env, path)
-		if err != nil || !enabled {
-			return nil, err
+		if err != nil {
+			return nil, "", err
 		}
-		return []plugin.Identity{{Plugin: plugin.Key(definition.Key), Instance: plugin.DefaultInstance}}, nil
+		if !enabled {
+			return nil, path + ".enabled is false", nil
+		}
+		return []plugin.Identity{{Plugin: plugin.Key(definition.Key), Instance: plugin.DefaultInstance}}, "", nil
 	}
 	section := env.Sub(path)
 	if section == nil {
-		return []plugin.Identity{{Plugin: plugin.Key(definition.Key), Instance: plugin.DefaultInstance}}, nil
+		return []plugin.Identity{{Plugin: plugin.Key(definition.Key), Instance: plugin.DefaultInstance}}, "", nil
 	}
 	pluginEnabled := true
 	var names []string
 	for name, raw := range section {
 		if _, ok := raw.(map[string]any); ok {
 			if err := plugin.ValidateInstanceName(name); err != nil {
-				return nil, fmt.Errorf("xbc: multi-instance plugin %s has invalid instance %q: %w", definition.Key, name, err)
+				return nil, "", fmt.Errorf("xbc: multi-instance plugin %s has invalid instance %q: %w", definition.Key, name, err)
 			}
 			names = append(names, name)
 			continue
 		}
 		if name != "enabled" {
-			return nil, fmt.Errorf("xbc: multi-instance plugin %s configuration %q is not an instance map", definition.Key, name)
+			return nil, "", fmt.Errorf("xbc: multi-instance plugin %s configuration %q is not an instance map", definition.Key, name)
 		}
 		value, ok := raw.(bool)
 		if !ok {
-			return nil, fmt.Errorf("xbc: %s.enabled must be boolean, got %v", path, raw)
+			return nil, "", fmt.Errorf("xbc: %s.enabled must be boolean, got %v", path, raw)
 		}
 		pluginEnabled = value
 	}
 	if !pluginEnabled {
-		return nil, nil
+		return nil, path + ".enabled is false", nil
 	}
 	if len(names) == 0 {
 		names = []string{plugin.DefaultInstance}
@@ -323,7 +384,7 @@ func expandIdentities(definition pluginmodel.DefinitionDescriptor, env *config.E
 		if raw, exists := sub["enabled"]; exists {
 			enabled, ok := raw.(bool)
 			if !ok {
-				return nil, fmt.Errorf("xbc: %s.%s.enabled must be boolean, got %v", path, name, raw)
+				return nil, "", fmt.Errorf("xbc: %s.%s.enabled must be boolean, got %v", path, name, raw)
 			}
 			if !enabled {
 				continue
@@ -331,7 +392,10 @@ func expandIdentities(definition pluginmodel.DefinitionDescriptor, env *config.E
 		}
 		identities = append(identities, plugin.Identity{Plugin: plugin.Key(definition.Key), Instance: name}.Normalized())
 	}
-	return identities, nil
+	if len(identities) == 0 {
+		return nil, "every instance configured under " + path + " is disabled", nil
+	}
+	return identities, "", nil
 }
 
 func sectionEnabled(env *config.Environment, path string) (bool, error) {
@@ -372,10 +436,7 @@ func prepareConfig(definition pluginmodel.DefinitionDescriptor, identity plugin.
 	}
 	pointer := reflect.New(configType)
 	pointer.Elem().Set(reflect.ValueOf(raw))
-	path := definitionPath(definition)
-	if definition.Cardinality == pluginmodel.MultipleInstances {
-		path += "." + identity.Instance
-	}
+	path := instanceConfigPath(definition, identity)
 	if err := env.BindWithOptions(path, pointer.Interface(), config.BindOptions{
 		AllowedKeys: []string{"enabled"},
 	}); err != nil {
@@ -583,16 +644,28 @@ func orderSubset(order, candidates []plugin.Identity) []plugin.Identity {
 	return result
 }
 
+// rejectOrphanConfiguration reports configuration under the conventional
+// plugins root that no selected Definition answers for. A Definition with a
+// custom ConfigPath participates whenever that path also lives under the
+// plugins root, so that "plugins.custom" is recognised rather than reported as
+// an orphan; a ConfigPath rooted elsewhere claims its own top-level section
+// and is covered by the Universe ownership check instead.
 func rejectOrphanConfiguration(definitions []pluginmodel.DefinitionDescriptor, env *config.Environment) error {
-	section := env.Sub("plugins")
+	section := env.Sub(pluginsRoot)
 	if section == nil {
 		return nil
 	}
 	known := make(map[string]struct{}, len(definitions))
 	for _, definition := range definitions {
-		if definitionPath(definition) == conventionalDefinitionPath(definition) {
-			known[definition.Key.String()] = struct{}{}
+		path := definitionPath(definition)
+		if !strings.HasPrefix(path, pluginsRoot+".") {
+			continue
 		}
+		child := strings.TrimPrefix(path, pluginsRoot+".")
+		if index := strings.IndexByte(child, '.'); index >= 0 {
+			child = child[:index]
+		}
+		known[child] = struct{}{}
 	}
 	var orphans []string
 	for key := range section {
@@ -606,7 +679,7 @@ func rejectOrphanConfiguration(definitions []pluginmodel.DefinitionDescriptor, e
 	sort.Strings(orphans)
 	var errs []error
 	for _, orphan := range orphans {
-		errs = append(errs, fmt.Errorf("xbc: plugins.%s has configuration but no corresponding plugin", orphan))
+		errs = append(errs, fmt.Errorf("xbc: %s.%s has configuration but no corresponding plugin", pluginsRoot, orphan))
 	}
 	return errors.Join(errs...)
 }

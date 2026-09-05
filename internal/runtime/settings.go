@@ -22,6 +22,16 @@ import (
 // that names the problem outright.
 const settingsSection = "xbc"
 
+// loggingSection and applicationSection are the other two roots the runtime
+// declares on somebody else's behalf: "log" belongs to the log package, and
+// "app" is the one deliberately freeform root, reserved for the application
+// author. Everything else at the top level must be claimed by a Definition's
+// configuration path, or the configuration layer rejects it.
+const (
+	loggingSection     = "log"
+	applicationSection = "app"
+)
+
 // settings is the core's own configuration section -- the only section the
 // runtime binds for itself. Every other reserved top-level key belongs
 // to somebody else: "log" to the log package, "plugins" to the assembly package,

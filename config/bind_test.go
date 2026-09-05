@@ -76,6 +76,24 @@ func TestBindOverlaysEnvForDuration(t *testing.T) {
 	require.Equal(t, 15*time.Second, cfg.ConnTimeout)
 }
 
+// TestBindEnvParseFailureNeverEchoesTheValue pins the redaction rule for the
+// per-leaf ENV overlay. strconv errors quote the input they rejected, so
+// wrapping one here would put a mistyped secret into a log line.
+func TestBindEnvParseFailureNeverEchoesTheValue(t *testing.T) {
+	k := koanfFrom(t, map[string]any{
+		"plugins": map[string]any{"gorm": map[string]any{"default": map[string]any{"dsn": "x"}}},
+	})
+	const secret = "hunter2-not-a-number"
+	t.Setenv("XBC_PLUGINS_GORM_DEFAULT_MAX_OPEN_CONN", secret)
+
+	var cfg gormLikeConfig
+	err := bind(k, "plugins.gorm.default", &cfg, "XBC_")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "XBC_PLUGINS_GORM_DEFAULT_MAX_OPEN_CONN")
+	require.Contains(t, err.Error(), "int", "The expected type is what makes the error actionable")
+	require.NotContains(t, err.Error(), secret)
+}
+
 func TestBindFillsDefaultsForUnsetleaves(t *testing.T) {
 	k := koanfFrom(t, map[string]any{
 		"plugins": map[string]any{"gorm": map[string]any{"default": map[string]any{"dsn": "x"}}},
@@ -213,7 +231,7 @@ func TestBindEnvBeatsOverridesOnSameKeyKnownLimitation(t *testing.T) {
 	// same key, ENV beats Overrides -- this is not a globally-true priority
 	// rule, only a boundary of this one Bind step.
 	t.Chdir(t.TempDir())
-	k, err := loadKoanf(Options{Overrides: map[string]any{"plugins.gorm.default.max_open_conn": 7}})
+	k, _, err := loadKoanf(Options{Overrides: map[string]any{"plugins.gorm.default.max_open_conn": 7}})
 	require.NoError(t, err)
 	t.Setenv("XBC_PLUGINS_GORM_DEFAULT_MAX_OPEN_CONN", "77")
 

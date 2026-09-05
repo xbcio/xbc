@@ -5,7 +5,15 @@
 #
 # XBC searches application.yml and configs/application.yml in that order, or
 # accepts --config explicitly. YAML values do not expand ${VAR}; environment
-# overrides use the complete path, for example XBC_WEB_ADDR.
+# overrides use the complete path, for example XBC_WEB_ADDR. The environment is
+# a full configuration layer above this file, so a section can exist by
+# environment alone; multi-instance sections insert the instance name, as in
+# XBC_PLUGINS_GORM_PRIMARY_DSN. Every top-level key must be owned by a selected
+# plugin or by the framework, so a misspelled root fails startup by name.
+#
+# Run `go run ./examples/quickstart doctor --config <path>` to see the resolved
+# plugin graph, instances, configuration sources, and disable reasons without
+# starting anything.
 
 xbc:
   # One budget covers cancellation, HTTP drain, and reverse-order plugin Stop.

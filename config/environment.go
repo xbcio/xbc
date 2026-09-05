@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
@@ -19,6 +20,9 @@ const DefaultEnvPrefix = "XBC_"
 type Environment struct {
 	k         *koanf.Koanf
 	envPrefix string
+	universe  *Universe
+	sources   []string
+	origins   map[string][]string
 }
 
 // Load merges the configured sources and returns the resulting Environment.
@@ -26,11 +30,68 @@ func Load(opts Options) (*Environment, error) {
 	if opts.EnvPrefix == "" {
 		opts.EnvPrefix = DefaultEnvPrefix
 	}
-	k, err := loadKoanf(opts)
+	k, layers, err := loadKoanf(opts)
 	if err != nil {
 		return nil, err
 	}
-	return &Environment{k: k, envPrefix: opts.EnvPrefix}, nil
+	env := &Environment{
+		k:         k,
+		envPrefix: opts.EnvPrefix,
+		universe:  opts.Universe,
+		origins:   make(map[string][]string, 64),
+	}
+	for _, source := range layers {
+		env.sources = append(env.sources, source.label)
+		for _, path := range source.paths {
+			env.origins[path] = append(env.origins[path], source.label)
+		}
+	}
+	return env, nil
+}
+
+// Roots returns the declared top-level configuration sections, sorted. It is
+// empty when the Environment was assembled without a Universe.
+func (e *Environment) Roots() []string {
+	if e == nil {
+		return nil
+	}
+	return e.universe.Roots()
+}
+
+// Sources returns the configuration sources that contributed at least one
+// path, lowest precedence first. Labels name files and layers, never values,
+// so the result is always safe to print.
+func (e *Environment) Sources() []string {
+	if e == nil {
+		return nil
+	}
+	return append([]string(nil), e.sources...)
+}
+
+// OriginsUnder returns the distinct sources that set path or anything below
+// it, in merge order. Like Sources it deliberately exposes no configured
+// value, which is what makes it usable by a diagnostic command.
+func (e *Environment) OriginsUnder(path string) []string {
+	if e == nil || len(e.origins) == 0 {
+		return nil
+	}
+	prefix := path + "."
+	seen := make(map[string]bool, len(e.sources))
+	for candidate, labels := range e.origins {
+		if candidate != path && !strings.HasPrefix(candidate, prefix) {
+			continue
+		}
+		for _, label := range labels {
+			seen[label] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for _, label := range e.sources {
+		if seen[label] {
+			out = append(out, label)
+		}
+	}
+	return out
 }
 
 // NewEnvironment builds an Environment directly from an in-memory map,
