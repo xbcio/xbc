@@ -45,6 +45,9 @@ type App struct {
 
 	unwindOnce sync.Once
 	unwindErr  error
+	// shutdownReport is written inside unwindOnce, so any goroutine that has
+	// returned from unwind observes it.
+	shutdownReport assembly.ShutdownReport
 
 	// Tests may set ready to observe the post-gate run-loop boundary.
 	ready chan struct{}

@@ -300,7 +300,7 @@ func TestStopErrorsAndPanicsDoNotTruncateUnwind(t *testing.T) {
 	require.NoError(t, err)
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err = constructed.Unwind(deadline, time.Second, nil)
+	_, err = constructed.Unwind(deadline, time.Second, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stop panic")
 	assert.Contains(t, err.Error(), "stop error")

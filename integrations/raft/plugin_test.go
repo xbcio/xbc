@@ -165,7 +165,7 @@ func TestDefinitionConstructsNodeAndCustomFSMOverridesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Construct() with custom FSM error = %v", err)
 	}
-	t.Cleanup(func() { _ = constructedCustom.Unwind(context.Background(), time.Second, nil) })
+	t.Cleanup(func() { _, _ = constructedCustom.Unwind(context.Background(), time.Second, nil) })
 	customInstance, ok := constructedCustom.Instance(plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance})
 	if !ok {
 		t.Fatal("constructed custom-FSM instance not found")

@@ -158,7 +158,7 @@ func TestDefinitionBundleDefaultsAndTypedExports(t *testing.T) {
 	}
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := constructed.Unwind(deadline, time.Second, nil); err != nil {
+	if _, err := constructed.Unwind(deadline, time.Second, nil); err != nil {
 		t.Fatalf("Unwind() error = %v", err)
 	}
 }
