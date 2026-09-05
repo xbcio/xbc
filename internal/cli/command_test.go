@@ -16,14 +16,14 @@ import (
 func TestParseArgsNoArguments(t *testing.T) {
 	t.Setenv("XBC_PROFILE", "")
 
-	cmd, err := ParseArgs(nil)
+	cmd, err := ParseArgs(nil, "XBC_")
 	require.NoError(t, err)
 	assert.Equal(t, Command{}, cmd, "Command should get zero value when no parameters")
 }
 
 // TestParseArgsConfigFlag pins --config.
 func TestParseArgsConfigFlag(t *testing.T) {
-	cmd, err := ParseArgs([]string{"--config", "/tmp/command-x.yaml"})
+	cmd, err := ParseArgs([]string{"--config", "/tmp/command-x.yaml"}, "XBC_")
 	require.NoError(t, err)
 	assert.Equal(t, "/tmp/command-x.yaml", cmd.Config)
 }
@@ -34,7 +34,7 @@ func TestParseArgsConfigFlag(t *testing.T) {
 func TestParseArgsProfileFlagOverridesEnv(t *testing.T) {
 	t.Setenv("XBC_PROFILE", "staging")
 
-	cmd, err := ParseArgs([]string{"--profile", "prod"})
+	cmd, err := ParseArgs([]string{"--profile", "prod"}, "XBC_")
 	require.NoError(t, err)
 	assert.Equal(t, "prod", cmd.Profile, "Explicit --profile must override environment variable")
 }
@@ -44,15 +44,30 @@ func TestParseArgsProfileFlagOverridesEnv(t *testing.T) {
 func TestParseArgsProfileFallsBackToEnv(t *testing.T) {
 	t.Setenv("XBC_PROFILE", "staging")
 
-	cmd, err := ParseArgs(nil)
+	cmd, err := ParseArgs(nil, "XBC_")
 	require.NoError(t, err)
 	assert.Equal(t, "staging", cmd.Profile, "Must fallback to read XBC_PROFILE when --profile is not passed")
+}
+
+// TestParseArgsProfileFallbackFollowsTheEnvPrefix pins that the profile
+// fallback is read relative to the caller's prefix rather than a hardcoded
+// XBC_. The configuration layer reserves the profile variable relative to the
+// same prefix, so a hardcoded name here would silently disagree with it: an
+// embedder using MYAPP_ would find MYAPP_PROFILE reserved but never read, and
+// XBC_PROFILE read but not reserved.
+func TestParseArgsProfileFallbackFollowsTheEnvPrefix(t *testing.T) {
+	t.Setenv("XBC_PROFILE", "wrong")
+	t.Setenv("MYAPP_PROFILE", "staging")
+
+	cmd, err := ParseArgs(nil, "MYAPP_")
+	require.NoError(t, err)
+	assert.Equal(t, "staging", cmd.Profile, "The fallback must follow the supplied prefix, not a hardcoded one")
 }
 
 // TestParseArgsMigrateFlag pins --migrate as a bare boolean flag, distinct
 // from the "migrate" subcommand.
 func TestParseArgsMigrateFlag(t *testing.T) {
-	cmd, err := ParseArgs([]string{"--migrate"})
+	cmd, err := ParseArgs([]string{"--migrate"}, "XBC_")
 	require.NoError(t, err)
 	assert.True(t, cmd.Migrate)
 	assert.Empty(t, cmd.Subcommand, "--migrate is a flag, should not be treated as a subcommand")
@@ -60,7 +75,7 @@ func TestParseArgsMigrateFlag(t *testing.T) {
 
 // TestParseArgsDoctorSubcommand pins the "doctor" subcommand.
 func TestParseArgsDoctorSubcommand(t *testing.T) {
-	cmd, err := ParseArgs([]string{"doctor"})
+	cmd, err := ParseArgs([]string{"doctor"}, "XBC_")
 	require.NoError(t, err)
 	assert.Equal(t, "doctor", cmd.Subcommand)
 }
@@ -69,7 +84,7 @@ func TestParseArgsDoctorSubcommand(t *testing.T) {
 // flags following it are still parsed -- ParseArgs peels the subcommand off
 // as the first non-flag argument and hands the rest to flag.FlagSet.Parse.
 func TestParseArgsMigrateSubcommand(t *testing.T) {
-	cmd, err := ParseArgs([]string{"migrate", "--config", "/tmp/command-y.yaml"})
+	cmd, err := ParseArgs([]string{"migrate", "--config", "/tmp/command-y.yaml"}, "XBC_")
 	require.NoError(t, err)
 	assert.Equal(t, "migrate", cmd.Subcommand)
 	assert.Equal(t, "/tmp/command-y.yaml", cmd.Config, "Flags after subcommand must still be parsed")
@@ -78,7 +93,7 @@ func TestParseArgsMigrateSubcommand(t *testing.T) {
 // TestParseArgsIllegalFlagReturnsError pins that an undeclared flag is
 // rejected by the flag package itself, not silently ignored.
 func TestParseArgsIllegalFlagReturnsError(t *testing.T) {
-	_, err := ParseArgs([]string{"--this-flag-does-not-exist"})
+	_, err := ParseArgs([]string{"--this-flag-does-not-exist"}, "XBC_")
 	require.Error(t, err)
 }
 
@@ -87,7 +102,7 @@ func TestParseArgsIllegalFlagReturnsError(t *testing.T) {
 // the two legal subcommands, rather than being treated as some other kind of
 // argument.
 func TestParseArgsUnknownSubcommandReturnsError(t *testing.T) {
-	_, err := ParseArgs([]string{"frobnicate"})
+	_, err := ParseArgs([]string{"frobnicate"}, "XBC_")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown subcommand")
 }
@@ -97,7 +112,7 @@ func TestParseArgsUnknownSubcommandReturnsError(t *testing.T) {
 // flag value that flag.Parse happens to treat as positional must still
 // surface.
 func TestParseArgsRejectsTrailingPositionalArgs(t *testing.T) {
-	_, err := ParseArgs([]string{"--config", "/tmp/command-z.yaml", "extra"})
+	_, err := ParseArgs([]string{"--config", "/tmp/command-z.yaml", "extra"}, "XBC_")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown argument")
 }

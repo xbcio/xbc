@@ -103,7 +103,7 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
 	// wins over every file, and so that Exists sees an ENV-only section --
 	// which is what lets a WhenConfigured plugin activate from ENV alone.
 	if opts.Universe != nil {
-		values, _, err := opts.Universe.envOverlay(opts.EnvPrefix, os.Environ())
+		values, err := opts.Universe.envOverlay(opts.EnvPrefix, os.Environ(), k)
 		if err != nil {
 			return nil, nil, err
 		}

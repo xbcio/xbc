@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,12 +110,12 @@ func NewUniverse(sections ...Section) (*Universe, error) {
 		}
 		universe.sections = append(universe.sections, resolved)
 
-		root := section.Path
-		if index := strings.IndexByte(root, '.'); index >= 0 {
-			root = root[:index]
-			continue // the root itself is claimed by the ancestor section
+		if strings.ContainsRune(section.Path, '.') {
+			// A nested section's root is claimed by the ancestor namespace it
+			// had to nest inside, so it never registers a root of its own.
+			continue
 		}
-		universe.rootSet[root] = section.Owner
+		universe.rootSet[section.Path] = section.Owner
 	}
 
 	for root := range universe.rootSet {
@@ -253,15 +254,22 @@ type envCandidate struct {
 	typ         reflect.Type
 	expressible bool
 	hint        string // set when the shape cannot be expressed at this spelling
+	// section and instance are set only for a path inside a SectionInstanced
+	// section, and only when the instance name was discovered from the
+	// variable name. They carry what checkInstanceCollision needs.
+	section  string
+	instance string
 }
 
 // envOverlay resolves every variable in environ that carries prefix into the
 // configuration path it names. A variable that lands inside a declared section
 // but matches no field, or whose shape has no unambiguous single-variable
 // spelling, is an error rather than a silent no-op.
-func (u *Universe) envOverlay(prefix string, environ []string) (map[string]any, map[string]string, error) {
+//
+// existing is the tree merged from the lower layers, consulted only to reject
+// an instance name that would fork rather than override. It may be nil.
+func (u *Universe) envOverlay(prefix string, environ []string, existing *koanf.Koanf) (map[string]any, error) {
 	values := make(map[string]any)
-	names := make(map[string]string)
 	var failures []error
 
 	for _, entry := range environ {
@@ -282,20 +290,77 @@ func (u *Universe) envOverlay(prefix string, environ []string) (map[string]any, 
 				name, prefix, strings.Join(u.roots, ", ")))
 			continue
 		}
+		if err := checkInstanceCollision(name, candidates, existing); err != nil {
+			failures = append(failures, err)
+			continue
+		}
 		value, err := interpret(name, raw, candidates)
 		if err != nil {
 			failures = append(failures, err)
 			continue
 		}
 		values[candidates[0].path] = value
-		names[candidates[0].path] = name
 	}
 
 	if len(failures) > 0 {
 		sort.Slice(failures, func(i, j int) bool { return failures[i].Error() < failures[j].Error() })
-		return nil, nil, errors.Join(failures...)
+		return nil, errors.Join(failures...)
 	}
-	return values, names, nil
+	return values, nil
+}
+
+// checkInstanceCollision rejects an environment variable whose discovered
+// instance name would fork an instance the configuration already declares
+// instead of overriding it.
+//
+// Instance names may legally contain a dash, but envSegment maps a dash and an
+// underscore onto the same environment spelling, so "my-db" and "my_db" are
+// indistinguishable from the environment and instanceOf can only ever produce
+// the underscore form. Without this check XBC_PLUGINS_STORE_MY_DB_DSN would
+// silently create a *second* instance beside a file-declared "my-db" -- the
+// exact class of silent failure the environment layer exists to remove.
+func checkInstanceCollision(name string, candidates []envCandidate, existing *koanf.Koanf) error {
+	if existing == nil {
+		return nil
+	}
+	for _, candidate := range candidates {
+		if candidate.instance == "" {
+			continue
+		}
+		siblings := declaredInstances(existing, candidate.section)
+		if siblings[candidate.instance] {
+			continue // an exact match: the variable overrides it, as intended
+		}
+		var collisions []string
+		for sibling := range siblings {
+			if sibling != candidate.instance && envSegment(sibling) == envSegment(candidate.instance) {
+				collisions = append(collisions, strconv.Quote(sibling))
+			}
+		}
+		if len(collisions) == 0 {
+			continue
+		}
+		sort.Strings(collisions)
+		return fmt.Errorf(
+			"xbc: environment variable %s names instance %q under %s, but the configuration already declares %s, which no environment variable can spell distinctly; rename that instance to %q or configure it in a file instead",
+			name, candidate.instance, candidate.section, strings.Join(collisions, " and "), candidate.instance)
+	}
+	return nil
+}
+
+// declaredInstances lists the instance names already present under an
+// instanced section in the lower configuration layers.
+func declaredInstances(k *koanf.Koanf, sectionPath string) map[string]bool {
+	names := make(map[string]bool)
+	for key, value := range k.Cut(sectionPath).Raw() {
+		if key == enabledKey {
+			continue
+		}
+		if _, nested := value.(map[string]any); nested {
+			names[key] = true
+		}
+	}
+	return names
 }
 
 // interpret turns one raw environment value into a typed configuration value,
@@ -402,6 +467,8 @@ func (section resolvedSection) matchInstanced(prefix, tail string, add func(envC
 				path:        section.Path + "." + instance + "." + enabledKey,
 				typ:         boolType,
 				expressible: true,
+				section:     section.Path,
+				instance:    instance,
 			})
 		}
 	}
@@ -421,6 +488,8 @@ func (section resolvedSection) matchInstanced(prefix, tail string, add func(envC
 				path:        section.Path + "." + instance + "." + item.path,
 				typ:         item.typ,
 				expressible: item.expressible,
+				section:     section.Path,
+				instance:    instance,
 			})
 		}
 	}
@@ -431,6 +500,10 @@ func (section resolvedSection) matchInstanced(prefix, tail string, add func(envC
 // channel: instance names are discovered from the environment, never from a
 // static schema, which is what makes an ENV-only multi-instance deployment
 // expressible at all.
+//
+// The recovered name can only ever use [a-z0-9_]. A dash is legal in an
+// instance name declared in a file but has no distinct environment spelling,
+// so checkInstanceCollision rejects the fork rather than letting it happen.
 func instanceOf(tail, suffix string) (string, bool) {
 	if len(tail) <= len(suffix)+1 || !strings.HasSuffix(tail, "_"+suffix) {
 		return "", false

@@ -117,20 +117,26 @@ export XBC_PLUGINS_GORM_PRIMARY_DSN="host=db.internal user=app dbname=orders ssl
 export XBC_PLUGINS_GORM_REPORTING_DSN="app:pw@tcp(reporting.internal:3306)/reporting?parseTime=true"
 ```
 
-实例名只允许小写字母、数字和下划线。发现出来的实例名归属于声明该路径的 Definition，不会再被当作「无人认领的键」拒绝。
+发现出来的实例名归属于声明该路径的 Definition，不会再被当作「无人认领的键」拒绝。
+
+实例名本身允许小写字母、数字、下划线和连字符，但**从环境变量里恢复出来的实例名只可能是 `[a-z0-9_]`**：变量名到配置路径的映射把 `-` 和 `_` 都还原成同一个字符，因此 `my-db` 与 `my_db` 在环境变量里没有可区分的拼写。如果文件里已经声明了 `plugins.gorm.my-db`，那么 `XBC_PLUGINS_GORM_MY_DB_DSN` 不会覆盖它——覆盖是不可能的，静默新建第二个实例更糟——加载器会直接报错，点名该变量、该实例名和所在 section，并给出两条出路：把实例改名为 `my_db`，或者改到文件里配置。含连字符的实例名因此只应在完全不需要环境变量覆盖时使用。
 
 ### 无法表达的形状会报错，而不是静默丢失
 
 布尔值、数字、duration、字符串、实现了 `encoding.TextUnmarshaler` 的类型以及 `[]string` 可直接覆盖；`[]string` 使用逗号分隔，例如 `XBC_PLUGINS_JWT_AUDIENCE=admin-api,worker-api`，空字符串表示显式清空。复杂对象、对象切片和动态 map 无法由单个环境变量无歧义地表达，此时不会静默忽略，而是给出可操作的错误，指明该去文件里配置。
 
-四类错误：
+加载器区分以下几类拒绝，每一类都点名变量与路径：
 
-- **落在多实例 section 却漏了实例段**：`XBC_PLUGINS_GORM_DSN` 会提示 `plugins.gorm holds one section per instance; insert the instance name, as in XBC_PLUGINS_GORM_<INSTANCE>_DSN`。
-- **类型无法由单个变量承载**：点名路径与类型，并要求改用文件。
-- **同一变量名可以落到两个路径**：报告两个候选路径，要求改用文件消歧，绝不猜测。
 - **占用了 `XBC_` 前缀却不属于任何已声明 section**：视同顶级拼写错误，错误里列出已声明的顶级 section。
+- **section 已认领，但后缀不是它的任何字段**：`names no configuration field`，通常是字段名写错。
+- **同一变量名可以落到两个路径**：报告两个候选路径，要求改用文件消歧，绝不猜测。
+- **落在多实例 section 却漏了实例段**：`XBC_PLUGINS_GORM_DSN` 会提示 `plugins.gorm holds one section per instance; insert the instance name, as in XBC_PLUGINS_GORM_<INSTANCE>_DSN`。
+- **落在 freeform section**：`app.*` 没有 schema 可供解析名字，只能在文件里配置。
+- **类型无法由单个变量承载**：点名路径与类型，并要求改用文件。
+- **值无法按字段类型解析**：例如把 `not-a-number` 赋给 int 字段。
+- **实例名与文件中已声明的实例只差连字符**：见上一节，这是环境变量拼不出来的形状，报错而不是新建实例。
 
-最后一条意味着 `XBC_` 是框架保留前缀：进程里其他用途的变量请不要使用它。`XBC_PROFILE` 是唯一的例外，它由加载器本身消费（等价于 `--profile`），不参与配置解析。
+第一条意味着 `XBC_` 是框架保留前缀：进程里其他用途的变量请不要使用它。`XBC_PROFILE` 是唯一的例外，它由加载器本身消费（等价于 `--profile`），不参与配置解析；该保留名是相对前缀计算的，嵌入方换用别的前缀时，被保留的也随之变成 `<PREFIX>PROFILE`。
 
 错误信息只包含变量名和期望类型，绝不回显变量的值：`strconv` 的原生错误会把被拒绝的输入原样引用出来，而环境变量正是 secret 的常见落点，因此这里不做错误包装。
 

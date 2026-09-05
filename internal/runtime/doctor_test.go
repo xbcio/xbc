@@ -3,7 +3,8 @@ package runtime
 import (
 	"bytes"
 	"context"
-	"strings"
+	goruntime "runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -165,6 +166,52 @@ func TestUnownedTopLevelKeyFailsBeforeAnythingIsConstructed(t *testing.T) {
 	assert.Nil(t, app.owned, "the failure happens before construction")
 }
 
+// TestDoctorConstructsNothingAndLeavesNoGoroutine guards the rest of doctor's
+// read-only contract -- no connections, no goroutines, no listeners -- which
+// otherwise holds only because Execute happens to return before Construct. A
+// later task appends its own section to doctor; this is what stops it quietly
+// dialling a database or spawning a collector and staying green.
+//
+// Constructing is how every one of those three appears, so a factory that
+// records having run is the sharp, deterministic half of the guard. The
+// goroutine delta is the blunt half, and catches anything started outside a
+// factory.
+func TestDoctorConstructsNothingAndLeavesNoGoroutine(t *testing.T) {
+	var built atomic.Bool
+	definition := plugin.Define("must-not-be-built", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		built.Store(true)
+		return &runtimeTestValue{}, nil
+	})
+	app := newRuntimeTestApp(definition)
+
+	before := settledGoroutines()
+	out := runDoctor(t, app, runtimeTestConfig(t, time.Second)...)
+
+	assert.False(t, built.Load(),
+		"doctor must not run a plugin factory: constructing is how connections, listeners and goroutines appear")
+	assert.Nil(t, app.owned, "doctor must finish owning nothing that would need stopping")
+	assert.False(t, app.trafficOpen, "doctor must not release the traffic gate")
+	assert.Contains(t, out, "must-not-be-built", "the plugin is still reported; it is only not built")
+
+	assert.LessOrEqual(t, settledGoroutines(), before,
+		"doctor must leave no goroutine running: it is run precisely when acting on the configuration may be unsafe")
+}
+
+// settledGoroutines samples the goroutine count once it stops moving, so that a
+// goroutine still unwinding from an earlier test does not decide this guard.
+func settledGoroutines() int {
+	previous := goruntime.NumGoroutine()
+	for attempt := 0; attempt < 50; attempt++ {
+		time.Sleep(10 * time.Millisecond)
+		current := goruntime.NumGoroutine()
+		if current == previous {
+			return current
+		}
+		previous = current
+	}
+	return previous
+}
+
 // TestApplicationFreeformRootIsAcceptedWithoutASchema pins the other side of
 // that rule: app.* is declared freeform on purpose, so an application may put
 // anything under it without the framework claiming to understand it.
@@ -176,6 +223,10 @@ func TestApplicationFreeformRootIsAcceptedWithoutASchema(t *testing.T) {
 
 	out := runDoctor(t, app, runtimeTestConfigWith(t, time.Second,
 		"app:\n  name: demo\n  anything:\n    nested: true\n")...)
-	assert.Contains(t, out, "app", "the application root is a declared section")
-	assert.True(t, strings.Contains(out, "roots"), "doctor lists the declared roots")
+	assert.Contains(t, out, "roots    app, log, plugins",
+		"app must be named in the declared roots, which is precisely why checkRoots does not reject it")
+	assert.Contains(t, out, "declared 1, enabled instances 1, disabled 0",
+		"a block the framework never interprets must not disturb the plugin graph")
+	assert.NotContains(t, out, "demo",
+		"a freeform section is still a section: doctor names it but never prints what is in it")
 }
