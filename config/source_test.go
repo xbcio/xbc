@@ -84,7 +84,11 @@ func TestLoadProfileMissingSiblingIsSilentlySkipped(t *testing.T) {
 	require.Equal(t, ":8080", k.String("server.addr"))
 }
 
-func TestLoadOverridesWinOverEverything(t *testing.T) {
+// TestLoadOverridesWinOverFileAndProfile pins the embedder's Overrides above
+// both file layers. It is deliberately not a statement about the top of the
+// stack: loadKoanf is called with no Universe here, so no environment layer is
+// applied, and the environment sits above Overrides when one is present.
+func TestLoadOverridesWinOverFileAndProfile(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	writeYAML(t, filepath.Join(dir, "application.yml"), "server:\n  addr: \":8080\"\n")
@@ -95,5 +99,5 @@ func TestLoadOverridesWinOverEverything(t *testing.T) {
 		Overrides: map[string]any{"server.addr": ":9999"},
 	})
 	require.NoError(t, err)
-	require.Equal(t, ":9999", k.String("server.addr"), "Flag override must have the highest priority")
+	require.Equal(t, ":9999", k.String("server.addr"), "Overrides must win over both the base file and the profile overlay")
 }

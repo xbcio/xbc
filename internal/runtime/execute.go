@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/xbcio/xbc/config"
 	"github.com/xbcio/xbc/internal/assembly"
 	"github.com/xbcio/xbc/internal/cli"
 	"github.com/xbcio/xbc/log"
@@ -50,7 +51,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	stopWatching := context.AfterFunc(parent, func() { a.requestStop(cancelReason) })
 	defer stopWatching()
 
-	command, err := cli.ParseArgs(args)
+	command, err := cli.ParseArgs(args, config.DefaultEnvPrefix)
 	if err != nil {
 		return 2, err
 	}

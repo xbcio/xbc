@@ -72,6 +72,21 @@ func TestUniverseNestedSectionMustLiveInsideANamespace(t *testing.T) {
 	require.Contains(t, err.Error(), "server.store")
 }
 
+// TestUniverseRejectsNestedSectionWithNoDeclaredRoot pins the other half of the
+// grafting rule: nesting inside a *foreign* schema is rejected above, and
+// nesting under a root nobody declared at all is rejected here. Without this a
+// plugin could invent an entire top-level namespace by writing a dotted
+// ConfigPath, and the unowned-root check would then wave its children through.
+func TestUniverseRejectsNestedSectionWithNoDeclaredRoot(t *testing.T) {
+	_, err := NewUniverse(
+		Section{Path: "plugins", Owner: "the assembly layer", Kind: SectionNamespace},
+		Section{Path: "infra.store.pool", Owner: `plugin "store"`, Kind: SectionTyped},
+	)
+	require.Error(t, err, "A nested section must descend from a declared namespace, not from thin air")
+	require.Contains(t, err.Error(), "infra.store.pool", "The error must name the offending section")
+	require.Contains(t, err.Error(), "infra", "The error must name the root that nobody declared")
+}
+
 func TestUniverseRejectsTwoOwnersForOnePath(t *testing.T) {
 	_, err := NewUniverse(
 		Section{Path: "plugins", Owner: "the assembly layer", Kind: SectionNamespace},
@@ -157,7 +172,7 @@ func TestEnvironmentLayerResolvesAgainstDeclaredSchema(t *testing.T) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			values, _, err := universe.envOverlay(DefaultEnvPrefix, []string{testCase.env + "=" + testCase.value})
+			values, err := universe.envOverlay(DefaultEnvPrefix, []string{testCase.env + "=" + testCase.value}, nil)
 			require.NoError(t, err, testCase.comment)
 			require.Equal(t, testCase.want, values[testCase.path], testCase.comment)
 			require.Len(t, values, 1, "A variable must set exactly the path it names")
@@ -212,7 +227,7 @@ func TestEnvironmentLayerRejectsShapesItCannotExpress(t *testing.T) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, _, err := universe.envOverlay(DefaultEnvPrefix, []string{testCase.entry})
+			_, err := universe.envOverlay(DefaultEnvPrefix, []string{testCase.entry}, nil)
 			require.Error(t, err, testCase.comment)
 			for _, want := range testCase.wants {
 				require.Contains(t, err.Error(), want, testCase.comment)
@@ -233,7 +248,7 @@ func TestEnvironmentLayerReportsAmbiguityRatherThanGuessing(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	_, _, err = universe.envOverlay(DefaultEnvPrefix, []string{"XBC_PLUGINS_STORE_A_B=x"})
+	_, err = universe.envOverlay(DefaultEnvPrefix, []string{"XBC_PLUGINS_STORE_A_B=x"}, nil)
 	require.Error(t, err, "Two schema leaves share one environment spelling; picking one would be a guess")
 	require.Contains(t, err.Error(), "plugins.store.a.b")
 	require.Contains(t, err.Error(), "plugins.store.a_b")
@@ -243,7 +258,7 @@ func TestEnvironmentErrorsNeverEchoTheValue(t *testing.T) {
 	universe := testUniverse(t)
 	const secret = "super-secret-password"
 
-	_, _, err := universe.envOverlay(DefaultEnvPrefix, []string{"XBC_SERVER_POOL_MAX_IDLE=" + secret})
+	_, err := universe.envOverlay(DefaultEnvPrefix, []string{"XBC_SERVER_POOL_MAX_IDLE=" + secret}, nil)
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), secret,
 		"Environment variables are where secrets live; a parse failure is diagnosable from name and type alone")
@@ -252,7 +267,7 @@ func TestEnvironmentErrorsNeverEchoTheValue(t *testing.T) {
 func TestEnvironmentLayerLeavesTheProfileVariableAlone(t *testing.T) {
 	universe := testUniverse(t)
 
-	values, _, err := universe.envOverlay(DefaultEnvPrefix, []string{"XBC_PROFILE=prod"})
+	values, err := universe.envOverlay(DefaultEnvPrefix, []string{"XBC_PROFILE=prod"}, nil)
 	require.NoError(t, err, "XBC_PROFILE addresses the loader itself, not a configuration section")
 	require.Empty(t, values)
 }
@@ -324,6 +339,47 @@ func TestEnvironmentAloneCanDeclareMultipleInstances(t *testing.T) {
 
 	instances := k.Get("plugins.store").(map[string]any)
 	require.Len(t, instances, 2, "Instance names are discovered from the environment, with no file involved")
+}
+
+// TestEnvironmentCannotSilentlyForkAHyphenatedInstance pins the resolution of
+// the one lossy corner of the environment round trip. A dash is legal in an
+// instance name declared in a file, but envSegment maps a dash and an
+// underscore onto the same environment spelling, so an override aimed at
+// "my-db" arrives as "my_db". Creating a second instance is exactly the silent
+// failure the environment layer exists to remove, so it is an error instead.
+func TestEnvironmentCannotSilentlyForkAHyphenatedInstance(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeYAML(t, filepath.Join(dir, "application.yml"),
+		"plugins:\n  store:\n    my-db:\n      dsn: from-file\n")
+	t.Setenv("XBC_PLUGINS_STORE_MY_DB_DSN", "from-env")
+
+	_, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
+	require.Error(t, err, "The override would have forked a second instance rather than replacing the first")
+	require.Contains(t, err.Error(), "XBC_PLUGINS_STORE_MY_DB_DSN", "The error must name the variable")
+	require.Contains(t, err.Error(), `"my-db"`, "The error must name the instance that cannot be reached")
+	require.Contains(t, err.Error(), "plugins.store", "The error must name the section")
+	require.Contains(t, err.Error(), "rename", "The error must say what would fix it")
+	require.NotContains(t, err.Error(), "from-env", "An environment error never echoes the value")
+}
+
+// TestEnvironmentOverridesAnInstanceItCanSpell is the negative control for the
+// test above: when the file-declared name has an exact environment spelling the
+// variable must override it, not trip the collision check.
+func TestEnvironmentOverridesAnInstanceItCanSpell(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeYAML(t, filepath.Join(dir, "application.yml"),
+		"plugins:\n  store:\n    my_db:\n      dsn: from-file\n      pool_size: 3\n")
+	t.Setenv("XBC_PLUGINS_STORE_MY_DB_DSN", "from-env")
+
+	k, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
+	require.NoError(t, err)
+	require.Equal(t, "from-env", k.String("plugins.store.my_db.dsn"))
+	require.Equal(t, 3, k.Int("plugins.store.my_db.pool_size"), "The rest of the instance survives the override")
+
+	instances := k.Get("plugins.store").(map[string]any)
+	require.Len(t, instances, 1, "The override must not have forked a second instance")
 }
 
 func TestEnvironmentProvenanceNamesSourcesNotValues(t *testing.T) {

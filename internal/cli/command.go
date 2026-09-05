@@ -3,10 +3,11 @@
 //
 // It is a private, focused command parser used by the runtime process adapter.
 // It deliberately owns the whole command-line domain and nothing else. It reads
-// os.Getenv for the profile fallback and returns a value; it does not load
-// configuration, does not know what a plugin is, and does not know the root
-// package exists. That one-way direction lets the internal runtime hold the
-// assembled Command as plain data and decide what to do with it.
+// os.Getenv for the profile fallback, relative to the environment prefix its
+// caller supplies, and returns a value; it does not load configuration, does
+// not know what a plugin is, and does not know the root package exists. That
+// one-way direction lets the internal runtime hold the assembled Command as
+// plain data and decide what to do with it.
 //
 // Per the package-layout design's import direction rules (§6), it depends on
 // nothing but the standard library, and must not import the root package,
@@ -33,11 +34,17 @@ type Command struct {
 // handful of flags. The subcommand, if present, must be the first non-flag
 // argument; flag requires every flag to precede positional arguments, so it
 // is peeled off before handing the rest to fs.Parse.
-func ParseArgs(args []string) (Command, error) {
+//
+// envPrefix is the caller's configuration environment prefix. The profile
+// fallback is read relative to it rather than from a hardcoded "XBC_", because
+// the configuration layer reserves the profile variable relative to the same
+// prefix; hardcoding here would let the two disagree the moment an embedder
+// chooses a different one.
+func ParseArgs(args []string, envPrefix string) (Command, error) {
 	var cmd Command
 	fs := flag.NewFlagSet("xbc", flag.ContinueOnError)
 	fs.StringVar(&cmd.Config, "config", "", "configuration file path")
-	fs.StringVar(&cmd.Profile, "profile", "", "configuration profile (read XBC_PROFILE if not set)")
+	fs.StringVar(&cmd.Profile, "profile", "", "configuration profile (read <prefix>PROFILE if not set)")
 	fs.BoolVar(&cmd.Migrate, "migrate", false, "run migration once before starting")
 
 	rest := args
@@ -61,7 +68,7 @@ func ParseArgs(args []string) (Command, error) {
 	}
 
 	if cmd.Profile == "" {
-		cmd.Profile = os.Getenv("XBC_PROFILE")
+		cmd.Profile = os.Getenv(envPrefix + "PROFILE")
 	}
 	return cmd, nil
 }

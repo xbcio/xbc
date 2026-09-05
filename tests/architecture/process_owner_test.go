@@ -27,6 +27,7 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 		{importPath: "os", selector: "Args"}:                       "os.Args",
 		{importPath: "os", selector: "Exit"}:                       "os.Exit",
 		{importPath: "os", selector: "Stderr"}:                     "os.Stderr",
+		{importPath: "os", selector: "Stdout"}:                     "os.Stdout",
 		{importPath: "os/signal", selector: "Notify"}:              "signal.Notify/NotifyContext",
 		{importPath: "os/signal", selector: "NotifyContext"}:       "signal.Notify/NotifyContext",
 		{importPath: "github.com/xbcio/xbc/log", selector: "Sync"}: "log.Sync",
@@ -141,7 +142,7 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 			}
 			if name != owner {
 				assert.Fail(t, "Process facility owner drift",
-					"%s line %d uses %s; os.Args, signal, os.Stderr, log.Sync and os.Exit can only be owned by %s, App.Execute must be embeddable",
+					"%s line %d uses %s; os.Args, signal, os.Stderr, os.Stdout, log.Sync and os.Exit can only be owned by %s, App.Execute must be embeddable",
 					name, fset.Position(sel.Pos()).Line, label, owner)
 				return true
 			}
@@ -153,6 +154,7 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 		"os.Args",
 		"os.Exit",
 		"os.Stderr",
+		"os.Stdout",
 		"signal.Notify/NotifyContext",
 		"log.Sync",
 		exitHookLabel,

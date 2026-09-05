@@ -219,17 +219,15 @@ func TestBindEnvEmptyStringClearsDefaultStringSlice(t *testing.T) {
 		"Explicit empty string in ENV is intent to clear list, binding result should be empty slice, not fall back to default:\"a,b,c\"")
 }
 
-func TestBindEnvBeatsOverridesOnSameKeyKnownLimitation(t *testing.T) {
-	// Known structural limitation: by the time Bind runs, the file, profile,
-	// and Load-stage Overrides have already been flattened into one koanf
-	// tree, so Bind cannot tell which layer a given value originally came
-	// from. The global priority is default < file < profile < ENV < flag,
-	// but within the three-step algorithm the Bind contract specifies
-	// (unmarshal -> ENV -> default), ENV always overrides whatever value is
-	// already in the koanf tree, with no way to tell whether that value came
-	// from flag Overrides. This test pins down the real behavior: on the
-	// same key, ENV beats Overrides -- this is not a globally-true priority
-	// rule, only a boundary of this one Bind step.
+func TestBindEnvBeatsOverridesOnSameKey(t *testing.T) {
+	// The documented priority is default < file < profile < Overrides < ENV,
+	// with the environment on top, and this is the Bind step agreeing with
+	// it. By the time Bind runs, the file, profile and Load-stage Overrides
+	// have already been flattened into one koanf tree, so Bind cannot tell
+	// which layer a value came from; its three-step algorithm (unmarshal ->
+	// ENV -> default) simply lets the environment override whatever is
+	// already there. That happens to produce exactly the global rule, so on
+	// the same key ENV beats Overrides here as it does everywhere else.
 	t.Chdir(t.TempDir())
 	k, _, err := loadKoanf(Options{Overrides: map[string]any{"plugins.gorm.default.max_open_conn": 7}})
 	require.NoError(t, err)
@@ -237,5 +235,5 @@ func TestBindEnvBeatsOverridesOnSameKeyKnownLimitation(t *testing.T) {
 
 	var cfg gormLikeConfig
 	require.NoError(t, bind(k, "plugins.gorm.default", &cfg, "XBC_"))
-	require.Equal(t, 77, cfg.MaxOpenConn, "Known limitation: When ENV and flag overrides collide on the same key, ENV wins")
+	require.Equal(t, 77, cfg.MaxOpenConn, "When ENV and embedder Overrides collide on the same key, ENV wins")
 }
