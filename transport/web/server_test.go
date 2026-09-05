@@ -3,10 +3,13 @@ package web
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -365,4 +368,170 @@ func TestOpenTrafficReturnsRouteFreezeErrorWithoutNotifyingListeners(t *testing.
 	assert.ErrorContains(t, err, "accepts no authentication schemes")
 	assert.False(t, listenerCalled)
 	assert.False(t, host.trafficReleased())
+}
+
+// servingPingServer starts a server, prepares it, releases the runtime gate,
+// and returns the bound address once the managed serving task is answering.
+// Every drain assertion needs a server that is genuinely serving traffic, not
+// merely bound.
+func servingPingServer(t *testing.T, inputs serverInputs) (*Server, string) {
+	t.Helper()
+	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, inputs)
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+	host.releaseTraffic()
+	addr := server.Addr()
+	require.True(t, pollUntil(2*time.Second, 20*time.Millisecond, func() bool {
+		return probe(addr, "/ping", 250*time.Millisecond) == nil
+	}), "the serving task never began answering after the gate was released")
+	return server, addr
+}
+
+// slowRoute registers /slow, which signals when it is entered, blocks until
+// release is closed, and marks completion just before it returns.
+func slowRoute(entered chan<- struct{}, release <-chan struct{}, completed *atomic.Bool) plugin.Entry[RouteContributor] {
+	var enteredOnce sync.Once
+	return plugin.Entry[RouteContributor]{
+		Identity: plugin.Identity{Plugin: "slowtest"},
+		Value: fakeRouteContributor{register: func(router *Router) {
+			router.GET("/slow", func(c *gin.Context) {
+				enteredOnce.Do(func() { close(entered) })
+				<-release
+				completed.Store(true)
+				c.String(http.StatusOK, "drained")
+			})
+		}},
+	}
+}
+
+// TestStopDrainsAnInFlightRequestBeforeReturning pins the graceful half of the
+// drain contract: Stop with budget to spare must not return until the request
+// that was already executing has produced its response.
+//
+// The handler is held past the moment Stop is called and released only from a
+// separate goroutine, so both discriminating assertions bite: a Stop that
+// force-closed instead of draining would return in well under the hold time
+// with completed still false. Asserting only the client's body would pass
+// against that broken implementation too, because the test waits for the
+// client either way.
+func TestStopDrainsAnInFlightRequestBeforeReturning(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var completed atomic.Bool
+	server, addr := servingPingServer(t, serverInputs{
+		routes: []plugin.Entry[RouteContributor]{slowRoute(entered, release, &completed)},
+	})
+
+	type response struct {
+		body string
+		err  error
+	}
+	responses := make(chan response, 1)
+	go func() {
+		result, err := http.Get("http://" + addr + "/slow")
+		if err != nil {
+			responses <- response{err: err}
+			return
+		}
+		defer result.Body.Close()
+		body, err := io.ReadAll(result.Body)
+		responses <- response{body: string(body), err: err}
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the slow handler was never entered")
+	}
+	// The handler is released only after Stop is already draining. Releasing
+	// it beforehand would let the request finish before Stop was even called,
+	// which no implementation could fail.
+	const holdFor = 150 * time.Millisecond
+	go func() {
+		time.Sleep(holdFor)
+		close(release)
+	}()
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	require.NoError(t, server.Stop(stopCtx))
+	elapsed := time.Since(started)
+	assert.True(t, completed.Load(),
+		"Stop returned while the in-flight handler was still running")
+	assert.GreaterOrEqual(t, elapsed, holdFor/2,
+		"Stop returned immediately instead of waiting for the in-flight request")
+
+	select {
+	case result := <-responses:
+		require.NoError(t, result.err, "the drained request must receive its response")
+		assert.Equal(t, "drained", result.body)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the drained request never completed")
+	}
+
+	listener, err := net.Listen("tcp", addr)
+	require.NoError(t, err, "a drained Stop must still release the listener")
+	require.NoError(t, listener.Close())
+}
+
+// TestStopIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline pins
+// the other half: a handler that outlives the shutdown deadline must not make
+// Stop unbounded. Stop force-closes, reports the deadline, and releases the
+// port — an unbounded Stop is exactly what burns the whole shared shutdown
+// budget on one plugin and starves every plugin below it.
+//
+// The elapsed-time bound is the discriminating assertion: a Stop that waited
+// for the handler would take the full hold time (or never return at all),
+// while re-binding the port immediately afterwards is what proves the forced
+// close actually happened rather than being merely reported.
+func TestStopIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHandler := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseHandler()
+	var completed atomic.Bool
+	server, addr := servingPingServer(t, serverInputs{
+		routes: []plugin.Entry[RouteContributor]{slowRoute(entered, release, &completed)},
+	})
+
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		result, err := http.Get("http://" + addr + "/slow")
+		if err == nil {
+			_, _ = io.Copy(io.Discard, result.Body)
+			_ = result.Body.Close()
+		}
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the slow handler was never entered")
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := server.Stop(stopCtx)
+	elapsed := time.Since(started)
+
+	require.Error(t, err, "a drain that exceeds its deadline must be reported, not swallowed")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, elapsed, 2*time.Second,
+		"Stop must be bounded by its deadline, not by the stuck handler")
+	assert.False(t, completed.Load(), "the handler is still running; Stop did not wait for it")
+
+	listener, err := net.Listen("tcp", addr)
+	require.NoError(t, err, "a forced Stop must still release the listener")
+	require.NoError(t, listener.Close())
+
+	releaseHandler()
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the forcibly closed request never finished")
+	}
 }
