@@ -21,7 +21,8 @@ func TestExecuteRejectsANilContextAndASecondExecution(t *testing.T) {
 
 	code, err = app.Execute(context.Background(), runtimeTestConfig(t, time.Second))
 	assert.Equal(t, 1, code, "the empty composition still fails, but Execute was consumed")
-	require.Error(t, err)
+	require.EqualError(t, err,
+		"xbc: no plugin was declared, nothing to do; compose Bundles explicitly or import an autoload leaf")
 
 	code, err = app.Execute(context.Background(), runtimeTestConfig(t, time.Second))
 	assert.Equal(t, 1, code)
@@ -106,46 +107,58 @@ func TestDoctorNeverInvokesALifecycleHook(t *testing.T) {
 	assert.Nil(t, app.owned)
 }
 
-func TestMigrationRunsOnceAndUnwindsWithoutStartingTraffic(t *testing.T) {
-	for name, args := range map[string][]string{
-		"subcommand": {"migrate"},
-		"flag":       {"--migrate"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			var stages []string
-			definition := plugin.Define("migrating", func(plugin.BuildContext) (*runtimeTestValue, error) {
-				return &runtimeTestValue{}, nil
-			}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
-				Migrate:     func(*runtimeTestValue, *plugin.Context) error { stages = append(stages, "migrate"); return nil },
-				Start:       func(*runtimeTestValue, *plugin.Context) error { stages = append(stages, "start"); return nil },
-				OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { stages = append(stages, "open"); return nil },
-				Stop: func(*runtimeTestValue, context.Context) error {
-					stages = append(stages, "stop")
-					return nil
-				},
-			}})
-			app := newRuntimeTestApp(definition)
-			full := append(append([]string(nil), args...), runtimeTestConfig(t, time.Second)...)
-
-			if name == "subcommand" {
-				code, err := app.Execute(context.Background(), full)
-				require.NoError(t, err)
-				assert.Equal(t, 0, code)
-				assert.Equal(t, []string{"migrate", "stop"}, stages,
-					"the migrate subcommand stops after migrating instead of serving")
-				assertChannelOpen(t, app.trafficGate, "the migrate subcommand released the traffic gate")
-				return
-			}
-
-			result := executeRuntimeTest(app, full...)
-			awaitRuntimeTestReady(t, app)
-			app.requestStop(stopReasonSignal)
-			completed := awaitRuntimeTestResult(t, result)
-			require.NoError(t, completed.err)
-			assert.Equal(t, []string{"migrate", "start", "open", "stop"}, stages,
-				"--migrate migrates and then boots normally")
-		})
+// migratingDefinition records every lifecycle stage it reaches into stages,
+// which the two migration tests below read after the run has finished.
+func migratingDefinition(stages *[]string) plugin.Definition {
+	record := func(stage string) func(*runtimeTestValue, *plugin.Context) error {
+		return func(*runtimeTestValue, *plugin.Context) error {
+			*stages = append(*stages, stage)
+			return nil
+		}
 	}
+	return plugin.Define("migrating", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Migrate:     record("migrate"),
+		Start:       record("start"),
+		OpenTraffic: record("open"),
+		Stop: func(*runtimeTestValue, context.Context) error {
+			*stages = append(*stages, "stop")
+			return nil
+		},
+	}})
+}
+
+// TestTheMigrateSubcommandMigratesAndStopsWithoutServing pins that "migrate" is
+// a one-shot maintenance command: it must unwind after migrating rather than
+// fall through into the startup and readiness phases.
+func TestTheMigrateSubcommandMigratesAndStopsWithoutServing(t *testing.T) {
+	var stages []string
+	app := newRuntimeTestApp(migratingDefinition(&stages))
+	args := append([]string{"migrate"}, runtimeTestConfig(t, time.Second)...)
+
+	code, err := app.Execute(context.Background(), args)
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, []string{"migrate", "stop"}, stages,
+		"the migrate subcommand stops after migrating instead of serving")
+	assertChannelOpen(t, app.trafficGate, "the migrate subcommand released the traffic gate")
+}
+
+// TestTheMigrateFlagMigratesAndThenBootsNormally pins the other half: --migrate
+// is a modifier on a normal run, so migration precedes the usual Start and
+// OpenTraffic rather than replacing them.
+func TestTheMigrateFlagMigratesAndThenBootsNormally(t *testing.T) {
+	var stages []string
+	app := newRuntimeTestApp(migratingDefinition(&stages))
+	args := append([]string{"--migrate"}, runtimeTestConfig(t, time.Second)...)
+
+	result := executeRuntimeTest(app, args...)
+	awaitRuntimeTestReady(t, app)
+	app.requestStop(stopReasonSignal)
+	require.NoError(t, awaitRuntimeTestResult(t, result).err)
+	assert.Equal(t, []string{"migrate", "start", "open", "stop"}, stages,
+		"--migrate migrates and then boots normally")
 }
 
 func TestAutoMigrateConfigurationMigratesWithoutAnyFlag(t *testing.T) {

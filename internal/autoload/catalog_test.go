@@ -1,6 +1,7 @@
 package autoload
 
 import (
+	"strings"
 	"sync"
 	"testing"
 
@@ -111,6 +112,21 @@ func TestConcurrentDeclareAndFreezeStayConsistent(t *testing.T) {
 	go func() { defer declarers.Done(); Freeze() }()
 	declarers.Wait()
 
-	assert.Equal(t, catalogTestKeys(Freeze()), catalogTestKeys(Freeze()),
-		"once frozen, the composition never changes again")
+	// The winning set is nondeterministic, but whatever it is must survive a
+	// later Declare attempt. Comparing two Freeze calls to each other would
+	// only restate that Freeze is idempotent; comparing across an intervening
+	// mutation attempt is what pins that the frozen snapshot is immutable.
+	frozen := catalogTestKeys(Freeze())
+	assert.Panics(t, func() { Declare(catalogTestBundle("after-the-race")) },
+		"declaration admission is closed once the racing Freeze has won")
+	assert.Equal(t, frozen, catalogTestKeys(Freeze()),
+		"a rejected Declare must not reach the already-frozen composition")
+
+	seen := make(map[plugin.Key]bool, len(frozen))
+	for _, key := range frozen {
+		assert.True(t, strings.HasPrefix(string(key), "racy-"),
+			"the frozen composition contains %q, which no racing Declare submitted", key)
+		assert.False(t, seen[key], "%q was recorded twice by concurrent Declares", key)
+		seen[key] = true
+	}
 }
