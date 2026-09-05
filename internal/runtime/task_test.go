@@ -58,7 +58,7 @@ func TestClosedAdmissionRejectsEveryFurtherSubmission(t *testing.T) {
 	assert.Zero(t, tasks.spawnedCount())
 }
 
-func TestConcurrentSubmitCloseAndStopStayConsistent(t *testing.T) {
+func TestConcurrentSubmitCloseAndShutdownStayConsistent(t *testing.T) {
 	t.Parallel()
 	tasks := newTestTaskRuntime(func(string) {})
 	owner := taskIdentity("racy")
@@ -81,7 +81,7 @@ func TestConcurrentSubmitCloseAndStopStayConsistent(t *testing.T) {
 	require.NoError(t, tasks.drainRemaining(context.Background()))
 }
 
-func TestStoppingOnePluginLeavesAnotherPluginsTasksRunning(t *testing.T) {
+func TestShutdownOfOnePluginLeavesAnotherPluginsTasksRunning(t *testing.T) {
 	t.Parallel()
 	tasks := newTestTaskRuntime(nil)
 	first, second := taskIdentity("first"), taskIdentity("second")
@@ -201,7 +201,7 @@ func TestPanicsAreRecordedAndOnlyCriticalOnesEscalate(t *testing.T) {
 	}
 }
 
-func TestATaskThatIgnoresCancellationIsReportedRatherThanWaitedForForever(t *testing.T) {
+func TestShutdownReportsATaskThatIgnoresCancellationRatherThanWaitingForever(t *testing.T) {
 	t.Parallel()
 	tasks := newTestTaskRuntime(nil)
 	owner := taskIdentity("stubborn")
@@ -218,7 +218,7 @@ func TestATaskThatIgnoresCancellationIsReportedRatherThanWaitedForForever(t *tes
 	assert.Contains(t, err.Error(), "xbc: plugin stubborn managed tasks did not exit within the shutdown budget")
 }
 
-func TestDrainRemainingReapsEveryScopeNoLifecycleStageClaimed(t *testing.T) {
+func TestShutdownDrainReapsEveryScopeNoLifecycleStageClaimed(t *testing.T) {
 	t.Parallel()
 	tasks := newTestTaskRuntime(nil)
 	canceled := make(chan struct{}, 2)
@@ -238,7 +238,7 @@ func TestDrainRemainingReapsEveryScopeNoLifecycleStageClaimed(t *testing.T) {
 	require.NoError(t, tasks.drainRemaining(context.Background()), "draining twice is a no-op")
 }
 
-func TestDrainRemainingAggregatesFailuresAcrossPlugins(t *testing.T) {
+func TestShutdownDrainAggregatesFailuresAcrossPlugins(t *testing.T) {
 	t.Parallel()
 	tasks := newTestTaskRuntime(func(string) {})
 	release := make(chan struct{})
