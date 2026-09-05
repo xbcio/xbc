@@ -375,19 +375,20 @@ func TestArchConfigAndLogAreMutuallyIndependent(t *testing.T) {
 // is first-party.
 const archRootPackage = "github.com/xbcio/xbc"
 
-// archThirdPartyClosureCeiling asserts that subject's production closure adds
-// no third-party package that bases do not already justify.
+// archClosureCeiling asserts that subject's production closure adds no package
+// -- third-party or first-party -- that bases do not already justify.
 //
 // The ceiling is expressed relative to another package's closure rather than
 // as a frozen list of paths, so it stays correct when koanf or zap change
 // their own transitive dependencies. What it catches is the subject reaching
 // for a dependency of its own -- which belongs in an implementation package.
 //
-// First-party paths are out of scope on purpose: which repository packages
-// each subject may reach is a direction question, already answered by the
-// import-direction guards above. This guard answers the orthogonal question
-// of how much foreign code the subject makes its consumers compile.
-func archThirdPartyClosureCeiling(t *testing.T, subject, owner string, bases ...string) {
+// firstParty names the repository subtrees the subject is allowed to contain
+// beyond what bases explain: normally just its own subtree, plus any private
+// model it is explicitly permitted to delegate to. Everything else in this
+// repository is held to the same ceiling as foreign code, because a first-party
+// addition is exactly how a leaf adapter quietly grows into an orchestrator.
+func archClosureCeiling(t *testing.T, subject, owner string, firstParty []string, bases ...string) {
 	t.Helper()
 	allowed := make(map[string]bool)
 	for _, base := range bases {
@@ -395,8 +396,25 @@ func archThirdPartyClosureCeiling(t *testing.T, subject, owner string, bases ...
 			allowed[dep] = true
 		}
 	}
+	exempt := func(dep string) bool {
+		for _, prefix := range firstParty {
+			if archPathAtOrBelow(dep, prefix) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, dep := range archDeps(t, subject) {
-		if allowed[dep] || archIsStdlib(dep) || archPathAtOrBelow(dep, archRootPackage) {
+		if allowed[dep] || archIsStdlib(dep) {
+			continue
+		}
+		if archPathAtOrBelow(dep, archRootPackage) {
+			if exempt(dep) {
+				continue
+			}
+			t.Errorf("%s's production closure contains repository package %q, which %s does not explain; "+
+				"this subject is a leaf over its bases, so reaching further up the repository belongs in an implementation package instead",
+				owner, dep, strings.Join(bases, " or "))
 			continue
 		}
 		t.Errorf("%s's production closure contains third-party package %q, which %s does not explain; "+
@@ -410,8 +428,13 @@ func archThirdPartyClosureCeiling(t *testing.T, subject, owner string, bases ...
 // already knows, so plugin's third-party closure would otherwise be free to
 // grow indefinitely. plugin depends on config and log by design, so whatever
 // those two already justify may legitimately appear here too.
+//
+// The first-party exemptions are plugin's own subtree and the private erased
+// model it is permitted to delegate to; guard 5 above pins that the delegation
+// stops there.
 func TestArchPluginClosureAddsNothingBeyondConfigAndLog(t *testing.T) {
-	archThirdPartyClosureCeiling(t, "./plugin/...", "github.com/xbcio/xbc/plugin",
+	archClosureCeiling(t, "./plugin/...", "github.com/xbcio/xbc/plugin",
+		[]string{archRootPackage + "/plugin", archRootPackage + "/internal/pluginmodel"},
 		"./config/...", "./log/...")
 }
 
@@ -419,8 +442,13 @@ func TestArchPluginClosureAddsNothingBeyondConfigAndLog(t *testing.T) {
 // process-global composition adapter a thin leaf over the SPI. It depends on
 // plugin, which legitimately pulls in config and log, so the ceiling is stated
 // relative to plugin's own closure rather than as a fixed allowlist.
+//
+// Unlike plugin, autoload has no import-direction guard of its own, so this is
+// the only place its outbound first-party closure is constrained: an autoload
+// that reached for assembly or runtime would be caught here and nowhere else.
 func TestArchAutoloadClosureIsPluginAndStdlibOnly(t *testing.T) {
-	archThirdPartyClosureCeiling(t, "./internal/autoload/...", "github.com/xbcio/xbc/internal/autoload",
+	archClosureCeiling(t, "./internal/autoload/...", "github.com/xbcio/xbc/internal/autoload",
+		[]string{archRootPackage + "/internal/autoload"},
 		"./plugin/...")
 }
 
