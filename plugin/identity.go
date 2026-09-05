@@ -1,10 +1,6 @@
 package plugin
 
-import (
-	"fmt"
-
-	"github.com/xbcio/xbc/internal/pluginmodel"
-)
+import "github.com/xbcio/xbc/internal/pluginmodel"
 
 // Key is the stable, configuration-facing identity of a Definition. It is
 // never derived from a Go package path or concrete type.
@@ -54,27 +50,10 @@ func ValidateInstanceName(value string) error {
 	return pluginmodel.ValidateInstanceName(value)
 }
 
-func validateIdentifier(kind, value string) error {
-	if err := pluginmodel.ValidateIdentifier(kind, value); err != nil {
-		return err
-	}
-	return nil
-}
-
 func toModelIdentity(identity Identity) pluginmodel.Identity {
 	return pluginmodel.Identity{Plugin: pluginmodel.Key(identity.Plugin), Instance: identity.Instance}
 }
 
 func fromModelIdentity(identity pluginmodel.Identity) Identity {
 	return Identity{Plugin: Key(identity.Plugin), Instance: identity.Instance}
-}
-
-func validateIdentity(identity Identity) error {
-	if err := identity.Plugin.Validate(); err != nil {
-		return err
-	}
-	if err := ValidateInstanceName(NormalizeInstance(identity.Instance)); err != nil {
-		return fmt.Errorf("xbc: plugin %q has invalid instance: %w", identity.Plugin, err)
-	}
-	return nil
 }
