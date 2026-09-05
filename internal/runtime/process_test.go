@@ -188,12 +188,12 @@ func TestSignalWatcherKeepsDrainingAfterTheFirstSignal(t *testing.T) {
 		"the watcher abandoned its channel after the first callback, losing the operator's second request")
 }
 
-// TestSignalHandlerIsUnregisteredAfterStopReturns compares two watchers rather
+// TestShutdownUnregistersTheSignalHandlerWhenStopReturns compares two watchers rather
 // than sending a bare signal and hoping nothing reacts. os/signal delivers one
 // incoming signal to every channel currently registered for it, so a leaked
 // registration in the already-stopped watcher would observe the same SIGTERM
 // that the live one does.
-func TestSignalHandlerIsUnregisteredAfterStopReturns(t *testing.T) {
+func TestShutdownUnregistersTheSignalHandlerWhenStopReturns(t *testing.T) {
 	var observedStopped, observedLive atomic.Bool
 	stopStopped := watchProcessSignals(func() { observedStopped.Store(true) })
 	stopStopped()
