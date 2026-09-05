@@ -168,7 +168,9 @@ func TestPlannerFailuresAreReportedWithTheOwningKey(t *testing.T) {
 	type config struct{}
 	failing := DefinePlanned("failing", ConfigSpec[config]{
 		Defaults: func() config { return config{} },
-	}, func(config) (Plan[*definitionValue], error) { return Plan[*definitionValue]{}, errors.New("planner refused") })
+	}, func(config) (Plan[*definitionValue], error) {
+		return Plan[*definitionValue]{}, errors.New("planner refused")
+	})
 	_, err := descriptorOf(t, failing).Plan(config{})
 	assert.EqualError(t, err, "planner refused")
 
