@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -184,7 +186,9 @@ func TestNilPlanAndUnknownIdentityAreRejectedWithoutPanicking(t *testing.T) {
 	assert.Nil(t, missing.Instances())
 	_, ok := missing.Instance(plugin.Identity{Plugin: "absent"})
 	assert.False(t, ok)
-	require.NoError(t, missing.Unwind(context.Background(), time.Second, nil))
+	unwound, err := missing.Unwind(context.Background(), time.Second, nil)
+	require.NoError(t, err)
+	assert.Empty(t, unwound.Records)
 
 	plan, err := planFor(t, nil, storeDefinition("gorm", plugin.SingleInstance))
 	require.NoError(t, err)
@@ -382,7 +386,12 @@ func TestLifecycleFailuresAndPanicsAreWrappedWithIdentityAndStage(t *testing.T) 
 	assert.Equal(t, []string{"init", "stop"}, stages, "a failed Init is still stopped")
 }
 
-func TestStopBoundedAbandonsAStopThatOutlivesTheBudget(t *testing.T) {
+// TestStopBoundedAbandonsAStopThatOutlivesTheShutdownBudget pins the single-instance
+// half of the shutdown contract deterministically: with an already-expired
+// deadline and a Stop that never returns, only the abandonment branch can be
+// taken, so the outcome cannot depend on which of two ready select cases the
+// scheduler happens to pick.
+func TestStopBoundedAbandonsAStopThatOutlivesTheShutdownBudget(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
 	defer close(release)
@@ -398,12 +407,172 @@ func TestStopBoundedAbandonsAStopThatOutlivesTheBudget(t *testing.T) {
 	require.NoError(t, err)
 	constructed, err := Construct(plan, ConstructOptions{})
 	require.NoError(t, err)
+	instance, ok := constructed.Instance(plugin.Identity{Plugin: "stuck"})
+	require.True(t, ok)
 
 	expired, cancel := context.WithCancel(context.Background())
 	cancel()
-	err = constructed.Unwind(expired, 50*time.Millisecond, nil)
+	outcome, err := instance.stopBounded(expired, 50*time.Millisecond)
+	assert.Equal(t, StopAbandoned, outcome)
 	require.Error(t, err)
 	assert.EqualError(t, err, "xbc: plugin stuck Stop did not return within shutdown budget 50ms; abandoning it")
+}
+
+// TestUnwindStartsNoStopOnceTheSharedBudgetIsSpent pins the §6.2 ruling. The
+// last instance's Stop hangs and burns the whole budget; the two instances
+// below it in the graph must then be reported not-attempted and their Stop
+// bodies must never be entered.
+//
+// The `entered` counter is what gives this discriminating power: the previous
+// implementation kept walking after the budget expired, so both bodies ran
+// (concurrently with the abandoned one, which is why reverse order was a
+// scheduling outcome). A report-only assertion would not have caught that.
+func TestUnwindStartsNoStopOnceTheSharedBudgetIsSpent(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	defer close(release)
+	stuckEntered := make(chan struct{})
+	var entered atomic.Int32
+	quiet := func(key plugin.Key) plugin.Definition {
+		return plugin.Define(key, func(plugin.BuildContext) (*store, error) {
+			return &store{name: key.String()}, nil
+		}, plugin.Options[*store]{Lifecycle: plugin.Lifecycle[*store]{
+			Stop: func(*store, context.Context) error {
+				entered.Add(1)
+				return nil
+			},
+		}})
+	}
+	stuck := plugin.Define("c-stuck", func(plugin.BuildContext) (*store, error) {
+		return &store{name: "c-stuck"}, nil
+	}, plugin.Options[*store]{Lifecycle: plugin.Lifecycle[*store]{
+		Stop: func(*store, context.Context) error {
+			entered.Add(1)
+			close(stuckEntered)
+			<-release
+			return nil
+		},
+	}})
+	plan, err := planFor(t, nil, quiet("a-first"), quiet("b-second"), stuck)
+	require.NoError(t, err)
+	constructed, err := Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+
+	deadline, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	report, err := constructed.Unwind(deadline, 40*time.Millisecond, nil)
+	<-stuckEntered
+
+	first := plugin.Identity{Plugin: "a-first", Instance: plugin.DefaultInstance}
+	second := plugin.Identity{Plugin: "b-second", Instance: plugin.DefaultInstance}
+	stuckIdentity := plugin.Identity{Plugin: "c-stuck", Instance: plugin.DefaultInstance}
+	assert.Equal(t, []plugin.Identity{stuckIdentity}, report.Attempted,
+		"the walk must stop launching Stop hooks once the shared budget is spent")
+	assert.Empty(t, report.Completed)
+	assert.Equal(t, []plugin.Identity{stuckIdentity}, report.Identities(StopAbandoned))
+	assert.Equal(t, []plugin.Identity{second, first}, report.Identities(StopNotAttempted),
+		"the remaining identities are named in reverse graph order")
+	assert.Equal(t, int32(1), entered.Load(), "only the stuck Stop body may ever have run")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "xbc: plugin c-stuck Stop did not return within shutdown budget 40ms")
+	assert.Contains(t, err.Error(), "xbc: plugin b-second Stop was not attempted")
+	assert.Contains(t, err.Error(), "xbc: plugin a-first Stop was not attempted")
+}
+
+// TestUnwindCompletesEveryStopSeriallyInReverseGraphOrder pins the normal
+// path: Attempted and Completed must be the same reverse-order sequence.
+// An implementation that launched every Stop concurrently would still produce
+// the right Attempted order but would let Completed come back interleaved,
+// which the overlap guard below turns into a hard failure rather than a flake.
+func TestUnwindCompletesEveryStopSeriallyInReverseGraphOrder(t *testing.T) {
+	t.Parallel()
+	var (
+		mu      sync.Mutex
+		bodies  []string
+		inside  int
+		overlap bool
+	)
+	slow := func(key plugin.Key) plugin.Definition {
+		return plugin.Define(key, func(plugin.BuildContext) (*store, error) {
+			return &store{name: key.String()}, nil
+		}, plugin.Options[*store]{Lifecycle: plugin.Lifecycle[*store]{
+			Stop: func(*store, context.Context) error {
+				mu.Lock()
+				inside++
+				overlap = overlap || inside > 1
+				bodies = append(bodies, key.String())
+				mu.Unlock()
+				time.Sleep(time.Millisecond)
+				mu.Lock()
+				inside--
+				mu.Unlock()
+				return nil
+			},
+		}})
+	}
+	plan, err := planFor(t, nil, slow("a"), slow("b"), slow("c"))
+	require.NoError(t, err)
+	constructed, err := Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+
+	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	report, err := constructed.Unwind(deadline, 5*time.Second, nil)
+	require.NoError(t, err)
+
+	want := []plugin.Identity{
+		{Plugin: "c", Instance: plugin.DefaultInstance},
+		{Plugin: "b", Instance: plugin.DefaultInstance},
+		{Plugin: "a", Instance: plugin.DefaultInstance},
+	}
+	assert.Equal(t, want, report.Attempted)
+	assert.Equal(t, want, report.Completed, "Stop completions must not be reordered against invocations")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"c", "b", "a"}, bodies)
+	assert.False(t, overlap, "two Stop bodies must never be inside the unwind at the same time")
+}
+
+// TestUnwindClassifiesPanicsFailuresAndAbsentHooks pins that the report tells
+// a recovered panic apart from a returned error without either truncating the
+// walk, and that an instance with no Stop hook is still counted as visited.
+func TestUnwindClassifiesPanicsFailuresAndAbsentHooks(t *testing.T) {
+	t.Parallel()
+	bare := plugin.Define("bare-stop", func(plugin.BuildContext) (*store, error) {
+		return &store{name: "bare-stop"}, nil
+	})
+	failing := plugin.Define("failing-stop", func(plugin.BuildContext) (*store, error) {
+		return &store{name: "failing-stop"}, nil
+	}, plugin.Options[*store]{Lifecycle: plugin.Lifecycle[*store]{
+		Stop: func(*store, context.Context) error { return errors.New("stop refused") },
+	}})
+	panicking := plugin.Define("panicking-stop", func(plugin.BuildContext) (*store, error) {
+		return &store{name: "panicking-stop"}, nil
+	}, plugin.Options[*store]{Lifecycle: plugin.Lifecycle[*store]{
+		Stop: func(*store, context.Context) error { panic("stop exploded") },
+	}})
+	plan, err := planFor(t, nil, bare, failing, panicking)
+	require.NoError(t, err)
+	constructed, err := Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+
+	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	report, err := constructed.Unwind(deadline, 5*time.Second, nil)
+	require.Error(t, err)
+
+	outcomes := make(map[string]StopOutcome, len(report.Records))
+	for _, record := range report.Records {
+		outcomes[record.Identity.Plugin.String()] = record.Outcome
+	}
+	assert.Equal(t, map[string]StopOutcome{
+		"panicking-stop": StopPanicked,
+		"failing-stop":   StopFailed,
+		"bare-stop":      StopSkipped,
+	}, outcomes)
+	assert.Len(t, report.Completed, 3, "a panicking Stop must not truncate the reverse walk")
+	assert.Contains(t, err.Error(), "stop exploded")
+	assert.Contains(t, err.Error(), "stop refused")
 }
 
 func TestUnwindReportsAfterStopFailuresAlongsideStopFailures(t *testing.T) {
@@ -419,7 +588,7 @@ func TestUnwindReportsAfterStopFailuresAlongsideStopFailures(t *testing.T) {
 	require.NoError(t, err)
 
 	var visited []plugin.Identity
-	err = constructed.Unwind(context.Background(), time.Second, func(identity plugin.Identity) error {
+	report, err := constructed.Unwind(context.Background(), time.Second, func(identity plugin.Identity) error {
 		visited = append(visited, identity)
 		return errors.New("join refused")
 	})
@@ -428,4 +597,49 @@ func TestUnwindReportsAfterStopFailuresAlongsideStopFailures(t *testing.T) {
 	assert.Contains(t, err.Error(), "join refused")
 	assert.Equal(t, []plugin.Identity{{Plugin: "noisy", Instance: plugin.DefaultInstance}}, visited,
 		"afterStop runs even when Stop failed")
+	require.Len(t, report.Records, 1)
+	assert.Equal(t, StopFailed, report.Records[0].Outcome)
+	assert.EqualError(t, report.Records[0].TaskErr, "join refused",
+		"the task-join failure is recorded against the same identity, under the same budget")
+}
+
+// TestUnwindRunTwiceStopsEachOwnedValueExactlyOnce pins that a second unwind —
+// what a shutdown signal racing a startup failure produces — is a reported
+// no-op rather than a second round of Stop calls. The stop counter is the
+// discriminating assertion: asserting only the second report's outcomes would
+// still pass if Stop ran again and simply happened to succeed twice.
+func TestUnwindRunTwiceStopsEachOwnedValueExactlyOnce(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	counting := func(key plugin.Key) plugin.Definition {
+		return plugin.Define(key, func(plugin.BuildContext) (*store, error) {
+			return &store{name: key.String()}, nil
+		}, plugin.Options[*store]{Lifecycle: plugin.Lifecycle[*store]{
+			Stop: func(*store, context.Context) error {
+				calls.Add(1)
+				return nil
+			},
+		}})
+	}
+	plan, err := planFor(t, nil, counting("first"), counting("second"))
+	require.NoError(t, err)
+	constructed, err := Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+
+	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	first, err := constructed.Unwind(deadline, 5*time.Second, nil)
+	require.NoError(t, err)
+	second, err := constructed.Unwind(deadline, 5*time.Second, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(2), calls.Load(), "each owned value's Stop may run only once")
+	for _, record := range first.Records {
+		assert.Equal(t, StopCompleted, record.Outcome, record.Identity)
+	}
+	for _, record := range second.Records {
+		assert.Equal(t, StopSkipped, record.Outcome, record.Identity)
+	}
+	assert.Equal(t, first.Attempted, second.Attempted,
+		"a repeated unwind still visits the same instances in the same order")
 }
