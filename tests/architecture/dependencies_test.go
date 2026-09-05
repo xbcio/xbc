@@ -369,8 +369,62 @@ func TestArchConfigAndLogAreMutuallyIndependent(t *testing.T) {
 		"log's dependency closure cannot contain config: reading configuration from logger is the direction more likely to violate this rule")
 }
 
-// ── guard 9: assembly must not read optional process-wide autoload state ─
+// ── guard 9: closures may not grow beyond what their owner explains ─────
 
+// archRootPackage is this repository's module path; everything at or below it
+// is first-party.
+const archRootPackage = "github.com/xbcio/xbc"
+
+// archThirdPartyClosureCeiling asserts that subject's production closure adds
+// no third-party package that bases do not already justify.
+//
+// The ceiling is expressed relative to another package's closure rather than
+// as a frozen list of paths, so it stays correct when koanf or zap change
+// their own transitive dependencies. What it catches is the subject reaching
+// for a dependency of its own -- which belongs in an implementation package.
+//
+// First-party paths are out of scope on purpose: which repository packages
+// each subject may reach is a direction question, already answered by the
+// import-direction guards above. This guard answers the orthogonal question
+// of how much foreign code the subject makes its consumers compile.
+func archThirdPartyClosureCeiling(t *testing.T, subject, owner string, bases ...string) {
+	t.Helper()
+	allowed := make(map[string]bool)
+	for _, base := range bases {
+		for _, dep := range archDeps(t, base) {
+			allowed[dep] = true
+		}
+	}
+	for _, dep := range archDeps(t, subject) {
+		if allowed[dep] || archIsStdlib(dep) || archPathAtOrBelow(dep, archRootPackage) {
+			continue
+		}
+		t.Errorf("%s's production closure contains third-party package %q, which %s does not explain; "+
+			"every implementer pays this compile cost, so it belongs in the capability package instead",
+			owner, dep, strings.Join(bases, " or "))
+	}
+}
+
+// TestArchPluginClosureAddsNothingBeyondConfigAndLog closes the gap a
+// blacklist structurally cannot cover: a blacklist rejects only the names it
+// already knows, so plugin's third-party closure would otherwise be free to
+// grow indefinitely. plugin depends on config and log by design, so whatever
+// those two already justify may legitimately appear here too.
+func TestArchPluginClosureAddsNothingBeyondConfigAndLog(t *testing.T) {
+	archThirdPartyClosureCeiling(t, "./plugin/...", "github.com/xbcio/xbc/plugin",
+		"./config/...", "./log/...")
+}
+
+// TestArchAutoloadClosureIsPluginAndStdlibOnly keeps the optional
+// process-global composition adapter a thin leaf over the SPI. It depends on
+// plugin, which legitimately pulls in config and log, so the ceiling is stated
+// relative to plugin's own closure rather than as a fixed allowlist.
+func TestArchAutoloadClosureIsPluginAndStdlibOnly(t *testing.T) {
+	archThirdPartyClosureCeiling(t, "./internal/autoload/...", "github.com/xbcio/xbc/internal/autoload",
+		"./plugin/...")
+}
+
+// ── guard 10: assembly must not read optional process-wide autoload state ─
 // TestArchAssemblyDoesNotReadDefaultAutoload keeps explicit Bundle assembly
 // deterministic. Only the runtime adapter may select the optional global
 // composition; assembly must consume exactly the Bundles in PlanOptions.
