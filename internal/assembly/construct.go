@@ -183,7 +183,7 @@ func isNil(value any) bool {
 func joinConstructionFailure(cause error, constructed *Constructed, timeout time.Duration) error {
 	deadline, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	unwind := constructed.Unwind(deadline, timeout, nil)
+	_, unwind := constructed.Unwind(deadline, timeout, nil)
 	return errors.Join(cause, unwind)
 }
 
@@ -217,68 +217,184 @@ func (instance *Instance) InvokeTrafficPreparation() error {
 	})
 }
 
-func (instance *Instance) invoke(stage string, fn func() error) (err error) {
+func (instance *Instance) invoke(stage string, fn func() error) error {
+	_, err := instance.invokeClassified(stage, fn)
+	return err
+}
+
+// invokeClassified runs one lifecycle stage under a panic boundary and tells
+// a recovered panic apart from a returned error without parsing diagnostics.
+func (instance *Instance) invokeClassified(stage string, fn func() error) (panicked bool, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			panicked = true
 			err = fmt.Errorf("xbc: plugin %s %s panic: %v\n%s", instance.identity, stage, recovered, debug.Stack())
 		}
 	}()
 	if err := fn(); err != nil {
-		return fmt.Errorf("xbc: plugin %s %s failed: %w", instance.identity, stage, err)
+		return false, fmt.Errorf("xbc: plugin %s %s failed: %w", instance.identity, stage, err)
 	}
-	return nil
+	return false, nil
+}
+
+// StopOutcome classifies how one owned value's Stop attempt ended.
+type StopOutcome string
+
+const (
+	// StopSkipped means the instance declares no Stop hook, or a previous
+	// unwind already stopped it.
+	StopSkipped StopOutcome = "skipped"
+	// StopCompleted means Stop returned nil inside the shared budget.
+	StopCompleted StopOutcome = "completed"
+	// StopFailed means Stop returned an error inside the shared budget.
+	StopFailed StopOutcome = "failed"
+	// StopPanicked means Stop panicked; the panic was recovered and reported.
+	StopPanicked StopOutcome = "panicked"
+	// StopAbandoned means Stop ignored the shared deadline and was left
+	// running. That is a plugin contract violation, not a runtime choice.
+	StopAbandoned StopOutcome = "abandoned"
+	// StopNotAttempted means the shared budget was already spent when the
+	// reverse walk reached this instance, so no Stop was started for it.
+	StopNotAttempted StopOutcome = "not-attempted"
+)
+
+// StopRecord is one instance's entry in a ShutdownReport. TaskErr carries the
+// afterStop (task-scope cancel and join) diagnostic for the same identity.
+type StopRecord struct {
+	Identity plugin.Identity
+	Outcome  StopOutcome
+	Err      error
+	TaskErr  error
+}
+
+// ShutdownReport is the observable result of one reverse unwind.
+//
+// Attempted lists the identities the walk reached while the shared budget was
+// still live, in reverse graph order; Completed lists the identities whose
+// Stop returned — successfully, with an error, or through a recovered panic —
+// before that budget was spent, in the order those calls returned. An
+// instance with no Stop hook appears in both: there was nothing to run and
+// nothing to wait for. Because Unwind starts no Stop until the previous one
+// has returned or been abandoned, the two lists are identical on every path
+// where nothing is abandoned; an implementation that launched Stop hooks
+// concurrently would reorder Completed against Attempted.
+type ShutdownReport struct {
+	Attempted []plugin.Identity
+	Completed []plugin.Identity
+	Records   []StopRecord
+}
+
+// Identities returns the recorded identities with the given outcome, in
+// reverse graph order.
+func (report ShutdownReport) Identities(outcome StopOutcome) []plugin.Identity {
+	var found []plugin.Identity
+	for _, record := range report.Records {
+		if record.Outcome == outcome {
+			found = append(found, record.Identity)
+		}
+	}
+	return found
 }
 
 // StopBounded stops one owned value at most once and abandons a stuck Stop
 // when the shared deadline expires.
 func (instance *Instance) StopBounded(deadline context.Context, budget time.Duration) error {
+	_, err := instance.stopBounded(deadline, budget)
+	return err
+}
+
+type stopResult struct {
+	outcome StopOutcome
+	err     error
+}
+
+func (instance *Instance) stopBounded(deadline context.Context, budget time.Duration) (StopOutcome, error) {
 	instance.stopMu.Lock()
 	if instance.stopped {
 		instance.stopMu.Unlock()
-		return nil
+		return StopSkipped, nil
 	}
 	instance.stopped = true
 	instance.stopMu.Unlock()
 	if instance.lifecycle.stop == nil {
-		return nil
+		return StopSkipped, nil
 	}
-	done := make(chan error, 1)
+	done := make(chan stopResult, 1)
 	go func() {
-		done <- instance.invoke("Stop", func() error {
+		panicked, err := instance.invokeClassified("Stop", func() error {
 			return instance.lifecycle.stop(instance.value, deadline)
 		})
+		switch {
+		case panicked:
+			done <- stopResult{outcome: StopPanicked, err: err}
+		case err != nil:
+			done <- stopResult{outcome: StopFailed, err: err}
+		default:
+			done <- stopResult{outcome: StopCompleted}
+		}
 	}()
 	select {
-	case err := <-done:
-		return err
+	case result := <-done:
+		return result.outcome, result.err
 	case <-deadline.Done():
 	}
+	// The budget is spent. Read done once more without blocking before
+	// declaring the Stop abandoned: a select whose cases are both ready picks
+	// one at random, so without this second read a Stop that finished in the
+	// same instant as the deadline would be classified by the scheduler
+	// rather than by what it actually did.
 	select {
-	case err := <-done:
-		return err
+	case result := <-done:
+		return result.outcome, result.err
 	default:
-		return fmt.Errorf("xbc: plugin %s Stop did not return within shutdown budget %s; abandoning it", instance.identity, budget)
+		return StopAbandoned, fmt.Errorf("xbc: plugin %s Stop did not return within shutdown budget %s; abandoning it", instance.identity, budget)
 	}
 }
 
-// Unwind visits every owned instance in reverse graph order. afterStop is
-// called even after Stop errors and lets runtime enforce Stop→cancel→join for
-// each Plugin's managed task scope.
-func (constructed *Constructed) Unwind(deadline context.Context, budget time.Duration, afterStop func(plugin.Identity) error) error {
+// Unwind visits every owned instance in reverse graph order under one shared
+// budget and returns what actually happened. afterStop is called even after
+// Stop errors and lets runtime enforce Stop→cancel→join for each Plugin's
+// managed task scope.
+//
+// Exactly one Stop is in flight at a time. Once the shared budget is spent the
+// walk starts no further Stop and calls no further afterStop: an abandoned
+// Stop is still running, so launching the next one would let two Stop bodies
+// execute concurrently and would make reverse order a scheduling outcome
+// rather than a contract. The instances the walk no longer reaches are
+// reported as not-attempted; releasing whatever they still hold is the
+// caller's job.
+func (constructed *Constructed) Unwind(deadline context.Context, budget time.Duration, afterStop func(plugin.Identity) error) (ShutdownReport, error) {
+	var report ShutdownReport
 	if constructed == nil {
-		return nil
+		return report, nil
 	}
 	var errs []error
 	for index := len(constructed.instances) - 1; index >= 0; index-- {
 		instance := constructed.instances[index]
-		if err := instance.StopBounded(deadline, budget); err != nil {
+		if deadline.Err() != nil {
+			report.Records = append(report.Records, StopRecord{
+				Identity: instance.identity,
+				Outcome:  StopNotAttempted,
+			})
+			errs = append(errs, fmt.Errorf("xbc: plugin %s Stop was not attempted: the %s shutdown budget was already spent", instance.identity, budget))
+			continue
+		}
+		report.Attempted = append(report.Attempted, instance.identity)
+		outcome, err := instance.stopBounded(deadline, budget)
+		record := StopRecord{Identity: instance.identity, Outcome: outcome, Err: err}
+		if err != nil {
 			errs = append(errs, err)
 		}
-		if afterStop != nil {
-			if err := afterStop(instance.identity); err != nil {
-				errs = append(errs, err)
+		if outcome != StopAbandoned {
+			report.Completed = append(report.Completed, instance.identity)
+			if afterStop != nil {
+				if taskErr := afterStop(instance.identity); taskErr != nil {
+					record.TaskErr = taskErr
+					errs = append(errs, taskErr)
+				}
 			}
 		}
+		report.Records = append(report.Records, record)
 	}
-	return errors.Join(errs...)
+	return report, errors.Join(errs...)
 }
