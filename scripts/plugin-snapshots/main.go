@@ -1,8 +1,8 @@
-// Command plugin-snapshots generates and checks the two committed
-// Everything Is a Plugin snapshot artifacts: every plugin's canonical
-// identity (key, config path, cardinality, exported contracts) and every
-// plugin's effective ConfigSpec default value. Both are regenerated and
-// diffed at each merge to catch unreviewed drift.
+// Command plugin-snapshots generates and checks the two committed plugin
+// contract snapshots: every plugin's canonical identity (key, config path,
+// cardinality, exported contracts) and every plugin's effective ConfigSpec
+// default value. Architecture tests regenerate and compare both snapshots to
+// catch unreviewed contract drift.
 package main
 
 import (
@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	defaultIdentityOutputPath = ".claude/migration/everything-plugin/identity-snapshot.json"
-	defaultDefaultOutputPath  = ".claude/migration/everything-plugin/default-snapshot.json"
+	defaultIdentityOutputPath = "tests/architecture/testdata/plugin-contracts/identity-snapshot.json"
+	defaultDefaultOutputPath  = "tests/architecture/testdata/plugin-contracts/default-snapshot.json"
 )
 
 func main() {

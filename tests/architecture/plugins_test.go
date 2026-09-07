@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -245,15 +246,27 @@ func TestArchPluginImplementationsDocumentUsage(t *testing.T) {
 	}
 }
 
-// TestArchPluginMigrationInventoryIsCurrentAndZero turns the generated AST
-// inventory into a permanent acceptance gate rather than a one-off migration
-// report. It checks both checked-artifact drift and the zero-blocker invariant.
-func TestArchPluginMigrationInventoryIsCurrentAndZero(t *testing.T) {
+// TestArchPluginContractsAreCurrent guards the committed plugin identity and
+// default-value baselines against unreviewed contract drift.
+func TestArchPluginContractsAreCurrent(t *testing.T) {
 	root := archRepositoryRoot(t)
-	command := exec.Command("go", "run", "./scripts/plugin-migration-inventory", "-check", "-require-zero")
+	command := exec.Command("go", "run", "./scripts/plugin-snapshots", "-check")
 	command.Dir = root
 	output, err := command.CombinedOutput()
-	require.NoErrorf(t, err, "plugin migration inventory check failed:\n%s", output)
+	require.NoErrorf(t, err, "plugin contract snapshot check failed:\n%s", output)
+}
+
+// TestArchPluginMigrationHasNoBlockers generates the AST-backed inventory in
+// memory and checks the zero-blocker invariant without committing the report.
+func TestArchPluginMigrationHasNoBlockers(t *testing.T) {
+	root := archRepositoryRoot(t)
+	command := exec.Command("go", "run", "./scripts/plugin-migration-inventory", "-stdout", "-require-zero")
+	command.Dir = root
+	command.Stdout = io.Discard
+	var diagnostics strings.Builder
+	command.Stderr = &diagnostics
+	err := command.Run()
+	require.NoErrorf(t, err, "plugin migration blocker check failed:\n%s", diagnostics.String())
 }
 
 func archDocUsage(group *ast.CommentGroup) (usageFound bool, codeFound bool) {

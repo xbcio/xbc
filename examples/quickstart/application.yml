@@ -1,7 +1,7 @@
 # Quickstart keeps the default stack self-contained: it needs no database,
 # Redis, broker, object store, or cluster peers. Optional infrastructure
-# plugins can be added later with one autoload import and one plugins.<key>
-# configuration section.
+# plugins can be added later by selecting their Bundle and adding one
+# plugins.<key> configuration section.
 #
 # XBC searches application.yml and configs/application.yml in that order, or
 # accepts --config explicitly. YAML values do not expand ${VAR}; environment
@@ -43,8 +43,8 @@ web:
   trusted_proxies: []
 
 plugins:
-  # The optional biz response plugin has no configuration section: its
-  # autoload import is the complete opt-in for the success envelope and the
+  # The optional biz response plugin has no configuration section: selecting
+  # biz.Bundle() is the complete opt-in for the success envelope and the
   # biz.onerror middleware. The core web.onerror boundary needs no config.
 
   # Outermost panic boundary; sensitive request data and panic values are not
