@@ -1,45 +1,45 @@
 package main
 
 import (
+	"github.com/xbcio/xbc/extensions/authorization/rbac"
 	"github.com/xbcio/xbc/plugin"
-	"github.com/xbcio/xbc/security/rbac"
 
-	"github.com/xbcio/xbc/integrations/asynq"
-	"github.com/xbcio/xbc/integrations/cron"
-	"github.com/xbcio/xbc/integrations/elasticsearch"
-	"github.com/xbcio/xbc/integrations/gorm"
-	"github.com/xbcio/xbc/integrations/kafka"
-	"github.com/xbcio/xbc/integrations/objectstorage"
-	"github.com/xbcio/xbc/integrations/outbox"
-	"github.com/xbcio/xbc/integrations/raft"
-	"github.com/xbcio/xbc/integrations/redis"
-	"github.com/xbcio/xbc/integrations/webhook"
+	"github.com/xbcio/xbc/extensions/coordination/raft"
+	"github.com/xbcio/xbc/extensions/jobs/asynq"
+	"github.com/xbcio/xbc/extensions/jobs/cron"
+	"github.com/xbcio/xbc/extensions/messaging/kafka"
+	"github.com/xbcio/xbc/extensions/messaging/outbox"
+	"github.com/xbcio/xbc/extensions/messaging/webhook"
+	"github.com/xbcio/xbc/extensions/storage/elasticsearch"
+	"github.com/xbcio/xbc/extensions/storage/gorm"
+	"github.com/xbcio/xbc/extensions/storage/objectstorage"
+	"github.com/xbcio/xbc/extensions/storage/redis"
 
 	"github.com/xbcio/xbc/transport/web"
-	"github.com/xbcio/xbc/transport/web/accesslog"
-	"github.com/xbcio/xbc/transport/web/apikey"
-	"github.com/xbcio/xbc/transport/web/auditlog"
-	"github.com/xbcio/xbc/transport/web/biz"
-	"github.com/xbcio/xbc/transport/web/cors"
-	"github.com/xbcio/xbc/transport/web/gracefulshutdown"
-	"github.com/xbcio/xbc/transport/web/gzip"
-	"github.com/xbcio/xbc/transport/web/health"
-	"github.com/xbcio/xbc/transport/web/integrations/casbin"
-	casbingorm "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm"
-	casbinredis "github.com/xbcio/xbc/transport/web/integrations/casbin-redis"
-	"github.com/xbcio/xbc/transport/web/integrations/idempotency"
-	"github.com/xbcio/xbc/transport/web/integrations/jwt"
-	"github.com/xbcio/xbc/transport/web/integrations/metrics"
-	"github.com/xbcio/xbc/transport/web/integrations/session"
-	"github.com/xbcio/xbc/transport/web/integrations/swagger"
-	"github.com/xbcio/xbc/transport/web/integrations/tracing"
-	"github.com/xbcio/xbc/transport/web/pprof"
-	"github.com/xbcio/xbc/transport/web/ratelimit"
-	"github.com/xbcio/xbc/transport/web/recovery"
-	"github.com/xbcio/xbc/transport/web/requestid"
-	"github.com/xbcio/xbc/transport/web/securityheaders"
-	"github.com/xbcio/xbc/transport/web/tenant"
-	"github.com/xbcio/xbc/transport/web/timeout"
+	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey"
+	"github.com/xbcio/xbc/transport/web/extensions/authentication/jwt"
+	"github.com/xbcio/xbc/transport/web/extensions/authentication/session"
+	"github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
+	casbingorm "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-gorm"
+	casbinredis "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-redis"
+	"github.com/xbcio/xbc/transport/web/extensions/authorization/tenant"
+	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog"
+	"github.com/xbcio/xbc/transport/web/extensions/observability/auditlog"
+	"github.com/xbcio/xbc/transport/web/extensions/observability/metrics"
+	"github.com/xbcio/xbc/transport/web/extensions/observability/pprof"
+	"github.com/xbcio/xbc/transport/web/extensions/observability/requestid"
+	"github.com/xbcio/xbc/transport/web/extensions/observability/tracing"
+	"github.com/xbcio/xbc/transport/web/extensions/openapi/swag"
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/gracefulshutdown"
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/health"
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency"
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit"
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/recovery"
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/timeout"
+	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
+	"github.com/xbcio/xbc/transport/web/extensions/response/gzip"
+	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
+	"github.com/xbcio/xbc/transport/web/extensions/security/securityheaders"
 )
 
 // definitionProviders is the exhaustive, manually curated list of every
@@ -79,7 +79,7 @@ var definitionProviders = []func() plugin.Definition{
 	jwt.Definition,
 	metrics.Definition,
 	session.Definition,
-	swagger.Definition,
+	swag.Definition,
 	tracing.Definition,
 	pprof.Definition,
 	ratelimit.Definition,

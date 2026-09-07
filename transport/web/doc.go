@@ -53,7 +53,7 @@
 // outer-to-inner boundary, while typed Before and After references refine
 // domain execution order. Missing preferred targets are reported; missing
 // required targets, phase contradictions, and cycles fail startup. Middleware
-// implementing security.RequiresPrincipal is framework-pinned after the
+// implementing authentication.RequiresPrincipal is framework-pinned after the
 // canonical authentication middleware.
 //
 // ErrorMapper Plugins declare a separate ErrorOrder. The web-error-boundary

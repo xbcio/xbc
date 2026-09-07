@@ -21,7 +21,7 @@
       "config_path": "plugins.asynq",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/integrations/asynq.Enqueuer"
+        "github.com/xbcio/xbc/extensions/jobs/asynq.Enqueuer"
       ]
     },
     {
@@ -45,9 +45,9 @@
       "config_path": "plugins.casbin",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/security/rbac.Backend",
+        "github.com/xbcio/xbc/extensions/authorization/rbac.Backend",
         "github.com/xbcio/xbc/transport/web.Middleware",
-        "github.com/xbcio/xbc/transport/web/integrations/casbin.EnforcerProvider"
+        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.EnforcerProvider"
       ]
     },
     {
@@ -55,7 +55,7 @@
       "config_path": "plugins.casbin-gorm",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web/integrations/casbin.AdapterProvider"
+        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.AdapterProvider"
       ]
     },
     {
@@ -63,7 +63,7 @@
       "config_path": "plugins.casbin-redis",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web/integrations/casbin.WatcherFactory"
+        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.WatcherFactory"
       ]
     },
     {
@@ -85,7 +85,7 @@
       "config_path": "plugins.elasticsearch",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/integrations/elasticsearch.BulkIndexer"
+        "github.com/xbcio/xbc/extensions/storage/elasticsearch.BulkIndexer"
       ]
     },
     {
@@ -137,7 +137,7 @@
       "config_path": "plugins.kafka",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/integrations/kafka.Producer"
+        "github.com/xbcio/xbc/extensions/messaging/kafka.Producer"
       ]
     },
     {
@@ -154,7 +154,7 @@
       "config_path": "plugins.objectstorage",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/integrations/objectstorage.Store"
+        "github.com/xbcio/xbc/extensions/storage/objectstorage.Store"
       ]
     },
     {
@@ -162,7 +162,7 @@
       "config_path": "plugins.outbox",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/integrations/outbox.Dispatcher"
+        "github.com/xbcio/xbc/extensions/messaging/outbox.Dispatcher"
       ]
     },
     {
@@ -178,7 +178,7 @@
       "config_path": "plugins.raft",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/integrations/raft.Node"
+        "github.com/xbcio/xbc/extensions/coordination/raft.Node"
       ]
     },
     {
@@ -194,7 +194,7 @@
       "config_path": "plugins.rbac",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/security/rbac.Manager"
+        "github.com/xbcio/xbc/extensions/authorization/rbac.Manager"
       ]
     },
     {
@@ -233,12 +233,12 @@
       "cardinality": "single",
       "contracts": [
         "github.com/xbcio/xbc/transport/web.Middleware",
-        "github.com/xbcio/xbc/transport/web/integrations/session.Manager"
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/session.Manager"
       ]
     },
     {
-      "key": "swagger",
-      "config_path": "plugins.swagger",
+      "key": "swag",
+      "config_path": "plugins.swag",
       "cardinality": "single",
       "contracts": [
         "github.com/xbcio/xbc/transport/web.RouteCatalogListener",
@@ -266,7 +266,7 @@
       "config_path": "plugins.tracing",
       "cardinality": "single",
       "contracts": [
-        "*github.com/xbcio/xbc/transport/web/integrations/tracing.Handle",
+        "*github.com/xbcio/xbc/transport/web/extensions/observability/tracing.Handle",
         "github.com/xbcio/xbc/transport/web.Middleware"
       ]
     },
@@ -281,7 +281,7 @@
       "config_path": "plugins.webhook",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/integrations/webhook.Dispatcher"
+        "github.com/xbcio/xbc/extensions/messaging/webhook.Dispatcher"
       ]
     }
   ]

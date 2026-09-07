@@ -12,6 +12,7 @@ require (
 	github.com/casbin/casbin/v2 v2.135.0
 	github.com/casbin/gorm-adapter/v3 v3.39.0
 	github.com/gin-gonic/gin v1.12.0
+	github.com/swaggo/swag v1.16.6
 	gorm.io/gorm v1.31.1
 )
 

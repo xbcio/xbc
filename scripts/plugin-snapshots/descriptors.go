@@ -56,7 +56,7 @@ func effectiveConfigPath(descriptor pluginmodel.DefinitionDescriptor) string {
 // could share a short name.
 //
 // Contract types are normally interfaces, which are always named, but at
-// least one plugin in this repository (transport/web/integrations/casbin)
+// least one plugin in this repository (transport/web/extensions/authorization/casbin)
 // exports a concrete pointer type as an additional contract. Pointer types
 // are themselves unnamed (PkgPath and Name are both empty), so this walks
 // through any leading pointer indirection and qualifies the pointed-to named

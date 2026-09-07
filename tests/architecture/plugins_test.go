@@ -293,30 +293,44 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	t.Helper()
 	repositoryRoot := archRepositoryRoot(t)
 	webRoot := filepath.Join(repositoryRoot, "transport", "web")
-	roots := make([]string, 0, len(archWebBuiltinNames)+1)
-	for _, name := range archWebBuiltinNames {
-		roots = append(roots, filepath.Join(webRoot, name))
+	roots := make([]string, 0, 35)
+	for _, extensionPath := range archWebPackageExtensionPaths {
+		roots = append(roots, filepath.Join(webRoot, "extensions", filepath.FromSlash(extensionPath)))
 	}
-	roots = append(roots, filepath.Join(repositoryRoot, "security", "rbac"))
 
-	for _, namespace := range []string{
-		filepath.Join(repositoryRoot, "integrations"),
-		filepath.Join(webRoot, "integrations"),
-	} {
-		entries, err := os.ReadDir(namespace)
-		require.NoError(t, err, "discover integration modules beneath %s", namespace)
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			root := filepath.Join(namespace, entry.Name())
-			info, err := os.Stat(filepath.Join(root, "go.mod"))
-			require.NoError(t, err, "integration %s must declare its module", root)
-			require.False(t, info.IsDir(), "integration manifest for %s must be a file", root)
-			roots = append(roots, root)
+	protocolNeutral := archExtensionModuleRoots(t, filepath.Join(repositoryRoot, "extensions"))
+	require.Len(t, protocolNeutral, 11, "expected 11 protocol-neutral extension plugins")
+	roots = append(roots, protocolNeutral...)
+
+	webAdapter := filepath.Join(webRoot, "extensions", "authorization", "rbac")
+	var webPlugins []string
+	for _, moduleRoot := range archExtensionModuleRoots(t, filepath.Join(webRoot, "extensions")) {
+		if moduleRoot != webAdapter {
+			webPlugins = append(webPlugins, moduleRoot)
 		}
 	}
-	require.Len(t, roots, 35, "expected 15 Web built-ins, 19 independent integrations, and protocol-neutral RBAC")
+	require.Len(t, webPlugins, 9, "expected 9 Web extension plugins plus the non-plugin RBAC adapter")
+	roots = append(roots, webPlugins...)
+
+	require.Len(t, roots, 35, "expected 15 Web package extensions, 11 protocol-neutral extension plugins, and 9 independently versioned Web extension plugins")
+	sort.Strings(roots)
+	return roots
+}
+
+func archExtensionModuleRoots(t *testing.T, namespace string) []string {
+	t.Helper()
+	var roots []string
+	err := filepath.WalkDir(namespace, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && entry.Name() == "go.mod" {
+			roots = append(roots, filepath.Dir(path))
+		}
+		return nil
+	})
+	require.NoError(t, err, "discover extension modules beneath %s", namespace)
+	require.NotEmpty(t, roots, "extension namespace %s contains no modules", namespace)
 	sort.Strings(roots)
 	return roots
 }

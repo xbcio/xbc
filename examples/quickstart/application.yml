@@ -96,10 +96,10 @@ plugins:
     # Do not expose dependency errors on public probes.
     detail_policy: never
 
-  swagger:
-    title: "XBC Quickstart API"
-    version: "dev"
-    json_path: "/openapi.json"
+  # API metadata and operations come from the generated docs package. This
+  # section selects its swag registry instance and configures serving paths.
+  swag:
+    instance_name: "swagger"
+    json_path: "/swagger.json"
     ui_path: "/docs"
     ui_enabled: true
-    bearer_auth: false

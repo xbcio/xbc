@@ -8,12 +8,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/xbcio/xbc/security"
+	"github.com/xbcio/xbc/authentication"
 )
 
 const (
-	testSchemeAPIKey security.Scheme = "apikey"
-	testSchemeJWT    security.Scheme = "jwt"
+	testSchemeAPIKey authentication.Scheme = "apikey"
+	testSchemeJWT    authentication.Scheme = "jwt"
 )
 
 func TestRouteAuthenticationPolicyDistinguishesAbsentPublicAndExplicit(t *testing.T) {
@@ -39,7 +39,7 @@ func TestRouteAuthenticationPolicyDistinguishesAbsentPublicAndExplicit(t *testin
 	require.True(t, ok)
 	require.NotNil(t, explicit.Auth)
 	assert.False(t, explicit.Auth.IsPublic())
-	assert.Equal(t, []security.Scheme{testSchemeJWT, testSchemeAPIKey}, explicit.Auth.Schemes())
+	assert.Equal(t, []authentication.Scheme{testSchemeJWT, testSchemeAPIKey}, explicit.Auth.Schemes())
 
 	var zero RouteInfo
 	assert.Nil(t, zero.Auth)
@@ -58,7 +58,7 @@ func TestAuthPolicyIsSealedAndCannotRepresentPublicWithSchemes(t *testing.T) {
 
 	explicit := Accepts(testSchemeJWT)
 	assert.False(t, explicit.IsPublic())
-	assert.Equal(t, []security.Scheme{testSchemeJWT}, explicit.Schemes())
+	assert.Equal(t, []authentication.Scheme{testSchemeJWT}, explicit.Schemes())
 }
 
 func TestRouteFreezeRejectsInvalidExplicitAuthenticationSchemes(t *testing.T) {
@@ -89,7 +89,7 @@ func TestRouteFreezeRejectsInvalidExplicitAuthenticationSchemes(t *testing.T) {
 }
 
 func TestRouteAuthenticationPolicyIsDefensivelyCopied(t *testing.T) {
-	source := []security.Scheme{testSchemeJWT, testSchemeAPIKey}
+	source := []authentication.Scheme{testSchemeJWT, testSchemeAPIKey}
 	policy := Accepts(source...)
 	source[0] = "mutated-source"
 
@@ -102,7 +102,7 @@ func TestRouteAuthenticationPolicyIsDefensivelyCopied(t *testing.T) {
 
 	first, ok := catalog.Lookup(http.MethodGet, "/api/private")
 	require.True(t, ok)
-	assert.Equal(t, []security.Scheme{testSchemeJWT, testSchemeAPIKey}, first.Auth.Schemes())
+	assert.Equal(t, []authentication.Scheme{testSchemeJWT, testSchemeAPIKey}, first.Auth.Schemes())
 
 	returned := first.Auth.Schemes()
 	returned[0] = "mutated-return"
@@ -114,5 +114,5 @@ func TestRouteAuthenticationPolicyIsDefensivelyCopied(t *testing.T) {
 
 	again, ok := catalog.Lookup(http.MethodGet, "/api/private")
 	require.True(t, ok)
-	assert.Equal(t, []security.Scheme{testSchemeJWT, testSchemeAPIKey}, again.Auth.Schemes())
+	assert.Equal(t, []authentication.Scheme{testSchemeJWT, testSchemeAPIKey}, again.Auth.Schemes())
 }

@@ -138,7 +138,7 @@ func TestArchCoreGoModDoesNotRequireOptionalStacks(t *testing.T) {
 		for _, forbidden := range []string{
 			"github.com/gin-gonic/gin",
 			"google.golang.org/grpc",
-			"github.com/xbcio/xbc/integrations",
+			"github.com/xbcio/xbc/extensions",
 			"github.com/xbcio/xbc/transport",
 		} {
 			if archPathAtOrBelow(req.Path, forbidden) {
@@ -315,7 +315,7 @@ func TestArchCoreDependencyClosureExcludesOptionalStacks(t *testing.T) {
 		for _, forbidden := range []string{
 			"github.com/gin-gonic/gin",
 			"google.golang.org/grpc",
-			"github.com/xbcio/xbc/integrations",
+			"github.com/xbcio/xbc/extensions",
 			"github.com/xbcio/xbc/transport",
 		} {
 			if archPathAtOrBelow(dep, forbidden) {

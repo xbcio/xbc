@@ -2,7 +2,7 @@
   "plugins": [
     {
       "key": "accesslog",
-      "config_type": "github.com/xbcio/xbc/transport/web/accesslog.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/accesslog.Config",
       "defaults": {
         "SkipPaths": null,
         "RequestIDHeader": "X-Request-ID",
@@ -12,7 +12,7 @@
     },
     {
       "key": "apikey",
-      "config_type": "github.com/xbcio/xbc/transport/web/apikey.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/apikey.Config",
       "defaults": {
         "Header": "X-API-Key",
         "AppIDHeader": "X-App-ID",
@@ -25,7 +25,7 @@
     },
     {
       "key": "asynq",
-      "config_type": "github.com/xbcio/xbc/integrations/asynq.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/jobs/asynq.Config",
       "defaults": {
         "Redis": {
           "Addr": "127.0.0.1:6379",
@@ -52,7 +52,7 @@
     },
     {
       "key": "auditlog",
-      "config_type": "github.com/xbcio/xbc/transport/web/auditlog.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/auditlog.Config",
       "defaults": {
         "Async": false,
         "QueueSize": 1024,
@@ -65,12 +65,12 @@
     },
     {
       "key": "biz",
-      "config_type": "github.com/xbcio/xbc/transport/web/biz.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/response/biz.Config",
       "defaults": {}
     },
     {
       "key": "casbin",
-      "config_type": "github.com/xbcio/xbc/transport/web/integrations/casbin.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.Config",
       "defaults": {
         "Model": "",
         "ModelFile": "",
@@ -91,7 +91,7 @@
     },
     {
       "key": "casbin-gorm",
-      "config_type": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-gorm.Config",
       "defaults": {
         "DBInstance": "default",
         "Table": "casbin_rule",
@@ -101,7 +101,7 @@
     },
     {
       "key": "casbin-redis",
-      "config_type": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-redis.Config",
       "defaults": {
         "Mode": "standalone",
         "Addrs": [
@@ -119,7 +119,7 @@
     },
     {
       "key": "cors",
-      "config_type": "github.com/xbcio/xbc/transport/web/cors.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/security/cors.Config",
       "defaults": {
         "AllowOrigins": [
           "*"
@@ -146,7 +146,7 @@
     },
     {
       "key": "cron",
-      "config_type": "github.com/xbcio/xbc/integrations/cron.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/jobs/cron.Config",
       "defaults": {
         "Seconds": false,
         "Timezone": "Local",
@@ -172,7 +172,7 @@
     },
     {
       "key": "elasticsearch",
-      "config_type": "github.com/xbcio/xbc/integrations/elasticsearch.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/storage/elasticsearch.Config",
       "defaults": {
         "Addresses": null,
         "CloudID": "",
@@ -195,7 +195,7 @@
     },
     {
       "key": "gorm",
-      "config_type": "github.com/xbcio/xbc/integrations/gorm.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/storage/gorm.Config",
       "defaults": {
         "Driver": "mysql",
         "DSN": "",
@@ -209,7 +209,7 @@
     },
     {
       "key": "gzip",
-      "config_type": "github.com/xbcio/xbc/transport/web/gzip.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/response/gzip.Config",
       "defaults": {
         "Level": -1,
         "MinLength": 1024,
@@ -230,7 +230,7 @@
     },
     {
       "key": "health",
-      "config_type": "github.com/xbcio/xbc/transport/web/health.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/reliability/health.Config",
       "defaults": {
         "Timeout": 2000000000,
         "LivenessPath": "/healthz",
@@ -240,7 +240,7 @@
     },
     {
       "key": "idempotency",
-      "config_type": "github.com/xbcio/xbc/transport/web/integrations/idempotency.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency.Config",
       "defaults": {
         "Header": "Idempotency-Key",
         "Backend": "memory",
@@ -258,7 +258,7 @@
     },
     {
       "key": "jwt",
-      "config_type": "github.com/xbcio/xbc/transport/web/integrations/jwt.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt.Config",
       "defaults": {
         "Secret": "",
         "Algorithm": "HS256",
@@ -278,7 +278,7 @@
     },
     {
       "key": "kafka",
-      "config_type": "github.com/xbcio/xbc/integrations/kafka.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/messaging/kafka.Config",
       "defaults": {
         "Brokers": null,
         "ClientID": "xbc",
@@ -311,7 +311,7 @@
     },
     {
       "key": "metrics",
-      "config_type": "github.com/xbcio/xbc/transport/web/integrations/metrics.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/metrics.Config",
       "defaults": {
         "Namespace": "xbc",
         "Subsystem": "",
@@ -339,7 +339,7 @@
     },
     {
       "key": "objectstorage",
-      "config_type": "github.com/xbcio/xbc/integrations/objectstorage.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/storage/objectstorage.Config",
       "defaults": {
         "Backend": "local",
         "MaxObjectBytes": 67108864,
@@ -368,7 +368,7 @@
     },
     {
       "key": "outbox",
-      "config_type": "github.com/xbcio/xbc/integrations/outbox.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/messaging/outbox.Config",
       "defaults": {
         "DBInstance": "default",
         "Table": "xbc_outbox_events",
@@ -392,7 +392,7 @@
     },
     {
       "key": "pprof",
-      "config_type": "github.com/xbcio/xbc/transport/web/pprof.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/pprof.Config",
       "defaults": {
         "Enabled": false,
         "Path": "/debug/pprof",
@@ -403,7 +403,7 @@
     },
     {
       "key": "raft",
-      "config_type": "github.com/xbcio/xbc/integrations/raft.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/coordination/raft.Config",
       "defaults": {
         "NodeID": "",
         "BindAddr": "127.0.0.1:7000",
@@ -430,7 +430,7 @@
     },
     {
       "key": "ratelimit",
-      "config_type": "github.com/xbcio/xbc/transport/web/ratelimit.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit.Config",
       "defaults": {
         "Rate": 100,
         "Burst": 200,
@@ -439,7 +439,7 @@
     },
     {
       "key": "rbac",
-      "config_type": "github.com/xbcio/xbc/security/rbac.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/authorization/rbac.Config",
       "defaults": {
         "Backend": {
           "Plugin": "casbin",
@@ -450,14 +450,14 @@
     },
     {
       "key": "recovery",
-      "config_type": "github.com/xbcio/xbc/transport/web/recovery.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/reliability/recovery.Config",
       "defaults": {
         "Stack": true
       }
     },
     {
       "key": "redis",
-      "config_type": "github.com/xbcio/xbc/integrations/redis.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/storage/redis.Config",
       "defaults": {
         "Addr": "",
         "Username": "",
@@ -479,7 +479,7 @@
     },
     {
       "key": "requestid",
-      "config_type": "github.com/xbcio/xbc/transport/web/requestid.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/requestid.Config",
       "defaults": {
         "Header": "X-Request-ID",
         "TrustIncoming": true,
@@ -488,7 +488,7 @@
     },
     {
       "key": "securityheaders",
-      "config_type": "github.com/xbcio/xbc/transport/web/securityheaders.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/security/securityheaders.Config",
       "defaults": {
         "ContentTypeNosniff": true,
         "FrameOptions": "DENY",
@@ -507,7 +507,7 @@
     },
     {
       "key": "session",
-      "config_type": "github.com/xbcio/xbc/transport/web/integrations/session.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/session.Config",
       "defaults": {
         "Backend": "memory",
         "RedisInstance": "default",
@@ -527,22 +527,18 @@
       }
     },
     {
-      "key": "swagger",
-      "config_type": "github.com/xbcio/xbc/transport/web/integrations/swagger.Config",
+      "key": "swag",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/openapi/swag.Config",
       "defaults": {
-        "Title": "XBC API",
-        "Version": "dev",
-        "Description": "",
-        "JSONPath": "/openapi.json",
+        "InstanceName": "swagger",
+        "JSONPath": "/swagger.json",
         "UIPath": "/docs",
-        "UIEnabled": true,
-        "Servers": null,
-        "BearerAuth": true
+        "UIEnabled": true
       }
     },
     {
       "key": "tenant",
-      "config_type": "github.com/xbcio/xbc/transport/web/tenant.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/tenant.Config",
       "defaults": {
         "Required": true,
         "Header": "X-Tenant-ID",
@@ -556,7 +552,7 @@
     },
     {
       "key": "timeout",
-      "config_type": "github.com/xbcio/xbc/transport/web/timeout.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/reliability/timeout.Config",
       "defaults": {
         "Duration": 15000000000,
         "ExcludePaths": null,
@@ -565,7 +561,7 @@
     },
     {
       "key": "tracing",
-      "config_type": "github.com/xbcio/xbc/transport/web/integrations/tracing.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/tracing.Config",
       "defaults": {
         "ServiceName": "xbc",
         "ServiceVersion": "",
@@ -621,7 +617,7 @@
     },
     {
       "key": "webhook",
-      "config_type": "github.com/xbcio/xbc/integrations/webhook.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/messaging/webhook.Config",
       "defaults": {
         "Workers": 4,
         "QueueSize": 1024,

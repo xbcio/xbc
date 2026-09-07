@@ -64,8 +64,8 @@ func TestSessionDescriptorRoundTrips(t *testing.T) {
 	}
 
 	wantContracts := map[string]bool{
-		"github.com/xbcio/xbc/transport/web.Middleware":                   false,
-		"github.com/xbcio/xbc/transport/web/integrations/session.Manager": false,
+		"github.com/xbcio/xbc/transport/web.Middleware":                                false,
+		"github.com/xbcio/xbc/transport/web/extensions/authentication/session.Manager": false,
 	}
 	if len(session.Contracts) != len(wantContracts) {
 		t.Fatalf("session.Contracts = %v, want exactly %v", session.Contracts, wantContracts)

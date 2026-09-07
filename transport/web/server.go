@@ -11,9 +11,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/xbcio/xbc/authentication"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
-	"github.com/xbcio/xbc/security"
 )
 
 // Server is the Gin-backed HTTP server Plugin. Its Definition injects the
@@ -133,7 +133,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		pinMiddlewareOutermost(Require(ErrorBoundaryKey)),
 	}
 	for _, entry := range s.middlewares {
-		if _, requiresPrincipal := entry.Value.(security.RequiresPrincipal); requiresPrincipal {
+		if _, requiresPrincipal := entry.Value.(authentication.RequiresPrincipal); requiresPrincipal {
 			orderOptions = append(orderOptions,
 				pinMiddlewareAfter(entry.Identity, Require(AuthenticationMiddlewareKey)))
 		}

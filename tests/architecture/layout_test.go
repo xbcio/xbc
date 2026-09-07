@@ -35,52 +35,66 @@ func archProductionGoFilesInDir(t *testing.T, dir string) []string {
 	return files
 }
 
-// archWebBuiltinNames is the intentional set of Web-owned plugins compiled as
-// packages of the transport/web module. Adding or removing one changes the Web
-// runtime's distribution boundary and therefore requires an explicit update.
-var archWebBuiltinNames = []string{
-	"accesslog",
-	"apikey",
-	"auditlog",
-	"biz",
-	"cors",
-	"gracefulshutdown",
-	"gzip",
-	"health",
-	"pprof",
-	"ratelimit",
-	"recovery",
-	"requestid",
-	"securityheaders",
-	"tenant",
-	"timeout",
+// archWebPackageExtensionPaths is the intentional set of lightweight Web
+// plugins grouped beneath extensions while remaining packages of the
+// transport/web module. Adding or removing one changes the Web runtime's
+// distribution boundary and therefore requires an explicit update.
+var archWebPackageExtensionPaths = []string{
+	"authentication/apikey",
+	"authorization/tenant",
+	"observability/accesslog",
+	"observability/auditlog",
+	"observability/pprof",
+	"observability/requestid",
+	"response/biz",
+	"response/gzip",
+	"reliability/gracefulshutdown",
+	"reliability/health",
+	"reliability/ratelimit",
+	"reliability/recovery",
+	"reliability/timeout",
+	"security/cors",
+	"security/securityheaders",
 }
 
-// archWebAdapterNames contains transport-only packages that adapt a
-// protocol-neutral capability without owning a plugin Definition or autoload.
-var archWebAdapterNames = []string{
-	"rbac",
+var archProtocolNeutralExtensionGroups = []string{
+	"authorization",
+	"coordination",
+	"storage",
+	"jobs",
+	"messaging",
+}
+
+var archWebExtensionGroups = []string{
+	"authentication",
+	"authorization",
+	"openapi",
+	"observability",
+	"response",
+	"reliability",
+	"security",
 }
 
 // TestArchRetiredPathsStayRetired prevents retired packages and repository
 // groupings from becoming second owners beside their canonical replacements.
 // Process orchestration and its private command parsing stay under the root
 // runtime owner, while Plugin model, assembly, and optional autoload infrastructure
-// stay together under plugin. Web built-ins and independently
-// versioned integrations retain their owners.
+// stay together under plugin. Web package extensions and independently
+// versioned extensions retain their capability-grouped owners.
 func TestArchRetiredPathsStayRetired(t *testing.T) {
 	root := archRepositoryRoot(t)
 	for _, canonical := range []string{
+		"authentication",
 		"runtime",
 		"plugin",
 		"plugin/assembly",
 		"plugin/autoload",
 		"plugin/model",
-		"integrations",
+		"extensions",
 		"transport",
 		"transport/web",
 		"transport/web/prelude",
-		"transport/web/integrations",
+		"transport/web/extensions",
 	} {
 		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(canonical)))
 		require.NoError(t, err, "canonical path %s must exist", canonical)
@@ -88,6 +102,9 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	}
 
 	retiredPaths := []string{
+		"authn",
+		"extensions/data",
+		"transport/web/extensions/presentation",
 		"internal/runtime",
 		"internal/cli",
 		"assembly",
@@ -98,8 +115,29 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		"topology",
 		"container",
 		"integration",
+		"integrations",
 		"management",
+		"security",
 		"transport/web/plugins",
+		"transport/web/integrations",
+		"transport/web/extensions/documentation",
+		"transport/web/extensions/openapi/swagger",
+		"transport/web/rbac",
+		"transport/web/accesslog",
+		"transport/web/apikey",
+		"transport/web/auditlog",
+		"transport/web/biz",
+		"transport/web/cors",
+		"transport/web/gracefulshutdown",
+		"transport/web/gzip",
+		"transport/web/health",
+		"transport/web/pprof",
+		"transport/web/ratelimit",
+		"transport/web/recovery",
+		"transport/web/requestid",
+		"transport/web/securityheaders",
+		"transport/web/tenant",
+		"transport/web/timeout",
 		"transport/web/autoload/prelude",
 		"transport/web/business",
 		"internal/assembly",
@@ -117,14 +155,14 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		retiredPath := filepath.Join(root, filepath.FromSlash(retired))
 		_, err := os.Stat(retiredPath)
 		if err == nil {
-			t.Errorf("old path %s must not be revived; use the canonical runtime, plugin, transport, or integrations owner", retired)
+			t.Errorf("old path %s must not be revived; use the canonical authentication, extensions, runtime, plugin, or transport owner", retired)
 			continue
 		}
 		require.ErrorIs(t, err, os.ErrNotExist, "checking old path %s failed", retired)
 	}
 
-	archAssertIndependentIntegrationNamespace(t, filepath.Join(root, "integrations"))
-	archAssertIndependentIntegrationNamespace(t, filepath.Join(root, "transport", "web", "integrations"))
+	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "extensions"), archProtocolNeutralExtensionGroups, nil)
+	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "web", "extensions"), archWebExtensionGroups, archWebPackageExtensionPaths)
 
 	webRoot := filepath.Join(root, "transport", "web")
 	preludeRoot := filepath.Join(webRoot, "prelude")
@@ -132,41 +170,31 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	_, err := os.Stat(filepath.Join(preludeRoot, "go.mod"))
 	require.ErrorIs(t, err, os.ErrNotExist, "Web prelude must belong to the transport/web module")
 
-	ownedPackageSet := make(map[string]bool, len(archWebBuiltinNames)+len(archWebAdapterNames))
-	for _, name := range archWebBuiltinNames {
-		ownedPackageSet[name] = true
-		builtinRoot := filepath.Join(webRoot, name)
-		info, err := os.Stat(builtinRoot)
-		require.NoError(t, err, "Web built-in package %s must exist", filepath.ToSlash(filepath.Join("transport", "web", name)))
-		require.True(t, info.IsDir(), "Web built-in %s must be a directory", builtinRoot)
-		require.NotEmpty(t, archProductionGoFilesInDir(t, builtinRoot), "%s must contain a production Go package", builtinRoot)
-		_, err = os.Stat(filepath.Join(builtinRoot, "go.mod"))
-		require.ErrorIs(t, err, os.ErrNotExist, "Web built-in %s must belong to the transport/web module, not declare its own module", name)
-		autoload, err := os.Stat(filepath.Join(builtinRoot, "autoload"))
-		require.NoError(t, err, "Web built-in %s must provide an autoload package", name)
-		require.True(t, autoload.IsDir(), "Web built-in autoload path %s must be a directory", autoload.Name())
-	}
-	for _, name := range archWebAdapterNames {
-		ownedPackageSet[name] = true
-	}
-
 	entries, err := os.ReadDir(webRoot)
 	require.NoError(t, err, "reading Web module root failed")
+	allowedDirectories := map[string]bool{
+		"autoload":   true,
+		"extensions": true,
+		"prelude":    true,
+	}
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name() == "autoload" || entry.Name() == "prelude" || entry.Name() == "integrations" {
+		if !entry.IsDir() {
 			continue
 		}
-		assert.Truef(t, ownedPackageSet[entry.Name()], "unexpected direct package directory transport/web/%s; declare its ownership explicitly", entry.Name())
+		assert.Truef(t, allowedDirectories[entry.Name()], "unexpected direct package directory transport/web/%s; Web plugins belong beneath transport/web/extensions", entry.Name())
 	}
 }
 
-// archAssertIndependentIntegrationNamespace permits documentation at a module
-// namespace but requires every direct child directory to be a real module.
-func archAssertIndependentIntegrationNamespace(t *testing.T, namespace string) {
+// archAssertGroupedExtensionNamespace requires the namespace and its declared
+// capability groups to remain organization-only directories. Every direct
+// child of a group is either an independently versioned module or one of the
+// explicitly declared package leaves owned by the parent module.
+func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expectedGroups, packageLeaves []string) {
 	t.Helper()
 	entries, err := os.ReadDir(namespace)
-	require.NoError(t, err, "reading integration namespace %s failed", namespace)
-	modules := 0
+	require.NoError(t, err, "reading extension namespace %s failed", namespace)
+
+	var actualGroups []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			name := entry.Name()
@@ -175,13 +203,59 @@ func archAssertIndependentIntegrationNamespace(t *testing.T, namespace string) {
 			}
 			continue
 		}
-		modules++
-		manifest := filepath.Join(namespace, entry.Name(), "go.mod")
-		info, err := os.Stat(manifest)
-		require.NoError(t, err, "integration directory %s must be an independent module", filepath.Join(namespace, entry.Name()))
-		require.False(t, info.IsDir(), "integration manifest %s must be a file", manifest)
+		actualGroups = append(actualGroups, entry.Name())
 	}
-	require.NotZero(t, modules, "integration namespace %s must contain independent modules", namespace)
+	sort.Strings(actualGroups)
+	wantGroups := append([]string(nil), expectedGroups...)
+	sort.Strings(wantGroups)
+	require.Equal(t, wantGroups, actualGroups, "extension capability groups beneath %s changed; update the explicit ownership map", namespace)
+
+	wantPackageLeaves := append([]string(nil), packageLeaves...)
+	sort.Strings(wantPackageLeaves)
+	packageLeafSet := make(map[string]bool, len(wantPackageLeaves))
+	for _, leaf := range wantPackageLeaves {
+		packageLeafSet[leaf] = true
+	}
+	var actualPackageLeaves []string
+
+	for _, group := range actualGroups {
+		groupRoot := filepath.Join(namespace, group)
+		groupEntries, err := os.ReadDir(groupRoot)
+		require.NoError(t, err, "reading extension group %s failed", groupRoot)
+
+		leaves := 0
+		for _, entry := range groupEntries {
+			if !entry.IsDir() {
+				name := entry.Name()
+				if name == "go.mod" || strings.HasSuffix(name, ".go") {
+					t.Errorf("%s must not exist: %s is a capability namespace, not a Go package or module", filepath.Join(groupRoot, name), groupRoot)
+				}
+				continue
+			}
+
+			leaves++
+			leafRoot := filepath.Join(groupRoot, entry.Name())
+			leafPath := filepath.ToSlash(filepath.Join(group, entry.Name()))
+			if packageLeafSet[leafPath] {
+				actualPackageLeaves = append(actualPackageLeaves, leafPath)
+				require.NotEmpty(t, archProductionGoFilesInDir(t, leafRoot), "Web package extension %s must contain production Go files", leafRoot)
+				_, err := os.Stat(filepath.Join(leafRoot, "go.mod"))
+				require.ErrorIs(t, err, os.ErrNotExist, "Web package extension %s must belong to the transport/web module", leafPath)
+				autoload, err := os.Stat(filepath.Join(leafRoot, "autoload"))
+				require.NoError(t, err, "Web package extension %s must provide an autoload package", leafPath)
+				require.True(t, autoload.IsDir(), "Web package extension autoload path %s must be a directory", autoload.Name())
+				continue
+			}
+
+			manifest := filepath.Join(leafRoot, "go.mod")
+			info, err := os.Stat(manifest)
+			require.NoError(t, err, "extension leaf %s must be an independent module or an explicitly declared package extension", leafRoot)
+			require.False(t, info.IsDir(), "extension manifest %s must be a file", manifest)
+		}
+		require.NotZero(t, leaves, "extension group %s must contain extension leaves", groupRoot)
+	}
+	sort.Strings(actualPackageLeaves)
+	require.Equal(t, wantPackageLeaves, actualPackageLeaves, "Web package extension ownership beneath %s changed", namespace)
 }
 
 // TestArchRootPublicAPIIsFrozen keeps the application-facing facade narrow.

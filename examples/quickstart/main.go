@@ -7,6 +7,13 @@
 //
 // Use the doctor subcommand to validate the complete plan without constructing
 // resources or opening a listener.
+//
+// @title XBC Quickstart API
+// @version dev
+// @description XBC quickstart service.
+// @BasePath /api/v1
+//
+//go:generate go run github.com/swaggo/swag/cmd/swag@v1.16.6 init -g main.go -d .,internal/greeter --parseInternal --parseDependencyLevel 1 -o docs --ot go,json
 package main
 
 import (
@@ -17,10 +24,11 @@ import (
 	"syscall"
 
 	"github.com/xbcio/xbc"
+	_ "github.com/xbcio/xbc/examples/quickstart/docs"
 	"github.com/xbcio/xbc/examples/quickstart/internal/greeter"
-	"github.com/xbcio/xbc/transport/web/biz"
-	"github.com/xbcio/xbc/transport/web/cors"
-	"github.com/xbcio/xbc/transport/web/integrations/swagger"
+	"github.com/xbcio/xbc/transport/web/extensions/openapi/swag"
+	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
+	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
 	"github.com/xbcio/xbc/transport/web/prelude"
 )
 
@@ -29,7 +37,7 @@ func main() {
 		prelude.Bundle(),
 		biz.Bundle(),
 		cors.Bundle(),
-		swagger.Bundle(),
+		swag.Bundle(),
 		greeter.Bundle(),
 	))
 	if err != nil {
