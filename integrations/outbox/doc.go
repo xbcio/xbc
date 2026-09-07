@@ -15,8 +15,17 @@
 //		orders.Bundle(),
 //	))
 //
-// The configured db_instance selects an exact *gorm.DB producer identity. A
-// consumer declares typed inputs and reads those same tokens in its factory:
+// The configured db_instance selects an exact *gorm.DB producer identity:
+//
+//	plugins:
+//	  outbox:
+//	    db_instance: writer
+//	    table: xbc_outbox_events
+//	    migrate: true
+//	    worker:
+//	      enabled: true
+//
+// A consumer declares typed inputs and reads those same tokens in its factory:
 //
 //	var (
 //		ordersDB    = plugin.RefToInstance[*gormlib.DB](gormplugin.Key, "writer")

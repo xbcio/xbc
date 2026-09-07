@@ -1,8 +1,9 @@
 // Package elasticsearch provides named timeout-aware Elasticsearch clients with
-// bounded asynchronous bulk indexing. Importing this package is side-effect
-// free. Prefer explicit composition with elasticsearch.Bundle(); executables
-// that intentionally use process-wide autoload may blank-import the autoload
-// subpackage.
+// bounded asynchronous bulk indexing. This module pins
+// github.com/elastic/go-elasticsearch/v8 at v8.19.1. Importing this package is
+// side-effect free. Prefer explicit composition with elasticsearch.Bundle();
+// executables that intentionally use process-wide autoload may blank-import
+// the autoload subpackage.
 //
 // # Usage
 //
