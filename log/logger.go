@@ -1,9 +1,3 @@
-// Package log is xbc's logging facade.
-//
-// It follows the SLF4J approach: business code and plugins depend only on
-// this package's Logger interface, and the concrete backend is wired up by
-// Init (zap by default) or replaced via SetLogger.
-// This package has zero framework dependencies and can be used standalone, outside xbc.
 package log
 
 import (
