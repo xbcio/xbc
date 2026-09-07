@@ -18,7 +18,7 @@ import (
 
 const (
 	archPluginImportPath       = "github.com/xbcio/xbc/plugin"
-	archInternalAutoloadPath   = "github.com/xbcio/xbc/internal/autoload"
+	archPluginAutoloadPath     = "github.com/xbcio/xbc/plugin/autoload"
 	archRetiredCatalogPath     = "github.com/xbcio/xbc/plugin/catalog"
 	archRepositoryImportPrefix = "github.com/xbcio/xbc/"
 )
@@ -117,7 +117,7 @@ func archAssertAutoloadAdapter(t *testing.T, directory, parentImport string) {
 			for _, specification := range file.Imports {
 				importPath, err := strconv.Unquote(specification.Path.Value)
 				require.NoError(t, err)
-				assert.Containsf(t, []string{archInternalAutoloadPath, parentImport}, importPath, "%s leaf adapter may import only internal/autoload and its parent package", directory)
+				assert.Containsf(t, []string{archPluginAutoloadPath, parentImport}, importPath, "%s leaf adapter may import only plugin/autoload and its parent package", directory)
 				if specification.Name != nil {
 					assert.NotEqual(t, "_", specification.Name.Name, "%s must call the parent Bundle explicitly, not blank-import it", directory)
 				}
@@ -130,7 +130,7 @@ func archAssertAutoloadAdapter(t *testing.T, directory, parentImport string) {
 						continue
 					}
 					initCount++
-					assert.Truef(t, archIsCanonicalAutoloadInit(file, declaration, parentImport), "%s init must contain only internal/autoload.Declare(parent.Bundle())", directory)
+					assert.Truef(t, archIsCanonicalAutoloadInit(file, declaration, parentImport), "%s init must contain only plugin/autoload.Declare(parent.Bundle())", directory)
 				case *ast.GenDecl:
 					if declaration.Tok != token.IMPORT {
 						assert.Failf(t, "autoload state", "%s may contain no production declarations except imports and init", directory)
@@ -143,12 +143,12 @@ func archAssertAutoloadAdapter(t *testing.T, directory, parentImport string) {
 }
 
 // TestArchAutoloadMutationIsConfined keeps the process-global optional adapter
-// private to internal/runtime and leaf autoload packages. Prelude and ordinary
-// implementation packages remain safe to import and call directly.
+// confined to runtime and declared leaf autoload packages. Prelude
+// and ordinary implementation packages remain safe to import and call directly.
 func TestArchAutoloadMutationIsConfined(t *testing.T) {
 	root := archRepositoryRoot(t)
 	allowedOwners := map[string]bool{
-		"internal/runtime":       true,
+		"runtime":                true,
 		"transport/web/autoload": true,
 	}
 	for _, implementationRoot := range archPluginImplementationRoots(t) {
@@ -175,13 +175,13 @@ func TestArchAutoloadMutationIsConfined(t *testing.T) {
 			importPath, err := strconv.Unquote(specification.Path.Value)
 			require.NoError(t, err)
 			assert.NotEqual(t, archRetiredCatalogPath, importPath, "%s must not revive the retired public catalog", path)
-			if importPath != archInternalAutoloadPath {
+			if importPath != archPluginAutoloadPath {
 				continue
 			}
 			relative, err := filepath.Rel(root, filepath.Dir(path))
 			require.NoError(t, err)
 			owner := filepath.ToSlash(relative)
-			assert.Truef(t, allowedOwners[owner], "%s imports internal/autoload outside a declared leaf adapter or internal/runtime", path)
+			assert.Truef(t, allowedOwners[owner], "%s imports plugin/autoload outside a declared leaf adapter or runtime", path)
 		}
 		return nil
 	})
@@ -201,7 +201,7 @@ func TestArchWebPreludeIsSideEffectFree(t *testing.T) {
 		for _, specification := range file.Imports {
 			importPath, err := strconv.Unquote(specification.Path.Value)
 			require.NoError(t, err)
-			assert.NotEqual(t, archInternalAutoloadPath, importPath, "Prelude must not mutate internal autoload")
+			assert.NotEqual(t, archPluginAutoloadPath, importPath, "Prelude must not mutate plugin autoload")
 			assert.NotEqual(t, archRetiredCatalogPath, importPath, "Prelude must not import the retired catalog")
 			if specification.Name != nil {
 				assert.NotEqual(t, "_", specification.Name.Name, "Prelude must compose explicit Bundles, not blank imports")
@@ -280,10 +280,11 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	t.Helper()
 	repositoryRoot := archRepositoryRoot(t)
 	webRoot := filepath.Join(repositoryRoot, "transport", "web")
-	roots := make([]string, 0, len(archWebBuiltinNames))
+	roots := make([]string, 0, len(archWebBuiltinNames)+1)
 	for _, name := range archWebBuiltinNames {
 		roots = append(roots, filepath.Join(webRoot, name))
 	}
+	roots = append(roots, filepath.Join(repositoryRoot, "security", "rbac"))
 
 	for _, namespace := range []string{
 		filepath.Join(repositoryRoot, "integrations"),
@@ -302,7 +303,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 			roots = append(roots, root)
 		}
 	}
-	require.Len(t, roots, 32, "expected 15 Web built-ins and 17 independent integrations")
+	require.Len(t, roots, 35, "expected 15 Web built-ins, 19 independent integrations, and protocol-neutral RBAC")
 	sort.Strings(roots)
 	return roots
 }
@@ -495,7 +496,7 @@ func archIsCanonicalAutoloadInit(file *ast.File, function *ast.FuncDecl, parentI
 		return false
 	}
 	declare, ok := archUnwrapExpression(expression.X).(*ast.CallExpr)
-	if !ok || !archCallMatches(file, declare, archInternalAutoloadPath, "Declare") || len(declare.Args) != 1 {
+	if !ok || !archCallMatches(file, declare, archPluginAutoloadPath, "Declare") || len(declare.Args) != 1 {
 		return false
 	}
 	bundle, ok := archUnwrapExpression(declare.Args[0]).(*ast.CallExpr)

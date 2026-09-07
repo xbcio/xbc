@@ -193,24 +193,23 @@ func TestArchRootPackageDoesNotImportExamples(t *testing.T) {
 
 // ── lower-layer direction versus public capability owners ──────────────
 //
-// The root package is a narrow application-facing facade. The internal runtime
-// owns lifecycle and process orchestration, internal assembly owns Plugin
-// assembly, and internal cli owns command parsing. The public plugin package may
-// delegate opaque representation to internal/pluginmodel, but that private model
-// remains below all three orchestration owners and must not pull them back in.
+// The root package is a narrow application-facing facade. The root runtime
+// package owns lifecycle, process orchestration, and private command parsing.
+// The plugin tree owns its typed facade, erased model, assembly,
+// and optional autoload infrastructure; it must not pull higher-level process
+// orchestration back into that subtree.
 
-// ── guard 5: plugin may use only its private model below internal ───────
+// ── guard 5: plugin must not import runtime, root facade, or internal packages ──
 
 // TestArchPluginPackagesDoNotImportHigherLevelOwners checks direct imports from
 // production and test files, then checks the production closure. The direct
-// check catches a forbidden test-only edge; the closure check prevents the
-// allowed internal/pluginmodel delegation from becoming an indirect bridge to
-// assembly, runtime, autoload, CLI, or another private implementation package.
+// check catches a forbidden test-only edge; the closure check prevents an
+// indirect bridge to runtime or another internal implementation package.
 func TestArchPluginPackagesDoNotImportHigherLevelOwners(t *testing.T) {
 	const (
-		rootPackage        = "github.com/xbcio/xbc"
-		internalRoot       = rootPackage + "/internal"
-		privatePluginModel = internalRoot + "/pluginmodel"
+		rootPackage  = "github.com/xbcio/xbc"
+		runtimeRoot  = rootPackage + "/runtime"
+		internalRoot = rootPackage + "/internal"
 	)
 
 	assertAllowed := func(owner, dep, evidence string) {
@@ -219,8 +218,12 @@ func TestArchPluginPackagesDoNotImportHigherLevelOwners(t *testing.T) {
 			t.Errorf("%s %s root package: plugin is the protocol-neutral SPI below the application facade", owner, evidence)
 			return
 		}
-		if archPathAtOrBelow(dep, internalRoot) && !archPathAtOrBelow(dep, privatePluginModel) {
-			t.Errorf("%s %s %q: public plugin may delegate only to %s; private assembly/runtime/autoload/CLI must not leak into the SPI", owner, evidence, dep, privatePluginModel)
+		if archPathAtOrBelow(dep, runtimeRoot) {
+			t.Errorf("%s %s %q: plugin owns model and assembly infrastructure below the application runtime and must not reverse import it", owner, evidence, dep)
+			return
+		}
+		if archPathAtOrBelow(dep, internalRoot) {
+			t.Errorf("%s %s %q: plugin owns model and assembly infrastructure but must not import another internal implementation", owner, evidence, dep)
 		}
 	}
 
@@ -324,9 +327,9 @@ func TestArchCoreDependencyClosureExcludesOptionalStacks(t *testing.T) {
 
 // ── guard 7: designated leaf packages are stdlib-only ──────────────────
 
-// TestArchLeafPackagesDependOnStdlibOnly keeps the shared ordering graph,
-// reflection scanner, and command parser independent of every framework layer
-// and third-party module. archDeps includes each package itself, so that exact
+// TestArchLeafPackagesDependOnStdlibOnly keeps the shared ordering graph
+// independent of every framework layer and third-party module. archDeps includes
+// each package itself, so that exact
 // package subtree is the only non-stdlib path allowed in its own closure.
 func TestArchLeafPackagesDependOnStdlibOnly(t *testing.T) {
 	cases := []struct {
@@ -334,7 +337,6 @@ func TestArchLeafPackagesDependOnStdlibOnly(t *testing.T) {
 		owner   string
 	}{
 		{pattern: "./plugin/ordering/...", owner: "github.com/xbcio/xbc/plugin/ordering"},
-		{pattern: "./internal/cli/...", owner: "github.com/xbcio/xbc/internal/cli"},
 	}
 
 	for _, tc := range cases {
@@ -384,8 +386,8 @@ const archRootPackage = "github.com/xbcio/xbc"
 // for a dependency of its own -- which belongs in an implementation package.
 //
 // firstParty names the repository subtrees the subject is allowed to contain
-// beyond what bases explain: normally just its own subtree, plus any private
-// model it is explicitly permitted to delegate to. Everything else in this
+// beyond what bases explain: normally just its own subtree, plus any explicitly
+// justified peer. Everything else in this
 // repository is held to the same ceiling as foreign code, because a first-party
 // addition is exactly how a leaf adapter quietly grows into an orchestrator.
 func archClosureCeiling(t *testing.T, subject, owner string, firstParty []string, bases ...string) {
@@ -429,12 +431,12 @@ func archClosureCeiling(t *testing.T, subject, owner string, firstParty []string
 // grow indefinitely. plugin depends on config and log by design, so whatever
 // those two already justify may legitimately appear here too.
 //
-// The first-party exemptions are plugin's own subtree and the private erased
-// model it is permitted to delegate to; guard 5 above pins that the delegation
-// stops there.
+// The sole first-party exemption is the Plugin framework's own subtree,
+// including model, assembly, and autoload; guard 5 above pins that the subtree
+// imports neither runtime nor an internal package.
 func TestArchPluginClosureAddsNothingBeyondConfigAndLog(t *testing.T) {
 	archClosureCeiling(t, "./plugin/...", "github.com/xbcio/xbc/plugin",
-		[]string{archRootPackage + "/plugin", archRootPackage + "/internal/pluginmodel"},
+		[]string{archRootPackage + "/plugin"},
 		"./config/...", "./log/...")
 }
 
@@ -447,9 +449,9 @@ func TestArchPluginClosureAddsNothingBeyondConfigAndLog(t *testing.T) {
 // the only place its outbound first-party closure is constrained: an autoload
 // that reached for assembly or runtime would be caught here and nowhere else.
 func TestArchAutoloadClosureIsPluginAndStdlibOnly(t *testing.T) {
-	archClosureCeiling(t, "./internal/autoload/...", "github.com/xbcio/xbc/internal/autoload",
-		[]string{archRootPackage + "/internal/autoload"},
-		"./plugin/...")
+	archClosureCeiling(t, "./plugin/autoload/...", "github.com/xbcio/xbc/plugin/autoload",
+		[]string{archRootPackage + "/plugin/autoload"},
+		"./plugin")
 }
 
 // ── guard 10: assembly must not read optional process-wide autoload state ─
@@ -458,7 +460,7 @@ func TestArchAutoloadClosureIsPluginAndStdlibOnly(t *testing.T) {
 // composition; assembly must consume exactly the Bundles in PlanOptions.
 func TestArchAssemblyDoesNotReadDefaultAutoload(t *testing.T) {
 	root := archRepositoryRoot(t)
-	assemblyDir := filepath.Join(root, "internal", "assembly")
+	assemblyDir := filepath.Join(root, "plugin", "assembly")
 	checked := 0
 	for _, name := range archProductionGoFilesInDir(t, assemblyDir) {
 		filePath := filepath.Join(assemblyDir, name)
@@ -468,9 +470,9 @@ func TestArchAssemblyDoesNotReadDefaultAutoload(t *testing.T) {
 		for _, specification := range file.Imports {
 			importPath, err := strconv.Unquote(specification.Path.Value)
 			require.NoError(t, err, "Parsing %s import failed", filePath)
-			assert.NotEqual(t, "github.com/xbcio/xbc/internal/autoload", importPath,
+			assert.NotEqual(t, "github.com/xbcio/xbc/plugin/autoload", importPath,
 				"assembly must not read optional process-wide autoload state")
 		}
 	}
-	require.NotZero(t, checked, "internal/assembly did not scan production Go files")
+	require.NotZero(t, checked, "plugin/assembly did not scan production Go files")
 }

@@ -46,12 +46,9 @@ m = (r.sub == p.sub || g(r.sub, p.sub)) && keyMatch2(r.obj, p.obj) && regexMatch
 
 var errReadOnlyPolicySource = errors.New("casbin: configured policy source is read-only; mutate in memory with autosave disabled or update the source and call LoadPolicy")
 
-func buildEnforcer(cfg normalizedConfig) (*casbinlib.SyncedEnforcer, error) {
-	m, err := loadModel(cfg)
+func buildSourceEnforcer(cfg normalizedConfig) (*casbinlib.SyncedEnforcer, error) {
+	m, err := loadAndValidateModel(cfg)
 	if err != nil {
-		return nil, err
-	}
-	if err := validateRequestShape(m, cfg.requestConvention); err != nil {
 		return nil, err
 	}
 
@@ -67,6 +64,35 @@ func buildEnforcer(cfg normalizedConfig) (*casbinlib.SyncedEnforcer, error) {
 	// explicit LoadPolicy atomically restores the configured source.
 	enforcer.EnableAutoSave(false)
 	return enforcer, nil
+}
+
+// buildProviderEnforcer deliberately constructs the enforcer without passing
+// adapter to NewSyncedEnforcer. Casbin loads an adapter supplied to its
+// constructor immediately, which would run before XBC's Migrate stage. The
+// first external policy load belongs to Plugin.start, after migrations.
+func buildProviderEnforcer(cfg normalizedConfig, adapter persist.Adapter) (*casbinlib.SyncedEnforcer, error) {
+	m, err := loadAndValidateModel(cfg)
+	if err != nil {
+		return nil, err
+	}
+	enforcer, err := casbinlib.NewSyncedEnforcer(m)
+	if err != nil {
+		return nil, fmt.Errorf("casbin: build enforcer: %w", err)
+	}
+	enforcer.SetAdapter(adapter)
+	enforcer.EnableAutoSave(true)
+	return enforcer, nil
+}
+
+func loadAndValidateModel(cfg normalizedConfig) (model.Model, error) {
+	m, err := loadModel(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRequestShape(m, cfg.requestConvention); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 func loadModel(cfg normalizedConfig) (model.Model, error) {

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/xbcio/xbc/config"
-	"github.com/xbcio/xbc/internal/assembly"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/assembly"
 )
 
 func TestDefaultConfigAndNormalization(t *testing.T) {

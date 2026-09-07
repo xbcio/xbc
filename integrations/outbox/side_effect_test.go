@@ -6,9 +6,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xbcio/xbc/integrations/outbox"
-	"github.com/xbcio/xbc/internal/assembly"
-	"github.com/xbcio/xbc/internal/autoload"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/assembly"
+	"github.com/xbcio/xbc/plugin/autoload"
 )
 
 func TestOrdinaryImportDefinitionAndBundleAreSideEffectFree(t *testing.T) {

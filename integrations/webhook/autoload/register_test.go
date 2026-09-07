@@ -6,9 +6,9 @@ import (
 
 	"github.com/xbcio/xbc/config"
 	"github.com/xbcio/xbc/integrations/webhook"
-	"github.com/xbcio/xbc/internal/assembly"
-	internalautoload "github.com/xbcio/xbc/internal/autoload"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/assembly"
+	pluginautoload "github.com/xbcio/xbc/plugin/autoload"
 )
 
 func TestImportDeclaresWebhookBundle(t *testing.T) {
@@ -19,7 +19,7 @@ func TestImportDeclaresWebhookBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, err := assembly.BuildPlan(assembly.PlanOptions{
-		Bundles: []plugin.Bundle{internalautoload.Freeze()},
+		Bundles: []plugin.Bundle{pluginautoload.Freeze()},
 		Env:     environment,
 	})
 	if err != nil {

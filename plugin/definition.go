@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"runtime"
 
-	"github.com/xbcio/xbc/internal/pluginmodel"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
 // Definition is an opaque, immutable declaration handle. Packages normally

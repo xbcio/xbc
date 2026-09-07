@@ -16,7 +16,7 @@ import (
 type Config struct {
 	Addr     string `yaml:"addr"     default:"127.0.0.1:6379" validate:"required,hostname_port"`
 	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Password string `yaml:"password" mask:"true"`
 	DB       int    `yaml:"db"       default:"0" validate:"min=0"`
 
 	DialTimeout  time.Duration `yaml:"dial_timeout"  default:"5s" validate:"min=1"`

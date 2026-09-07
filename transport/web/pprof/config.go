@@ -19,7 +19,7 @@ type Config struct {
 	Enabled       bool   `yaml:"enabled"`
 	Path          string `yaml:"path"           default:"/debug/pprof"`
 	Header        string `yaml:"header"         default:"X-XBC-Pprof-Token"`
-	Token         string `yaml:"token"`
+	Token         string `yaml:"token" mask:"true"`
 	AllowLoopback bool   `yaml:"allow_loopback" default:"true"`
 }
 

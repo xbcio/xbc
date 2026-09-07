@@ -1,8 +1,8 @@
 package plugin
 
 import (
-	"github.com/xbcio/xbc/internal/pluginmodel"
 	"github.com/xbcio/xbc/log"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
 // BuildContext is the bounded constructor-injection context for exactly one
@@ -12,7 +12,7 @@ type BuildContext pluginmodel.BuildContext
 
 // Identity returns the consuming Plugin identity.
 func (context BuildContext) Identity() Identity {
-	return fromModelIdentity(pluginmodel.BuildContext(context).Identity())
+	return fromInternalIdentity(pluginmodel.BuildContext(context).Identity())
 }
 
 // Log returns the consuming Plugin's pre-bound logger.

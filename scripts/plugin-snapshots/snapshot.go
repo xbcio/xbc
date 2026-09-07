@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"sort"
 
-	"github.com/xbcio/xbc/internal/pluginmodel"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
 // identitySnapshot is the top-level shape of identity-snapshot.json: every

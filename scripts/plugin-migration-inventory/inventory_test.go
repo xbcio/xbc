@@ -53,7 +53,10 @@ func literalOrder() web.Order {
 `)
 	writeInventoryFixture(t, root, "app/runtime/instance.go", `package runtime
 
-import "github.com/xbcio/xbc/plugin"
+import (
+	"github.com/xbcio/xbc/plugin"
+	_ "github.com/xbcio/xbc/runtime"
+)
 
 // Framework runtime ownership is not Plugin implementation retention.
 type instance struct { context *plugin.Context }
@@ -73,6 +76,7 @@ func Definition() plugin.Definition {
 
 import (
 	"example.com/app/fixture"
+	_ "github.com/xbcio/xbc/internal/runtime"
 	"github.com/xbcio/xbc/plugin/catalog"
 )
 
@@ -107,6 +111,8 @@ func init() { catalog.Declare(fixture.Definition()) }
 	assert.NotZero(t, apis["ConfigPtr"])
 	assert.NotZero(t, apis[`xbc:"inject"`])
 	assert.NotZero(t, apis[catalogImportPath])
+	assert.NotZero(t, apis[coreImportPath+"/internal/runtime"])
+	assert.Zero(t, apis[coreImportPath+"/runtime"], "root runtime is the canonical low-level execution owner")
 	assert.NotZero(t, apis["plugin/catalog.Declare"])
 
 	generated, err := marshalInventory(inventory)

@@ -19,9 +19,9 @@ const (
 type Config struct {
 	Addresses []string `yaml:"addresses"`
 	CloudID   string   `yaml:"cloud_id"`
-	APIKey    string   `yaml:"api_key"`
+	APIKey    string   `yaml:"api_key" mask:"true"`
 	Username  string   `yaml:"username"`
-	Password  string   `yaml:"password"`
+	Password  string   `yaml:"password" mask:"true"`
 
 	TLS         TLSConfig     `yaml:"tls"`
 	Timeout     time.Duration `yaml:"timeout" default:"10s" validate:"gt=0"`

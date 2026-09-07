@@ -4,9 +4,9 @@ package autoload
 
 import (
 	"github.com/xbcio/xbc/integrations/objectstorage"
-	internalautoload "github.com/xbcio/xbc/internal/autoload"
+	pluginautoload "github.com/xbcio/xbc/plugin/autoload"
 )
 
 func init() {
-	internalautoload.Declare(objectstorage.Bundle())
+	pluginautoload.Declare(objectstorage.Bundle())
 }

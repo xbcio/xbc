@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	integrationasynq "github.com/xbcio/xbc/integrations/asynq"
-	"github.com/xbcio/xbc/internal/autoload"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/autoload"
 )
 
 func TestOrdinaryImportDefinitionAndBundleHaveNoAutoloadSideEffect(t *testing.T) {

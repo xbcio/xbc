@@ -29,6 +29,39 @@
 // SubjectResolver has the same trust obligation and must not derive identity
 // from an unverified header or bearer token.
 //
+// For persistent policy and multi-instance synchronization, compose adapter
+// and watcher provider plugins and select their exact instances in Casbin's
+// configuration. The adapter provider owns schema migration and its backing
+// connection; the watcher factory creates a watcher that Casbin owns until
+// shutdown:
+//
+//	plugins:
+//	  casbin-gorm:
+//	    writer: {}
+//	  casbin-redis:
+//	    events: {}
+//	  casbin:
+//	    adapter:
+//	      plugin: casbin-gorm
+//	      instance: writer
+//	    watcher:
+//	      plugin: casbin-redis
+//	      instance: events
+//
+// Provider references are resolved through Definition/Bundle composition, not
+// casbin.New. Business authorization code should depend on rbac.Manager, which
+// provides validated, backend-neutral RBAC checks and management semantics on
+// top of this package's rbac.Backend export. Advanced migration and diagnostic
+// code that genuinely needs Casbin-specific APIs may instead depend on
+// EnforcerProvider and call Enforcer to obtain the live
+// *casbin.SyncedEnforcer; it must not retain the enforcer after lifecycle
+// shutdown or publish it as process-global state. An external adapter is
+// attached without loading during construction so migrations can run first;
+// Start opens and attaches the
+// watcher, then performs the initial policy load. External adapters use
+// Casbin autosave, while inline/file sources remain read-only with autosave
+// disabled.
+//
 // Importing this package has no registration side effects. Import
 // github.com/xbcio/xbc/transport/web/integrations/casbin/autoload for process-wide
 // composition, or use Definition/Bundle with a private assembly.

@@ -116,7 +116,7 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
 				return nil, nil, err
 			}
 		}
-		if err := opts.Universe.checkRoots(k); err != nil {
+		if err := opts.Universe.checkOwnership(k); err != nil {
 			return nil, nil, err
 		}
 	}

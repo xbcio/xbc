@@ -75,19 +75,27 @@ app:
 
 HTTP 地址属于 `transport/web`，因此没有含糊的全局 `server` 节；Web Definition 通过静态 `ConfigPath` 把根级 `web` 声明为唯一 canonical path。
 
-### 顶级键必须有 owner
+### 配置键必须有 owner
 
-启动时，composition root 选入的每个 Definition 都会声明自己的 `ConfigPath`，连同框架保留的 `xbc`、`log` 和应用自由区 `app`，构成一份完整的顶级 owner 清单。**任何没有 owner 的顶级键都会让启动失败**，错误会点名该键并列出被接受的顶级 section：
+启动时，composition root 选入的每个 Definition 都会声明自己的 `ConfigPath`，连同框架保留的 `xbc`、`log` 和应用自由区 `app`，构成一份完整的 owner 清单。**任何没有 owner 的配置键都会让启动失败**，错误会点名该键并列出它旁边被接受的 section：
 
 ```
-xbc: configuration contains a top-level key that no plugin or framework section owns
+xbc: configuration contains a key that no plugin or framework section owns
   wbe
   declared top-level sections: app, log, plugins, web, xbc
 ```
 
 这条规则专门用来抓住 `wbe:` 这类拼写错误——在此之前它只会被静默忽略，表现为「配置写了但完全没生效」。`app` 是被显式声明的 freeform 根：框架从不解释它的结构，因此 `app` 下面可以放任意内容而不触发校验。
 
-其他插件未声明自定义 `ConfigPath` 时仍使用 `plugins.<key>`。`enabled: false` 可以显式关闭插件；具体插件是始终参与装配还是只在配置节存在时启用，由其 Definition 的 Activation 决定。配置了 `plugins.<key>` 却没有在 composition root 加入对应 Bundle，会作为 orphan configuration 拒绝启动；已知结构中的拼写错误也会被严格校验拒绝。声明了自定义 `ConfigPath` 的插件同样参与这项检查：它拥有的是自己声明的路径，而不是 `plugins.<key>` 这个约定名，约定名不再是 fallback。
+判定是一次自顶向下的遍历，在第一个被声明的非命名空间 section 处停下：section 内部的键归严格绑定管，实例名和 freeform 子树因此不会被误判。命名空间内部则继续下沉，所以 `ConfigPath` 是多段路径的插件同样受保护：
+
+```
+xbc: configuration contains a key that no plugin or framework section owns
+  plugins.group.typo
+  declared sections under plugins.group: plugins.group.actual
+```
+
+其他插件未声明自定义 `ConfigPath` 时仍使用 `plugins.<key>`。`enabled: false` 可以显式关闭插件；具体插件是始终参与装配还是只在配置节存在时启用，由其 Definition 的 Activation 决定。配置了 `plugins.<key>` 却没有在 composition root 加入对应 Bundle，就是一个没有 owner 的键，拒绝启动；已知结构中的拼写错误也会被严格校验拒绝。声明了自定义 `ConfigPath` 的插件同样参与这项检查：它拥有的是自己声明的路径，而不是 `plugins.<key>` 这个约定名，约定名不再是 fallback。
 
 ## 环境变量映射
 
@@ -142,6 +150,37 @@ export XBC_PLUGINS_GORM_REPORTING_DSN="app:pw@tcp(reporting.internal:3306)/repor
 
 Web 环境变量统一使用 `XBC_WEB_*`。
 
+## 用 `mask` 标签声明敏感字段
+
+校验失败的错误信息会回显违规的值，因为「配的是什么」通常正是诊断本身——`not a valid host:port — got "127.0.0.1"` 缺了那个值就没法看。但同一条渲染路径也会经过 JWT secret、DSN 和密码，这些字段的值一旦进了错误信息，就会随启动失败进入 stderr 与运维日志。
+
+字段上的 `mask:"true"` 标签把该字段标为「持有 secret」，校验错误只描述值而不复现它：
+
+```go
+type Config struct {
+    Secret string `yaml:"secret" validate:"required,min=32" mask:"true"`
+    Addr   string `yaml:"addr"   validate:"hostname_port"`
+}
+```
+
+```
+xbc: configuration error
+  plugins.jwt.secret  cannot be less than 32, got a 24-character value
+  plugins.jwt.addr    not a valid host:port — got "127.0.0.1"
+```
+
+被违反的规则本身照常保留：脱敏隐藏的是值，不是诊断。字符串报告长度，因为 `min`/`max` 违规问的正好是长度，而阈值已经写在同一行里；其余类型收敛为 `[redacted]`，长度对一个数字没有意义，而它的数位就是 secret 本身。
+
+标签向下继承，标在结构体上即覆盖其下所有字段——这样以后往 credentials 块里加字段时，不必依赖谁记得补标签：
+
+```go
+type Config struct {
+    Credentials CredentialsConfig `yaml:"credentials" mask:"true"`
+}
+```
+
+标签值必须显式写 `"true"` 或 `"false"`；拼错会在 schema 解析阶段直接报错，而不是静默退化为「不是 secret」。
+
 ## doctor 子命令
 
 配置分层之后，「这个插件为什么没起来」不再能靠读一个文件回答。`doctor` 子命令把最终结果打印出来：
@@ -152,7 +191,7 @@ go run ./examples/quickstart doctor --config examples/quickstart/application.yml
 
 它报告四件事：配置来源（每一层的标签与已声明的顶级 section）、最终插件图（declared / enabled instances / disabled 计数）、按启动顺序排列的启用实例及其绑定的配置节和取值来源，以及每个被禁用插件的**具体原因**（activation 路径未配置、`enabled` 为 false、或多实例下所有实例都已关闭）。
 
-doctor 是严格只读的：它不初始化日志（因此不会输出任何日志行、不会打开日志文件、不会启动 flush goroutine，也不会替换进程全局 logger），不建立任何连接，不启动 goroutine 或监听端口，也不修改任何进程全局状态。它只打印路径、身份和来源标签，**从不打印配置值**——DSN、token 和密码不会出现在 doctor 输出里。同样地，它们也不会出现在错误信息和启动报告里。
+doctor 是严格只读的：它不初始化日志（因此不会输出任何日志行、不会打开日志文件、不会启动 flush goroutine，也不会替换进程全局 logger），不建立任何连接，不启动 goroutine 或监听端口，也不修改任何进程全局状态。它只打印路径、身份和来源标签，**从不打印配置值**——DSN、token 和密码不会出现在 doctor 输出里。启动报告同样只打印路径与身份；校验错误则按字段判断，见[上一节](#用-mask-标签声明敏感字段)。
 
 ## Web 生产基线
 
@@ -315,6 +354,72 @@ plugins:
 ```
 
 幂等 key 不是认证凭据；网关和日志应避免无界记录请求体或敏感 header。
+
+### Casbin 持久化与多副本同步
+
+基础 `casbin` integration 默认仍从 inline/file policy 读取只读策略，适合静态授权。SAS 这类需要运行时管理角色和权限的服务，应在 composition root 显式组合 `gorm.Bundle()`、`casbin-gorm.Bundle()`、`casbin-redis.Bundle()`、`casbin.Bundle()` 与 `security/rbac` 包的 `rbac.Bundle()`，再用精确 plugin key/instance 连接能力：
+
+```yaml
+plugins:
+  gorm:
+    primary:
+      driver: postgres
+      dsn: "host=db.internal user=app dbname=sas sslmode=require"
+
+  casbin-gorm:
+    policy:
+      db_instance: primary
+      table: sys_casbin_rule
+      migrate: true
+
+  casbin-redis:
+    policy:
+      mode: standalone
+      addrs: ["redis.internal:6379"]
+      channel: /casbin
+      ignore_self: true
+      # password 应由部署 secret 注入。
+
+  casbin:
+    model: |
+      [request_definition]
+      r = sub, obj, act
+
+      [policy_definition]
+      p = sub, obj, act
+
+      [role_definition]
+      g = _, _
+
+      [policy_effect]
+      e = some(where (p.eft == allow))
+
+      [matchers]
+      m = g(r.sub, p.sub) && r.obj == p.obj && (p.act == "*" || r.act == p.act)
+    request_convention: path_method
+    adapter:
+      plugin: casbin-gorm
+      instance: policy
+    watcher:
+      plugin: casbin-redis
+      instance: policy
+
+  rbac:
+    backend:
+      plugin: casbin
+      instance: default
+    admin_role: admin
+```
+
+`casbin-gorm` 默认 `migrate: false`，构造阶段不会隐式 AutoMigrate；启用后也只在 XBC 的 Migrate stage 建表，Casbin 到 Start 才首次加载 policy，因此不会先查询尚未创建的表。外部 adapter 模式开启 AutoSave，`AddPolicy`、角色关系增删和 filtered remove 会写入数据库；Redis Watcher 传播变更到其他实例。Watcher 使用自己拥有的 Redis clients，GORM connection pool 仍由命名 `gorm` plugin 拥有。
+
+`security/rbac` 是协议无关的独立业务插件，拥有 Definition、Config、Manager、Backend、Permission 与 autoload。业务代码依赖 `security/rbac.Manager` 完成管理员判断、AND/OR 授权、角色与权限查询，以及直接关系集合的 replace/delete；Casbin integration 提供所需 `Backend`，只有迁移或 Casbin 特有高级操作才应直接依赖 `casbin.EnforcerProvider`。
+
+`transport/web/rbac` 不是插件，只是把 `web.CurrentPrincipal` 接入 `security/rbac.Manager` 的薄适配器。应用应在具体 route/group 上显式使用该包的 `RequireAll` 或 `RequireAny`；它不拥有 Definition、Config、Backend 或 autoload，也不注册全局授权链。用户角色 replace 因 Casbin 不支持 grouping policy 的 filtered replace，只能串行 remove/add 并在失败时尽力恢复和 reload；它不承诺与应用业务表之间的原子事务。未来 ABAC 将在有真实需求时作为与 RBAC 平行的独立业务插件及传输适配器设计，本次不提供占位实现。
+
+XBC 不提供通用 RBAC 管理 HTTP API：用户/角色/权限领域模型、subject 命名、管理端鉴权、审计以及业务表与 policy 的事务编排属于应用。SAS 的 `u<ID>` / `r<ID>`、`object#action` 与 `sys_*` CRUD 继续由 SAS 映射；不要把 Manager 或 Enforcer 放入进程全局变量。
+
+需注意固定的上游 `gorm-adapter/v3 v3.39.0` 有一个 legacy `Adapter.Transaction` 限制：事务内部用 `NewAdapterByDB` 重建 adapter，会把自定义表退回默认 `casbin_rule`。默认表 transaction smoke 已覆盖；SAS 当前通过其主 module 的 `replace github.com/casbin/gorm-adapter/v3 => ./internal/gorm-adapter` 修复为保留 table prefix/name，因此迁移 SAS 时该 replace 仍会作用于 XBC 的依赖。XBC 不在可发布 module 中加入本地 replace 或隐式 fork；使用自定义表的其他消费者应采用包含该修复的正式上游版本/自有补丁，或使用能保留表元数据的 transaction-context API。
 
 ### Session + 租户隔离
 
@@ -479,4 +584,4 @@ plugins:
       # token 由 XBC_PLUGINS_GRACEFULSHUTDOWN_HTTP_TOKEN 提供。
 ```
 
-先在 composition root 加入相应 Bundle，再配置这些 section。不要把 JWT secret、Redis/数据库密码、API key 明文或运维 token 提交到仓库；环境变量只是最低限度的部署接口，生产环境宜由 secret manager 注入。框架自身不会回显这些值：doctor 输出、配置错误信息和启动报告都只包含路径、身份和来源标签。不要信任公网传入的 forwarded headers，除非请求先经过会清洗这些 header 的可信反向代理。远程关机最终复用 core 的统一取消、HTTP drain 和逆序插件关闭路径，不应另行调用 `os.Exit`。
+先在 composition root 加入相应 Bundle，再配置这些 section。不要把 JWT secret、Redis/数据库密码、API key 明文或运维 token 提交到仓库；环境变量只是最低限度的部署接口，生产环境宜由 secret manager 注入。框架自身不会回显这些值：doctor 输出与启动报告只包含路径、身份和来源标签，配置错误信息中标了 `mask:"true"` 的字段只描述值而不复现它。不要信任公网传入的 forwarded headers，除非请求先经过会清洗这些 header 的可信反向代理。远程关机最终复用 core 的统一取消、HTTP drain 和逆序插件关闭路径，不应另行调用 `os.Exit`。

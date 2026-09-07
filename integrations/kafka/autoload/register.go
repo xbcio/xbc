@@ -4,7 +4,7 @@ package autoload
 
 import (
 	"github.com/xbcio/xbc/integrations/kafka"
-	"github.com/xbcio/xbc/internal/autoload"
+	"github.com/xbcio/xbc/plugin/autoload"
 )
 
 func init() { autoload.Declare(kafka.Bundle()) }

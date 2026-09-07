@@ -1,6 +1,6 @@
 package plugin
 
-import "github.com/xbcio/xbc/internal/pluginmodel"
+import pluginmodel "github.com/xbcio/xbc/plugin/model"
 
 // Key is the stable, configuration-facing identity of a Definition. It is
 // never derived from a Go package path or concrete type.
@@ -39,7 +39,7 @@ func (i Identity) String() string {
 
 // CompareIdentity provides the canonical (Key, normalized instance) order.
 func CompareIdentity(left, right Identity) int {
-	return pluginmodel.CompareIdentity(toModelIdentity(left), toModelIdentity(right))
+	return pluginmodel.CompareIdentity(toInternalIdentity(left), toInternalIdentity(right))
 }
 
 // ValidateName validates a textual plugin key before conversion to Key.
@@ -50,10 +50,10 @@ func ValidateInstanceName(value string) error {
 	return pluginmodel.ValidateInstanceName(value)
 }
 
-func toModelIdentity(identity Identity) pluginmodel.Identity {
+func toInternalIdentity(identity Identity) pluginmodel.Identity {
 	return pluginmodel.Identity{Plugin: pluginmodel.Key(identity.Plugin), Instance: identity.Instance}
 }
 
-func fromModelIdentity(identity pluginmodel.Identity) Identity {
+func fromInternalIdentity(identity pluginmodel.Identity) Identity {
 	return Identity{Plugin: Key(identity.Plugin), Instance: identity.Instance}
 }

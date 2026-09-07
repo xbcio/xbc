@@ -20,7 +20,7 @@ const (
 // kept unless SkipDefaultTransaction is explicitly enabled.
 type Config struct {
 	Driver string `yaml:"driver" default:"mysql" validate:"required,oneof=mysql postgres sqlite sqlserver"`
-	DSN    string `yaml:"dsn" validate:"required"`
+	DSN    string `yaml:"dsn" validate:"required" mask:"true"`
 
 	MaxOpenConn     int           `yaml:"max_open_conn" default:"20" validate:"min=1"`
 	MaxIdleConn     int           `yaml:"max_idle_conn" default:"10" validate:"min=0,ltefield=MaxOpenConn"`

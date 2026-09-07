@@ -6,13 +6,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/xbcio/xbc/internal/pluginmodel"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
 // collectDescriptors evaluates every registered Definition accessor and
 // returns the resulting descriptors sorted by plugin key. It only reads the
 // already-built package-level Definition value; it never invokes a factory,
-// a planner, or internal/assembly's Construct.
+// a planner, or plugin/assembly's Construct.
 func collectDescriptors() ([]pluginmodel.DefinitionDescriptor, error) {
 	descriptors := make([]pluginmodel.DefinitionDescriptor, 0, len(definitionProviders))
 	seen := make(map[string]string, len(definitionProviders))
@@ -33,7 +33,7 @@ func collectDescriptors() ([]pluginmodel.DefinitionDescriptor, error) {
 	return descriptors, nil
 }
 
-// effectiveConfigPath mirrors internal/assembly's own definitionPath
+// effectiveConfigPath mirrors plugin/assembly's own definitionPath
 // convention: an explicit Options.ConfigPath wins, otherwise the
 // configuration section is the conventional "plugins.<key>" that every
 // plugin.WhenConfigured(...) activation in this repository already uses.

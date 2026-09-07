@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/xbcio/xbc/internal/pluginmodel"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
 type definitionContract interface{ Value() int }

@@ -5,7 +5,7 @@ package autoload
 
 import (
 	"github.com/xbcio/xbc/integrations/asynq"
-	"github.com/xbcio/xbc/internal/autoload"
+	"github.com/xbcio/xbc/plugin/autoload"
 )
 
 func init() { autoload.Declare(asynq.Bundle()) }

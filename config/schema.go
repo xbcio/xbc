@@ -34,6 +34,11 @@ type configSchema struct {
 	Node         *schemaNode
 	Leaves       []leaf
 	YAMLByGoPath map[string]string
+	// MaskedGoPaths holds the Go path of every field tagged mask:"true".
+	// It is keyed by Go path rather than yaml path because validator reports
+	// violations by struct namespace, and that is the only identifier
+	// available at the point a message is rendered.
+	MaskedGoPaths map[string]bool
 }
 
 func inspectStructPointer(out any) (reflect.Value, error) {
@@ -75,8 +80,9 @@ func schemaForType(root reflect.Type) (*configSchema, error) {
 	}
 
 	schema := &configSchema{
-		Root:         root,
-		YAMLByGoPath: make(map[string]string),
+		Root:          root,
+		YAMLByGoPath:  make(map[string]string),
+		MaskedGoPaths: make(map[string]bool),
 	}
 	node, err := schema.walkStruct(root, "", nil, nil, make(map[reflect.Type]bool), true)
 	if err != nil {
@@ -129,6 +135,14 @@ func (s *configSchema) walkStruct(
 			yamlPath = joinPath(yamlPrefix, name)
 		}
 		s.YAMLByGoPath[strings.Join(goPath, ".")] = yamlPath
+
+		masked, err := maskedField(field)
+		if err != nil {
+			return nil, err
+		}
+		if masked {
+			s.MaskedGoPaths[strings.Join(goPath, ".")] = true
+		}
 
 		if isStructSchema(fieldType) {
 			child, err := s.walkStruct(fieldType, yamlPath, fieldIndex, goPath, stack, collectLeaves)
@@ -203,6 +217,29 @@ func (s *configSchema) walkValue(
 		node.Elem = child
 	}
 	return node, nil
+}
+
+// maskedField reports whether a field is marked as holding a secret. The value
+// is spelled out rather than inferred from the tag's presence so that
+// mask:"false" reads as a deliberate "not a secret" and a typo in the value
+// fails loudly instead of silently leaving the field unprotected.
+//
+// The tag is "mask" to match log's masking vocabulary, and because plugins
+// were already writing mask:"true" on secret-bearing config fields before
+// anything read it.
+func maskedField(field reflect.StructField) (bool, error) {
+	tag, tagged := field.Tag.Lookup("mask")
+	if !tagged {
+		return false, nil
+	}
+	switch tag {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("mask tag for field %s must be \"true\" or \"false\", got %q", field.Name, tag)
+	}
 }
 
 func yamlField(field reflect.StructField) (name string, inline, skip bool) {

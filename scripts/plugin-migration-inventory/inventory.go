@@ -65,10 +65,10 @@ var retiredSymbols = map[string]map[string]bool{
 }
 
 var retiredImportPaths = map[string]bool{
-	catalogImportPath:                   true,
-	coreImportPath + "/assembly":        true,
-	coreImportPath + "/assembly/inject": true,
-	coreImportPath + "/runtime":         true,
+	catalogImportPath:                    true,
+	coreImportPath + "/assembly":         true,
+	coreImportPath + "/assembly/inject":  true,
+	coreImportPath + "/internal/runtime": true,
 }
 
 var retiredMethodNames = map[string]bool{

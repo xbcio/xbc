@@ -4,7 +4,7 @@ package autoload
 
 import (
 	integration "github.com/xbcio/xbc/integrations/elasticsearch"
-	"github.com/xbcio/xbc/internal/autoload"
+	"github.com/xbcio/xbc/plugin/autoload"
 )
 
 func init() { autoload.Declare(integration.Bundle()) }

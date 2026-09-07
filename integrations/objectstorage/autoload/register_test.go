@@ -4,12 +4,12 @@ import (
 	"testing"
 
 	"github.com/xbcio/xbc/integrations/objectstorage"
-	internalautoload "github.com/xbcio/xbc/internal/autoload"
-	"github.com/xbcio/xbc/internal/pluginmodel"
+	pluginautoload "github.com/xbcio/xbc/plugin/autoload"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
 func TestImportDeclaresOnlyObjectStorageBundle(t *testing.T) {
-	bundle := internalautoload.Freeze()
+	bundle := pluginautoload.Freeze()
 	entries := pluginmodel.BundleEntries(pluginmodel.Bundle(bundle))
 	if len(entries) != 1 {
 		t.Fatalf("autoload bundle entries = %d, want 1", len(entries))

@@ -20,7 +20,7 @@ var defaultAlgorithms = []string{"HS256", "HS384", "HS512"}
 // verification allowlist and is restricted to the HMAC SHA-2 family so a
 // symmetric secret can never be confused with an asymmetric verification key.
 type Config struct {
-	Secret     string        `yaml:"secret" validate:"required,min=32"`
+	Secret     string        `yaml:"secret" validate:"required,min=32" mask:"true"`
 	Algorithm  string        `yaml:"algorithm"          default:"HS256"`
 	Algorithms []string      `yaml:"algorithms"         default:"HS256,HS384,HS512"`
 	Issuer     string        `yaml:"issuer"`

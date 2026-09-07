@@ -30,6 +30,55 @@ func TestInlineModelPolicyAndRoleInheritance(t *testing.T) {
 	}
 }
 
+func TestInlineAndFilePolicySourcesDisableAutosave(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*Config)
+	}{
+		{
+			name: "inline",
+			configure: func(cfg *Config) {
+				cfg.Policy = "p, alice, reports:read"
+			},
+		},
+		{
+			name: "file",
+			configure: func(cfg *Config) {
+				path := filepath.Join(t.TempDir(), "policy.csv")
+				writePolicy(t, path, "p, alice, reports:read\n")
+				cfg.PolicyFile = path
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			test.configure(&cfg)
+			p, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			enforcer, ok := p.Enforcer()
+			if !ok {
+				t.Fatal("missing enforcer")
+			}
+			allowed, err := enforcer.Enforce("alice", "reports:read")
+			assertEnforce(t, allowed, err, true)
+
+			added, err := enforcer.AddPolicy("bob", "reports:read")
+			if err != nil || !added {
+				t.Fatalf("AddPolicy() = (%v, %v), want in-memory mutation with autosave disabled", added, err)
+			}
+			if err := p.LoadPolicy(); err != nil {
+				t.Fatalf("LoadPolicy() error = %v", err)
+			}
+			allowed, err = enforcer.Enforce("bob", "reports:read")
+			assertEnforce(t, allowed, err, false)
+		})
+	}
+}
+
 func TestPolicyValidationRejectsUnknownAndWrongArityRules(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -159,22 +208,27 @@ func TestConcurrentEnforceAndProgrammaticReload(t *testing.T) {
 
 func TestStopHonorsCancelledContextWhenReloadTaskCannotExit(t *testing.T) {
 	// A normal managed task always exits on cancellation. This test covers the
-	// already-cancelled deadline branch directly without manufacturing a leaked
-	// goroutine: an unclosed done channel represents a host that has not yet
-	// delivered task cancellation.
+	// already-cancelled deadline branch directly. The done channel represents a
+	// host that has not yet delivered task cancellation and is released after
+	// the deadline assertion so the asynchronous cleanup worker can exit.
 	p, err := New(DefaultConfig())
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	done := make(chan struct{})
 	p.state = &runtimeState{
 		cancel: func() {},
-		done:   make(chan struct{}),
+		done:   done,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err = p.Stop(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Stop(cancelled) error = %v, want context.Canceled", err)
+	}
+	close(done)
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() after task exit error = %v", err)
 	}
 }
 

@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xbcio/xbc/config"
-	"github.com/xbcio/xbc/internal/assembly"
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/assembly"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )

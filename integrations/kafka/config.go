@@ -62,7 +62,7 @@ type TLSConfig struct {
 type SASLConfig struct {
 	Mechanism string `yaml:"mechanism"`
 	Username  string `yaml:"username"`
-	Password  string `yaml:"password"`
+	Password  string `yaml:"password" mask:"true"`
 }
 
 // ProducerConfig controls batching and delivery guarantees. Topic may be left

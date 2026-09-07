@@ -8,8 +8,8 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/xbcio/xbc/config"
-	"github.com/xbcio/xbc/internal/assembly"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/assembly"
 	"github.com/xbcio/xbc/transport/web"
 )
 
