@@ -30,7 +30,6 @@ application-local.yml
 .superpowers/
 .worktrees/
 
-# Local design and agent working documents
+# Local design documents and implementation plans
 /.claude/specs/
-/.claude/tasks/
-/docs/superpowers/
+/.claude/plans/

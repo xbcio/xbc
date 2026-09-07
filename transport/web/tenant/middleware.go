@@ -14,9 +14,8 @@ import (
 // jwtKey, sessionKey, and casbinKey mirror the stable plugin.Key identities
 // owned by the optional transport/web/integrations/{jwt,session,casbin}
 // plugins. tenant is a transport/web built-in and must not import those
-// optional integration modules (see
-// docs/superpowers/specs/2026-08-26-xbc-package-layout-design.md §8), so the
-// identities are duplicated here as typed constants. Every reference stays
+// optional integration modules to preserve module dependency boundaries, so
+// the identities are duplicated here as typed constants. Every reference stays
 // soft: custom auth/authorization stacks remain valid when any named plugin
 // is absent.
 const (

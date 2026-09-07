@@ -25,7 +25,7 @@ xbc 是一个与传输协议无关的 Go 插件应用运行时。Core 只负责�
 | `examples/` | 独立 module；可运行的消费方示例 |
 | `tests/architecture/` | 依赖方向、公开 API、组合副作用和 module 完整性守卫 |
 
-这个布局遵循成熟 Go 项目常见的三条规则：用根级 `runtime` 统一承载低层进程执行及其私有命令解析，并把 Plugin 模型、装配和可选收集机制归入同一 `plugin` owner；按 owner 而不是技术标签组织 package；只在需要独立版本、依赖隔离或发布节奏时拆 Go module。根包 `xbc` 因而保持稳定薄门面，Web 内建能力跟随 Web 运行栈发布，重型集成才承担独立 module 的维护成本。不要新增模糊的 `common`、`utils`、`pkg`，也不要为未实现能力创建空目录或占位 API。未来真正实现新的协议运行栈时再建立 `transport/<stack>`；gRPC 本轮明确不实现。完整约束见[包布局设计](docs/superpowers/specs/2026-08-26-xbc-package-layout-design.md)。
+这个布局遵循成熟 Go 项目常见的三条规则：用根级 `runtime` 统一承载低层进程执行及其私有命令解析，并把 Plugin 模型、装配和可选收集机制归入同一 `plugin` owner；按 owner 而不是技术标签组织 package；只在需要独立版本、依赖隔离或发布节奏时拆 Go module。根包 `xbc` 因而保持稳定薄门面，Web 内建能力跟随 Web 运行栈发布，重型集成才承担独立 module 的维护成本。不要新增模糊的 `common`、`utils`、`pkg`，也不要为未实现能力创建空目录或占位 API。未来真正实现新的协议运行栈时再建立 `transport/<stack>`；gRPC 本轮明确不实现。完整约束由 `AGENTS.md` 与 `tests/architecture/` 中的守卫共同定义。
 
 ## 已实现插件
 

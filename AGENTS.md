@@ -17,7 +17,7 @@ The product is successful when:
 - Published modules work outside this repository without `go.work`, local replacements, placeholder versions, or unpublished sibling assumptions.
 - Microservice capabilities are added from concrete deployment requirements after the single-service Web and gRPC paths are reliable, rather than through speculative common SPIs.
 
-The staged improvement plan and acceptance gates are recorded in [`.claude/specs/2026-09-05-service-framework-improvement-plan.md`](.claude/specs/2026-09-05-service-framework-improvement-plan.md).
+Local design artifacts stay outside version control: specifications and architecture designs belong in `.claude/specs/`, while implementation plans and task breakdowns belong in `.claude/plans/`. Committed source, module manifests, tests, and user documentation remain the shared source of truth.
 
 ## Decision Rules
 Define a change by the outcome it must achieve and the behavior it must not violate, not by the current implementation. Prescribe a specific implementation only when that implementation is itself a deliberate project constraint.
