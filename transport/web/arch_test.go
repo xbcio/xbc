@@ -35,6 +35,24 @@ type packageJSON struct {
 	XTestImports []string
 }
 
+var packageExtensionPrefixes = []string{
+	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey",
+	"github.com/xbcio/xbc/transport/web/extensions/authorization/tenant",
+	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog",
+	"github.com/xbcio/xbc/transport/web/extensions/observability/auditlog",
+	"github.com/xbcio/xbc/transport/web/extensions/observability/pprof",
+	"github.com/xbcio/xbc/transport/web/extensions/observability/requestid",
+	"github.com/xbcio/xbc/transport/web/extensions/response/biz",
+	"github.com/xbcio/xbc/transport/web/extensions/response/gzip",
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/gracefulshutdown",
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/health",
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit",
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/recovery",
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/timeout",
+	"github.com/xbcio/xbc/transport/web/extensions/security/cors",
+	"github.com/xbcio/xbc/transport/web/extensions/security/securityheaders",
+}
+
 // forbiddenDirectImport reports why importing dep from web would violate a
 // package-layout design §9 guard, or "" if dep is fine.
 func forbiddenDirectImport(importer, dep string) string {
@@ -44,11 +62,18 @@ func forbiddenDirectImport(importer, dep string) string {
 	if dep == "github.com/xbcio/xbc/plugin/autoload" && strings.HasSuffix(importer, "/autoload") {
 		return ""
 	}
+	if dep == "github.com/xbcio/xbc/transport/web/extensions" || strings.HasPrefix(dep, "github.com/xbcio/xbc/transport/web/extensions/") {
+		for _, prefix := range packageExtensionPrefixes {
+			if dep == prefix || strings.HasPrefix(dep, prefix+"/") {
+				return ""
+			}
+		}
+		return "transport/web module packages may not import independently versioned extension modules; those modules implement package-owned contracts (design §9 guards #7/#10)"
+	}
 	for _, forbidden := range []struct {
 		prefix string
 		reason string
 	}{
-		{"github.com/xbcio/xbc/transport/web/integrations", "Web built-ins may not reverse import independently versioned integration modules; integrations implement built-in contracts"},
 		{"github.com/xbcio/xbc/plugin/autoload", "only leaf autoload packages may mutate optional process composition"},
 		{"github.com/xbcio/xbc/plugin/assembly", "web may not directly depend on low-level Plugin assembly implementation"},
 		{"github.com/xbcio/xbc/runtime", "web may not directly depend on runtime orchestration implementation"},

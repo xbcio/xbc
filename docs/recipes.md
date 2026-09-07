@@ -70,7 +70,7 @@ An idempotency key is not an authentication credential. Gateways and logs should
 
 ## Persistent Casbin policy with multi-replica synchronization
 
-The base `casbin` integration reads static policy from inline content or a file. A service that must manage roles and permissions at runtime should explicitly compose `gorm.Bundle()`, `casbin-gorm.Bundle()`, `casbin-redis.Bundle()`, `casbin.Bundle()`, and the protocol-neutral `security/rbac` package's `rbac.Bundle()`. Connect capabilities by exact plugin key and instance:
+The base `casbin` extension reads static policy from inline content or a file. A service that must manage roles and permissions at runtime should explicitly compose `gorm.Bundle()`, `casbin-gorm.Bundle()`, `casbin-redis.Bundle()`, `casbin.Bundle()`, and the protocol-neutral `rbac.Bundle()` from `github.com/xbcio/xbc/extensions/authorization/rbac`. Connect capabilities by exact plugin key and instance:
 
 ```yaml
 plugins:
@@ -126,9 +126,9 @@ plugins:
 
 `casbin-gorm` defaults to `migrate: false` and never runs AutoMigrate implicitly during construction. When enabled, migration occurs only in XBC's Migrate stage. Casbin first loads policy at Start, after the table can exist. External-adapter mode enables AutoSave, so `AddPolicy`, role-relation changes, and filtered removals persist to the database. The Redis Watcher propagates changes to other replicas. The watcher owns its Redis clients; the named `gorm` plugin continues to own the GORM connection pool.
 
-`security/rbac` is a protocol-neutral application plugin with its own Definition, Config, Manager, Backend, Permission model, and autoload adapter. Application code should depend on `security/rbac.Manager` for administrator checks, AND/OR authorization, role and permission queries, and replacement or deletion of direct relations. The Casbin integration supplies its Backend. Depend directly on `casbin.EnforcerProvider` only for migrations or Casbin-specific advanced operations.
+`github.com/xbcio/xbc/extensions/authorization/rbac` is a protocol-neutral application plugin with its own Definition, Config, Manager, Backend, Permission model, and autoload adapter. Application code should depend on `rbac.Manager` for administrator checks, AND/OR authorization, role and permission queries, and replacement or deletion of direct relations. The Casbin extension supplies its Backend. Depend directly on `casbin.EnforcerProvider` only for migrations or Casbin-specific advanced operations.
 
-`transport/web/rbac` is not a plugin. It is a thin adapter from `web.CurrentPrincipal` to `security/rbac.Manager` and supplies only `RequireAll` and `RequireAny`. Apply those functions explicitly to routes or groups. It owns no Definition, Config, Backend, or autoload registration and contributes no global authorization chain. If a concrete ABAC requirement emerges, it should be designed as a separate business plugin parallel to RBAC with its own transport adapters; XBC does not reserve placeholder ABAC directories or APIs.
+`github.com/xbcio/xbc/transport/web/extensions/authorization/rbac` is not a plugin. It is a thin adapter from `web.CurrentPrincipal` to `rbac.Manager` and supplies only `RequireAll` and `RequireAny`. Apply those functions explicitly to routes or groups. It owns no Definition, Config, Backend, or autoload registration and contributes no global authorization chain. If a concrete ABAC requirement emerges, it should be designed as a separate business plugin parallel to RBAC with its own transport adapters; XBC does not reserve placeholder ABAC directories or APIs.
 
 Replacing a user's roles uses serialized remove/add operations because Casbin cannot atomically replace filtered grouping policy. The implementation attempts restore and reload on failure but cannot promise a transaction shared with application business tables.
 

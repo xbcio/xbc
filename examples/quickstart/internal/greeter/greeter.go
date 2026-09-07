@@ -7,7 +7,7 @@ import (
 
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
-	"github.com/xbcio/xbc/transport/web/biz"
+	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
 )
 
 // Key is greeter's stable configuration and runtime identity.
@@ -36,21 +36,54 @@ func Definition() plugin.Definition { return definition }
 // Bundle returns greeter's side-effect-free explicit composition Bundle.
 func Bundle() plugin.Bundle { return bundle }
 
-type greetingRequest struct {
-	Name string `json:"name" binding:"required,min=2,max=80"`
+// GreetingRequest is the JSON body accepted by the greeting endpoint.
+type GreetingRequest struct {
+	Name string `json:"name" binding:"required,min=2,max=80" example:"XBC"`
+}
+
+// Greeting is the greeting endpoint's business payload.
+type Greeting struct {
+	Message string `json:"message" example:"hello from xbc"`
 }
 
 // RegisterRoutes implements web.RouteContributor.
-func (*Plugin) RegisterRoutes(router *web.Router) {
-	router.GET("/hello", web.Handle(func(gc *gin.Context) error {
-		return biz.OK(gc, gin.H{"message": "hello from xbc"})
-	})).Name("greeter.hello").Auth(web.Public())
+func (p *Plugin) RegisterRoutes(router *web.Router) {
+	router.GET("/hello", web.Handle(p.getGreeting)).
+		Name("greeter.hello").
+		Auth(web.Public())
 
-	router.POST("/hello", web.Handle(func(gc *gin.Context) error {
-		var request greetingRequest
-		if err := gc.ShouldBindJSON(&request); err != nil {
-			return web.ParamError(err, &request)
-		}
-		return biz.OK(gc, gin.H{"message": "hello " + request.Name + " from xbc"})
-	})).Name("greeter.hello.create").Auth(web.Public())
+	router.POST("/hello", web.Handle(p.createGreeting)).
+		Name("greeter.hello.create").
+		Auth(web.Public())
+}
+
+// getGreeting returns the default greeting.
+//
+// @Summary Get a greeting
+// @Tags greetings
+// @Produce json
+// @Success 200 {object} biz.Response[Greeting]
+// @Failure 500 {object} web.ProblemDetail
+// @Router /hello [get]
+func (*Plugin) getGreeting(gc *gin.Context) error {
+	return biz.OK(gc, Greeting{Message: "hello from xbc"})
+}
+
+// createGreeting returns a greeting for the submitted name.
+//
+// @Summary Create a greeting
+// @Tags greetings
+// @Accept json
+// @Produce json
+// @Param request body GreetingRequest true "Greeting request"
+// @Success 200 {object} biz.Response[Greeting]
+// @Failure 400 {object} web.ProblemDetail
+// @Failure 500 {object} web.ProblemDetail
+// @Router /hello [post]
+func (*Plugin) createGreeting(gc *gin.Context) error {
+	var request GreetingRequest
+	if err := gc.ShouldBindJSON(&request); err != nil {
+		return web.ParamError(err, &request)
+	}
+	return biz.OK(gc, Greeting{Message: "hello " + request.Name + " from xbc"})
 }

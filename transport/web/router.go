@@ -6,7 +6,7 @@ import (
 	"path"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xbcio/xbc/security"
+	"github.com/xbcio/xbc/authentication"
 )
 
 // AuthPolicy is a sealed, route-level authentication override. Its fields are
@@ -19,7 +19,7 @@ import (
 // restrictive default; it never means public.
 type AuthPolicy struct {
 	kind    authPolicyKind
-	schemes []security.Scheme
+	schemes []authentication.Scheme
 }
 
 type authPolicyKind uint8
@@ -39,10 +39,10 @@ func Public() AuthPolicy {
 // authentication schemes. The input is copied immediately. Empty and duplicate
 // schemes are rejected when the route table is frozen, where an error can name
 // the affected route.
-func Accepts(schemes ...security.Scheme) AuthPolicy {
+func Accepts(schemes ...authentication.Scheme) AuthPolicy {
 	return AuthPolicy{
 		kind:    authPolicyExplicit,
-		schemes: append([]security.Scheme(nil), schemes...),
+		schemes: append([]authentication.Scheme(nil), schemes...),
 	}
 }
 
@@ -54,11 +54,11 @@ func (p *AuthPolicy) IsPublic() bool {
 
 // Schemes returns the explicit policy's accepted schemes. It always returns a
 // defensive copy, and returns nil for public, absent, or invalid policies.
-func (p *AuthPolicy) Schemes() []security.Scheme {
+func (p *AuthPolicy) Schemes() []authentication.Scheme {
 	if p == nil || p.kind != authPolicyExplicit {
 		return nil
 	}
-	return append([]security.Scheme(nil), p.schemes...)
+	return append([]authentication.Scheme(nil), p.schemes...)
 }
 
 func cloneAuthPolicy(policy *AuthPolicy) *AuthPolicy {
@@ -67,7 +67,7 @@ func cloneAuthPolicy(policy *AuthPolicy) *AuthPolicy {
 	}
 	return &AuthPolicy{
 		kind:    policy.kind,
-		schemes: append([]security.Scheme(nil), policy.schemes...),
+		schemes: append([]authentication.Scheme(nil), policy.schemes...),
 	}
 }
 
@@ -246,7 +246,7 @@ func validateRouteAuth(route RouteInfo) error {
 		if len(policy.schemes) == 0 {
 			return fmt.Errorf("xbc: route %s %s accepts no authentication schemes", route.Method, route.Path)
 		}
-		seen := make(map[security.Scheme]struct{}, len(policy.schemes))
+		seen := make(map[authentication.Scheme]struct{}, len(policy.schemes))
 		for i, scheme := range policy.schemes {
 			if scheme == "" {
 				return fmt.Errorf("xbc: route %s %s has an empty authentication scheme at index %d", route.Method, route.Path, i)

@@ -16,12 +16,12 @@ import (
 	gormlib "gorm.io/gorm"
 
 	"github.com/xbcio/xbc"
-	gormplugin "github.com/xbcio/xbc/integrations/gorm"
+	"github.com/xbcio/xbc/extensions/authorization/rbac"
+	gormplugin "github.com/xbcio/xbc/extensions/storage/gorm"
 	"github.com/xbcio/xbc/plugin"
-	"github.com/xbcio/xbc/security/rbac"
-	casbinplugin "github.com/xbcio/xbc/transport/web/integrations/casbin"
-	casbingorm "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm"
-	casbinredis "github.com/xbcio/xbc/transport/web/integrations/casbin-redis"
+	casbinplugin "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
+	casbingorm "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-gorm"
+	casbinredis "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-redis"
 )
 
 const stackWait = 5 * time.Second

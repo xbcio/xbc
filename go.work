@@ -1,11 +1,11 @@
 go 1.25.0
 
 // go.work is committed on purpose. This repository contains independently
-// publishable core, transport, transport-owned integration, protocol-neutral
-// integration, and example modules. Web built-ins are packages inside the
-// transport/web module; third-party Web integrations live below
-// transport/web/integrations; protocol-neutral integrations live below the
-// top-level integrations namespace.
+// publishable core, transport, grouped protocol-neutral extensions,
+// transport-owned extensions, and example modules. Lightweight Web extensions
+// remain packages inside the transport/web module, while dependency-heavy
+// extension leaves are independently publishable modules. Every Web plugin
+// lives beneath a capability group under transport/web/extensions.
 // Local development resolves unpublished XBC imports through this workspace;
 // publishable child manifests must not use filesystem replaces, v0.0.0
 // requirements, or synthetic pseudo-versions. Once upstream modules have real
@@ -13,25 +13,27 @@ go 1.25.0
 use (
 	.
 	./examples
-	./integrations/asynq
-	./integrations/cron
-	./integrations/elasticsearch
-	./integrations/gorm
-	./integrations/kafka
-	./integrations/objectstorage
-	./integrations/outbox
-	./integrations/raft
-	./integrations/redis
-	./integrations/webhook
+	./extensions/authorization/rbac
+	./extensions/coordination/raft
+	./extensions/storage/elasticsearch
+	./extensions/storage/gorm
+	./extensions/storage/objectstorage
+	./extensions/storage/redis
+	./extensions/jobs/asynq
+	./extensions/jobs/cron
+	./extensions/messaging/kafka
+	./extensions/messaging/outbox
+	./extensions/messaging/webhook
 	./scripts/plugin-snapshots
 	./transport/web
-	./transport/web/integrations/casbin
-	./transport/web/integrations/casbin-gorm
-	./transport/web/integrations/casbin-redis
-	./transport/web/integrations/idempotency
-	./transport/web/integrations/jwt
-	./transport/web/integrations/metrics
-	./transport/web/integrations/session
-	./transport/web/integrations/swagger
-	./transport/web/integrations/tracing
+	./transport/web/extensions/authentication/jwt
+	./transport/web/extensions/authentication/session
+	./transport/web/extensions/authorization/casbin
+	./transport/web/extensions/authorization/casbin-gorm
+	./transport/web/extensions/authorization/casbin-redis
+	./transport/web/extensions/authorization/rbac
+	./transport/web/extensions/openapi/swag
+	./transport/web/extensions/observability/metrics
+	./transport/web/extensions/observability/tracing
+	./transport/web/extensions/reliability/idempotency
 )
