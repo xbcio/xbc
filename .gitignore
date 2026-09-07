@@ -1,7 +1,7 @@
 # macOS
 .DS_Store
 
-# 编辑器
+# Editors
 .idea/
 .vscode/
 
@@ -11,25 +11,26 @@
 *.out
 vendor/
 
-# go.work 本身必须入库：仓库内的 plugins/*/* 与 examples 是独立 module，
-# 且按设计禁止本地 replace；core 打出第一个 tag 前它们只能靠 go.work 解析到
-# core。忽略它会让新克隆的仓库连插件 module 都无法编译，CI 同理。
+# go.work must remain tracked: plugins/*/* and examples are independent modules,
+# and local replace directives are intentionally forbidden. Before core's first
+# release tag, they can resolve core only through go.work. Ignoring it would break
+# plugin module builds in fresh clones and CI.
 
-# 本地配置（含凭据，绝不入库）
+# Local configuration (may contain credentials; never commit)
 /application.yml
 /configs/application.yml
 application-local.yml
 *.local.yml
 .env
 
-# 运行时产物
+# Runtime artifacts
 **/logs/
 
-# 工具的本地暂存目录
+# Tool working directories
 .superpowers/
 .worktrees/
 
-# 本地设计与代理工作文档
+# Local design and agent working documents
 /.claude/specs/
 /.claude/tasks/
 /docs/superpowers/
