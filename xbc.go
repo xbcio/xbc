@@ -21,12 +21,12 @@ package xbc
 import (
 	"context"
 
-	appruntime "github.com/xbcio/xbc/internal/runtime"
 	"github.com/xbcio/xbc/plugin"
+	appruntime "github.com/xbcio/xbc/runtime"
 )
 
 // App is a single-use assembled application with a deliberately narrow public
-// surface. Runtime and construction details remain private.
+// surface. Runtime and construction details remain behind this facade.
 type App struct{ impl *appruntime.App }
 
 // Option configures New.

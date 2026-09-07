@@ -58,7 +58,12 @@ type Section struct {
 type Universe struct {
 	sections []resolvedSection
 	roots    []string
-	rootSet  map[string]string
+	// byPath answers "is this exact path a declared section", and prefixes
+	// answers "is this path an unclaimed segment on the way to one". Together
+	// they let the ownership walk descend a dotted ConfigPath such as
+	// "plugins.group.actual" without any declared section at "plugins.group".
+	byPath   map[string]Section
+	prefixes map[string]bool
 }
 
 // resolvedSection is a Section with its environment-variable tables computed.
@@ -86,22 +91,25 @@ var reservedEnvSuffixes = map[string]bool{"PROFILE": true}
 
 // NewUniverse validates and freezes the declared sections.
 func NewUniverse(sections ...Section) (*Universe, error) {
-	universe := &Universe{rootSet: make(map[string]string)}
-	byPath := make(map[string]Section, len(sections))
+	universe := &Universe{
+		byPath:   make(map[string]Section, len(sections)),
+		prefixes: make(map[string]bool),
+	}
+	rootSet := make(map[string]bool)
 
 	for _, section := range sections {
 		if err := validateSectionPath(section.Path); err != nil {
 			return nil, err
 		}
-		if previous, exists := byPath[section.Path]; exists {
+		if previous, exists := universe.byPath[section.Path]; exists {
 			return nil, fmt.Errorf("xbc: configuration section %s is claimed by both %s and %s",
 				section.Path, previous.Owner, section.Owner)
 		}
-		byPath[section.Path] = section
+		universe.byPath[section.Path] = section
 	}
 
 	for _, section := range sections {
-		if err := checkSectionParent(section, byPath); err != nil {
+		if err := checkSectionParent(section, universe.byPath); err != nil {
 			return nil, err
 		}
 		resolved, err := resolveSection(section)
@@ -110,15 +118,18 @@ func NewUniverse(sections ...Section) (*Universe, error) {
 		}
 		universe.sections = append(universe.sections, resolved)
 
+		for cut := strings.LastIndexByte(section.Path, '.'); cut >= 0; cut = strings.LastIndexByte(section.Path[:cut], '.') {
+			universe.prefixes[section.Path[:cut]] = true
+		}
 		if strings.ContainsRune(section.Path, '.') {
 			// A nested section's root is claimed by the ancestor namespace it
 			// had to nest inside, so it never registers a root of its own.
 			continue
 		}
-		universe.rootSet[section.Path] = section.Owner
+		rootSet[section.Path] = true
 	}
 
-	for root := range universe.rootSet {
+	for root := range rootSet {
 		universe.roots = append(universe.roots, root)
 	}
 	sort.Strings(universe.roots)
@@ -223,29 +234,101 @@ func (u *Universe) Roots() []string {
 	return append([]string(nil), u.roots...)
 }
 
-// checkRoots rejects every top-level key no declared Section claims.
-func (u *Universe) checkRoots(k *koanf.Koanf) error {
+// checkOwnership rejects every configuration key no declared Section claims,
+// at any depth. It is the single answer to "who does this block belong to",
+// which is why a plugin renaming its section through a dotted ConfigPath gets
+// the same protection as one sitting at a conventional path.
+//
+// The walk stops at the first declared section that is not a namespace: what
+// lives inside a typed, instanced or freeform section is that section's own
+// business, and strict bind rather than this walk answers for it.
+func (u *Universe) checkOwnership(k *koanf.Koanf) error {
 	if u == nil || k == nil {
 		return nil
 	}
-	var unowned []string
-	for key := range k.Raw() {
-		if _, owned := u.rootSet[key]; !owned {
-			unowned = append(unowned, key)
-		}
-	}
+	unowned := u.collectUnowned("", k.Raw())
 	if len(unowned) == 0 {
 		return nil
 	}
 	sort.Strings(unowned)
 
 	var b strings.Builder
-	b.WriteString("xbc: configuration contains a top-level key that no plugin or framework section owns")
-	for _, key := range unowned {
-		fmt.Fprintf(&b, "\n  %s", key)
+	b.WriteString("xbc: configuration contains a key that no plugin or framework section owns")
+	byParent := make(map[string][]string)
+	var parents []string
+	for _, path := range unowned {
+		parent := parentPath(path)
+		if _, seen := byParent[parent]; !seen {
+			parents = append(parents, parent)
+		}
+		byParent[parent] = append(byParent[parent], path)
 	}
-	fmt.Fprintf(&b, "\n  declared top-level sections: %s", strings.Join(u.roots, ", "))
+	sort.Strings(parents)
+	for _, parent := range parents {
+		for _, path := range byParent[parent] {
+			fmt.Fprintf(&b, "\n  %s", path)
+		}
+		fmt.Fprintf(&b, "\n  %s", u.describeDeclared(parent))
+	}
 	return errors.New(b.String())
+}
+
+// collectUnowned walks one already-owned node and returns the full dotted paths
+// of the keys below it that no section claims.
+func (u *Universe) collectUnowned(parent string, node map[string]any) []string {
+	var unowned []string
+	for key, value := range node {
+		path := key
+		if parent != "" {
+			path = parent + "." + key
+		}
+		section, declared := u.byPath[path]
+		if declared && section.Kind != SectionNamespace {
+			continue
+		}
+		if !declared && !u.prefixes[path] {
+			unowned = append(unowned, path)
+			continue
+		}
+		if value == nil {
+			// "plugins:" with nothing under it claims no key at all.
+			continue
+		}
+		child, nested := value.(map[string]any)
+		if !nested {
+			// A namespace holds sections, never a value of its own.
+			unowned = append(unowned, path)
+			continue
+		}
+		unowned = append(unowned, u.collectUnowned(path, child)...)
+	}
+	return unowned
+}
+
+// describeDeclared names the sections an unowned key could have meant: the ones
+// declared directly beside it, which is the list a reader can act on.
+func (u *Universe) describeDeclared(parent string) string {
+	var siblings []string
+	for _, section := range u.sections {
+		if parentPath(section.Path) == parent {
+			siblings = append(siblings, section.Path)
+		}
+	}
+	scope := "top-level sections"
+	if parent != "" {
+		scope = "sections under " + parent
+	}
+	if len(siblings) == 0 {
+		return "no " + scope + " are declared"
+	}
+	return "declared " + scope + ": " + strings.Join(siblings, ", ")
+}
+
+func parentPath(path string) string {
+	if cut := strings.LastIndexByte(path, '.'); cut >= 0 {
+		return path[:cut]
+	}
+	return ""
 }
 
 // envCandidate is one configuration path an environment variable could name.

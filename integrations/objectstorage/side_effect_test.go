@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/xbcio/xbc/integrations/objectstorage"
-	internalautoload "github.com/xbcio/xbc/internal/autoload"
-	"github.com/xbcio/xbc/internal/pluginmodel"
+	pluginautoload "github.com/xbcio/xbc/plugin/autoload"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
 func TestOrdinaryImportHasNoAutoloadSideEffect(t *testing.T) {
@@ -18,7 +18,7 @@ func TestOrdinaryImportHasNoAutoloadSideEffect(t *testing.T) {
 		t.Fatalf("objectstorage Bundle descriptor = %+v, found = %v", descriptor, ok)
 	}
 
-	global := pluginmodel.BundleEntries(pluginmodel.Bundle(internalautoload.Freeze()))
+	global := pluginmodel.BundleEntries(pluginmodel.Bundle(pluginautoload.Freeze()))
 	if len(global) != 0 {
 		t.Fatalf("ordinary package import declared %d global bundle entries", len(global))
 	}

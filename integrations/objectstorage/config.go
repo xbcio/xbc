@@ -43,8 +43,8 @@ type S3Config struct {
 	Bucket       string `yaml:"bucket"`
 	PathStyle    bool   `yaml:"path_style"   default:"true"`
 	AccessKeyID  string `yaml:"access_key_id"`
-	SecretKey    string `yaml:"secret_key"`
-	SessionToken string `yaml:"session_token"`
+	SecretKey    string `yaml:"secret_key" mask:"true"`
+	SessionToken string `yaml:"session_token" mask:"true"`
 	Prefix       string `yaml:"prefix"`
 
 	DialTimeout           time.Duration `yaml:"dial_timeout"            default:"5s" validate:"gt=0"`

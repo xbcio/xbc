@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	raftplugin "github.com/xbcio/xbc/integrations/raft"
-	"github.com/xbcio/xbc/internal/autoload"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/autoload"
 )
 
 func TestOrdinaryImportDefinitionAndBundleHaveNoAutoloadSideEffect(t *testing.T) {

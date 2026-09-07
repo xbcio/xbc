@@ -7,7 +7,13 @@ go 1.25.0
 // root go.work; local replace directives, v0.0.0, and synthetic pseudo-versions
 // would only hide a broken publication boundary. After real tags exist, run
 // `GOWORK=off go mod tidy` and publish modules in dependency-topology order.
-require github.com/gin-gonic/gin v1.12.0
+require (
+	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/casbin/casbin/v2 v2.135.0
+	github.com/casbin/gorm-adapter/v3 v3.39.0
+	github.com/gin-gonic/gin v1.12.0
+	gorm.io/gorm v1.31.1
+)
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect

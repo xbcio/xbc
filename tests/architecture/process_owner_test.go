@@ -15,7 +15,7 @@ import (
 
 // TestArchProcessConcernsRemainInProcessAdapter parses every runtime-package
 // production file, resolving import aliases before inspecting selectors. Test
-// files are deliberately excluded. internal/runtime/process.go is the sole owner of
+// files are deliberately excluded. runtime/process.go is the sole owner of
 // process arguments, signals, diagnostics, logger flushing, and termination;
 // keeping these concerns out of App.Execute is what makes it embeddable.
 func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
@@ -33,19 +33,19 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 		{importPath: "github.com/xbcio/xbc/log", selector: "Sync"}: "log.Sync",
 	}
 	const (
-		owner         = "internal/runtime/process.go"
+		owner         = "runtime/process.go"
 		exitHook      = "osExit"
 		exitHookLabel = "package-level osExit"
 	)
 	seenInOwner := map[string]bool{}
 
 	root := archRepositoryRoot(t)
-	runtimeDir := filepath.Join(root, "internal", "runtime")
+	runtimeDir := filepath.Join(root, "runtime")
 	var sourcePaths []string
 	for _, name := range archProductionGoFilesInDir(t, runtimeDir) {
 		sourcePaths = append(sourcePaths, filepath.Join(runtimeDir, name))
 	}
-	require.NotEmpty(t, sourcePaths, "internal/runtime has no production Go files scanned, process facility guard actually not effective")
+	require.NotEmpty(t, sourcePaths, "runtime has no production Go files scanned, process facility guard actually not effective")
 
 	fset := token.NewFileSet()
 	for _, filePath := range sourcePaths {

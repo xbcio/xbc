@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/xbcio/xbc/plugin"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
+	"github.com/xbcio/xbc/security/rbac"
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -25,6 +27,29 @@ func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(first, second) {
 		t.Fatal("Bundle() returned different composition content")
+	}
+}
+
+func TestDefinitionExportsMiddlewareAndEnforcerContracts(t *testing.T) {
+	descriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(Definition()))
+	if !ok {
+		t.Fatal("Definition() returned a zero handle")
+	}
+
+	want := map[reflect.Type]bool{
+		reflect.TypeOf((*web.Middleware)(nil)).Elem():   false,
+		reflect.TypeOf((*EnforcerProvider)(nil)).Elem(): false,
+		reflect.TypeOf((*rbac.Backend)(nil)).Elem():     false,
+	}
+	for _, contract := range descriptor.Contracts {
+		if _, expected := want[contract.Type]; expected {
+			want[contract.Type] = true
+		}
+	}
+	for contract, found := range want {
+		if !found {
+			t.Errorf("Definition contracts %+v do not export %v", descriptor.Contracts, contract)
+		}
 	}
 }
 

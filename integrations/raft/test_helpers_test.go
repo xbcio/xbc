@@ -16,7 +16,7 @@ import (
 )
 
 // testRuntimeHost is a minimal plugin.RuntimeHost used only by tests that
-// exercise Definition through internal/assembly. Raft's Lifecycle declares no
+// exercise Definition through plugin/assembly. Raft's Lifecycle declares no
 // Init or Start stage, so no test here needs task admission or a traffic gate.
 type testRuntimeHost struct {
 	execution context.Context

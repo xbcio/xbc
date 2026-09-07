@@ -36,6 +36,27 @@ type multiFieldConfig struct {
 	Addr string `yaml:"addr" validate:"required,hostname_port"`
 }
 
+type maskedValidateConfig struct {
+	Secret string `yaml:"secret" validate:"min=32" mask:"true"`
+	Addr   string `yaml:"addr" validate:"hostname_port"`
+}
+
+type maskedNumberConfig struct {
+	Rounds int `yaml:"rounds" validate:"min=9999999" mask:"true"`
+}
+
+type credentialLeaf struct {
+	Token string `yaml:"token" validate:"min=32"`
+}
+
+type maskedNestedConfig struct {
+	Credentials credentialLeaf `yaml:"credentials" mask:"true"`
+}
+
+type misspelledMaskConfig struct {
+	Secret string `yaml:"secret" mask:"yes"`
+}
+
 func TestValidateRequiredMessage(t *testing.T) {
 	cfg := gormValidateConfig{}
 	err := Validate(&cfg, "plugins.gorm.readonly")
@@ -64,6 +85,60 @@ func TestValidateOneofMessage(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "must be")
 	require.Contains(t, err.Error(), `"weekly"`)
+}
+
+// TestValidateRedactsOnlyTheFieldsMarkedForMasking is the discriminating case:
+// the same error block must hide the value the schema marked for masking while
+// still echoing the one it did not. A rule that simply stopped quoting values
+// everywhere would also pass the first assertion, so the Addr assertion is what
+// makes this test able to fail.
+func TestValidateRedactsOnlyTheFieldsMarkedForMasking(t *testing.T) {
+	cfg := maskedValidateConfig{Secret: "hunter2-live-signing-key", Addr: "127.0.0.1"}
+	err := Validate(&cfg, "plugins.jwt")
+	require.Error(t, err)
+
+	assert.NotContains(t, err.Error(), "hunter2", "a sensitive value must never reach the message")
+	assert.Contains(t, err.Error(), "cannot be less than 32",
+		"the rule that was violated stays visible -- redaction hides the value, not the diagnosis")
+	assert.Contains(t, err.Error(), "24-character",
+		"length is the one detail a min violation needs, and the rule itself already implies it")
+	assert.Contains(t, err.Error(), `got "127.0.0.1"`,
+		"an unmarked field is unaffected, so operators keep the diagnosis they had")
+}
+
+// TestValidateRedactsANonStringMaskedValueWithoutDescribingIt pins the other
+// branch: a length says nothing useful about a number, so the value collapses
+// to a bare marker rather than leaking its digits.
+func TestValidateRedactsANonStringMaskedValueWithoutDescribingIt(t *testing.T) {
+	cfg := maskedNumberConfig{Rounds: 1234567}
+	err := Validate(&cfg, "plugins.kdf")
+	require.Error(t, err)
+
+	assert.NotContains(t, err.Error(), "1234567", "the configured number is the secret here")
+	assert.Contains(t, err.Error(), "[redacted]")
+	assert.Contains(t, err.Error(), "plugins.kdf.rounds", "the path an operator must edit stays named")
+}
+
+// TestValidateMaskOnAStructCoversEveryFieldBelowIt keeps the marker usable
+// on a credentials block: marking the one field that happens to exist today
+// would silently stop protecting the block the moment a second field is added.
+func TestValidateMaskOnAStructCoversEveryFieldBelowIt(t *testing.T) {
+	cfg := maskedNestedConfig{Credentials: credentialLeaf{Token: "short-token"}}
+	err := Validate(&cfg, "plugins.oidc")
+	require.Error(t, err)
+
+	assert.NotContains(t, err.Error(), "short-token", "the marker is inherited by everything under it")
+	assert.Contains(t, err.Error(), "plugins.oidc.credentials.token")
+}
+
+// TestValidateRejectsAMisspelledMaskTag is why the tag spells its value
+// out. A marker that silently means "not a secret" whenever it is misspelled
+// would fail exactly where it matters, and it would do so invisibly.
+func TestValidateRejectsAMisspelledMaskTag(t *testing.T) {
+	cfg := misspelledMaskConfig{}
+	err := Validate(&cfg, "plugins.jwt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `mask tag for field Secret must be "true" or "false", got "yes"`)
 }
 
 func TestValidateNestedStructPath(t *testing.T) {

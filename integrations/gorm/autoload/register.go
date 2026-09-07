@@ -5,7 +5,7 @@ package autoload
 
 import (
 	gormplugin "github.com/xbcio/xbc/integrations/gorm"
-	"github.com/xbcio/xbc/internal/autoload"
+	"github.com/xbcio/xbc/plugin/autoload"
 )
 
 func init() {

@@ -3,7 +3,7 @@
 package autoload
 
 import (
-	"github.com/xbcio/xbc/internal/autoload"
+	"github.com/xbcio/xbc/plugin/autoload"
 	"github.com/xbcio/xbc/transport/web/integrations/jwt"
 )
 

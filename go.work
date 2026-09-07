@@ -26,6 +26,8 @@ use (
 	./scripts/plugin-snapshots
 	./transport/web
 	./transport/web/integrations/casbin
+	./transport/web/integrations/casbin-gorm
+	./transport/web/integrations/casbin-redis
 	./transport/web/integrations/idempotency
 	./transport/web/integrations/jwt
 	./transport/web/integrations/metrics

@@ -36,8 +36,55 @@ func TestConfigValidation(t *testing.T) {
 		{name: "unknown missing policy", mutate: func(c *Config) { c.MissingPermission = "ignore" }, wantErr: "missing_permission"},
 		{name: "model source conflict", mutate: func(c *Config) { c.Model, c.ModelFile = permissionModel, "model.conf" }, wantErr: "mutually exclusive"},
 		{name: "policy source conflict", mutate: func(c *Config) { c.Policy, c.PolicyFile = "p, alice, read", "policy.csv" }, wantErr: "mutually exclusive"},
+		{name: "adapter", mutate: func(c *Config) { c.Adapter = ProviderRef{Plugin: "casbin-gorm"} }},
+		{name: "named adapter", mutate: func(c *Config) { c.Adapter = ProviderRef{Plugin: "casbin-gorm", Instance: "writer"} }},
+		{name: "watcher with adapter", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: "casbin-gorm"}
+			c.Watcher = ProviderRef{Plugin: "casbin-redis"}
+		}},
+		{name: "reload external adapter", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: "casbin-gorm"}
+			c.ReloadInterval = time.Second
+		}},
 		{name: "negative interval", mutate: func(c *Config) { c.ReloadInterval = -time.Second }, wantErr: "cannot be negative"},
-		{name: "reload without file", mutate: func(c *Config) { c.ReloadInterval = time.Second }, wantErr: "requires policy_file"},
+		{name: "reload without source", mutate: func(c *Config) { c.ReloadInterval = time.Second }, wantErr: "requires policy_file or adapter"},
+		{name: "adapter with policy", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: "casbin-gorm"}
+			c.Policy = "p, alice, read"
+		}, wantErr: "adapter is mutually exclusive"},
+		{name: "adapter with policy file", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: "casbin-gorm"}
+			c.PolicyFile = "policy.csv"
+		}, wantErr: "adapter is mutually exclusive"},
+		{name: "watcher without adapter", mutate: func(c *Config) {
+			c.Watcher = ProviderRef{Plugin: "casbin-redis"}
+		}, wantErr: "watcher requires adapter"},
+		{name: "adapter instance without plugin", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Instance: "writer"}
+		}, wantErr: "adapter.instance"},
+		{name: "watcher instance without plugin", mutate: func(c *Config) {
+			c.Watcher = ProviderRef{Instance: "events"}
+		}, wantErr: "watcher.instance"},
+		{name: "invalid adapter key", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: "Casbin GORM"}
+		}, wantErr: "adapter.plugin"},
+		{name: "adapter key surrounding whitespace", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: " casbin-gorm"}
+		}, wantErr: "adapter.plugin"},
+		{name: "adapter instance surrounding whitespace", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: "casbin-gorm", Instance: "writer "}
+		}, wantErr: "adapter.instance"},
+		{name: "invalid adapter instance", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: "casbin-gorm", Instance: "Writer DB"}
+		}, wantErr: "adapter.instance"},
+		{name: "invalid watcher key", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: "casbin-gorm"}
+			c.Watcher = ProviderRef{Plugin: "Casbin Redis"}
+		}, wantErr: "watcher.plugin"},
+		{name: "invalid watcher instance", mutate: func(c *Config) {
+			c.Adapter = ProviderRef{Plugin: "casbin-gorm"}
+			c.Watcher = ProviderRef{Plugin: "casbin-redis", Instance: "Events Bus"}
+		}, wantErr: "watcher.instance"},
 	}
 
 	for _, tt := range tests {

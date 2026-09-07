@@ -5,12 +5,12 @@ import (
 	"testing"
 
 	raftplugin "github.com/xbcio/xbc/integrations/raft"
-	internalautoload "github.com/xbcio/xbc/internal/autoload"
 	"github.com/xbcio/xbc/plugin"
+	pluginautoload "github.com/xbcio/xbc/plugin/autoload"
 )
 
 func TestImportDeclaresRaftBundle(t *testing.T) {
-	got := internalautoload.Freeze()
+	got := pluginautoload.Freeze()
 	if reflect.DeepEqual(got, plugin.Bundle{}) {
 		t.Fatal("autoload import did not declare the Raft Bundle")
 	}

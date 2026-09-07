@@ -76,7 +76,7 @@ func TestArchRetiredCompositionAPIsStayRetired(t *testing.T) {
 }
 
 // TestArchRuntimeHostPublicAPIShape locks the capability boundary between
-// plugin.Context and internal/runtime. The important rule is semantic: this
+// plugin.Context and runtime. The important rule is semantic: this
 // reverse port must never regain value publication, lookup, or enumeration.
 func TestArchRuntimeHostPublicAPIShape(t *testing.T) {
 	hostType := reflect.TypeOf((*plugin.RuntimeHost)(nil)).Elem()

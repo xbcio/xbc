@@ -56,19 +56,26 @@ var archWebBuiltinNames = []string{
 	"timeout",
 }
 
+// archWebAdapterNames contains transport-only packages that adapt a
+// protocol-neutral capability without owning a plugin Definition or autoload.
+var archWebAdapterNames = []string{
+	"rbac",
+}
+
 // TestArchRetiredPathsStayRetired prevents retired packages and repository
 // groupings from becoming second owners beside their canonical replacements.
-// Core orchestration is private under internal; Web built-ins are packages of
-// transport/web; optional third-party Web adapters and protocol-neutral
-// integrations retain independent module boundaries.
+// Process orchestration and its private command parsing stay under the root
+// runtime owner, while Plugin model, assembly, and optional autoload infrastructure
+// stay together under plugin. Web built-ins and independently
+// versioned integrations retain their owners.
 func TestArchRetiredPathsStayRetired(t *testing.T) {
 	root := archRepositoryRoot(t)
 	for _, canonical := range []string{
-		"internal",
-		"internal/runtime",
-		"internal/assembly",
-		"internal/cli",
+		"runtime",
 		"plugin",
+		"plugin/assembly",
+		"plugin/autoload",
+		"plugin/model",
 		"integrations",
 		"transport",
 		"transport/web",
@@ -81,7 +88,8 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	}
 
 	retiredPaths := []string{
-		"runtime",
+		"internal/runtime",
+		"internal/cli",
 		"assembly",
 		"cli",
 		"plugins",
@@ -94,9 +102,13 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		"transport/web/plugins",
 		"transport/web/autoload/prelude",
 		"transport/web/business",
+		"internal/assembly",
+		"internal/assembly/inject",
+		"internal/autoload",
 		"internal/container",
 		"internal/inject",
-		"internal/assembly/inject",
+		"internal/plugin",
+		"internal/pluginmodel",
 		"internal/report",
 		"internal/startupreport",
 		"internal/architecture",
@@ -105,7 +117,7 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		retiredPath := filepath.Join(root, filepath.FromSlash(retired))
 		_, err := os.Stat(retiredPath)
 		if err == nil {
-			t.Errorf("old path %s must not be revived; use the canonical internal, transport, or integrations owner", retired)
+			t.Errorf("old path %s must not be revived; use the canonical runtime, plugin, transport, or integrations owner", retired)
 			continue
 		}
 		require.ErrorIs(t, err, os.ErrNotExist, "checking old path %s failed", retired)
@@ -120,9 +132,9 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	_, err := os.Stat(filepath.Join(preludeRoot, "go.mod"))
 	require.ErrorIs(t, err, os.ErrNotExist, "Web prelude must belong to the transport/web module")
 
-	builtinSet := make(map[string]bool, len(archWebBuiltinNames))
+	ownedPackageSet := make(map[string]bool, len(archWebBuiltinNames)+len(archWebAdapterNames))
 	for _, name := range archWebBuiltinNames {
-		builtinSet[name] = true
+		ownedPackageSet[name] = true
 		builtinRoot := filepath.Join(webRoot, name)
 		info, err := os.Stat(builtinRoot)
 		require.NoError(t, err, "Web built-in package %s must exist", filepath.ToSlash(filepath.Join("transport", "web", name)))
@@ -134,6 +146,9 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		require.NoError(t, err, "Web built-in %s must provide an autoload package", name)
 		require.True(t, autoload.IsDir(), "Web built-in autoload path %s must be a directory", autoload.Name())
 	}
+	for _, name := range archWebAdapterNames {
+		ownedPackageSet[name] = true
+	}
 
 	entries, err := os.ReadDir(webRoot)
 	require.NoError(t, err, "reading Web module root failed")
@@ -141,7 +156,7 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		if !entry.IsDir() || entry.Name() == "autoload" || entry.Name() == "prelude" || entry.Name() == "integrations" {
 			continue
 		}
-		assert.Truef(t, builtinSet[entry.Name()], "unexpected direct package directory transport/web/%s; declare its ownership explicitly", entry.Name())
+		assert.Truef(t, ownedPackageSet[entry.Name()], "unexpected direct package directory transport/web/%s; declare its ownership explicitly", entry.Name())
 	}
 }
 
@@ -170,9 +185,9 @@ func archAssertIndependentIntegrationNamespace(t *testing.T, namespace string) {
 }
 
 // TestArchRootPublicAPIIsFrozen keeps the application-facing facade narrow.
-// Runtime, assembly, and CLI implementation packages are private under
-// internal/; importing the root package must expose only the six entry-point
-// symbols below.
+// Runtime and assembly implementation stay behind the application-facing
+// facade; importing the root package must expose only the six entry-point symbols
+// below.
 //
 // The set below is deliberately tiny and should stay that way: an application
 // calls Run, an embedding host calls New and App.Execute, and a test supplies

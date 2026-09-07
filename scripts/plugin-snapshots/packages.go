@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/security/rbac"
 
 	"github.com/xbcio/xbc/integrations/asynq"
 	"github.com/xbcio/xbc/integrations/cron"
@@ -24,6 +25,8 @@ import (
 	"github.com/xbcio/xbc/transport/web/gzip"
 	"github.com/xbcio/xbc/transport/web/health"
 	"github.com/xbcio/xbc/transport/web/integrations/casbin"
+	casbingorm "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm"
+	casbinredis "github.com/xbcio/xbc/transport/web/integrations/casbin-redis"
 	"github.com/xbcio/xbc/transport/web/integrations/idempotency"
 	"github.com/xbcio/xbc/transport/web/integrations/jwt"
 	"github.com/xbcio/xbc/transport/web/integrations/metrics"
@@ -70,6 +73,8 @@ var definitionProviders = []func() plugin.Definition{
 	gzip.Definition,
 	health.Definition,
 	casbin.Definition,
+	casbingorm.Definition,
+	casbinredis.Definition,
 	idempotency.Definition,
 	jwt.Definition,
 	metrics.Definition,
@@ -80,6 +85,7 @@ var definitionProviders = []func() plugin.Definition{
 	ratelimit.Definition,
 	recovery.Definition,
 	requestid.Definition,
+	rbac.Definition,
 	securityheaders.Definition,
 	tenant.Definition,
 	timeout.Definition,

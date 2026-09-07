@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/config"
-	"github.com/xbcio/xbc/internal/assembly"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/assembly"
 	gormlib "gorm.io/gorm"
 )
 

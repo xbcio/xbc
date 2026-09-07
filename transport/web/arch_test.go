@@ -17,7 +17,7 @@ import (
 //
 // This guard deliberately checks Imports/TestImports/XTestImports, not
 // Deps, per package-layout design §9.1: the rule under test is "web's own
-// source files must never import the root facade or private core implementation
+// source files must never import the root facade or low-level core implementation
 // packages", a statement about what web's authors wrote, not about what ends
 // up on disk once gin or any other dependency's own transitive graph is
 // flattened. Using Deps here would produce a false negative the moment
@@ -41,16 +41,17 @@ func forbiddenDirectImport(importer, dep string) string {
 	if dep == "github.com/xbcio/xbc" {
 		return "web may not reverse import root facade (design §9 guard #11)"
 	}
-	if dep == "github.com/xbcio/xbc/internal/autoload" && strings.HasSuffix(importer, "/autoload") {
+	if dep == "github.com/xbcio/xbc/plugin/autoload" && strings.HasSuffix(importer, "/autoload") {
 		return ""
 	}
 	for _, forbidden := range []struct {
 		prefix string
 		reason string
 	}{
-		{"github.com/xbcio/xbc/internal/runtime", "web may not directly depend on runtime orchestration implementation"},
-		{"github.com/xbcio/xbc/internal/assembly", "web may not directly depend on instance assembly implementation"},
-		{"github.com/xbcio/xbc/internal/cli", "web may not directly depend on command parsing implementation"},
+		{"github.com/xbcio/xbc/transport/web/integrations", "Web built-ins may not reverse import independently versioned integration modules; integrations implement built-in contracts"},
+		{"github.com/xbcio/xbc/plugin/autoload", "only leaf autoload packages may mutate optional process composition"},
+		{"github.com/xbcio/xbc/plugin/assembly", "web may not directly depend on low-level Plugin assembly implementation"},
+		{"github.com/xbcio/xbc/runtime", "web may not directly depend on runtime orchestration implementation"},
 		{"github.com/xbcio/xbc/internal", "web may not import core internal/*"},
 	} {
 		if dep == forbidden.prefix || strings.HasPrefix(dep, forbidden.prefix+"/") {
@@ -60,11 +61,11 @@ func forbiddenDirectImport(importer, dep string) string {
 	return ""
 }
 
-// TestWebDoesNotDirectlyImportFacadeOrCoreInternal is the package-layout
-// architecture guard for the complete Web module. Only leaf autoload packages
-// may import the exact internal/autoload adapter; all other internal edges and
-// reverse imports of the root facade remain forbidden.
-func TestWebDoesNotDirectlyImportFacadeOrCoreInternal(t *testing.T) {
+// TestWebDoesNotDirectlyImportFacadeOrFrameworkInfrastructure is the package-
+// layout architecture guard for the complete Web module. Only leaf autoload
+// packages may import plugin/autoload; Plugin assembly, runtime process
+// implementation, and reverse imports of the root facade remain forbidden.
+func TestWebDoesNotDirectlyImportFacadeOrFrameworkInfrastructure(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go command is unavailable, skipping dependency direction check")
 	}

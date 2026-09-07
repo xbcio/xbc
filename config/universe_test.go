@@ -63,6 +63,50 @@ func TestUniverseAcceptsDeclaredFreeformApplicationRoot(t *testing.T) {
 	require.Equal(t, 1, k.Int("app.anything.nested"))
 }
 
+// TestUniverseRejectsUnownedKeyBesideADeepSection is the reason ownership is a
+// walk rather than a top-level scan. A Definition may rename its section to a
+// dotted ConfigPath, and the segment it nests under is then claimed by nobody
+// in particular -- so without descending into it, a sibling typo lands in a
+// blind spot between the unowned-root check and strict bind, and is silently
+// ignored.
+func TestUniverseRejectsUnownedKeyBesideADeepSection(t *testing.T) {
+	universe, err := NewUniverse(
+		Section{Path: "plugins", Owner: "the assembly layer", Kind: SectionNamespace},
+		Section{Path: "plugins.group.actual", Owner: `plugin "renamed"`, Kind: SectionTyped, Toggle: true},
+	)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeYAML(t, filepath.Join(dir, "application.yml"),
+		"plugins:\n  group:\n    actual:\n      enabled: true\n    typo:\n      enabled: true\n")
+
+	_, _, err = loadKoanf(Options{Universe: universe})
+	require.Error(t, err, "A sibling of a renamed section is owned by nobody and must fail")
+	require.Contains(t, err.Error(), "plugins.group.typo", "The error must name the full path, not just its root")
+	require.Contains(t, err.Error(), "plugins.group.actual",
+		"The error must name what is declared beside it, not the distant top-level roots")
+}
+
+// TestUniverseLeavesTheInteriorOfADeclaredSectionToBind draws the line the walk
+// stops at. Descending past a declared section would make this check a second,
+// weaker copy of strict bind -- and would reject legal keys, since an instance
+// name and a freeform subtree are by definition unknown to any schema.
+func TestUniverseLeavesTheInteriorOfADeclaredSectionToBind(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeYAML(t, filepath.Join(dir, "application.yml"),
+		"server:\n  pool:\n    max_idle: 4\n"+
+			"app:\n  anything:\n    nested: 1\n"+
+			"plugins:\n  store:\n    primary:\n      dsn: from-file\n")
+
+	k, _, err := loadKoanf(Options{Universe: testUniverse(t)})
+	require.NoError(t, err)
+	require.Equal(t, 4, k.Int("server.pool.max_idle"), "a nested schema leaf is the owning section's business")
+	require.Equal(t, "from-file", k.String("plugins.store.primary.dsn"),
+		"an instance name is known only to the configuration, never to a schema")
+}
+
 func TestUniverseNestedSectionMustLiveInsideANamespace(t *testing.T) {
 	_, err := NewUniverse(
 		Section{Path: "server", Owner: "the framework", Kind: SectionTyped, Schema: reflect.TypeOf(serverSection{})},

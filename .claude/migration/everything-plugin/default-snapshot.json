@@ -76,9 +76,45 @@
         "ModelFile": "",
         "Policy": "",
         "PolicyFile": "",
+        "Adapter": {
+          "Plugin": "",
+          "Instance": ""
+        },
+        "Watcher": {
+          "Plugin": "",
+          "Instance": ""
+        },
         "RequestConvention": "route_permission",
         "MissingPermission": "deny",
         "ReloadInterval": 0
+      }
+    },
+    {
+      "key": "casbin-gorm",
+      "config_type": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm.Config",
+      "defaults": {
+        "DBInstance": "default",
+        "Table": "casbin_rule",
+        "TablePrefix": "",
+        "Migrate": false
+      }
+    },
+    {
+      "key": "casbin-redis",
+      "config_type": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis.Config",
+      "defaults": {
+        "Mode": "standalone",
+        "Addrs": [
+          "127.0.0.1:6379"
+        ],
+        "Username": "",
+        "Password": "",
+        "DB": 0,
+        "DialTimeout": 5000000000,
+        "ReadTimeout": 3000000000,
+        "WriteTimeout": 3000000000,
+        "Channel": "/casbin",
+        "IgnoreSelf": true
       }
     },
     {
@@ -399,6 +435,17 @@
         "Rate": 100,
         "Burst": 200,
         "Scope": "global"
+      }
+    },
+    {
+      "key": "rbac",
+      "config_type": "github.com/xbcio/xbc/security/rbac.Config",
+      "defaults": {
+        "Backend": {
+          "Plugin": "casbin",
+          "Instance": "default"
+        },
+        "AdminRole": "admin"
       }
     },
     {

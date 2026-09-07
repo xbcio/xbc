@@ -3,7 +3,7 @@ package plugin
 import (
 	"fmt"
 
-	"github.com/xbcio/xbc/internal/pluginmodel"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
 // Entry retains the identity of the Plugin that exported Value.
@@ -127,7 +127,7 @@ func readEntries[T any](context BuildContext, token pluginmodel.InputToken) []En
 		if !ok {
 			panic(fmt.Sprintf("xbc: internal invariant: input token %d bound %T, want %s", token.ID, entry.Value, typeOf[T]()))
 		}
-		entries[i] = Entry[T]{Identity: fromModelIdentity(entry.Identity), Value: value}
+		entries[i] = Entry[T]{Identity: fromInternalIdentity(entry.Identity), Value: value}
 	}
 	return entries
 }

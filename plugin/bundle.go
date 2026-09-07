@@ -1,6 +1,6 @@
 package plugin
 
-import "github.com/xbcio/xbc/internal/pluginmodel"
+import pluginmodel "github.com/xbcio/xbc/plugin/model"
 
 // Bundle is a side-effect-free static collection of canonical Definitions. It
 // has no runtime identity, configuration, dependencies, or lifecycle.

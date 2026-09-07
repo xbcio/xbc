@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/xbcio/xbc/plugin"
-	"github.com/xbcio/xbc/plugin/ordering"
 )
 
 // renderMiddlewareChain renders the frozen middleware chain using producer
@@ -59,19 +58,23 @@ func renderRouteTable(routes []RouteInfo) string {
 	return b.String()
 }
 
+// renderSoftMisses reports Prefer references that had no target in the frozen
+// chain. This is what a soft reference is documented to do -- a plugin declares
+// "order me relative to X if X is here", and X is not -- so the report states
+// the fact rather than suggesting a fault. The reference is a typed key in the
+// declaring plugin's own Go source, so the operator reading this log never
+// wrote it; the only thing they can act on is whether the named plugin was
+// meant to be part of this application at all.
 func renderSoftMisses(misses []MiddlewareOrderMiss) string {
 	var b strings.Builder
-	b.WriteString("web: unmatched soft constraints (startup unaffected)")
+	b.WriteString("web: optional ordering preferences with no target (chain unaffected)")
 	for _, miss := range misses {
-		direction := "After"
-		if miss.Direction == ordering.Before {
-			direction = "Before"
-		}
 		fmt.Fprintf(
 			&b,
-			"\n  %s.%s = %q — no matching middleware, ignored\n    → spelling error? or forgot to enable the corresponding plugin?",
+			"\n  %s prefers to run %s %s, which contributes no middleware\n    → %s is not selected in this build, or not enabled by configuration",
 			miss.Middleware,
-			direction,
+			miss.Direction,
+			miss.Reference,
 			miss.Reference,
 		)
 	}

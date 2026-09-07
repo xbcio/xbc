@@ -28,3 +28,8 @@ application-local.yml
 # 工具的本地暂存目录
 .superpowers/
 .worktrees/
+
+# 本地设计与代理工作文档
+/.claude/specs/
+/.claude/tasks/
+/docs/superpowers/

@@ -39,7 +39,7 @@ func TestOrdinaryImplementationDoesNotDeclareAutoload(t *testing.T) {
 			t.Fatal(err)
 		}
 		source := string(data)
-		if strings.Contains(source, "internal/autoload") || strings.Contains(source, "autoload.Declare(") {
+		if strings.Contains(source, "plugin/autoload") || strings.Contains(source, "autoload.Declare(") {
 			t.Fatalf("ordinary implementation file %s declares autoload composition", entry.Name())
 		}
 	}

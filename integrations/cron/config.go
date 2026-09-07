@@ -49,7 +49,7 @@ type DistributedConfig struct {
 type RedisConfig struct {
 	Addr         string        `yaml:"addr"`
 	Username     string        `yaml:"username"`
-	Password     string        `yaml:"password"`
+	Password     string        `yaml:"password" mask:"true"`
 	DB           int           `yaml:"db" validate:"min=0"`
 	DialTimeout  time.Duration `yaml:"dial_timeout"  default:"5s"`
 	ReadTimeout  time.Duration `yaml:"read_timeout"  default:"3s"`

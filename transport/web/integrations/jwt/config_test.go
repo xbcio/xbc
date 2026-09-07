@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xbcio/xbc/config"
 )
 
 const testSecret = "0123456789abcdef0123456789abcdef"
@@ -50,6 +52,27 @@ func TestConfigValidation(t *testing.T) {
 				t.Fatal("validation error leaked secret")
 			}
 		})
+	}
+}
+
+// TestSchemaValidationDoesNotEchoTheSecret guards the mask:"true" marker on
+// Secret. Config.Validate is written to never include the secret, but the
+// struct's own min=32 rule is enforced by config.Validate, which renders the
+// offending value -- so the marker, not the hand-written method, is what keeps
+// a short signing key out of the startup error.
+func TestSchemaValidationDoesNotEchoTheSecret(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Secret = "hunter2-live-signing-key"
+
+	err := config.Validate(&cfg, "plugins.jwt")
+	if err == nil {
+		t.Fatal("config.Validate() = nil, want a min=32 violation")
+	}
+	if strings.Contains(err.Error(), cfg.Secret) {
+		t.Fatalf("validation error leaked the signing key: %v", err)
+	}
+	if !strings.Contains(err.Error(), "plugins.jwt.secret") {
+		t.Fatalf("validation error must still name the path to edit: %v", err)
 	}
 }
 

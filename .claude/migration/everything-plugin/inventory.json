@@ -65,6 +65,14 @@
         "root": "transport/web/integrations/casbin"
       },
       {
+        "path": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm",
+        "root": "transport/web/integrations/casbin-gorm"
+      },
+      {
+        "path": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis",
+        "root": "transport/web/integrations/casbin-redis"
+      },
+      {
         "path": "github.com/xbcio/xbc/transport/web/integrations/idempotency",
         "root": "transport/web/integrations/idempotency"
       },
@@ -91,35 +99,35 @@
     ]
   },
   "summary": {
-    "modules": 21,
-    "go_files": 539,
+    "modules": 23,
+    "go_files": 581,
     "migration_blockers": 0,
     "retired_api_uses": 0,
     "context_retentions": 0,
-    "definition_accessors": 34,
+    "definition_accessors": 37,
     "noncanonical_definition_accessors": 0,
     "generic_order_references": 0,
     "web_literal_order_references": 0,
-    "plugin_packages": 68
+    "plugin_packages": 74
   },
   "module_totals": [
     {
       "module": "github.com/xbcio/xbc",
       "root": ".",
-      "go_files": 115,
+      "go_files": 129,
       "migration_blockers": 0,
       "retired_api_uses": 0,
       "context_retentions": 0,
-      "definition_accessors": 0,
+      "definition_accessors": 1,
       "noncanonical_definition_accessors": 0,
       "generic_order_references": 0,
       "web_literal_order_references": 0,
-      "plugin_packages": 1
+      "plugin_packages": 3
     },
     {
       "module": "github.com/xbcio/xbc/examples",
       "root": "examples",
-      "go_files": 3,
+      "go_files": 4,
       "migration_blockers": 0,
       "retired_api_uses": 0,
       "context_retentions": 0,
@@ -275,7 +283,7 @@
     {
       "module": "github.com/xbcio/xbc/transport/web",
       "root": "transport/web",
-      "go_files": 185,
+      "go_files": 189,
       "migration_blockers": 0,
       "retired_api_uses": 0,
       "context_retentions": 0,
@@ -288,7 +296,33 @@
     {
       "module": "github.com/xbcio/xbc/transport/web/integrations/casbin",
       "root": "transport/web/integrations/casbin",
-      "go_files": 14,
+      "go_files": 18,
+      "migration_blockers": 0,
+      "retired_api_uses": 0,
+      "context_retentions": 0,
+      "definition_accessors": 1,
+      "noncanonical_definition_accessors": 0,
+      "generic_order_references": 0,
+      "web_literal_order_references": 0,
+      "plugin_packages": 2
+    },
+    {
+      "module": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm",
+      "root": "transport/web/integrations/casbin-gorm",
+      "go_files": 9,
+      "migration_blockers": 0,
+      "retired_api_uses": 0,
+      "context_retentions": 0,
+      "definition_accessors": 1,
+      "noncanonical_definition_accessors": 0,
+      "generic_order_references": 0,
+      "web_literal_order_references": 0,
+      "plugin_packages": 2
+    },
+    {
+      "module": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis",
+      "root": "transport/web/integrations/casbin-redis",
+      "go_files": 10,
       "migration_blockers": 0,
       "retired_api_uses": 0,
       "context_retentions": 0,
@@ -381,6 +415,19 @@
   "retired_api_uses": null,
   "context_retentions": null,
   "definition_accessors": [
+    {
+      "module": "github.com/xbcio/xbc",
+      "package": "github.com/xbcio/xbc/security/rbac",
+      "definition": "rbac",
+      "file": "security/rbac/plugin.go",
+      "scope": "production",
+      "line": 39,
+      "column": 6,
+      "canonical": true,
+      "shape": "package-level-identifier",
+      "declaration_kind": "var",
+      "expression": "definition"
+    },
     {
       "module": "github.com/xbcio/xbc/examples",
       "package": "github.com/xbcio/xbc/examples/quickstart/internal/greeter",
@@ -738,7 +785,33 @@
       "definition": "casbin",
       "file": "transport/web/integrations/casbin/plugin.go",
       "scope": "production",
-      "line": 128,
+      "line": 210,
+      "column": 6,
+      "canonical": true,
+      "shape": "package-level-identifier",
+      "declaration_kind": "var",
+      "expression": "definition"
+    },
+    {
+      "module": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm",
+      "package": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm",
+      "definition": "casbin-gorm",
+      "file": "transport/web/integrations/casbin-gorm/plugin.go",
+      "scope": "production",
+      "line": 40,
+      "column": 6,
+      "canonical": true,
+      "shape": "package-level-identifier",
+      "declaration_kind": "var",
+      "expression": "definition"
+    },
+    {
+      "module": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis",
+      "package": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis",
+      "definition": "casbin-redis",
+      "file": "transport/web/integrations/casbin-redis/plugin.go",
+      "scope": "production",
+      "line": 32,
       "column": 6,
       "canonical": true,
       "shape": "package-level-identifier",
@@ -829,8 +902,36 @@
   "plugin_packages": [
     {
       "module": "github.com/xbcio/xbc",
-      "package": "github.com/xbcio/xbc/internal/autoload",
-      "directory": "internal/autoload",
+      "package": "github.com/xbcio/xbc/plugin/autoload",
+      "directory": "plugin/autoload",
+      "definitions": [],
+      "definition_accessors": null,
+      "signals": [
+        "autoload-adapter"
+      ],
+      "status": "autoload-adapter"
+    },
+    {
+      "module": "github.com/xbcio/xbc",
+      "package": "github.com/xbcio/xbc/security/rbac",
+      "directory": "security/rbac",
+      "definitions": [
+        "rbac"
+      ],
+      "definition_accessors": [
+        "Definition"
+      ],
+      "signals": [
+        "bundle",
+        "canonical-definition",
+        "definition-accessor"
+      ],
+      "status": "migrated"
+    },
+    {
+      "module": "github.com/xbcio/xbc",
+      "package": "github.com/xbcio/xbc/security/rbac/autoload",
+      "directory": "security/rbac/autoload",
       "definitions": [],
       "definition_accessors": null,
       "signals": [
@@ -1606,6 +1707,62 @@
       "module": "github.com/xbcio/xbc/transport/web/integrations/casbin",
       "package": "github.com/xbcio/xbc/transport/web/integrations/casbin/autoload",
       "directory": "transport/web/integrations/casbin/autoload",
+      "definitions": [],
+      "definition_accessors": null,
+      "signals": [
+        "autoload-adapter"
+      ],
+      "status": "autoload-adapter"
+    },
+    {
+      "module": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm",
+      "package": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm",
+      "directory": "transport/web/integrations/casbin-gorm",
+      "definitions": [
+        "casbin-gorm"
+      ],
+      "definition_accessors": [
+        "Definition"
+      ],
+      "signals": [
+        "bundle",
+        "canonical-definition",
+        "definition-accessor"
+      ],
+      "status": "migrated"
+    },
+    {
+      "module": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm",
+      "package": "github.com/xbcio/xbc/transport/web/integrations/casbin-gorm/autoload",
+      "directory": "transport/web/integrations/casbin-gorm/autoload",
+      "definitions": [],
+      "definition_accessors": null,
+      "signals": [
+        "autoload-adapter"
+      ],
+      "status": "autoload-adapter"
+    },
+    {
+      "module": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis",
+      "package": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis",
+      "directory": "transport/web/integrations/casbin-redis",
+      "definitions": [
+        "casbin-redis"
+      ],
+      "definition_accessors": [
+        "Definition"
+      ],
+      "signals": [
+        "bundle",
+        "canonical-definition",
+        "definition-accessor"
+      ],
+      "status": "migrated"
+    },
+    {
+      "module": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis",
+      "package": "github.com/xbcio/xbc/transport/web/integrations/casbin-redis/autoload",
+      "directory": "transport/web/integrations/casbin-redis/autoload",
       "definitions": [],
       "definition_accessors": null,
       "signals": [

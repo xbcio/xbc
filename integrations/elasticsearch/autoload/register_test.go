@@ -5,12 +5,12 @@ import (
 	"testing"
 
 	"github.com/xbcio/xbc/integrations/elasticsearch"
-	internalautoload "github.com/xbcio/xbc/internal/autoload"
 	"github.com/xbcio/xbc/plugin"
+	pluginautoload "github.com/xbcio/xbc/plugin/autoload"
 )
 
 func TestImportDeclaresElasticsearchBundle(t *testing.T) {
-	got := internalautoload.Freeze()
+	got := pluginautoload.Freeze()
 	if reflect.DeepEqual(got, plugin.Bundle{}) {
 		t.Fatal("autoload import did not declare the Elasticsearch Bundle")
 	}
