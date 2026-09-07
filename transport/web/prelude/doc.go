@@ -3,8 +3,9 @@
 //
 // The Bundle combines the HTTP server plus recovery, request IDs, structured
 // access logging, security headers, compression, cooperative request timeouts,
-// and health probes. It preserves every member's canonical Definition and
-// activation policy; it neither clones declarations nor registers from init.
+// and health probes. It preserves every member's canonical Definition,
+// activation policy, and configuration path; it neither clones declarations nor
+// registers from init.
 //
 // Business response envelopes, CORS, authentication, authorization,
 // persistence, telemetry exporters, and API documentation are deliberately not

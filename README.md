@@ -55,52 +55,7 @@ go run ./examples/quickstart doctor --config examples/quickstart/application.yml
 go run ./examples/quickstart --config examples/quickstart/application.yml
 ```
 
-Quickstart 的 composition root 显式交付无副作用的 Bundle：
-
-```go
-app, err := xbc.New(xbc.WithBundles(
-    prelude.Bundle(),
-    biz.Bundle(),
-    cors.Bundle(),
-    swagger.Bundle(),
-    greeter.Bundle(),
-))
-```
-
-`prelude.Bundle()` 组合不依赖外部设施的生产基线：`web`、`recovery`、`requestid`、`accesslog`、`securityheaders`、`gzip`、`timeout` 和 `health`；`biz`、需要应用策略的 `cors` 与 `swagger`，以及应用自己的 `greeter` 均保持显式。`doctor` 只执行 Plan，验证配置、activation、typed Inputs/contracts 和依赖图，不创建资源；正常执行随后进入 Construct，并由该事务统一接管成功构造的资源。可直接检查：
-
-```bash
-curl -i localhost:8080/api/v1/hello
-curl -i -H 'Content-Type: application/json' \
-  -d '{"name":"XBC"}' localhost:8080/api/v1/hello
-# 未知字段、畸形 JSON、DTO 校验失败统一返回 application/problem+json
-curl -i -H 'Content-Type: application/json' \
-  -d '{"name":"X","unexpected":true}' localhost:8080/api/v1/hello
-curl localhost:8080/api/v1/healthz
-curl localhost:8080/api/v1/readyz
-curl localhost:8080/api/v1/openapi.json
-open http://localhost:8080/api/v1/docs
-```
-
-Web 默认提供生产安全的 HTTP timeout、header/body/multipart 上限，且不信任任何代理转发头；只有 `web.trusted_proxies` 明确列出的 IP/CIDR 才能影响客户端地址。404、405、请求体超限、panic、认证授权和严格 DTO 绑定等内建错误统一采用 RFC 9457 `web.ProblemDetail`。业务 handler 推荐使用 `web.Handle` 返回普通 Go error；核心 `web.onerror` 边界集中捕获 `web.Handle`、`web.AbortError` 和 Gin `c.Error` 报告的错误，并通过 typed contracts 组合应用插件导出的 `web.ErrorMapper`，未知错误固定返回不泄漏原因的 500。panic 仍由独立 recovery 中间件处理。可选 `web/biz` 插件提供显式的 `biz.OK` / `Created` / `Paginated` 成功 envelope，并通过 `biz.onerror` 将 `biz.Error` 转换为正确的 4xx/5xx Problem Details，而不是伪装成 HTTP 200。`ProblemDetail` 只是 HTTP 出网 DTO，不应进入领域层。Web 配置的 canonical 位置只有根级 `web:`。
-
-增加协议无关 integration 时，显式导入实现 package 并把它的 Bundle 放入同一个 composition root。例如 Redis：
-
-```go
-app, err := xbc.New(xbc.WithBundles(
-    prelude.Bundle(),
-    redis.Bundle(),
-))
-```
-
-```yaml
-plugins:
-  redis:
-    default:
-      addr: "127.0.0.1:6379"
-```
-
-配置所有权、环境变量覆盖和 Quickstart 完整示例见[配置约定](docs/configuration.md)。
+完整的组合说明、配置入口和验证请求见 [Quickstart](docs/quickstart.md)。Web 运行契约见 [Web package documentation](https://pkg.go.dev/github.com/xbcio/xbc/transport/web)，认证、持久化、消息和多副本部署示例见 [Deployment recipes](docs/recipes.md)。
 
 ## 开发与验证
 

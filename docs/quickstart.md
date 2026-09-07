@@ -1,0 +1,139 @@
+# Quickstart
+
+This guide runs the repository's self-contained Web example, explains its explicit plugin composition, and covers the configuration needed to adapt it. The example requires no database, Redis, broker, object store, or cluster peer.
+
+## Requirements
+
+Install Go 1.25 or newer, then run all commands from the repository root.
+
+## Validate and start the example
+
+Inspect the complete application plan without constructing resources or opening a listener:
+
+```bash
+go run ./examples/quickstart doctor --config examples/quickstart/application.yml
+```
+
+`doctor` validates configuration, plugin activation, typed inputs and contracts, and dependency order. Its output includes source paths and plugin identities, but never configuration values.
+
+Start the application:
+
+```bash
+go run ./examples/quickstart --config examples/quickstart/application.yml
+```
+
+The process listens on `localhost:8080` and serves routes below `/api/v1`.
+
+## Understand the composition root
+
+[`examples/quickstart/main.go`](../examples/quickstart/main.go) selects every capability explicitly:
+
+```go
+app, err := xbc.New(xbc.WithBundles(
+    prelude.Bundle(),
+    biz.Bundle(),
+    cors.Bundle(),
+    swagger.Bundle(),
+    greeter.Bundle(),
+))
+```
+
+`prelude.Bundle()` provides the production Web baseline: the Web server, recovery, request IDs, access logging, security headers, compression, cooperative timeouts, and health probes. The response envelope, CORS policy, OpenAPI UI, and application-owned Greeter remain explicit choices.
+
+A Bundle contains side-effect-free composition data. XBC finishes configuration and dependency planning before any plugin factory runs, then owns successfully constructed resources through reverse-order shutdown.
+
+## Configuration
+
+The runnable baseline is [`examples/quickstart/application.yml`](../examples/quickstart/application.yml). Its top-level sections have distinct owners:
+
+- `xbc` configures the core runtime.
+- `log` configures logging.
+- `web` configures the HTTP transport selected by `prelude.Bundle()`.
+- `plugins.<key>` configures the plugin with that key.
+- `app` is a free-form namespace for application settings.
+
+Only Bundles selected at the composition root can own configuration sections. A misspelled section, an unknown field in a typed section, or configuration for an unselected plugin fails startup instead of being ignored.
+
+### Files and profiles
+
+Without `--config`, XBC uses the first file found in the current working directory:
+
+1. `application.yml`
+2. `configs/application.yml`
+
+An explicit `--config <path>` must exist. Add `--profile prod` to merge an optional sibling such as `application-prod.yml`; when the flag is absent, the runtime reads `XBC_PROFILE`.
+
+For a normally executed XBC application, precedence from lowest to highest is:
+
+1. Go struct `default` tags
+2. Base YAML
+3. Profile YAML
+4. Environment variables
+
+YAML strings do not expand `${VAR}`. Supply deployment values through environment variables or an application-owned secret provider instead.
+
+### Environment variables
+
+Environment variables use the complete configuration path with the `XBC_` prefix. Dots and hyphens become underscores and letters become uppercase:
+
+| Configuration path | Environment variable |
+| --- | --- |
+| `web.addr` | `XBC_WEB_ADDR` |
+| `plugins.jwt.secret` | `XBC_PLUGINS_JWT_SECRET` |
+| `plugins.redis.cache.password` | `XBC_PLUGINS_REDIS_CACHE_PASSWORD` |
+
+For example:
+
+```bash
+XBC_WEB_ADDR=:9090 \
+  go run ./examples/quickstart --config examples/quickstart/application.yml
+```
+
+Environment variables are a complete configuration layer. They can activate a selected plugin whose section is absent from YAML and can declare named instances such as `redis.cache`. They cannot activate code whose Bundle was not selected.
+
+## Exercise the API
+
+In another terminal, call the example routes:
+
+```bash
+curl -i localhost:8080/api/v1/hello
+curl -i -H 'Content-Type: application/json' \
+  -d '{"name":"XBC"}' localhost:8080/api/v1/hello
+curl localhost:8080/api/v1/healthz
+curl localhost:8080/api/v1/readyz
+curl localhost:8080/api/v1/openapi.json
+```
+
+Open <http://localhost:8080/api/v1/docs> for the Swagger UI.
+
+Malformed JSON, unknown fields, validation failures, routing errors, authentication failures, and unexpected server errors use RFC 9457 Problem Details. Unexpected errors never expose their internal cause.
+
+## Add a capability
+
+To add Redis, import its package, select its Bundle, and configure a named instance:
+
+```go
+app, err := xbc.New(xbc.WithBundles(
+    prelude.Bundle(),
+    biz.Bundle(),
+    cors.Bundle(),
+    swagger.Bundle(),
+    greeter.Bundle(),
+    redis.Bundle(),
+))
+```
+
+```yaml
+plugins:
+  redis:
+    default:
+      addr: "127.0.0.1:6379"
+```
+
+Selecting a Bundle makes the implementation available; its activation policy and configuration determine whether XBC constructs an instance.
+
+## Next steps
+
+- [Deployment recipes](recipes.md) show explicit compositions for authentication, persistence, messaging, scheduling, and multi-replica services.
+- [Package `web`](https://pkg.go.dev/github.com/xbcio/xbc/transport/web) documents routing, middleware, request binding, errors, limits, and trusted proxies.
+- [Package `config`](https://pkg.go.dev/github.com/xbcio/xbc/config) documents the programmatic loader and schema contract.

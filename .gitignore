@@ -33,3 +33,4 @@ application-local.yml
 # Local design documents and implementation plans
 /.claude/specs/
 /.claude/plans/
+/.claude/migration/
