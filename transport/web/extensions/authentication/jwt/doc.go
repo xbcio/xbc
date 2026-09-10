@@ -2,18 +2,19 @@
 //
 // # Usage
 //
-// Configure plugins.jwt.secret with at least 32 bytes, enable the autoload
-// package, and read only claims installed by the authentication middleware.
-// ClaimsFromContext never returns unparsed bearer-token data:
+// jwt is a credential extractor and authenticator, not a middleware: it plugs
+// into the Web transport's built-in authentication middleware, which is the
+// only place a gin.Context is available. Configure plugins.jwt.secret with at
+// least 32 bytes, enable the autoload package, and read the identity that
+// middleware publishes. Verified claims travel as web.Principal.Attributes:
 //
 //	func profile(c *gin.Context) {
-//		claims, claimsOK := jwt.ClaimsFromContext(c)
-//		principal, principalOK := web.CurrentPrincipal(c)
-//		if !claimsOK || !principalOK {
+//		principal, ok := web.CurrentPrincipal(c)
+//		if !ok {
 //			c.AbortWithStatus(http.StatusUnauthorized)
 //			return
 //		}
-//		role, _ := claims["role"].(string)
+//		role, _ := principal.Attributes["role"].(string)
 //		c.JSON(http.StatusOK, gin.H{
 //			"subject": principal.Subject,
 //			"role":    role,

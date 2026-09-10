@@ -28,7 +28,6 @@ func TestConfigValidation(t *testing.T) {
 		{name: "bad header", mutate: func(c *Config) { c.Header = "X Auth" }, wantErr: "valid HTTP header"},
 		{name: "bad scheme", mutate: func(c *Config) { c.Scheme = "My Scheme" }, wantErr: "valid HTTP authentication scheme"},
 		{name: "empty audience", mutate: func(c *Config) { c.Audience = []string{"service", " "} }, wantErr: "audience values cannot be empty"},
-		{name: "bad exclude", mutate: func(c *Config) { c.Exclude = []string{"relative"} }, wantErr: "must be an absolute path"},
 	}
 
 	for _, tt := range tests {
