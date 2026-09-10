@@ -7,6 +7,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNormalizeConfigPropagatesCustomPath(t *testing.T) {
+	cfg, err := normalizeConfig(Config{Enabled: true, Path: "/ops/pprof"})
+	require.NoError(t, err)
+	assert.Equal(t, "/ops/pprof", cfg.path, "plugins.pprof.path must reach the registered route")
+}
+
 func TestNormalizeConfigFailsClosed(t *testing.T) {
 	tests := []struct {
 		name string

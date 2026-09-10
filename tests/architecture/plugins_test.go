@@ -22,7 +22,36 @@ const (
 	archPluginAutoloadPath     = "github.com/xbcio/xbc/plugin/autoload"
 	archRetiredCatalogPath     = "github.com/xbcio/xbc/plugin/catalog"
 	archRepositoryImportPrefix = "github.com/xbcio/xbc/"
+	archWebImportPath          = "github.com/xbcio/xbc/transport/web"
 )
+
+// archManagementEndpointPackages are the built-in Web extensions that expose an
+// operator endpoint. Their access control belongs to the application's
+// authentication policy, not to the route declaration.
+var archManagementEndpointPackages = []string{
+	filepath.Join("transport", "web", "extensions", "observability", "metrics"),
+	filepath.Join("transport", "web", "extensions", "observability", "pprof"),
+	filepath.Join("transport", "web", "extensions", "reliability", "gracefulshutdown"),
+}
+
+// archWebAuthPolicyConstructors are the web package functions that build a
+// route-level authentication policy.
+var archWebAuthPolicyConstructors = map[string]bool{
+	"Public":  true,
+	"Accepts": true,
+}
+
+// archRouteRegistrationMethods are the Router methods that contribute a route.
+var archRouteRegistrationMethods = map[string]bool{
+	"GET":     true,
+	"POST":    true,
+	"PUT":     true,
+	"PATCH":   true,
+	"DELETE":  true,
+	"HEAD":    true,
+	"OPTIONS": true,
+	"Handle":  true,
+}
 
 type archTopValue struct {
 	file        *ast.File
@@ -242,6 +271,74 @@ func TestArchPluginImplementationsDocumentUsage(t *testing.T) {
 			usageFound, codeFound := archDocUsage(file.Doc)
 			assert.Truef(t, usageFound, "%s package comment must contain a '# Usage' heading", docPath)
 			assert.Truef(t, codeFound, "%s '# Usage' section must contain an indented Go code block", docPath)
+		})
+	}
+}
+
+// TestArchManagementEndpointsDeclareNoAuthenticationExemption keeps the
+// built-in management endpoints on the application's authentication policy.
+// These plugins expose operator surfaces (metrics, pprof, shutdown) and must
+// not carry their own exemption: a route-level web.Public() declaration
+// outranks the security default, so re-adding one here would silently reopen
+// an operator endpoint that the deny default is meant to protect. The
+// companion runtime guard lives in transport/web
+// (TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator); this one
+// catches the source-level regression directly, in the packages that own it.
+func TestArchManagementEndpointsDeclareNoAuthenticationExemption(t *testing.T) {
+	root := archRepositoryRoot(t)
+	for _, relative := range archManagementEndpointPackages {
+		t.Run(filepath.ToSlash(relative), func(t *testing.T) {
+			files := archParseProductionGoFiles(t, filepath.Join(root, relative))
+			require.NotEmpty(t, files, "%s must contain production Go files", relative)
+
+			contributors := 0
+			registrations := 0
+			for _, file := range files {
+				webAliases := archImportAliases(file, archWebImportPath)
+				ast.Inspect(file, func(node ast.Node) bool {
+					selector, ok := node.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					if selector.Sel.Name == "Auth" {
+						assert.Failf(t, "route-level authentication declaration",
+							"%s must leave authentication to the application policy; found .Auth(...)", relative)
+						return true
+					}
+					identifier, ok := selector.X.(*ast.Ident)
+					if !ok || !webAliases[identifier.Name] {
+						return true
+					}
+					if archWebAuthPolicyConstructors[selector.Sel.Name] {
+						assert.Failf(t, "route-level authentication exemption",
+							"%s must not construct its own authentication policy; found web.%s",
+							relative, selector.Sel.Name)
+					}
+					return true
+				})
+				for _, declaration := range file.Decls {
+					function, ok := declaration.(*ast.FuncDecl)
+					if !ok || function.Recv == nil || function.Name.Name != "RegisterRoutes" {
+						continue
+					}
+					contributors++
+					ast.Inspect(function.Body, func(node ast.Node) bool {
+						call, ok := node.(*ast.CallExpr)
+						if !ok {
+							return true
+						}
+						if selector, ok := call.Fun.(*ast.SelectorExpr); ok && archRouteRegistrationMethods[selector.Sel.Name] {
+							registrations++
+						}
+						return true
+					})
+				}
+			}
+			// Positive controls: the guard above only proves an absence, so it
+			// would also pass on a package that stopped registering routes at
+			// all, or renamed RegisterRoutes out from under the scan.
+			require.Equal(t, 1, contributors, "%s must keep exactly one RegisterRoutes route contributor", relative)
+			require.NotZero(t, registrations, "%s RegisterRoutes must still register routes", relative)
 		})
 	}
 }

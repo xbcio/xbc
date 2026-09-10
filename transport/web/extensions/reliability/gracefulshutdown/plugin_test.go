@@ -108,6 +108,16 @@ func TestStopDetachesController(t *testing.T) {
 	}
 }
 
+func TestNewPluginPropagatesCustomEndpointPath(t *testing.T) {
+	p, _ := initializedPlugin(t, func(cfg *Config) {
+		cfg.HTTP.Enabled = true
+		cfg.HTTP.Path = "/ops/shutdown"
+	})
+	if p.endpoint.path != "/ops/shutdown" {
+		t.Fatalf("endpoint path = %q, want the configured plugins.gracefulshutdown.http.path", p.endpoint.path)
+	}
+}
+
 func TestNewPluginUsesProvidedController(t *testing.T) {
 	controller := New()
 	cfg := defaultConfig()
