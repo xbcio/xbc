@@ -35,12 +35,14 @@ func (p *Plugin) ExtractCredential(c *gin.Context) (authentication.CredentialRes
 	}
 	fields := strings.Fields(raw)
 	if len(fields) == 0 || !strings.EqualFold(fields[0], runtime.scheme) {
-		// Some other scheme owns this header value.
-		return authentication.Absent(), nil
+		// Some other scheme owns this header value. WWW-Authenticate describes
+		// what this route accepts, not what the client sent, so the challenge
+		// still names this scheme.
+		return authentication.AbsentWithChallenge(authentication.Challenge(runtime.scheme)), nil
 	}
 	if len(fields) != 2 || fields[1] == "" {
 		return authentication.MalformedWithChallenge(
-			"malformed authorization header",
+			"malformed credential",
 			authentication.Challenge(runtime.scheme),
 		), nil
 	}
@@ -58,7 +60,10 @@ func (p *Plugin) Authenticate(
 	runtime := p.compiled
 	token, ok := credential.Value().(string)
 	if !ok {
-		return authentication.Rejected("invalid credential type"), nil
+		return authentication.RejectedWithChallenge(
+			"invalid credential type",
+			authentication.Challenge(runtime.scheme),
+		), nil
 	}
 	claims, err := runtime.verify(token)
 	if err != nil {

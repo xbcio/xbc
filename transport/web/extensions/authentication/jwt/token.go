@@ -8,7 +8,8 @@ import (
 	jwtlib "github.com/golang-jwt/jwt/v5"
 )
 
-// Claims is the map of verified JWT claims stored on a Gin request context.
+// Claims is the map of verified JWT claims returned by Authenticate and
+// published as web.Principal.Attributes.
 type Claims = jwtlib.MapClaims
 
 var errInvalidToken = errors.New("jwt: invalid token")
