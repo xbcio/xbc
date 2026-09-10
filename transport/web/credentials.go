@@ -1,0 +1,87 @@
+package web
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/xbcio/xbc/authentication"
+	"github.com/xbcio/xbc/plugin"
+)
+
+// CredentialExtractor is the Web projection of authentication.CredentialSource.
+//
+// The protocol-neutral contract takes only a context and a scheme, so a plugin
+// implementing it directly could never see a header or a cookie. This interface
+// closes that gap without letting HTTP leak into the authentication package:
+// the framework wraps the registered extractors in a per-request adapter, and a
+// future gRPC transport will supply its own equivalent.
+//
+// An extractor decides only whether a credential syntactically belongs to its
+// scheme. Signature checks, expiry, and revocation belong to the Authenticator.
+// Two plugins sharing one header (jwt and apikey both read Authorization) must
+// therefore agree on the Absent/Malformed/Presented boundary:
+//
+//   - header missing, or present but not this scheme's prefix -> Absent
+//   - this scheme's prefix but unparseable structure           -> Malformed
+//   - this scheme's prefix and structurally complete           -> Presented
+type CredentialExtractor interface {
+	Scheme() authentication.Scheme
+	ExtractCredential(*gin.Context) (authentication.CredentialResult, error)
+}
+
+// newExtractorIndex keys extractors by scheme. Two extractors claiming one
+// scheme is unresolvable -- the framework would have to pick arbitrarily, which
+// is exactly the nondeterminism this design exists to remove -- so it fails
+// startup instead.
+func newExtractorIndex(
+	entries []plugin.Entry[CredentialExtractor],
+) (map[authentication.Scheme]CredentialExtractor, error) {
+	index := make(map[authentication.Scheme]CredentialExtractor, len(entries))
+	owners := make(map[authentication.Scheme]plugin.Identity, len(entries))
+	for _, entry := range entries {
+		scheme := entry.Value.Scheme()
+		if err := scheme.Validate(); err != nil {
+			return nil, fmt.Errorf(
+				"xbc: web credential extractor %s declares an invalid scheme: %w",
+				entry.Identity, err,
+			)
+		}
+		if owner, exists := owners[scheme]; exists {
+			return nil, fmt.Errorf(
+				"xbc: web credential extractors %s and %s both claim scheme %q",
+				owner, entry.Identity, scheme,
+			)
+		}
+		owners[scheme] = entry.Identity
+		index[scheme] = entry.Value
+	}
+	return index, nil
+}
+
+// requestCredentialSource adapts the extractor index to one live request. It is
+// created per request and never stored, so the *gin.Context it captures cannot
+// outlive the handler.
+type requestCredentialSource struct {
+	gc         *gin.Context
+	extractors map[authentication.Scheme]CredentialExtractor
+}
+
+var _ authentication.CredentialSource = requestCredentialSource{}
+
+func (s requestCredentialSource) Credential(
+	_ context.Context,
+	scheme authentication.Scheme,
+) (authentication.CredentialResult, error) {
+	extractor, ok := s.extractors[scheme]
+	if !ok {
+		// Startup validation should have caught this. Reaching it means the
+		// manager and the extractor index disagree, which is a framework bug
+		// rather than a rejected request.
+		return authentication.CredentialResult{}, fmt.Errorf(
+			"xbc: web has no credential extractor for scheme %q", scheme,
+		)
+	}
+	return extractor.ExtractCredential(s.gc)
+}
