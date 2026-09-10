@@ -48,6 +48,8 @@
 //	)
 //
 //	func (p *Login) RegisterRoutes(r *web.Router) {
+//		// Auth(web.Public()) is a tier-2 declaration: the route is public unless
+//		// a tier-1 web.security policy rule overrides it.
 //		r.POST("/login", p.login).Name("login").Auth(web.Public())
 //	}
 //

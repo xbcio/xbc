@@ -32,7 +32,9 @@
 //		return apikey.New(apikey.DefaultConfig(), apikey.WithRepository(repository))
 //	}
 //
-// Public routes must opt out explicitly with Route.Auth(web.Public()). On a
+// Whether a route is public or protected is decided by the web.security policy
+// and the route's own .Auth() declaration, not by this plugin. apikey is one
+// Authenticator in the framework's built-in authentication middleware. On a
 // successfully authenticated protected request, consume the shared Web
 // principal rather than reading the credential header again:
 //

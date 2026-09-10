@@ -1,7 +1,8 @@
 // Package casbin provides route-aware authorization for XBC's Web transport.
 //
 // By default a protected route is authorized with its RouteInfo.Perm value and
-// the verified subject published through web.SetPrincipal. Applications can
+// the verified subject published by the framework's built-in authentication
+// middleware through web.SetPrincipal. Applications can
 // instead select the path_method convention or inject a SubjectResolver for a
 // different, already-verified identity source. This package never parses
 // credentials or unverified bearer tokens itself.

@@ -28,7 +28,7 @@ plugins:
     request_id_header: "X-Request-ID"
 ```
 
-Authentication plugins allow routes marked `.Public()` to proceed without credentials. Protected routes receive the shared `web.Principal`, which lets audit records correlate the principal, route name, request ID, status code, and duration.
+Authentication is performed once by the framework's built-in authentication middleware; plugins contribute `authentication.Authenticator` and `web.CredentialExtractor` implementations but do not intercept requests themselves. Route access is decided by a three-tier precedence model: an explicit `web.security` policy rule (tier 1) overrides a route's `.Auth()` declaration (tier 2), and the global `web.security.default` (factory setting `deny`) covers routes that neither tier addresses. Protected routes receive the shared `web.Principal`, which lets audit records correlate the principal, route name, request ID, status code, and duration.
 
 For high-volume or dynamic credentials, inject an API-key repository instead of repeatedly editing static YAML.
 
@@ -173,7 +173,7 @@ plugins:
 
 A login handler creates a session through `session.Manager.Create` and then calls `SetCookie`. Use atomic `Rotate` after privilege or authentication changes, and use `Revoke` plus `ClearCookie` during logout.
 
-The server-side authentication flow must write `tenant_id` and `tenant_ids` session attributes. `X-Tenant-ID` merely selects one tenant from that verified membership set; it never proves membership. Anonymous requests receive 401, while forged or unauthorized selections receive 403.
+The server-side authentication flow must write `tenant_id` and `tenant_ids` session attributes. `X-Tenant-ID` merely selects one tenant from that verified membership set; it never proves membership. Anonymous requests receive 401 from the framework's built-in authentication middleware when the route resolves to deny; the tenant middleware itself only produces 403 for forged or unauthorized selections.
 
 A session cookie is a bearer credential. Production deployments must use HTTPS and add appropriate SameSite and CSRF protection for browser requests that change state.
 
@@ -286,7 +286,16 @@ This mechanism provides at-most-one-active-owner coordination, not exactly-once 
 
 ## Operational endpoints and secrets
 
-Health endpoints return aggregate status by default. Use `detail_policy: never` to prevent unauthenticated probes from receiving dependency errors. pprof and remote shutdown are disabled by default. If they are required, prefer an address reachable only from the operations network and protect each endpoint with a token containing at least 32 bytes:
+Health endpoints return aggregate status by default. Use `detail_policy: never` to prevent unauthenticated probes from receiving dependency errors. pprof and remote shutdown are disabled by default. Neither endpoint carries its own authentication mechanism: they fall through to the `web.security` global default, which is `deny` out of the box. An application that enables them must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`. To restrict them to a specific scheme, write a tier-1 policy rule:
+
+```yaml
+web:
+  security:
+    default: deny
+    policies:
+      - match: "/debug/pprof/**"
+        authenticate: [jwt]
+```
 
 ```yaml
 plugins:
@@ -298,17 +307,11 @@ plugins:
   pprof:
     enabled: true
     path: "/debug/pprof"
-    header: "X-XBC-Pprof-Token"
-    allow_loopback: false
-    # Supply token through XBC_PLUGINS_PPROF_TOKEN.
 
   gracefulshutdown:
     http:
       enabled: true
       path: "/-/shutdown"
-      header: "X-XBC-Shutdown-Token"
-      allow_loopback: false
-      # Supply token through XBC_PLUGINS_GRACEFULSHUTDOWN_HTTP_TOKEN.
 ```
 
 Select the corresponding Bundles at the composition root before configuring these sections. Never commit JWT secrets, Redis or database passwords, API keys, or operations tokens to the repository. Environment variables are only a minimum deployment interface; production systems should inject them through a secret manager.
