@@ -6,7 +6,6 @@ import (
 
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
-	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey"
 )
 
 func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
@@ -62,20 +61,38 @@ func TestMiddlewareOrderingAfterAuthenticationBeforeAuthorization(t *testing.T) 
 	if order.Phase != web.PhaseAuth {
 		t.Fatalf("Phase=%v", order.Phase)
 	}
-	wantAfter := []plugin.Key{jwtKey, apikey.Key, sessionKey}
-	if len(order.After) != len(wantAfter) {
+	if len(order.After) != 1 {
 		t.Fatalf("After=%#v", order.After)
 	}
-	for i, want := range wantAfter {
-		ref := order.After[i]
-		if ref.Key() != want || ref.InstanceName() != "" || ref.Required() {
-			t.Fatalf("After[%d]=%#v, want optional %v", i, ref, want)
-		}
+	if ref := order.After[0]; ref.Key() != web.AuthenticationMiddlewareKey || ref.InstanceName() != "" || !ref.Required() {
+		t.Fatalf("After[0]=%#v, want required %v", ref, web.AuthenticationMiddlewareKey)
 	}
 	if len(order.Before) != 1 {
 		t.Fatalf("Before=%#v", order.Before)
 	}
 	if ref := order.Before[0]; ref.Key() != casbinKey || ref.InstanceName() != "" || ref.Required() {
 		t.Fatalf("Before[0]=%#v, want optional %v", ref, casbinKey)
+	}
+}
+
+// TestOrderRequiresAuthenticationMiddleware locks the hard-reference: a soft
+// Prefer degrades silently into lexicographic tie-break the moment its target
+// plugin's Order() stops naming it, and that yields a 403/401 at runtime with
+// no compile or test failure to point at it. A mutation back to
+// web.Prefer(web.AuthenticationMiddlewareKey) must fail this test.
+func TestOrderRequiresAuthenticationMiddleware(t *testing.T) {
+	t.Parallel()
+
+	order := New().Order()
+	var found bool
+	for _, ref := range order.After {
+		if ref == web.Require(web.AuthenticationMiddlewareKey) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("authorization must hard-require the authentication middleware; " +
+			"a soft Prefer degrades silently into lexicographic tie-break and yields 403/401")
 	}
 }

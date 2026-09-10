@@ -14,6 +14,14 @@ import (
 
 const currentRouteKeyForTest = "xbc/web.currentRoute"
 
+// authenticationExemptKeyForTest mirrors the private gin.Context key the
+// authentication middleware sets when it resolves a request to permit (see
+// web.AuthenticationExempt). Tests that exercise casbin standalone, without
+// the real authentication middleware in front of it, set this key directly
+// to simulate an exempt request -- mirroring the existing currentRouteKeyForTest
+// convention above.
+const authenticationExemptKeyForTest = "xbc/transport/web.authenticationExempt"
+
 func init() {
 	gin.SetMode(gin.TestMode)
 }
@@ -38,15 +46,35 @@ func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
 	assertForbidden(t, denied)
 }
 
-func TestPublicRouteBypassesSubjectAndPolicy(t *testing.T) {
+func TestExemptRouteBypassesSubjectAndPolicy(t *testing.T) {
 	p, _ := initializedPlugin(t, nil)
-	publicPolicy := web.Public()
 	response := requestThroughCasbin(p,
-		web.RouteInfo{Method: http.MethodGet, Path: "/login", Auth: &publicPolicy}, nil,
+		web.RouteInfo{Method: http.MethodGet, Path: "/login"},
+		func(c *gin.Context) { c.Set(authenticationExemptKeyForTest, true) },
 	)
 	if response.Code != http.StatusNoContent {
-		t.Fatalf("public status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("exempt status = %d, body = %s", response.Code, response.Body.String())
 	}
+}
+
+// TestRouteDeclaredPublicButNotExemptStillEnforces pins the vulnerability
+// Ruling 20 closed: a route's own .Auth(Public()) declaration is only a
+// tier-2 signal. When an application rule in web.security tightens that
+// route for this request, the authentication middleware does not mark the
+// request exempt, and casbin must not fall back to the route's IsPublic()
+// declaration -- it must still enforce. An implementation that asked
+// route.Auth.IsPublic() instead of web.AuthenticationExempt would let this
+// request through with 204 instead of 403.
+func TestRouteDeclaredPublicButNotExemptStillEnforces(t *testing.T) {
+	p, _ := initializedPlugin(t, func(cfg *Config) {
+		cfg.Policy = "p, alice, reports:read"
+	})
+	publicPolicy := web.Public()
+	response := requestThroughCasbin(p,
+		web.RouteInfo{Method: http.MethodGet, Path: "/login", Auth: &publicPolicy, Perm: "reports:read"},
+		func(c *gin.Context) { web.SetPrincipal(c, web.Principal{Subject: "bob"}) },
+	)
+	assertForbidden(t, response)
 }
 
 func TestProtectedRoutesFailClosed(t *testing.T) {

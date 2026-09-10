@@ -46,6 +46,41 @@ var (
 	_ RouteCatalogListener = (*authenticationMiddleware)(nil)
 )
 
+// authenticationExemptContextKey marks that this request's authentication
+// policy resolved to permit inside the authentication middleware itself.
+// AuthenticationExempt reads it so authorization middleware asks the
+// framework what exemption actually applied to this specific request,
+// instead of re-deriving the answer from a route's own .Auth() declaration --
+// a tier-2 signal a tier-1 web.security rule may have overridden.
+const authenticationExemptContextKey = "xbc/transport/web.authenticationExempt"
+
+// markAuthenticationExempt records that this request's authentication policy
+// resolved to permit. It is called only from the same branch that skips
+// calling the authentication manager, so the two facts never disagree.
+func markAuthenticationExempt(c *gin.Context) {
+	c.Set(authenticationExemptContextKey, true)
+}
+
+// AuthenticationExempt reports whether the authentication middleware resolved
+// this request to permit. Authorization middleware must ask this instead of
+// RouteInfo.Auth.IsPublic(): a route's own declaration is only a tier-2
+// signal, and an application rule in web.security may have tightened or
+// loosened it for this specific request -- the application is the final
+// arbiter. A request that never reached the authentication middleware (for
+// example a test that wires up authorization middleware standalone) reports
+// false: fail closed, not open.
+func AuthenticationExempt(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	value, ok := c.Get(authenticationExemptContextKey)
+	if !ok {
+		return false
+	}
+	exempt, ok := value.(bool)
+	return ok && exempt
+}
+
 // authenticationIdentity is the producer identity the Server attributes its
 // built-in authentication middleware to. It is not a selectable plugin -- see
 // newAuthenticationMiddleware -- but it participates in the middleware ordering
@@ -183,6 +218,7 @@ func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
 			return
 		}
 		if policy.permit {
+			markAuthenticationExempt(c)
 			c.Next()
 			return
 		}

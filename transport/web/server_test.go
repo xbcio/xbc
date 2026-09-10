@@ -186,6 +186,15 @@ func newPingServer(t *testing.T, cfg Config, inputs serverInputs) (*Server, *plu
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
+	// These tests exercise server lifecycle (routing, ordering, shutdown
+	// draining), not authentication policy, and none of them register an
+	// authenticator. Default an unset Security.Default to permit so /ping
+	// does not fall to the deny-by-default tier and demand an authenticator
+	// that has nothing to do with what each test actually verifies.
+	if cfg.Security.Default == "" {
+		cfg.Security.Default = SecurityPermit
+	}
+
 	middlewares := make([]plugin.Entry[Middleware], 0, len(inputs.middlewares)+1)
 	middlewares = append(middlewares, plugin.Entry[Middleware]{
 		Identity: plugin.Identity{Plugin: ErrorBoundaryKey},
