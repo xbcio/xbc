@@ -1,108 +1,85 @@
 package jwt
 
 import (
-	"net/http"
+	"context"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/xbcio/xbc/authentication"
 	"github.com/xbcio/xbc/transport/web"
 )
 
-// Handler implements web.Middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.authenticate }
+// Scheme is this plugin's authentication scheme name. It is what a security
+// policy names in its authenticate list.
+const Scheme authentication.Scheme = "jwt"
 
-// Order implements web.Middleware. JWT declares no ordering constraints of
-// its own; dependents that must run after authentication reference this
-// Definition's Key directly (see web.Prefer and web.Require).
-func (p *Plugin) Order() web.Order {
-	return web.Order{Phase: web.PhaseAuth}
-}
+var (
+	_ authentication.Authenticator = (*Plugin)(nil)
+	_ web.CredentialExtractor      = (*Plugin)(nil)
+)
 
-func (p *Plugin) authenticate(c *gin.Context) {
+// Scheme identifies this plugin to both the credential extractor index and the
+// authentication manager.
+func (*Plugin) Scheme() authentication.Scheme { return Scheme }
+
+// ExtractCredential decides only whether the configured header syntactically
+// belongs to this scheme. Signature, expiry, and revocation are Authenticate's
+// job -- splitting them this way is what lets jwt and another bearer-style
+// scheme share one header without either shadowing the other.
+func (p *Plugin) ExtractCredential(c *gin.Context) (authentication.CredentialResult, error) {
 	runtime := p.compiled
-
-	// CurrentRoute reads the request's entry from Web's frozen route index.
-	// This must remain request-time work: the middleware is built before
-	// application routes are registered, so loading a whitelist there would
-	// permanently cache an empty table.
-	route, found := web.CurrentRoute(c)
-	if found && route.Auth.IsPublic() {
-		c.Next()
-		return
+	raw := c.GetHeader(runtime.header)
+	if strings.TrimSpace(raw) == "" {
+		return authentication.AbsentWithChallenge(authentication.Challenge(runtime.scheme)), nil
 	}
-	if runtime.isExcluded(c, route, found) {
-		c.Next()
-		return
+	fields := strings.Fields(raw)
+	if len(fields) == 0 || !strings.EqualFold(fields[0], runtime.scheme) {
+		// Some other scheme owns this header value.
+		return authentication.Absent(), nil
 	}
+	if len(fields) != 2 || fields[1] == "" {
+		return authentication.MalformedWithChallenge(
+			"malformed authorization header",
+			authentication.Challenge(runtime.scheme),
+		), nil
+	}
+	return authentication.Presented(fields[1]), nil
+}
 
-	raw, ok := bearerToken(c.GetHeader(runtime.header), runtime.scheme)
+// Authenticate performs every semantic check: parsing, signature, expiry, and
+// subject extraction. Deliberately does not return, log, or serialize the
+// underlying parser error -- signature, expiry, issuer, and parser details are
+// all authentication oracles.
+func (p *Plugin) Authenticate(
+	_ context.Context,
+	credential authentication.Credential,
+) (authentication.Result, error) {
+	runtime := p.compiled
+	token, ok := credential.Value().(string)
 	if !ok {
-		unauthorized(c, runtime.scheme)
-		return
+		return authentication.Rejected("invalid credential type"), nil
 	}
-	claims, err := runtime.verify(raw)
+	claims, err := runtime.verify(token)
 	if err != nil {
-		// Deliberately do not return, log, or serialize raw or err. Signature,
-		// expiry, issuer, and parser details are all authentication oracles.
-		unauthorized(c, runtime.scheme)
-		return
+		return authentication.RejectedWithChallenge(
+			"invalid token",
+			authentication.Challenge(runtime.scheme),
+		), nil
 	}
-	c.Set(claimsContextKey, claims)
-	if subject, err := claims.GetSubject(); err == nil && subject != "" {
-		web.SetPrincipal(c, web.Principal{
-			Subject:    subject,
-			AuthMethod: "jwt",
-			Attributes: map[string]any(claims),
-		})
+	subject, err := claims.GetSubject()
+	if err != nil || subject == "" {
+		// A principal must carry a non-empty subject (web.SetPrincipal enforces
+		// this), so a token that verifies but names no subject cannot produce
+		// one and is rejected the same as any other invalid token.
+		return authentication.RejectedWithChallenge(
+			"invalid token",
+			authentication.Challenge(runtime.scheme),
+		), nil
 	}
-	c.Next()
-}
-
-func bearerToken(value, scheme string) (string, bool) {
-	fields := strings.Fields(value)
-	if len(fields) != 2 || !strings.EqualFold(fields[0], scheme) || fields[1] == "" {
-		return "", false
-	}
-	return fields[1], true
-}
-
-func (runtime *compiledConfig) isExcluded(c *gin.Context, route web.RouteInfo, found bool) bool {
-	if len(runtime.exclude) == 0 {
-		return false
-	}
-
-	paths := make([]string, 0, 3)
-	if found && route.Path != "" {
-		paths = append(paths, route.Path)
-	}
-	if fullPath := c.FullPath(); fullPath != "" {
-		paths = append(paths, fullPath)
-	}
-	if c.Request != nil && c.Request.URL != nil && c.Request.URL.Path != "" {
-		paths = append(paths, c.Request.URL.Path)
-	}
-
-	method := ""
-	if c.Request != nil {
-		method = strings.ToUpper(c.Request.Method)
-	}
-	for _, rule := range runtime.exclude {
-		if rule.method != "" && rule.method != method {
-			continue
-		}
-		for _, candidate := range paths {
-			if candidate == rule.path {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func unauthorized(c *gin.Context, scheme string) {
-	if scheme != "" {
-		c.Header("WWW-Authenticate", scheme)
-	}
-	web.AbortProblem(c, web.NewProblem(http.StatusUnauthorized, "unauthorized"))
+	return authentication.Accepted(web.Principal{
+		Subject:    subject,
+		AuthMethod: string(Scheme),
+		Attributes: map[string]any(claims),
+	}), nil
 }

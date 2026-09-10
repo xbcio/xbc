@@ -272,8 +272,7 @@
         "Leeway": 0,
         "Header": "Authorization",
         "Scheme": "Bearer",
-        "Expire": 7200000000000,
-        "Exclude": null
+        "Expire": 7200000000000
       }
     },
     {

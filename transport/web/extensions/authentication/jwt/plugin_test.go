@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/xbcio/xbc/plugin"
-	"github.com/xbcio/xbc/transport/web"
 )
 
 func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
@@ -41,10 +40,7 @@ func TestNewRejectsInvalidConfigAndAppliesDefaults(t *testing.T) {
 		p.compiled.header != "Authorization" || p.compiled.scheme != "Bearer" {
 		t.Fatalf("New defaults = %#v", p.compiled.normalizedConfig)
 	}
-	if p.Order().Phase != web.PhaseAuth {
-		t.Fatalf("Order().Phase = %v, want PhaseAuth", p.Order().Phase)
-	}
-	if p.Handler() == nil {
-		t.Fatal("Handler() = nil")
+	if p.Scheme() != Scheme {
+		t.Fatalf("Scheme() = %q, want %q", p.Scheme(), Scheme)
 	}
 }

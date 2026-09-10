@@ -129,7 +129,8 @@
       "config_path": "plugins.jwt",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web.Middleware"
+        "github.com/xbcio/xbc/authentication.Authenticator",
+        "github.com/xbcio/xbc/transport/web.CredentialExtractor"
       ]
     },
     {

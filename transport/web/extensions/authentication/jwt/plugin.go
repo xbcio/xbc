@@ -3,6 +3,7 @@ package jwt
 import (
 	"time"
 
+	"github.com/xbcio/xbc/authentication"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -10,18 +11,16 @@ import (
 // Key is the stable Definition and configuration identity of the JWT plugin.
 const Key plugin.Key = "jwt"
 
-// Plugin validates and issues HMAC JWTs and contributes an authentication
-// middleware to the Web transport. A constructed Plugin's compiled
-// configuration is immutable; nothing about verification depends on state
-// that changes after construction.
+// Plugin validates and issues HMAC JWTs and contributes a credential extractor
+// and an authenticator to the Web transport's authentication middleware. A
+// constructed Plugin's compiled configuration is immutable; nothing about
+// verification depends on state that changes after construction.
 type Plugin struct {
 	compiled *compiledConfig
 
 	// now is a field only to make expiration behavior deterministic in tests.
 	now func() time.Time
 }
-
-var _ web.Middleware = (*Plugin)(nil)
 
 var definition = plugin.DefineConfigured(
 	Key,
@@ -35,7 +34,8 @@ var definition = plugin.DefineConfigured(
 	plugin.Options[*Plugin]{
 		Activation: plugin.WhenConfigured("plugins." + Key.String()),
 		Exports: plugin.Contracts(
-			plugin.ExportAs[web.Middleware](func(value *Plugin) web.Middleware { return value }),
+			plugin.ExportAs[authentication.Authenticator](func(value *Plugin) authentication.Authenticator { return value }),
+			plugin.ExportAs[web.CredentialExtractor](func(value *Plugin) web.CredentialExtractor { return value }),
 		),
 	},
 )

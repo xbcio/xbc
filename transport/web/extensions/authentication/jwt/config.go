@@ -29,18 +29,12 @@ type Config struct {
 	Header     string        `yaml:"header"             default:"Authorization"`
 	Scheme     string        `yaml:"scheme"             default:"Bearer"`
 	Expire     time.Duration `yaml:"expire"             default:"2h"`
-	Exclude    []string      `yaml:"exclude"`
 }
 
 // Validate checks security-sensitive invariants without exposing Secret.
 func (c Config) Validate() error {
 	_, err := normalizeConfig(c)
 	return err
-}
-
-type excludeRule struct {
-	method string
-	path   string
 }
 
 type normalizedConfig struct {
@@ -54,7 +48,6 @@ type normalizedConfig struct {
 	header     string
 	scheme     string
 	expire     time.Duration
-	exclude    []excludeRule
 }
 
 // DefaultConfig returns JWT's default configuration. Secret has no default
@@ -153,17 +146,6 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 		audience = append(audience, value)
 	}
 
-	exclude := make([]excludeRule, 0, len(c.Exclude))
-	for _, value := range c.Exclude {
-		rule, ok, err := parseExclude(value)
-		if err != nil {
-			return normalizedConfig{}, err
-		}
-		if ok {
-			exclude = append(exclude, rule)
-		}
-	}
-
 	return normalizedConfig{
 		secret:     append([]byte(nil), []byte(c.Secret)...),
 		algorithm:  algorithm,
@@ -175,28 +157,7 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 		header:     header,
 		scheme:     scheme,
 		expire:     expire,
-		exclude:    exclude,
 	}, nil
-}
-
-func parseExclude(value string) (excludeRule, bool, error) {
-	fields := strings.Fields(value)
-	switch len(fields) {
-	case 0:
-		return excludeRule{}, false, nil
-	case 1:
-		if !strings.HasPrefix(fields[0], "/") {
-			return excludeRule{}, false, fmt.Errorf("jwt: exclude %q must be an absolute path or METHOD plus an absolute path", value)
-		}
-		return excludeRule{path: fields[0]}, true, nil
-	case 2:
-		if !validToken(fields[0]) || !strings.HasPrefix(fields[1], "/") {
-			return excludeRule{}, false, fmt.Errorf("jwt: exclude %q must be an absolute path or METHOD plus an absolute path", value)
-		}
-		return excludeRule{method: strings.ToUpper(fields[0]), path: fields[1]}, true, nil
-	default:
-		return excludeRule{}, false, fmt.Errorf("jwt: exclude %q must be an absolute path or METHOD plus an absolute path", value)
-	}
 }
 
 func isSupportedAlgorithm(algorithm string) bool {
