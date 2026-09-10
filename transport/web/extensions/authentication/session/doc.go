@@ -19,9 +19,11 @@
 //			return
 //		}
 //		role, _ := principal.Attributes["role"].(string)
+//		sessionID, _ := principal.Attributes["session_id"].(string)
 //		c.JSON(http.StatusOK, gin.H{
-//			"subject": principal.Subject,
-//			"role":    role,
+//			"subject":    principal.Subject,
+//			"role":       role,
+//			"session_id": sessionID,
 //		})
 //	}
 //
