@@ -1,6 +1,9 @@
 package web
 
-import "github.com/xbcio/xbc/plugin"
+import (
+	"github.com/xbcio/xbc/authentication"
+	"github.com/xbcio/xbc/plugin"
+)
 
 const (
 	// Key is the stable identity of the HTTP server Plugin.
@@ -22,6 +25,12 @@ var (
 	middlewareInput = plugin.Collect[Middleware]()
 	routeInput      = plugin.Collect[RouteContributor]()
 	listenerInput   = plugin.Collect[RouteCatalogListener]()
+	// The Server, not a separate Definition, assembles the built-in
+	// authentication middleware: the policy it enforces lives in this
+	// Definition's own web.security section, and a configuration section has
+	// exactly one owning plugin.
+	authenticatorInput = plugin.Collect[authentication.Authenticator]()
+	extractorInput     = plugin.Collect[CredentialExtractor]()
 
 	definition = plugin.DefineConfigured(
 		Key,
@@ -35,6 +44,8 @@ var (
 				middlewareInput.Get(ctx),
 				routeInput.Get(ctx),
 				listenerInput.Get(ctx),
+				authenticatorInput.Get(ctx),
+				extractorInput.Get(ctx),
 			), nil
 		},
 		plugin.Options[*Server]{
@@ -43,6 +54,8 @@ var (
 				middlewareInput,
 				routeInput,
 				listenerInput,
+				authenticatorInput,
+				extractorInput,
 			),
 		},
 	)
@@ -53,7 +66,7 @@ var (
 // New constructs a side-effect-free server with production-safe defaults.
 // Contributions are normally injected by Definition; tests and embedding hosts
 // can use the unexported constructor in this package.
-func New() *Server { return newServer(DefaultConfig(), nil, nil, nil) }
+func New() *Server { return newServer(DefaultConfig(), nil, nil, nil, nil, nil) }
 
 // Definition returns the canonical HTTP server declaration handle.
 func Definition() plugin.Definition { return definition }

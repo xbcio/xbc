@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/authentication"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -47,10 +48,12 @@ func (l modeLogger) Enabled(level log.Level) bool {
 }
 
 type serverInputs struct {
-	middlewares []plugin.Entry[Middleware]
-	routes      []plugin.Entry[RouteContributor]
-	listeners   []plugin.Entry[RouteCatalogListener]
-	mappers     []ErrorMapper
+	middlewares    []plugin.Entry[Middleware]
+	routes         []plugin.Entry[RouteContributor]
+	listeners      []plugin.Entry[RouteCatalogListener]
+	authenticators []plugin.Entry[authentication.Authenticator]
+	extractors     []plugin.Entry[CredentialExtractor]
+	mappers        []ErrorMapper
 }
 
 func TestSetGinModeUsesLoggerCapabilityNotGlobalConfig(t *testing.T) {
@@ -201,7 +204,7 @@ func newPingServer(t *testing.T, cfg Config, inputs serverInputs) (*Server, *plu
 
 	host := newFakeHost()
 	ctx := contextFromHost(host)
-	server := newServer(cfg, middlewares, routes, inputs.listeners)
+	server := newServer(cfg, middlewares, routes, inputs.listeners, inputs.authenticators, inputs.extractors)
 	t.Cleanup(func() {
 		if err := server.Stop(context.Background()); err != nil {
 			t.Errorf("stopping test server: %v", err)

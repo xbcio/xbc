@@ -22,24 +22,27 @@ import (
 type Server struct {
 	cfg Config
 
-	middlewares []plugin.Entry[Middleware]
-	routes      []plugin.Entry[RouteContributor]
-	listeners   []plugin.Entry[RouteCatalogListener]
+	middlewares    []plugin.Entry[Middleware]
+	routes         []plugin.Entry[RouteContributor]
+	listeners      []plugin.Entry[RouteCatalogListener]
+	authenticators []plugin.Entry[authentication.Authenticator]
+	extractors     []plugin.Entry[CredentialExtractor]
 
 	// listener is a test-only pre-bound socket set from export_test.go.
 	listener net.Listener
 
-	mu       sync.Mutex
-	engine   *gin.Engine
-	router   *Router
-	ln       net.Listener
-	srv      *http.Server
-	ordered  []plugin.Entry[Middleware]
-	misses   []MiddlewareOrderMiss
-	catalog  RouteCatalog
-	started  bool
-	prepared bool
-	served   bool
+	mu             sync.Mutex
+	engine         *gin.Engine
+	router         *Router
+	ln             net.Listener
+	srv            *http.Server
+	ordered        []plugin.Entry[Middleware]
+	misses         []MiddlewareOrderMiss
+	authentication *authenticationMiddleware
+	catalog        RouteCatalog
+	started        bool
+	prepared       bool
+	served         bool
 }
 
 var (
@@ -53,12 +56,16 @@ func newServer(
 	middlewares []plugin.Entry[Middleware],
 	routes []plugin.Entry[RouteContributor],
 	listeners []plugin.Entry[RouteCatalogListener],
+	authenticators []plugin.Entry[authentication.Authenticator],
+	extractors []plugin.Entry[CredentialExtractor],
 ) *Server {
 	return &Server{
-		cfg:         cfg,
-		middlewares: append([]plugin.Entry[Middleware](nil), middlewares...),
-		routes:      append([]plugin.Entry[RouteContributor](nil), routes...),
-		listeners:   append([]plugin.Entry[RouteCatalogListener](nil), listeners...),
+		cfg:            cfg,
+		middlewares:    append([]plugin.Entry[Middleware](nil), middlewares...),
+		routes:         append([]plugin.Entry[RouteContributor](nil), routes...),
+		listeners:      append([]plugin.Entry[RouteCatalogListener](nil), listeners...),
+		authenticators: append([]plugin.Entry[authentication.Authenticator](nil), authenticators...),
+		extractors:     append([]plugin.Entry[CredentialExtractor](nil), extractors...),
 	}
 }
 
@@ -129,16 +136,35 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	engine.Use(limitRequestBody(cfg.MaxRequestBodyBytes))
 	engine.Use(newErrorResolver(logger).attach)
 
+	// The framework's authentication middleware is assembled here rather than
+	// selected as a plugin: it enforces this Server's own web.security section,
+	// and a configuration section has exactly one owning plugin. It still enters
+	// the ordering graph under AuthenticationMiddlewareKey, so the pins below
+	// resolve against a real entry.
+	authenticator, err := newAuthenticationMiddleware(cfg.Security, s.authenticators, s.extractors)
+	if err != nil {
+		return err
+	}
+	middlewares := append(
+		[]plugin.Entry[Middleware]{{Identity: authenticationIdentity, Value: authenticator}},
+		s.middlewares...,
+	)
+
 	orderOptions := []middlewareOrderOption{
 		pinMiddlewareOutermost(Require(ErrorBoundaryKey)),
+		// Authentication runs before every other PhaseAuth middleware so
+		// authorization always observes a published Principal.
+		pinMiddlewareOutermost(Require(AuthenticationMiddlewareKey)),
 	}
+	// Only contributed middleware can require a principal. Scanning the built-in
+	// entry too would let a future edit pin authentication after itself.
 	for _, entry := range s.middlewares {
 		if _, requiresPrincipal := entry.Value.(authentication.RequiresPrincipal); requiresPrincipal {
 			orderOptions = append(orderOptions,
 				pinMiddlewareAfter(entry.Identity, Require(AuthenticationMiddlewareKey)))
 		}
 	}
-	ordered, misses, err := orderMiddlewares(s.middlewares, orderOptions...)
+	ordered, misses, err := orderMiddlewares(middlewares, orderOptions...)
 	if err != nil {
 		return err
 	}
@@ -187,6 +213,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	s.srv = srv
 	s.ordered = ordered
 	s.misses = misses
+	s.authentication = authenticator
 	s.started = true
 	s.mu.Unlock()
 
@@ -234,11 +261,21 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 	ordered := append([]plugin.Entry[Middleware](nil), s.ordered...)
 	misses := append([]MiddlewareOrderMiss(nil), s.misses...)
 	listeners := append([]plugin.Entry[RouteCatalogListener](nil), s.listeners...)
+	authenticator := s.authentication
 	s.mu.Unlock()
 
 	catalog, err := router.freeze()
 	if err != nil {
 		return err
+	}
+	// The built-in authentication middleware compiles its policy table and runs
+	// the startup policy validations before any contributed listener observes
+	// the catalog: a policy mistake must fail startup, not be reported after
+	// other listeners have already reacted to the route table.
+	if authenticator != nil {
+		if err := authenticator.RoutesReady(catalog); err != nil {
+			return err
+		}
 	}
 	for _, entry := range listeners {
 		if err := entry.Value.RoutesReady(catalog); err != nil {
