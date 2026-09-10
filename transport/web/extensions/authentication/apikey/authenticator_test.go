@@ -117,11 +117,25 @@ func TestPluginExtractCredentialClassifiesHeaders(t *testing.T) {
 			wantReason:    "conflicting api key headers",
 		},
 		{
-			name:          "app ID header duplicated is malformed",
-			headers:       map[string][]string{"X-App-ID": {"checkout", "other"}},
+			name: "app ID header duplicated alongside a valid key header is malformed",
+			headers: map[string][]string{
+				"X-API-Key": {"0123456789abcdef0123456789abcdef"},
+				"X-App-ID":  {"checkout", "other"},
+			},
 			want:          authentication.CredentialStatusMalformed,
 			wantChallenge: true,
 			wantReason:    "malformed app id header",
+		},
+		{
+			// This request names nothing of apikey's: no key header, no
+			// Authorization value. A duplicated X-App-ID alone must not turn
+			// into a Malformed reason, or an unauthenticated caller gets a
+			// free, credential-less probe for whether apikey is in this
+			// route's scheme selection.
+			name:          "app ID header duplicated alone with no api key or Authorization is absent",
+			headers:       map[string][]string{"X-App-ID": {"checkout", "other"}},
+			want:          authentication.CredentialStatusAbsent,
+			wantChallenge: true,
 		},
 	}
 
@@ -153,6 +167,197 @@ func TestPluginExtractCredentialClassifiesHeaders(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// configuredPluginWithoutBearer returns a plugin identical to configuredPlugin
+// except AllowBearer is disabled, so the Authorization header is not one of
+// apikey's credential sources.
+func configuredPluginWithoutBearer(t *testing.T) *Plugin {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.AllowBearer = false
+	cfg.Static = []StaticCredential{{
+		ID:      "payments",
+		AppID:   "checkout",
+		Subject: "service:payments",
+		SHA256:  HashKey("0123456789abcdef0123456789abcdef").String(),
+	}}
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestPluginExtractCredentialRespectsAllowBearer pins Config.AllowBearer as a
+// live control, not dead configuration: with it disabled, Authorization is
+// not one of apikey's credential sources at all, so both a well-formed and a
+// duplicated Authorization value must be Absent rather than Presented or
+// Malformed. Without this test, deleting the AllowBearer check entirely
+// leaves the whole package green.
+func TestPluginExtractCredentialRespectsAllowBearer(t *testing.T) {
+	t.Parallel()
+
+	const wantChallenge = authentication.Challenge("Bearer")
+
+	tests := []struct {
+		name    string
+		headers map[string][]string
+	}{
+		{
+			name:    "matching bearer prefix is absent when allow bearer is disabled",
+			headers: map[string][]string{"Authorization": {"Bearer 0123456789abcdef0123456789abcdef"}},
+		},
+		{
+			name:    "duplicated Authorization is absent when allow bearer is disabled",
+			headers: map[string][]string{"Authorization": {"Bearer aaa", "Bearer bbb"}},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			p := configuredPluginWithoutBearer(t)
+			c := newTestContextWithHeaders(t, test.headers)
+			got, err := p.ExtractCredential(c)
+			if err != nil {
+				t.Fatalf("ExtractCredential() error = %v", err)
+			}
+			if got.Status() != authentication.CredentialStatusAbsent {
+				t.Fatalf("status = %v, want %v", got.Status(), authentication.CredentialStatusAbsent)
+			}
+			challenge, ok := got.Challenge()
+			if !ok || challenge != wantChallenge {
+				t.Fatalf("Challenge() = %q, ok=%v, want %q", challenge, ok, wantChallenge)
+			}
+		})
+	}
+}
+
+// configuredPluginWithHeaders returns a plugin configured with a non-default
+// credential header, app-ID header, and bearer scheme, so tests can prove
+// those three configured fields are actually consulted rather than the
+// package's compiled-in defaults ("X-API-Key", "X-App-ID", "Bearer").
+func configuredPluginWithHeaders(t *testing.T) *Plugin {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.Header = "X-Custom-Key"
+	cfg.AppIDHeader = "X-Custom-App-ID"
+	cfg.BearerScheme = "XBC-Key"
+	cfg.Static = []StaticCredential{{
+		ID:      "payments",
+		AppID:   "checkout",
+		Subject: "service:payments",
+		SHA256:  HashKey("0123456789abcdef0123456789abcdef").String(),
+	}}
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestPluginExtractCredentialUsesConfiguredHeaderNamesAndScheme pins
+// Config.Header, Config.AppIDHeader, and Config.BearerScheme as live
+// configuration: every other test in this package uses DefaultConfig(), so
+// hardcoding "X-API-Key", "X-App-ID", or "Bearer" in place of the configured
+// fields would leave the rest of the suite green.
+func TestPluginExtractCredentialUsesConfiguredHeaderNamesAndScheme(t *testing.T) {
+	t.Parallel()
+
+	const wantChallenge = authentication.Challenge("XBC-Key")
+
+	tests := []struct {
+		name          string
+		headers       map[string][]string
+		want          authentication.CredentialStatus
+		wantChallenge bool
+		wantReason    authentication.SafeReason
+	}{
+		{
+			name:          "configured key header is presented",
+			headers:       map[string][]string{"X-Custom-Key": {"0123456789abcdef0123456789abcdef"}},
+			want:          authentication.CredentialStatusPresented,
+			wantChallenge: false,
+		},
+		{
+			name: "configured bearer scheme is presented",
+			headers: map[string][]string{
+				"Authorization": {"XBC-Key 0123456789abcdef0123456789abcdef"},
+			},
+			want:          authentication.CredentialStatusPresented,
+			wantChallenge: false,
+		},
+		{
+			name:          "the compiled-in default Bearer prefix no longer matches the configured scheme",
+			headers:       map[string][]string{"Authorization": {"Bearer 0123456789abcdef0123456789abcdef"}},
+			want:          authentication.CredentialStatusAbsent,
+			wantChallenge: true,
+		},
+		{
+			name: "configured app id header duplicated is malformed",
+			headers: map[string][]string{
+				"X-Custom-Key":    {"0123456789abcdef0123456789abcdef"},
+				"X-Custom-App-ID": {"a", "b"},
+			},
+			want:          authentication.CredentialStatusMalformed,
+			wantChallenge: true,
+			wantReason:    "malformed app id header",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			p := configuredPluginWithHeaders(t)
+			c := newTestContextWithHeaders(t, test.headers)
+			got, err := p.ExtractCredential(c)
+			if err != nil {
+				t.Fatalf("ExtractCredential() error = %v", err)
+			}
+			if got.Status() != test.want {
+				t.Fatalf("status = %v, want %v", got.Status(), test.want)
+			}
+			challenge, ok := got.Challenge()
+			if test.wantChallenge {
+				if !ok || challenge != wantChallenge {
+					t.Fatalf("Challenge() = %q, ok=%v, want %q", challenge, ok, wantChallenge)
+				}
+			} else if ok {
+				t.Fatalf("Challenge() = %q, want none", challenge)
+			}
+			if test.want == authentication.CredentialStatusMalformed {
+				reason, ok := got.Reason()
+				if !ok || reason != test.wantReason {
+					t.Fatalf("Reason() = %q, ok=%v, want %q", reason, ok, test.wantReason)
+				}
+			}
+		})
+	}
+}
+
+// TestPluginAuthenticateUsesConfiguredBearerSchemeForChallenge pins
+// Authenticate's own Challenge derivation to the configured BearerScheme,
+// independent of the extractor-side coverage above.
+func TestPluginAuthenticateUsesConfiguredBearerSchemeForChallenge(t *testing.T) {
+	p := configuredPluginWithHeaders(t)
+	credential, ok := authentication.Presented("not-a-credentialValue").Credential()
+	if !ok {
+		t.Fatal("Credential() ok = false")
+	}
+
+	result, err := p.Authenticate(context.Background(), credential)
+	if err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if !result.Rejected() {
+		t.Fatal("Rejected() = false, want true")
+	}
+	if challenges := result.Challenges(); len(challenges) != 1 || challenges[0] != authentication.Challenge("XBC-Key") {
+		t.Fatalf("Challenges() = %v, want [XBC-Key]", challenges)
 	}
 }
 
