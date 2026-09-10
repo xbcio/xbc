@@ -132,3 +132,70 @@ func (s *policySet) compile(routes []RouteInfo) map[string]effectivePolicy {
 	}
 	return compiled
 }
+
+// validateReachability rejects a rule that an earlier, broader rule already
+// decides for every route it could name. Because rules are first-match-wins and
+// both the rule list and the route table are frozen at startup, an unreachable
+// rule is statically detectable -- and it is almost always a mistake in rule
+// order rather than an intentionally dead rule.
+func (s *policySet) validateReachability() error {
+	for i, candidate := range s.rules {
+		for j := 0; j < i; j++ {
+			earlier := s.rules[j]
+			if !earlier.matcher.covers(candidate.matcher) {
+				continue
+			}
+			return fmt.Errorf(
+				"web: security policy %d (%q) is unreachable: policy %d (%q) already matches every route it names; "+
+					"write the more specific rule first",
+				i, candidate.rule.Match, j, earlier.rule.Match,
+			)
+		}
+	}
+	return nil
+}
+
+// referencedSchemes returns every scheme named by an authenticate rule, in
+// first-appearance order.
+func (s *policySet) referencedSchemes() []authentication.Scheme {
+	seen := make(map[authentication.Scheme]struct{})
+	var schemes []authentication.Scheme
+	for _, candidate := range s.rules {
+		for _, scheme := range candidate.rule.Authenticate {
+			if _, duplicate := seen[scheme]; duplicate {
+				continue
+			}
+			seen[scheme] = struct{}{}
+			schemes = append(schemes, scheme)
+		}
+	}
+	return schemes
+}
+
+// validateSchemeCoverage rejects a registered authenticator that no rule can
+// ever reach. Selecting a plugin and then never naming it is a half-finished
+// migration or a typo, and failing startup is cheaper than discovering it when
+// the credential it was meant to accept is rejected in production.
+//
+// Under default deny the check is skipped: uncovered routes resolve through the
+// manager's restrictive default selection, so every registered scheme remains
+// reachable without appearing in any rule.
+func (s *policySet) validateSchemeCoverage(registered []authentication.Scheme) error {
+	if s.defaultDecision == SecurityDeny {
+		return nil
+	}
+	referenced := make(map[authentication.Scheme]struct{}, len(s.rules))
+	for _, scheme := range s.referencedSchemes() {
+		referenced[scheme] = struct{}{}
+	}
+	for _, scheme := range registered {
+		if _, ok := referenced[scheme]; !ok {
+			return fmt.Errorf(
+				"web: authentication scheme %q is registered but no security policy references it; "+
+					"name it in a policy or remove the plugin",
+				scheme,
+			)
+		}
+	}
+	return nil
+}

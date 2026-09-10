@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/xbcio/xbc/authentication"
@@ -154,5 +155,76 @@ func TestPolicySetCompileIndexesEveryFrozenRoute(t *testing.T) {
 	}
 	if got := compiled[routeKey(http.MethodGet, "/other")]; got.tier != tierDefault {
 		t.Fatalf("uncovered route tier = %s, want %s", got.tier, tierDefault)
+	}
+}
+
+func TestPolicySetRejectsUnreachableRule(t *testing.T) {
+	t.Parallel()
+
+	set := mustPolicySet(t, SecurityConfig{
+		Policies: []PolicyRule{
+			{Match: "/api/**", Authenticate: []authentication.Scheme{"jwt"}},
+			{Match: "/api/v1/health", Permit: true},
+		},
+	})
+
+	err := set.validateReachability()
+	if err == nil {
+		t.Fatal("validateReachability() error = nil, want unreachable rule error")
+	}
+	for _, want := range []string{"policy 1", "/api/v1/health", "policy 0", "/api/**"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want substring %q", err, want)
+		}
+	}
+}
+
+func TestPolicySetAcceptsSpecificRuleBeforeBroadRule(t *testing.T) {
+	t.Parallel()
+
+	set := mustPolicySet(t, SecurityConfig{
+		Policies: []PolicyRule{
+			{Match: "/api/v1/health", Permit: true},
+			{Match: "/api/**", Authenticate: []authentication.Scheme{"jwt"}},
+		},
+	})
+
+	if err := set.validateReachability(); err != nil {
+		t.Fatalf("validateReachability() error = %v, want nil", err)
+	}
+}
+
+func TestPolicySetRejectsUnreferencedRegisteredScheme(t *testing.T) {
+	t.Parallel()
+
+	set := mustPolicySet(t, SecurityConfig{
+		Default: SecurityPermit,
+		Policies: []PolicyRule{
+			{Match: "/api/**", Authenticate: []authentication.Scheme{"jwt"}},
+		},
+	})
+
+	err := set.validateSchemeCoverage([]authentication.Scheme{"jwt", "apikey"})
+	if err == nil {
+		t.Fatal("validateSchemeCoverage() error = nil, want unreferenced scheme error")
+	}
+	if !strings.Contains(err.Error(), `"apikey"`) {
+		t.Fatalf("error = %q, want substring \"apikey\"", err)
+	}
+
+	if err := set.validateSchemeCoverage([]authentication.Scheme{"jwt"}); err != nil {
+		t.Fatalf("validateSchemeCoverage(jwt) error = %v, want nil", err)
+	}
+}
+
+func TestPolicySetDefaultDenyTreatsEverySchemeAsReferenced(t *testing.T) {
+	t.Parallel()
+
+	// Under default deny, uncovered routes resolve through the manager's
+	// restrictive default selection, which can reach any registered scheme.
+	// Reporting those schemes as unreferenced would be a false alarm.
+	set := mustPolicySet(t, SecurityConfig{Default: SecurityDeny})
+	if err := set.validateSchemeCoverage([]authentication.Scheme{"jwt", "apikey"}); err != nil {
+		t.Fatalf("validateSchemeCoverage() error = %v, want nil under default deny", err)
 	}
 }
