@@ -30,16 +30,17 @@ const (
 // controls how much parsed multipart data remains in memory; the request-body
 // ceiling still limits the complete request.
 type Config struct {
-	Addr                string        `yaml:"addr"                   default:":8080"   validate:"required"`
-	BasePath            string        `yaml:"base_path"              default:"/"       validate:"required,startswith=/"`
-	ReadTimeout         time.Duration `yaml:"read_timeout"           default:"10s"     validate:"gt=0"`
-	ReadHeaderTimeout   time.Duration `yaml:"read_header_timeout"    default:"5s"      validate:"gt=0"`
-	WriteTimeout        time.Duration `yaml:"write_timeout"          default:"30s"     validate:"gt=0"`
-	IdleTimeout         time.Duration `yaml:"idle_timeout"           default:"60s"     validate:"gt=0"`
-	MaxHeaderBytes      int           `yaml:"max_header_bytes"       default:"1048576" validate:"gt=0"`
-	MaxRequestBodyBytes int64         `yaml:"max_request_body_bytes" default:"10485760" validate:"gt=0"`
-	MaxMultipartMemory  int64         `yaml:"max_multipart_memory"   default:"8388608" validate:"gt=0"`
-	TrustedProxies      []string      `yaml:"trusted_proxies"                          validate:"dive,required"`
+	Addr                string         `yaml:"addr"                   default:":8080"   validate:"required"`
+	BasePath            string         `yaml:"base_path"              default:"/"       validate:"required,startswith=/"`
+	ReadTimeout         time.Duration  `yaml:"read_timeout"           default:"10s"     validate:"gt=0"`
+	ReadHeaderTimeout   time.Duration  `yaml:"read_header_timeout"    default:"5s"      validate:"gt=0"`
+	WriteTimeout        time.Duration  `yaml:"write_timeout"          default:"30s"     validate:"gt=0"`
+	IdleTimeout         time.Duration  `yaml:"idle_timeout"           default:"60s"     validate:"gt=0"`
+	MaxHeaderBytes      int            `yaml:"max_header_bytes"       default:"1048576" validate:"gt=0"`
+	MaxRequestBodyBytes int64          `yaml:"max_request_body_bytes" default:"10485760" validate:"gt=0"`
+	MaxMultipartMemory  int64          `yaml:"max_multipart_memory"   default:"8388608" validate:"gt=0"`
+	TrustedProxies      []string       `yaml:"trusted_proxies"                          validate:"dive,required"`
+	Security            SecurityConfig `yaml:"security"`
 }
 
 // DefaultConfig returns the production-safe defaults used by New and by the
@@ -55,6 +56,7 @@ func DefaultConfig() Config {
 		MaxHeaderBytes:      defaultMaxHeaderBytes,
 		MaxRequestBodyBytes: defaultMaxRequestBodyBytes,
 		MaxMultipartMemory:  defaultMaxMultipartMemory,
+		Security:            SecurityConfig{Default: SecurityDeny},
 	}
 }
 
@@ -85,6 +87,9 @@ func (c Config) Validate() error {
 		if net.ParseIP(proxy) == nil {
 			return fmt.Errorf("web: trusted proxy %q is not a valid IP address", proxy)
 		}
+	}
+	if err := c.Security.Validate(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -123,5 +128,6 @@ func normalizeConfig(c Config) (Config, error) {
 		c.MaxMultipartMemory = defaults.MaxMultipartMemory
 	}
 	c.TrustedProxies = append([]string(nil), c.TrustedProxies...)
+	c.Security = c.Security.normalize()
 	return c, c.Validate()
 }

@@ -612,7 +612,11 @@
         "MaxHeaderBytes": 1048576,
         "MaxRequestBodyBytes": 10485760,
         "MaxMultipartMemory": 8388608,
-        "TrustedProxies": null
+        "TrustedProxies": null,
+        "Security": {
+          "Default": "deny",
+          "Policies": null
+        }
       }
     },
     {
