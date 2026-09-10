@@ -6,6 +6,25 @@
 // side-effect free; xbc.Run applications may opt into the leaf autoload
 // adapter.
 //
+// session is a credential extractor and authenticator, not a middleware: it
+// plugs into the Web transport's built-in authentication middleware, which is
+// the only place a gin.Context is available. The session's stored attributes
+// travel as web.Principal.Attributes, alongside its opaque ID under the
+// "session_id" key:
+//
+//	func profile(c *gin.Context) {
+//		principal, ok := web.CurrentPrincipal(c)
+//		if !ok {
+//			c.AbortWithStatus(http.StatusUnauthorized)
+//			return
+//		}
+//		role, _ := principal.Attributes["role"].(string)
+//		c.JSON(http.StatusOK, gin.H{
+//			"subject": principal.Subject,
+//			"role":    role,
+//		})
+//	}
+//
 // # Usage
 //
 // Application plugins can require the provided Manager, create a session after
@@ -45,8 +64,9 @@
 //		c.Status(http.StatusNoContent)
 //	}
 //
-// Protected handlers can call Current for the authenticated server-side value.
-// Rotate the session after privilege changes, revoke it on logout, and retain
-// the secure, HTTP-only cookie defaults in production. Use the Redis backend
-// when sessions must be shared across application replicas.
+// Protected handlers read the authenticated session's attributes and ID from
+// web.CurrentPrincipal, as shown above. Rotate the session after privilege
+// changes, revoke it on logout, and retain the secure, HTTP-only cookie
+// defaults in production. Use the Redis backend when sessions must be shared
+// across application replicas.
 package session
