@@ -1,6 +1,8 @@
 package web
 
 import (
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,4 +87,43 @@ func TestRenderSoftMissesReportsEveryMiss(t *testing.T) {
 
 	assert.Contains(t, report, "run after tracing")
 	assert.Contains(t, report, "run before metrics[regional]")
+}
+
+func TestRenderPublicEndpointsWarnsOnDefaultPermit(t *testing.T) {
+	t.Parallel()
+
+	got := renderPublicEndpoints([]RouteInfo{
+		{Method: http.MethodGet, Path: "/healthz"},
+	}, true)
+
+	if !strings.Contains(got, "/healthz") {
+		t.Fatalf("report = %q, want it to list /healthz", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "permit") {
+		t.Fatalf("report = %q, want a default-permit warning", got)
+	}
+}
+
+func TestRenderPolicyDecisionsNamesTheDecidingTier(t *testing.T) {
+	t.Parallel()
+
+	got := renderPolicyDecisions([]policyDecision{
+		{
+			route:  RouteInfo{Method: http.MethodGet, Path: "/metrics"},
+			policy: effectivePolicy{tier: tierApplicationRule, ruleIndex: 2},
+		},
+		{
+			route:  RouteInfo{Method: http.MethodGet, Path: "/orders"},
+			policy: effectivePolicy{tier: tierDefault, ruleIndex: -1},
+		},
+	})
+
+	for _, want := range []string{"/metrics", "application-rule", "/orders", "default"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("report = %q, want substring %q", got, want)
+		}
+	}
+	if strings.Contains(got, "rule -1") {
+		t.Fatal("report must not print a rule number for a decision no rule made")
+	}
 }

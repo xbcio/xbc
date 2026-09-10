@@ -58,6 +58,63 @@ func renderRouteTable(routes []RouteInfo) string {
 	return b.String()
 }
 
+// renderPublicEndpoints lists every route that resolved to permit and reports
+// the count. When defaultPermit is true the global fallback is fail-open,
+// which deserves a prominent warning because every uncovered route is public.
+func renderPublicEndpoints(routes []RouteInfo, defaultPermit bool) string {
+	methodWidth := 0
+	for _, route := range routes {
+		if l := len(route.Method); l > methodWidth {
+			methodWidth = l
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "web: public endpoints (%d)", len(routes))
+	if defaultPermit {
+		b.WriteString("\n  WARNING: default policy is permit — every endpoint not covered by a rule or route declaration is public")
+	}
+	for i, route := range routes {
+		fmt.Fprintf(&b, "\n  %d. %-*s  %s", i+1, methodWidth, route.Method, route.Path)
+	}
+	return b.String()
+}
+
+// renderPolicyDecisions renders the per-route effective policy table so an
+// operator can see which tier decided each route's authentication requirement.
+func renderPolicyDecisions(decisions []policyDecision) string {
+	methodWidth := 0
+	pathWidth := 0
+	for _, d := range decisions {
+		if l := len(d.route.Method); l > methodWidth {
+			methodWidth = l
+		}
+		if l := len(d.route.Path); l > pathWidth {
+			pathWidth = l
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "web: policy decisions (%d)", len(decisions))
+	for i, d := range decisions {
+		outcome := "deny"
+		if d.policy.permit {
+			outcome = "permit"
+		} else if schemes := d.policy.selection.Schemes(); len(schemes) > 0 {
+			parts := make([]string, len(schemes))
+			for j, s := range schemes {
+				parts[j] = string(s)
+			}
+			outcome = strings.Join(parts, ",")
+		}
+		tier := fmt.Sprintf("(%s", d.policy.tier)
+		if d.policy.ruleIndex >= 0 {
+			tier += fmt.Sprintf(", rule %d", d.policy.ruleIndex)
+		}
+		tier += ")"
+		fmt.Fprintf(&b, "\n  %d. %-*s  %-*s  -> %-8s  %s", i+1, methodWidth, d.route.Method, pathWidth, d.route.Path, outcome, tier)
+	}
+	return b.String()
+}
+
 // renderSoftMisses reports Prefer references that had no target in the frozen
 // chain. This is what a soft reference is documented to do -- a plugin declares
 // "order me relative to X if X is here", and X is not -- so the report states
