@@ -13,7 +13,8 @@
       "config_path": "plugins.apikey",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web.Middleware"
+        "github.com/xbcio/xbc/authentication.Authenticator",
+        "github.com/xbcio/xbc/transport/web.CredentialExtractor"
       ]
     },
     {
