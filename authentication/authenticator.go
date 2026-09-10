@@ -21,9 +21,6 @@ const (
 	// ReasonMalformedCredential is the safe fallback for malformed credential
 	// evidence that omitted a reason.
 	ReasonMalformedCredential SafeReason = "malformed credential"
-	// ReasonAmbiguousCredentials is used when more than one accepted scheme
-	// supplied credential evidence.
-	ReasonAmbiguousCredentials SafeReason = "multiple credentials presented"
 )
 
 // Credential holds one opaque, protocol-neutral credential. It deliberately
@@ -203,9 +200,6 @@ const (
 	RejectionInvalidCredential RejectionKind = iota + 1
 	// RejectionMalformedCredential means the sole evidence was malformed.
 	RejectionMalformedCredential
-	// RejectionAmbiguousCredentials means multiple accepted schemes supplied
-	// credential evidence.
-	RejectionAmbiguousCredentials
 	// RejectionUnauthenticated means every accepted scheme was absent.
 	RejectionUnauthenticated
 )
@@ -217,8 +211,6 @@ func (k RejectionKind) String() string {
 		return "invalid-credential"
 	case RejectionMalformedCredential:
 		return "malformed-credential"
-	case RejectionAmbiguousCredentials:
-		return "ambiguous-credentials"
 	case RejectionUnauthenticated:
 		return "unauthenticated"
 	default:
@@ -228,8 +220,8 @@ func (k RejectionKind) String() string {
 
 // Result is a closed authentication outcome. Authenticator implementations can
 // create only Accepted and Rejected outcomes. Manager attaches the effective
-// scheme and creates malformed, ambiguous, and unauthenticated rejections.
-// Operational failures are returned separately as errors.
+// scheme and creates malformed and unauthenticated rejections. Operational
+// failures are returned separately as errors.
 type Result struct {
 	status     ResultStatus
 	rejection  RejectionKind
@@ -292,8 +284,7 @@ func (r Result) Principal() (any, bool) {
 }
 
 // Scheme returns the scheme responsible for an authenticated result or a
-// scheme-specific rejection. Ambiguous and unauthenticated results have no
-// single scheme.
+// scheme-specific rejection. Unauthenticated results have no single scheme.
 func (r Result) Scheme() (Scheme, bool) {
 	if r.scheme == "" {
 		return "", false

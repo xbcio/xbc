@@ -170,11 +170,15 @@ func (m *Manager) ValidateSelection(selection Selection) error {
 
 // Authenticate applies ordered first-applicable authentication:
 //   - resolve default or route-selected schemes in authentication-domain order;
-//   - collect every selected CredentialResult exactly once before verification;
-//   - reject multiple evidence states (Presented or Malformed) as ambiguous;
-//   - reject a sole Malformed result without invoking an Authenticator;
-//   - invoke only the Authenticator for a sole Presented credential; and
-//   - reject all-Absent input with ordered, de-duplicated challenges.
+//   - skip Absent schemes, recording their challenges;
+//   - remember the first Malformed result and continue;
+//   - invoke the Authenticator for each Presented credential in order, returning
+//     the first Accepted result and remembering the first Rejected one; and
+//   - fall back to the first rejection, then the first malformed result, then an
+//     all-Absent rejection carrying ordered, de-duplicated challenges.
+//
+// Continuing past a rejection is deliberate: an expired credential must not
+// shadow a valid credential presented for a later scheme in the same request.
 //
 // Rejection is returned as a Result with a nil error. Credential-source and
 // Authenticator errors are terminal OperationalError values and never trigger
