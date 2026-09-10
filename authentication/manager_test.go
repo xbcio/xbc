@@ -241,7 +241,12 @@ func TestManagerAuthenticatesSolePresentedCredentialAfterCollectingAllSchemes(t 
 	}
 }
 
-func TestRejectedCredentialIsTerminalAndDoesNotFallThrough(t *testing.T) {
+// TestRejectedCredentialReportsSchemeAndChallenge locks the rejection payload
+// for a rejected credential. It does not exercise fallthrough because jwt has
+// no credential here (Absent), so there is nothing to fall through to; see
+// TestRejectedCredentialContinuesToLaterSchemeAndRemembersFirstReason for the
+// fallthrough behavior itself.
+func TestRejectedCredentialReportsSchemeAndChallenge(t *testing.T) {
 	t.Parallel()
 
 	apiKey := &stubAuthenticator{
@@ -359,34 +364,37 @@ func TestDefaultFirstApplicableCombinations(t *testing.T) {
 			wantChallenges: []Challenge{"Bearer"},
 		},
 		{
-			name: "presented plus malformed is ambiguous",
+			name: "presented wins over later malformed",
 			results: map[Scheme]CredentialResult{
 				schemeAPIKey: Presented("key"),
 				schemeJWT:    Malformed("bad token syntax"),
 				schemeMTLS:   Absent(),
 			},
-			wantKind:   RejectionAmbiguousCredentials,
-			wantReason: ReasonAmbiguousCredentials,
+			wantScheme:        schemeAPIKey,
+			wantAPIKeyCalls:   1,
+			wantAuthenticated: true,
 		},
 		{
-			name: "two presented credentials are ambiguous",
+			name: "first presented in domain order wins",
 			results: map[Scheme]CredentialResult{
 				schemeAPIKey: Presented("key"),
 				schemeJWT:    Presented("token"),
 				schemeMTLS:   Absent(),
 			},
-			wantKind:   RejectionAmbiguousCredentials,
-			wantReason: ReasonAmbiguousCredentials,
+			wantScheme:        schemeAPIKey,
+			wantAPIKeyCalls:   1,
+			wantAuthenticated: true,
 		},
 		{
-			name: "two malformed credentials are ambiguous",
+			name: "all malformed returns the first reason",
 			results: map[Scheme]CredentialResult{
 				schemeAPIKey: Malformed("bad key syntax"),
 				schemeJWT:    Malformed("bad token syntax"),
 				schemeMTLS:   Absent(),
 			},
-			wantKind:   RejectionAmbiguousCredentials,
-			wantReason: ReasonAmbiguousCredentials,
+			wantKind:   RejectionMalformedCredential,
+			wantReason: "bad key syntax",
+			wantScheme: schemeAPIKey,
 		},
 		{
 			name: "sole accepted credential authenticates",
@@ -460,7 +468,7 @@ func TestDefaultFirstApplicableCombinations(t *testing.T) {
 	}
 }
 
-func TestCredentialSourceFailureCollectsEverySchemeButInvokesNoAuthenticator(t *testing.T) {
+func TestCredentialSourceFailureIsTerminalAndInvokesNoAuthenticator(t *testing.T) {
 	t.Parallel()
 
 	cause := errors.New("extractor included sensitive raw credential")
@@ -483,7 +491,7 @@ func TestCredentialSourceFailureCollectsEverySchemeButInvokesNoAuthenticator(t *
 	if !errors.Is(err, cause) {
 		t.Fatalf("Authenticate() error = %v, want wrapped source cause", err)
 	}
-	if got, want := called, []Scheme{schemeAPIKey, schemeJWT}; !reflect.DeepEqual(got, want) {
+	if got, want := called, []Scheme{schemeAPIKey}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("credential source calls = %v, want %v", got, want)
 	}
 	if strings.Contains(err.Error(), "sensitive raw credential") {
@@ -565,6 +573,71 @@ func TestSchemeValidationAndRestrictiveDefaults(t *testing.T) {
 	if err := manager.ValidateSelection(SelectSchemes()); !errors.Is(err, ErrEmptySelection) {
 		t.Fatalf("ValidateSelection(empty) error = %v, want ErrEmptySelection", err)
 	}
+}
+
+func TestRejectedCredentialContinuesToLaterSchemeAndRemembersFirstReason(t *testing.T) {
+	t.Parallel()
+
+	t.Run("later valid credential is not shadowed by an earlier rejection", func(t *testing.T) {
+		t.Parallel()
+		apiKey := &stubAuthenticator{
+			scheme: schemeAPIKey,
+			result: Rejected("api key expired"),
+		}
+		jwt := &stubAuthenticator{scheme: schemeJWT, result: Accepted("jwt-user")}
+		manager := newTestManager(t, []Scheme{schemeAPIKey, schemeJWT}, apiKey, jwt)
+
+		result, err := manager.Authenticate(
+			context.Background(),
+			DefaultSelection(),
+			CredentialSourceFunc(func(_ context.Context, scheme Scheme) (CredentialResult, error) {
+				return Presented("evidence-for-" + string(scheme)), nil
+			}),
+		)
+		if err != nil {
+			t.Fatalf("Authenticate() error = %v", err)
+		}
+		if !result.Authenticated() {
+			t.Fatalf("result status = %s, want authenticated", result.Status())
+		}
+		if got, ok := result.Scheme(); !ok || got != schemeJWT {
+			t.Fatalf("Scheme() = %q, %v, want jwt, true", got, ok)
+		}
+		if apiKey.calls != 1 || jwt.calls != 1 {
+			t.Fatalf("authenticator calls = apikey:%d jwt:%d, want 1/1", apiKey.calls, jwt.calls)
+		}
+	})
+
+	t.Run("all rejected reports the first rejection reason", func(t *testing.T) {
+		t.Parallel()
+		apiKey := &stubAuthenticator{
+			scheme: schemeAPIKey,
+			result: RejectedWithChallenge("api key expired", "ApiKey"),
+		}
+		jwt := &stubAuthenticator{scheme: schemeJWT, result: Rejected("token signature invalid")}
+		manager := newTestManager(t, []Scheme{schemeAPIKey, schemeJWT}, apiKey, jwt)
+
+		result, err := manager.Authenticate(
+			context.Background(),
+			DefaultSelection(),
+			CredentialSourceFunc(func(context.Context, Scheme) (CredentialResult, error) {
+				return Presented("evidence"), nil
+			}),
+		)
+		if err != nil {
+			t.Fatalf("Authenticate() error = %v", err)
+		}
+		assertRejection(t, result, RejectionInvalidCredential, "api key expired")
+		if got, ok := result.Scheme(); !ok || got != schemeAPIKey {
+			t.Fatalf("Scheme() = %q, %v, want apikey, true", got, ok)
+		}
+		if got, want := result.Challenges(), []Challenge{"ApiKey"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("Challenges() = %v, want %v", got, want)
+		}
+		if apiKey.calls != 1 || jwt.calls != 1 {
+			t.Fatalf("authenticator calls = apikey:%d jwt:%d, want 1/1", apiKey.calls, jwt.calls)
+		}
+	})
 }
 
 func assertRejection(t *testing.T, result Result, wantKind RejectionKind, wantReason SafeReason) {
