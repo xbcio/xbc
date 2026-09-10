@@ -4,10 +4,13 @@
 //
 // # Usage
 //
-// Compose Bundle explicitly to use configuration-backed static credentials.
-// Bundle and ordinary package imports are side-effect free. Executables that
-// intentionally use XBC's optional process-wide composition can import the leaf
-// apikey/autoload package instead.
+// apikey is a credential extractor and authenticator, not a middleware: it
+// plugs into the Web transport's built-in authentication middleware, which is
+// the only place a gin.Context is available. Compose Bundle explicitly to use
+// configuration-backed static credentials. Bundle and ordinary package
+// imports are side-effect free. Executables that intentionally use XBC's
+// optional process-wide composition can import the leaf apikey/autoload
+// package instead.
 //
 // For direct construction, Config.Static builds the same digest-only repository
 // used by the canonical Definition. WithRepository selects an external store

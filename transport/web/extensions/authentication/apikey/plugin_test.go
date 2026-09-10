@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/xbcio/xbc/plugin"
-	"github.com/xbcio/xbc/transport/web"
 )
 
 type fixedRepository struct{}
@@ -25,7 +24,7 @@ func staticConfig(secret string) Config {
 	return cfg
 }
 
-func TestDefinitionAndMiddlewareContract(t *testing.T) {
+func TestDefinitionAndAuthenticatorContract(t *testing.T) {
 	var zero plugin.Definition
 	if Definition() == zero || Definition() != Definition() {
 		t.Fatal("Definition() must return one non-zero canonical handle")
@@ -35,9 +34,8 @@ func TestDefinitionAndMiddlewareContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	order := p.Order()
-	if order.Phase != web.PhaseAuth || len(order.After) != 0 || len(order.Before) != 0 || p.Handler() == nil {
-		t.Fatalf("unexpected middleware order: %#v", order)
+	if p.Scheme() != Scheme {
+		t.Fatalf("Scheme() = %q, want %q", p.Scheme(), Scheme)
 	}
 }
 

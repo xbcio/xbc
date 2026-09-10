@@ -4,13 +4,12 @@ import (
 	"errors"
 	"reflect"
 
-	"github.com/gin-gonic/gin"
-
+	"github.com/xbcio/xbc/authentication"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
 
-// Key is the stable configuration and middleware identity of the API-key
+// Key is the stable configuration and Definition identity of the API-key
 // plugin.
 const Key plugin.Key = "apikey"
 
@@ -20,8 +19,10 @@ type runtimeState struct {
 	static *StaticRepository
 }
 
-// Plugin authenticates HTTP requests through a pluggable digest repository.
-// It is fully constructed before New or its Definition's factory returns.
+// Plugin authenticates HTTP requests through a pluggable digest repository
+// and contributes a credential extractor and an authenticator to the Web
+// transport's authentication middleware. It is fully constructed before New
+// or its Definition's factory returns.
 type Plugin struct {
 	state *runtimeState
 }
@@ -43,8 +44,6 @@ func WithRepository(repository Repository) Option {
 	}
 }
 
-var _ web.Middleware = (*Plugin)(nil)
-
 var definition = plugin.DefineConfigured(
 	Key,
 	plugin.ConfigSpec[Config]{
@@ -57,7 +56,8 @@ var definition = plugin.DefineConfigured(
 	plugin.Options[*Plugin]{
 		Activation: plugin.WhenConfigured("plugins." + Key.String()),
 		Exports: plugin.Contracts(
-			plugin.ExportAs[web.Middleware](func(value *Plugin) web.Middleware { return value }),
+			plugin.ExportAs[authentication.Authenticator](func(value *Plugin) authentication.Authenticator { return value }),
+			plugin.ExportAs[web.CredentialExtractor](func(value *Plugin) web.CredentialExtractor { return value }),
 		),
 	},
 )
@@ -71,9 +71,9 @@ func prepareConfig(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-// New constructs directly usable API-key middleware. Without WithRepository,
-// cfg.Static is validated and compiled into the built-in repository before New
-// returns. The two repository sources are mutually exclusive.
+// New constructs a directly usable Plugin. Without WithRepository, cfg.Static
+// is validated and compiled into the built-in repository before New returns.
+// The two repository sources are mutually exclusive.
 func New(cfg Config, options ...Option) (*Plugin, error) {
 	normalized, err := normalizeConfig(cfg)
 	if err != nil {
@@ -124,12 +124,6 @@ func isNilRepository(repository Repository) bool {
 		return false
 	}
 }
-
-// Handler returns the Gin authentication middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.authenticate }
-
-// Order places API-key authentication in the authentication phase.
-func (*Plugin) Order() web.Order { return web.Order{Phase: web.PhaseAuth} }
 
 // Definition returns apikey's canonical immutable declaration handle.
 func Definition() plugin.Definition { return definition }
