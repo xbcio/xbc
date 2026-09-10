@@ -42,6 +42,25 @@ web:
   # Add only exact proxy IPs or CIDRs; arbitrary forwarded headers are ignored.
   trusted_proxies: []
 
+  # Authentication policy: three-tier precedence model.
+  #   Tier 1 — web.security.policies rules (highest, overrides route declarations)
+  #   Tier 2 — route-level .Auth() declarations (e.g. Auth(web.Public()))
+  #   Tier 3 — web.security.default (factory setting: deny; covers unclaimed routes)
+  #
+  # The quickstart has no authenticator, so only "permit" rules are valid here.
+  # To switch a rule to "authenticate: [jwt]" you must first register a JWT
+  # authenticator by selecting its Bundle; otherwise startup fails because the
+  # scheme is not registered.
+  security:
+    default: deny
+    policies:
+      # Tier-1 rule: explicitly permit the documentation endpoints. These routes
+      # already declare Auth(web.Public()) at tier 2, so this rule is redundant
+      # in practice — it demonstrates that a tier-1 rule takes precedence and
+      # appears as "application-rule" in the startup policy table.
+      - match: "/api/v1/docs/**"
+        permit: true
+
 plugins:
   # The optional biz response plugin has no configuration section: selecting
   # biz.Bundle() is the complete opt-in for the success envelope and the

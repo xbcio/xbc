@@ -43,11 +43,16 @@
 //		}).Name("greeting").Auth(web.Public())
 //	}
 //
-// Route authentication has three distinct states. Omitting Auth selects the
-// authentication manager's restrictive default, Auth(Public()) explicitly
-// bypasses authentication, and Auth(Accepts(...)) selects explicit schemes.
-// The frozen RouteInfo.Auth pointer preserves those states; absence is never
-// interpreted as public access.
+// Route access is decided by a three-tier precedence model. An explicit
+// web.security policy rule (tier 1) overrides a route's own .Auth()
+// declaration (tier 2), and the global web.security.default (factory setting
+// deny) covers routes that neither tier addresses. Auth(Public()) is a tier-2
+// declaration; only a tier-1 rule can override it. The global default never
+// overrides a route-level declaration. Omitting Auth leaves the route to the
+// global default, Auth(Public()) explicitly bypasses authentication, and
+// Auth(Accepts(...)) selects explicit schemes. The frozen RouteInfo.Auth
+// pointer preserves those states; absence is never interpreted as public
+// access.
 //
 // Middleware identity is the producing plugin.Entry Identity. Phase is a hard
 // outer-to-inner boundary, while typed Before and After references refine
