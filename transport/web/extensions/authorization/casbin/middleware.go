@@ -6,17 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
-
-// jwtKey mirrors the stable plugin.Key identity owned by the optional
-// transport/web/extensions/authentication/jwt plugin. casbin must not import that sibling
-// integration module (each optional integration is independently
-// versioned), so the identity is duplicated here as a typed constant. The
-// reference stays soft: any Principal-producing authentication plugin keeps
-// Casbin usable when jwt is absent.
-const jwtKey plugin.Key = "jwt"
 
 // Handler implements web.Middleware.
 func (p *Plugin) Handler() gin.HandlerFunc { return p.authorize }
@@ -25,16 +16,20 @@ func (p *Plugin) Handler() gin.HandlerFunc { return p.authorize }
 func (p *Plugin) Order() web.Order {
 	return web.Order{
 		Phase: web.PhaseAuth,
-		After: []web.OrderRef{web.Prefer(jwtKey)},
+		After: []web.OrderRef{web.Require(web.AuthenticationMiddlewareKey)},
 	}
 }
 
 func (p *Plugin) authorize(c *gin.Context) {
-	route, found := web.CurrentRoute(c)
-	if found && route.Auth.IsPublic() {
+	// Ask the framework what exemption actually applied to this request,
+	// never the route's own .Auth() declaration: an application rule in
+	// web.security is the final arbiter and may have tightened a route that
+	// declared itself public.
+	if web.AuthenticationExempt(c) {
 		c.Next()
 		return
 	}
+	route, found := web.CurrentRoute(c)
 	if !found {
 		forbidden(c)
 		return

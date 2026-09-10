@@ -17,6 +17,14 @@ import (
 
 const currentRouteKeyForTest = "xbc/web.currentRoute"
 
+// authenticationExemptKeyForTest mirrors the private gin.Context key the
+// authentication middleware sets when it resolves a request to permit (see
+// web.AuthenticationExempt). Tests that exercise tenant standalone, without
+// the real authentication middleware in front of it, set this key directly
+// to simulate an exempt request -- mirroring the existing currentRouteKeyForTest
+// convention above.
+const authenticationExemptKeyForTest = "xbc/transport/web.authenticationExempt"
+
 func init() { gin.SetMode(gin.TestMode) }
 
 func initializedTenantPlugin(t *testing.T, mutate func(*Config), options ...Option) *Plugin {
@@ -33,11 +41,25 @@ func initializedTenantPlugin(t *testing.T, mutate func(*Config), options ...Opti
 }
 
 func serveTenantRequest(p *Plugin, route web.RouteInfo, principal *web.Principal, headers http.Header, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+	return serveTenantRequestWithExempt(p, route, principal, headers, false, handler)
+}
+
+// serveExemptTenantRequest drives a request the same way serveTenantRequest
+// does, but also marks it exempt the way the authentication middleware would
+// for a permit route -- see web.AuthenticationExempt.
+func serveExemptTenantRequest(p *Plugin, route web.RouteInfo, principal *web.Principal, headers http.Header, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+	return serveTenantRequestWithExempt(p, route, principal, headers, true, handler)
+}
+
+func serveTenantRequestWithExempt(p *Plugin, route web.RouteInfo, principal *web.Principal, headers http.Header, exempt bool, handler gin.HandlerFunc) *httptest.ResponseRecorder {
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) {
 		c.Set(currentRouteKeyForTest, route)
 		if principal != nil {
 			web.SetPrincipal(c, *principal)
+		}
+		if exempt {
+			c.Set(authenticationExemptKeyForTest, true)
 		}
 		c.Next()
 	})
@@ -80,26 +102,52 @@ func TestMiddlewarePublishesVerifiedTenantAndDefensiveAttributes(t *testing.T) {
 	}
 }
 
+// TestMiddlewareNeverTrustsAnonymousOrNonMemberHeader pins that a request with
+// no published Principal never has a tenant resolved from its header, even
+// though it is no longer tenant's job to reject that request itself (see
+// TestMiddlewareUsesUniform401And403Responses). An implementation that
+// resolved tenancy from the header without checking for a principal first
+// would leak Current(c) here and fail with 500 instead of 204.
 func TestMiddlewareNeverTrustsAnonymousOrNonMemberHeader(t *testing.T) {
 	p := initializedTenantPlugin(t, nil)
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "admin")
-	anonymous := serveTenantRequest(p, route, nil, headers, func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	assertTenantError(t, anonymous, http.StatusUnauthorized, "unauthorized")
+	anonymous := serveTenantRequest(p, route, nil, headers, func(c *gin.Context) {
+		if _, ok := Current(c); ok {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+	if anonymous.Code != http.StatusNoContent {
+		t.Fatalf("anonymous status=%d body=%s", anonymous.Code, anonymous.Body.String())
+	}
 
 	principal := &web.Principal{Subject: "alice", Attributes: map[string]any{"tenant_ids": []string{"acme"}}}
 	nonMember := serveTenantRequest(p, route, principal, headers, func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	assertTenantError(t, nonMember, http.StatusForbidden, "forbidden")
 }
 
+// TestMiddlewareUsesUniform401And403Responses pins Ruling 4: authentication is
+// no longer tenant's job to backstop. A missing Principal on a non-exempt
+// route is no longer a tenant error -- the authentication middleware either
+// already published one or already rejected the request itself, upstream of
+// tenant. Only an authenticated request that fails tenant membership still
+// gets tenant's own 403.
 func TestMiddlewareUsesUniform401And403Responses(t *testing.T) {
 	uninitialized := New()
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
-	assertTenantError(t, serveTenantRequest(uninitialized, route, nil, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) }), http.StatusUnauthorized, "unauthorized")
+	response := serveTenantRequest(uninitialized, route, nil, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("uninitialized, no principal status=%d body=%s", response.Code, response.Body.String())
+	}
 
 	p := initializedTenantPlugin(t, nil)
-	assertTenantError(t, serveTenantRequest(p, route, nil, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) }), http.StatusUnauthorized, "unauthorized")
+	response = serveTenantRequest(p, route, nil, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("no principal status=%d body=%s", response.Code, response.Body.String())
+	}
 
 	noMembership := &web.Principal{Subject: "alice", AuthMethod: "jwt"}
 	assertTenantError(t, serveTenantRequest(p, route, noMembership, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) }), http.StatusForbidden, "forbidden")
@@ -134,13 +182,19 @@ func TestMiddlewareRejectsAmbiguousAndMaliciousHeaders(t *testing.T) {
 	}
 }
 
-func TestMiddlewarePublicBypassAndOptionalTenant(t *testing.T) {
+// TestMiddlewareExemptRouteBypassesTenantResolution pins that
+// web.AuthenticationExempt, not the route's own .Auth() declaration, is what
+// lets a request skip tenant resolution. It supplies both a principal and a
+// malicious tenant header to prove the bypass is unconditional once exempt is
+// set, matching what the authentication middleware does for a genuinely
+// permitted route.
+func TestMiddlewareExemptRouteBypassesTenantResolution(t *testing.T) {
 	uninitialized := New()
-	publicPolicy := web.Public()
-	public := web.RouteInfo{Method: http.MethodGet, Path: "/health", Auth: &publicPolicy}
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/health"}
+	principal := &web.Principal{Subject: "alice", Attributes: map[string]any{"tenant_ids": []string{"acme"}}}
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "../../attacker")
-	response := serveTenantRequest(uninitialized, public, nil, headers, func(c *gin.Context) {
+	response := serveExemptTenantRequest(uninitialized, route, principal, headers, func(c *gin.Context) {
 		if _, ok := Current(c); ok {
 			c.Status(http.StatusInternalServerError)
 			return
@@ -148,12 +202,34 @@ func TestMiddlewarePublicBypassAndOptionalTenant(t *testing.T) {
 		c.Status(http.StatusNoContent)
 	})
 	if response.Code != http.StatusNoContent {
-		t.Fatalf("public status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("exempt status=%d body=%s", response.Code, response.Body.String())
 	}
+}
 
+// TestRouteDeclaredPublicButNotExemptStillEnforcesMembership pins the
+// vulnerability Ruling 20 closed: a route's own .Auth(Public()) declaration
+// is only a tier-2 signal. When an application rule in web.security tightens
+// that route for this request, the authentication middleware does not mark
+// the request exempt, and tenant must not fall back to the route's
+// IsPublic() declaration -- it must still enforce membership. An
+// implementation that asked route.Auth.IsPublic() instead of
+// web.AuthenticationExempt would let this request through with 204 instead
+// of 403.
+func TestRouteDeclaredPublicButNotExemptStillEnforcesMembership(t *testing.T) {
+	p := initializedTenantPlugin(t, nil)
+	publicPolicy := web.Public()
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/login", Auth: &publicPolicy}
+	principal := &web.Principal{Subject: "alice", Attributes: map[string]any{"tenant_ids": []string{"acme"}}}
+	headers := make(http.Header)
+	headers.Set(defaultHeader, "attacker")
+	response := serveTenantRequest(p, route, principal, headers, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	assertTenantError(t, response, http.StatusForbidden, "forbidden")
+}
+
+func TestMiddlewareOptionalTenantAllowsMissingMembership(t *testing.T) {
 	optional := initializedTenantPlugin(t, func(cfg *Config) { cfg.Required = false })
 	principal := &web.Principal{Subject: "alice"}
-	response = serveTenantRequest(optional, web.RouteInfo{Method: http.MethodGet, Path: "/optional"}, principal, nil, func(c *gin.Context) {
+	response := serveTenantRequest(optional, web.RouteInfo{Method: http.MethodGet, Path: "/optional"}, principal, nil, func(c *gin.Context) {
 		if _, ok := Current(c); ok {
 			c.Status(http.StatusInternalServerError)
 			return

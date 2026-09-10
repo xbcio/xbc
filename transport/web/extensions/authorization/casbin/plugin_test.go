@@ -62,11 +62,33 @@ func TestNewAppliesDefaultsAndMiddlewareContract(t *testing.T) {
 		t.Fatalf("Order().Phase = %v, want PhaseAuth", p.Order().Phase)
 	}
 	after := p.Order().After
-	if len(after) != 1 || after[0] != web.Prefer(jwtKey) {
-		t.Fatalf("Order().After = %v, want [Prefer(jwt)]", after)
+	if len(after) != 1 || after[0] != web.Require(web.AuthenticationMiddlewareKey) {
+		t.Fatalf("Order().After = %v, want [Require(authentication-middleware)]", after)
 	}
 	if p.Handler() == nil {
 		t.Fatal("Handler() = nil")
+	}
+}
+
+// TestOrderRequiresAuthenticationMiddleware locks the hard-reference: a soft
+// Prefer degrades silently into lexicographic tie-break the moment its target
+// plugin's Order() stops naming it, and that yields a 403 at runtime with no
+// compile or test failure to point at it. A mutation back to
+// web.Prefer(web.AuthenticationMiddlewareKey) must fail this test.
+func TestOrderRequiresAuthenticationMiddleware(t *testing.T) {
+	t.Parallel()
+
+	order := (&Plugin{}).Order()
+	var found bool
+	for _, ref := range order.After {
+		if ref == web.Require(web.AuthenticationMiddlewareKey) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("authorization must hard-require the authentication middleware; " +
+			"a soft Prefer degrades silently into lexicographic tie-break and yields 403")
 	}
 }
 
