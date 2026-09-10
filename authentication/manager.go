@@ -196,72 +196,94 @@ func (m *Manager) Authenticate(
 		return Result{}, err
 	}
 
-	type observation struct {
-		entry  orderedAuthenticator
-		result CredentialResult
+	var (
+		challenges     []Challenge
+		seenChallenges = make(map[Challenge]struct{}, len(selected))
+		firstRejection *Result
+		firstMalformed *Result
+	)
+	recordChallenge := func(challenge Challenge) {
+		if challenge == "" {
+			return
+		}
+		if _, duplicate := seenChallenges[challenge]; duplicate {
+			return
+		}
+		seenChallenges[challenge] = struct{}{}
+		challenges = append(challenges, challenge)
 	}
-	observations := make([]observation, 0, len(selected))
-	var firstOperational error
+
 	for _, entry := range selected {
 		result, sourceErr := source.Credential(ctx, entry.scheme)
 		if sourceErr != nil {
-			if firstOperational == nil {
-				firstOperational = newOperationalError(
-					OperationCredentialCollection,
-					entry.scheme,
-					sourceErr,
-				)
-			}
-			continue
+			return Result{}, newOperationalError(
+				OperationCredentialCollection,
+				entry.scheme,
+				sourceErr,
+			)
 		}
 		if validationErr := validateCredentialResult(result); validationErr != nil {
-			if firstOperational == nil {
-				firstOperational = newOperationalError(
-					OperationCredentialCollection,
+			return Result{}, newOperationalError(
+				OperationCredentialCollection,
+				entry.scheme,
+				validationErr,
+			)
+		}
+
+		recordChallenge(result.challenge)
+
+		switch result.status {
+		case CredentialStatusAbsent:
+			continue
+		case CredentialStatusMalformed:
+			if firstMalformed == nil {
+				var malformedChallenges []Challenge
+				if result.challenge != "" {
+					malformedChallenges = []Challenge{result.challenge}
+				}
+				rejection := managerRejection(
+					RejectionMalformedCredential,
 					entry.scheme,
-					validationErr,
+					result.reason,
+					malformedChallenges,
 				)
+				firstMalformed = &rejection
 			}
 			continue
 		}
-		observations = append(observations, observation{entry: entry, result: result})
-	}
-	if firstOperational != nil {
-		return Result{}, firstOperational
-	}
 
-	evidenceCount := 0
-	var evidence observation
-	for _, observed := range observations {
-		if observed.result.status == CredentialStatusPresented ||
-			observed.result.status == CredentialStatusMalformed {
-			evidenceCount++
-			evidence = observed
+		credential := Credential{value: result.credential}
+		authenticatorResult, authenticateErr := entry.authenticator.Authenticate(ctx, credential)
+		if authenticateErr != nil {
+			return Result{}, newOperationalError(
+				OperationAuthentication,
+				entry.scheme,
+				authenticateErr,
+			)
+		}
+		if validationErr := validateAuthenticatorResult(authenticatorResult); validationErr != nil {
+			return Result{}, newOperationalError(
+				OperationAuthentication,
+				entry.scheme,
+				validationErr,
+			)
+		}
+		if authenticatorResult.status == ResultStatusAuthenticated {
+			authenticatorResult.scheme = entry.scheme
+			return authenticatorResult, nil
+		}
+		if firstRejection == nil {
+			authenticatorResult.scheme = entry.scheme
+			firstRejection = &authenticatorResult
 		}
 	}
 
 	switch {
-	case evidenceCount > 1:
-		return managerRejection(
-			RejectionAmbiguousCredentials,
-			"",
-			ReasonAmbiguousCredentials,
-			nil,
-		), nil
-	case evidenceCount == 0:
-		challenges := make([]Challenge, 0, len(observations))
-		seen := make(map[Challenge]struct{}, len(observations))
-		for _, observed := range observations {
-			challenge := observed.result.challenge
-			if challenge == "" {
-				continue
-			}
-			if _, duplicate := seen[challenge]; duplicate {
-				continue
-			}
-			seen[challenge] = struct{}{}
-			challenges = append(challenges, challenge)
-		}
+	case firstRejection != nil:
+		return *firstRejection, nil
+	case firstMalformed != nil:
+		return *firstMalformed, nil
+	default:
 		return managerRejection(
 			RejectionUnauthenticated,
 			"",
@@ -269,38 +291,6 @@ func (m *Manager) Authenticate(
 			challenges,
 		), nil
 	}
-
-	if evidence.result.status == CredentialStatusMalformed {
-		var challenges []Challenge
-		if evidence.result.challenge != "" {
-			challenges = []Challenge{evidence.result.challenge}
-		}
-		return managerRejection(
-			RejectionMalformedCredential,
-			evidence.entry.scheme,
-			evidence.result.reason,
-			challenges,
-		), nil
-	}
-
-	credential := Credential{value: evidence.result.credential}
-	authenticatorResult, authenticateErr := evidence.entry.authenticator.Authenticate(ctx, credential)
-	if authenticateErr != nil {
-		return Result{}, newOperationalError(
-			OperationAuthentication,
-			evidence.entry.scheme,
-			authenticateErr,
-		)
-	}
-	if validationErr := validateAuthenticatorResult(authenticatorResult); validationErr != nil {
-		return Result{}, newOperationalError(
-			OperationAuthentication,
-			evidence.entry.scheme,
-			validationErr,
-		)
-	}
-	authenticatorResult.scheme = evidence.entry.scheme
-	return authenticatorResult, nil
 }
 
 func (m *Manager) resolve(selection Selection) ([]orderedAuthenticator, error) {
