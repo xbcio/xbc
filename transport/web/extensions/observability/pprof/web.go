@@ -1,9 +1,6 @@
 package pprof
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
-	"net"
 	"net/http"
 	stdpprof "net/http/pprof"
 	"strings"
@@ -13,19 +10,17 @@ import (
 	"github.com/xbcio/xbc/transport/web"
 )
 
-// RegisterRoutes contributes pprof only when explicitly enabled. The routes
-// use an explicit public authentication policy because this plugin performs
-// its own stricter direct-peer/token
-// authorization before invoking any runtime profile handler.
+// RegisterRoutes contributes pprof only when explicitly enabled. Access control
+// is delegated to the application's authentication policy.
 func (p *Plugin) RegisterRoutes(router *web.Router) {
 	cfg := p.currentSettings()
 	if !cfg.enabled {
 		return
 	}
 	handler := p.handler()
-	router.GET(cfg.path, handler).Name("management.pprof.index").Auth(web.Public())
-	router.GET(cfg.path+"/*profile", handler).Name("management.pprof.profile").Auth(web.Public())
-	router.POST(cfg.path+"/*profile", handler).Name("management.pprof.command").Auth(web.Public())
+	router.GET(cfg.path, handler).Name("management.pprof.index")
+	router.GET(cfg.path+"/*profile", handler).Name("management.pprof.profile")
+	router.POST(cfg.path+"/*profile", handler).Name("management.pprof.command")
 }
 
 func (p *Plugin) handler() gin.HandlerFunc {
@@ -33,37 +28,12 @@ func (p *Plugin) handler() gin.HandlerFunc {
 		cfg := p.currentSettings()
 		c.Header("Cache-Control", "no-store")
 		c.Header("X-Content-Type-Options", "nosniff")
-		if !cfg.enabled || !authorized(c.Request, cfg) {
-			web.AbortProblem(c, web.NewProblem(http.StatusUnauthorized, "unauthorized"))
+		if !cfg.enabled {
+			web.AbortProblem(c, web.NewProblem(http.StatusNotFound, "not_found"))
 			return
 		}
 		serveProfile(c.Writer, c.Request, cfg.path)
 	}
-}
-
-func authorized(request *http.Request, cfg settings) bool {
-	if request == nil {
-		return false
-	}
-	if cfg.allowLoopback && directPeerIsLoopback(request.RemoteAddr) {
-		return true
-	}
-	if !cfg.hasToken {
-		return false
-	}
-	candidate := sha256.Sum256([]byte(request.Header.Get(cfg.header)))
-	return subtle.ConstantTimeCompare(candidate[:], cfg.tokenDigest[:]) == 1
-}
-
-func directPeerIsLoopback(remoteAddr string) bool {
-	remoteAddr = strings.TrimSpace(remoteAddr)
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	host = strings.Trim(host, "[]")
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func serveProfile(writer http.ResponseWriter, request *http.Request, basePath string) {

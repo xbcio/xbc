@@ -120,20 +120,3 @@ func TestNewPluginUsesProvidedController(t *testing.T) {
 		t.Fatalf("plugin = %#v, want enabled adapter for provided controller", p)
 	}
 }
-
-func TestConfigRequiresProtectedEnabledEndpoint(t *testing.T) {
-	cfg := defaultConfig()
-	cfg.HTTP.Enabled = true
-	cfg.HTTP.AllowLoopback = false
-	if _, err := newPlugin(cfg, New()); err == nil {
-		t.Fatal("unprotected endpoint configuration accepted")
-	}
-	cfg.HTTP.Token = "short"
-	if _, err := newPlugin(cfg, New()); err == nil {
-		t.Fatal("short token accepted")
-	}
-	cfg.HTTP.Token = "0123456789abcdef0123456789abcdef"
-	if _, err := newPlugin(cfg, New()); err != nil {
-		t.Fatalf("secure endpoint config rejected: %v", err)
-	}
-}

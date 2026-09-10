@@ -21,7 +21,7 @@ type assertError string
 
 func (e assertError) Error() string { return string(e) }
 
-func TestEndpointSecurityAndExposition(t *testing.T) {
+func TestEndpointExposition(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.HTTP.Enabled = true
 	p, err := newPlugin(cfg)
@@ -40,50 +40,17 @@ func TestEndpointSecurityAndExposition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	remote := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	remote.RemoteAddr = "203.0.113.8:1234"
-	remote.Header.Set("X-Forwarded-For", "127.0.0.1")
-	denied := httptest.NewRecorder()
-	engine.ServeHTTP(denied, remote)
-	if denied.Code != http.StatusUnauthorized {
-		t.Fatalf("forwarded loopback status = %d", denied.Code)
-	}
-
-	loopback := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	loopback.RemoteAddr = "127.0.0.1:1234"
-	allowed := httptest.NewRecorder()
-	engine.ServeHTTP(allowed, loopback)
-	if allowed.Code != http.StatusOK {
-		t.Fatalf("loopback status = %d body=%s", allowed.Code, allowed.Body.String())
-	}
-	if !strings.Contains(allowed.Body.String(), "# HELP endpoint_probe_total") {
-		t.Fatalf("missing Prometheus exposition:\n%s", allowed.Body.String())
-	}
-	if allowed.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("cache control = %q", allowed.Header().Get("Cache-Control"))
-	}
-}
-
-func TestTokenProtectsNonLoopbackEndpoint(t *testing.T) {
-	const token = "0123456789abcdef0123456789abcdef"
-	cfg := DefaultConfig()
-	cfg.HTTP.Enabled = true
-	cfg.HTTP.AllowLoopback = false
-	cfg.HTTP.Token = token
-	p, err := newPlugin(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine := gin.New()
-	engine.GET("/metrics", p.handleMetrics)
-
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	request.RemoteAddr = "203.0.113.8:1234"
-	request.Header.Set(defaultHeader, token)
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("token status = %d body=%s", response.Code, response.Body.String())
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "# HELP endpoint_probe_total") {
+		t.Fatalf("missing Prometheus exposition:\n%s", response.Body.String())
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("cache control = %q", response.Header().Get("Cache-Control"))
 	}
 }
 
@@ -99,7 +66,6 @@ func TestGatherFailureReturnsServerError(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	request.RemoteAddr = "127.0.0.1:1234"
 	response := httptest.NewRecorder()
 	engine := gin.New()
 	engine.GET("/metrics", p.handleMetrics)
@@ -111,11 +77,9 @@ func TestGatherFailureReturnsServerError(t *testing.T) {
 
 func TestConfigValidation(t *testing.T) {
 	cases := []Config{
-		{Namespace: "bad-name", HTTP: HTTPConfig{Path: defaultPath, Header: defaultHeader, AllowLoopback: true}},
-		{Namespace: defaultNamespace, DurationBuckets: []float64{1, 1}, HTTP: HTTPConfig{Path: defaultPath, Header: defaultHeader, AllowLoopback: true}},
-		{Namespace: defaultNamespace, HTTP: HTTPConfig{Enabled: true, Path: defaultPath, Header: defaultHeader}},
-		{Namespace: defaultNamespace, HTTP: HTTPConfig{Enabled: true, Path: defaultPath, Header: defaultHeader, Token: "short"}},
-		{Namespace: defaultNamespace, HTTP: HTTPConfig{Path: "/metrics/:tenant", Header: defaultHeader, AllowLoopback: true}},
+		{Namespace: "bad-name", HTTP: HTTPConfig{Path: defaultPath}},
+		{Namespace: defaultNamespace, DurationBuckets: []float64{1, 1}, HTTP: HTTPConfig{Path: defaultPath}},
+		{Namespace: defaultNamespace, HTTP: HTTPConfig{Path: "/metrics/:tenant"}},
 	}
 	for _, cfg := range cases {
 		if err := cfg.Validate(); err == nil {

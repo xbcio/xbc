@@ -329,10 +329,7 @@
         ],
         "HTTP": {
           "Enabled": false,
-          "Path": "/metrics",
-          "Header": "X-XBC-Metrics-Token",
-          "Token": "",
-          "AllowLoopback": true
+          "Path": "/metrics"
         }
       }
     },
@@ -394,10 +391,7 @@
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/pprof.Config",
       "defaults": {
         "Enabled": false,
-        "Path": "/debug/pprof",
-        "Header": "X-XBC-Pprof-Token",
-        "Token": "",
-        "AllowLoopback": true
+        "Path": "/debug/pprof"
       }
     },
     {

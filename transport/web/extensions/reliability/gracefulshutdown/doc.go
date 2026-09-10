@@ -30,10 +30,8 @@
 //
 // Include gracefulshutdown.Bundle() and a plugins.gracefulshutdown section to
 // activate both Definitions. The HTTP endpoint remains disabled unless
-// http.enabled is true. It authorizes only a direct loopback peer or a
-// constant-time token match and deliberately ignores forwarded client-address
-// headers. Do not expose it remotely without a strong token and network
-// controls.
+// http.enabled is true. When enabled, access control is determined by the
+// application's authentication policy.
 //
 // An accepted request cancels every plugin lifecycle context and lets core
 // perform its normal bounded reverse-order Stop sequence, including HTTP

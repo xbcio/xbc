@@ -1,10 +1,8 @@
 package metrics
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"math"
-	"net/http"
 	"path"
 	"strings"
 
@@ -14,12 +12,10 @@ import (
 const (
 	defaultNamespace = "xbc"
 	defaultPath      = "/metrics"
-	defaultHeader    = "X-XBC-Metrics-Token"
 )
 
 // Config is bound from plugins.metrics. The scrape endpoint is deliberately
-// disabled by default; enabling it still requires a direct loopback peer or a
-// secret token of at least 32 bytes.
+// disabled by default.
 type Config struct {
 	Namespace       string     `yaml:"namespace" default:"xbc"`
 	Subsystem       string     `yaml:"subsystem"`
@@ -27,14 +23,10 @@ type Config struct {
 	HTTP            HTTPConfig `yaml:"http"`
 }
 
-// HTTPConfig controls the optional Prometheus exposition endpoint. Forwarded
-// headers are never trusted for AllowLoopback decisions.
+// HTTPConfig controls the optional Prometheus exposition endpoint.
 type HTTPConfig struct {
-	Enabled       bool   `yaml:"enabled" default:"false"`
-	Path          string `yaml:"path" default:"/metrics"`
-	Header        string `yaml:"header" default:"X-XBC-Metrics-Token"`
-	Token         string `yaml:"token" mask:"true"`
-	AllowLoopback bool   `yaml:"allow_loopback" default:"true"`
+	Enabled bool   `yaml:"enabled" default:"false"`
+	Path    string `yaml:"path" default:"/metrics"`
 }
 
 // DefaultConfig returns the same defaults applied by XBC's config binder.
@@ -43,26 +35,20 @@ func DefaultConfig() Config {
 		Namespace:       defaultNamespace,
 		DurationBuckets: append([]float64(nil), prometheus.DefBuckets...),
 		HTTP: HTTPConfig{
-			Path:          defaultPath,
-			Header:        defaultHeader,
-			AllowLoopback: true,
+			Path: defaultPath,
 		},
 	}
 }
 
-// Validate checks metric naming, histogram bounds, and endpoint security.
+// Validate checks metric naming, histogram bounds, and endpoint path.
 func (c Config) Validate() error {
 	_, err := normalizeConfig(c)
 	return err
 }
 
 type endpointConfig struct {
-	enabled       bool
-	path          string
-	header        string
-	tokenDigest   [sha256.Size]byte
-	hasToken      bool
-	allowLoopback bool
+	enabled bool
+	path    string
 }
 
 type normalizedConfig struct {
@@ -110,29 +96,9 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 		return normalizedConfig{}, fmt.Errorf("metrics: http.path cannot be the root path")
 	}
 
-	header := strings.TrimSpace(cfg.HTTP.Header)
-	if header == "" {
-		header = defaultHeader
-	}
-	if !validHeaderName(header) {
-		return normalizedConfig{}, fmt.Errorf("metrics: http.header is not a valid HTTP header name")
-	}
-	if cfg.HTTP.Token != "" && len([]byte(cfg.HTTP.Token)) < 32 {
-		return normalizedConfig{}, fmt.Errorf("metrics: http.token must contain at least 32 bytes")
-	}
-	if cfg.HTTP.Enabled && cfg.HTTP.Token == "" && !cfg.HTTP.AllowLoopback {
-		return normalizedConfig{}, fmt.Errorf("metrics: enabled HTTP endpoint requires a token or allow_loopback")
-	}
-
 	endpoint := endpointConfig{
-		enabled:       cfg.HTTP.Enabled,
-		path:          endpointPath,
-		header:        http.CanonicalHeaderKey(header),
-		hasToken:      cfg.HTTP.Token != "",
-		allowLoopback: cfg.HTTP.AllowLoopback,
-	}
-	if endpoint.hasToken {
-		endpoint.tokenDigest = sha256.Sum256([]byte(cfg.HTTP.Token))
+		enabled: cfg.HTTP.Enabled,
+		path:    endpointPath,
 	}
 	return normalizedConfig{
 		namespace: namespace,
@@ -156,21 +122,4 @@ func validMetricComponent(value string) bool {
 
 func isASCIILetter(ch byte) bool {
 	return ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z'
-}
-
-func validHeaderName(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			continue
-		case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
-			continue
-		default:
-			return false
-		}
-	}
-	return true
 }
