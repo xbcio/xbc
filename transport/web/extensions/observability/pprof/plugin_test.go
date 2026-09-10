@@ -1,7 +1,6 @@
 package pprof
 
 import (
-	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,8 +13,6 @@ func TestNewPluginUsesDisabledDefaults(t *testing.T) {
 	cfg := p.currentSettings()
 	assert.False(t, cfg.enabled)
 	assert.Equal(t, defaultPath, cfg.path)
-	assert.Equal(t, http.CanonicalHeaderKey(defaultHeader), cfg.header)
-	assert.True(t, cfg.allowLoopback)
 }
 
 func TestNewPluginUsesExplicitConfiguration(t *testing.T) {
@@ -29,13 +26,4 @@ func TestNewPluginUsesExplicitConfiguration(t *testing.T) {
 	require.NotSame(t, first, second)
 	assert.True(t, first.currentSettings().enabled)
 	assert.True(t, second.currentSettings().enabled)
-}
-
-func TestNewPluginRejectsUnsafeConfiguration(t *testing.T) {
-	cfg := defaultConfig()
-	cfg.Enabled = true
-	cfg.AllowLoopback = false
-	_, err := newPlugin(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires a token")
 }

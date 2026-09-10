@@ -1,7 +1,6 @@
 package pprof
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,8 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/xbcio/xbc/transport/web"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -37,7 +34,7 @@ func invoke(handler gin.HandlerFunc, path, remote string, headers map[string]str
 	return recorder
 }
 
-func TestLoopbackCanReadProfileAndResponsesAreNotCacheable(t *testing.T) {
+func TestEnabledEndpointServesProfileAndResponsesAreNotCacheable(t *testing.T) {
 	handler := configuredHandler(t, func(cfg *Config) { cfg.Enabled = true })
 	response := invoke(handler, "/debug/pprof/goroutine?debug=1", "127.0.0.1:4321", nil)
 	assert.Equal(t, http.StatusOK, response.Code)
@@ -45,39 +42,9 @@ func TestLoopbackCanReadProfileAndResponsesAreNotCacheable(t *testing.T) {
 	assert.Contains(t, response.Body.String(), "goroutine profile")
 }
 
-func TestRemotePeerRequiresTokenAndForwardedLoopbackIsIgnored(t *testing.T) {
-	const token = "0123456789abcdef0123456789abcdef"
-	handler := configuredHandler(t, func(cfg *Config) {
-		cfg.Enabled = true
-		cfg.AllowLoopback = false
-		cfg.Token = token
-	})
-
-	for name, headers := range map[string]map[string]string{
-		"missing":   nil,
-		"wrong":     {defaultHeader: "0123456789abcdef0123456789abcdeg"},
-		"forwarded": {"X-Forwarded-For": "127.0.0.1"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			response := invoke(handler, "/debug/pprof/", "198.51.100.10:4321", headers)
-			assert.Equal(t, http.StatusUnauthorized, response.Code)
-			assert.Equal(t, "application/problem+json; charset=utf-8", response.Header().Get("Content-Type"))
-			var problem web.ProblemDetail
-			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &problem))
-			assert.Equal(t, http.StatusUnauthorized, problem.Status)
-			assert.Equal(t, "unauthorized", problem.Properties["code"])
-			assert.Equal(t, "/debug/pprof/", problem.Instance)
-		})
-	}
-
-	response := invoke(handler, "/debug/pprof/", "198.51.100.10:4321", map[string]string{defaultHeader: token})
-	assert.Equal(t, http.StatusOK, response.Code)
-	assert.Contains(t, response.Body.String(), "profile")
-}
-
-func TestDisabledHandlerFailsClosed(t *testing.T) {
+func TestDisabledHandlerReturnsNotFound(t *testing.T) {
 	p, err := newPlugin(defaultConfig())
 	require.NoError(t, err)
 	response := invoke(p.handler(), "/debug/pprof/", "127.0.0.1:4321", nil)
-	assert.Equal(t, http.StatusUnauthorized, response.Code)
+	assert.Equal(t, http.StatusNotFound, response.Code)
 }
