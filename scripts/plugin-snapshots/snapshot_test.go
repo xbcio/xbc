@@ -64,7 +64,8 @@ func TestSessionDescriptorRoundTrips(t *testing.T) {
 	}
 
 	wantContracts := map[string]bool{
-		"github.com/xbcio/xbc/transport/web.Middleware":                                false,
+		"github.com/xbcio/xbc/authentication.Authenticator":                            false,
+		"github.com/xbcio/xbc/transport/web.CredentialExtractor":                       false,
 		"github.com/xbcio/xbc/transport/web/extensions/authentication/session.Manager": false,
 	}
 	if len(session.Contracts) != len(wantContracts) {

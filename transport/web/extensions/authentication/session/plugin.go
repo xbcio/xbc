@@ -6,11 +6,12 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/xbcio/xbc/authentication"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
 
-// Key is this plugin's stable configuration, dependency, and middleware
+// Key is this plugin's stable configuration, dependency, and Definition
 // identity.
 const Key plugin.Key = "session"
 
@@ -20,14 +21,8 @@ const Key plugin.Key = "session"
 // versioned), so the identity is duplicated here as a typed constant.
 const redisPluginKey plugin.Key = "redis"
 
-// tenantKey and casbinKey mirror the stable plugin.Key identities owned by
-// sibling web middleware plugins that authentication must run before.
-const (
-	tenantKey plugin.Key = "tenant"
-	casbinKey plugin.Key = "casbin"
-)
-
-// Plugin owns session persistence and contributes cookie authentication. It
+// Plugin owns session persistence and contributes a credential extractor and
+// an authenticator to the Web transport's authentication middleware. It
 // embeds *manager so it satisfies Manager directly through promoted methods,
 // which plugin.ExportAs requires of a Definition's primary type.
 type Plugin struct {
@@ -47,8 +42,6 @@ type Option func(*options)
 // lifecycle remains caller-owned.
 func WithStore(store Store) Option { return func(o *options) { o.store = store } }
 
-var _ web.Middleware = (*Plugin)(nil)
-
 var definition = plugin.DefinePlanned(
 	Key,
 	plugin.ConfigSpec[Config]{
@@ -59,7 +52,8 @@ var definition = plugin.DefinePlanned(
 	plugin.Options[*Plugin]{
 		Activation: plugin.WhenConfigured("plugins." + Key.String()),
 		Exports: plugin.Contracts(
-			plugin.ExportAs[web.Middleware](func(value *Plugin) web.Middleware { return value }),
+			plugin.ExportAs[authentication.Authenticator](func(value *Plugin) authentication.Authenticator { return value }),
+			plugin.ExportAs[web.CredentialExtractor](func(value *Plugin) web.CredentialExtractor { return value }),
 			plugin.ExportAs(func(value *Plugin) Manager { return value }),
 		),
 	},

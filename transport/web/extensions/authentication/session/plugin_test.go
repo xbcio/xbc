@@ -12,7 +12,6 @@ import (
 
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/assembly"
-	"github.com/xbcio/xbc/transport/web"
 )
 
 func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
@@ -32,22 +31,15 @@ func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
 	}
 }
 
-func TestNewAppliesMemoryDefaultsAndMiddlewareContract(t *testing.T) {
+func TestNewAppliesMemoryDefaultsAndAuthenticationContract(t *testing.T) {
 	p, err := New(DefaultConfig())
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	t.Cleanup(func() { _ = p.Stop(context.Background()) })
 
-	order := p.Order()
-	if order.Phase != web.PhaseAuth {
-		t.Fatalf("Order().Phase = %v, want PhaseAuth", order.Phase)
-	}
-	if len(order.Before) != 2 || order.Before[0] != web.Prefer(tenantKey) || order.Before[1] != web.Prefer(casbinKey) {
-		t.Fatalf("Order().Before = %#v", order.Before)
-	}
-	if p.Handler() == nil {
-		t.Fatal("Handler() = nil")
+	if p.Scheme() != Scheme {
+		t.Fatalf("Scheme() = %q, want %q", p.Scheme(), Scheme)
 	}
 	if _, ok := p.manager.store.(*MemoryStore); !ok {
 		t.Fatalf("memory backend did not construct a MemoryStore, got %T", p.manager.store)

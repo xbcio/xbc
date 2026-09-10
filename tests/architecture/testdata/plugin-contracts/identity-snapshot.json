@@ -234,7 +234,8 @@
       "config_path": "plugins.session",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web.Middleware",
+        "github.com/xbcio/xbc/authentication.Authenticator",
+        "github.com/xbcio/xbc/transport/web.CredentialExtractor",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/session.Manager"
       ]
     },

@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,31 +11,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/xbcio/xbc/authentication"
 	"github.com/xbcio/xbc/transport/web"
 )
 
-const currentRouteKeyForTest = "xbc/web.currentRoute"
-
 func init() { gin.SetMode(gin.TestMode) }
 
-func serveSessionRequest(p *Plugin, route web.RouteInfo, cookies []*http.Cookie, handler gin.HandlerFunc) *httptest.ResponseRecorder {
-	engine := gin.New()
-	engine.Use(func(c *gin.Context) {
-		c.Set(currentRouteKeyForTest, route)
-		c.Next()
-	})
-	engine.Use(p.Handler())
-	engine.Handle(route.Method, route.Path, handler)
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(route.Method, route.Path, nil)
-	for _, cookie := range cookies {
-		request.AddCookie(cookie)
-	}
-	engine.ServeHTTP(recorder, request)
-	return recorder
-}
-
-func initializedSessionPlugin(t *testing.T, store Store, mutate func(*Config)) *Plugin {
+// configuredSessionPlugin returns a plugin backed by store, with cfg mutated
+// by mutate before construction.
+func configuredSessionPlugin(t *testing.T, store Store, mutate func(*Config)) *Plugin {
 	t.Helper()
 	cfg := DefaultConfig()
 	if mutate != nil {
@@ -50,138 +33,316 @@ func initializedSessionPlugin(t *testing.T, store Store, mutate func(*Config)) *
 	return p
 }
 
-func TestMiddlewareAuthenticatesAndPublishesDefensiveSessionPrincipal(t *testing.T) {
+// newTestContextWithCookies builds a bare *gin.Context carrying the given
+// cookies on its request. A nil slice means the request has no cookies at
+// all -- the minimum ExtractCredential needs to classify a request.
+func newTestContextWithCookies(t *testing.T, cookies []*http.Cookie) *gin.Context {
+	t.Helper()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+	c.Request = req
+	return c
+}
+
+// TestPluginExtractCredentialClassifiesCookie exercises the three-state
+// extraction boundary: cookie absent, cookie present but no value can be read
+// from it (empty value, or more than one cookie sharing the configured
+// name), and cookie present with a value -- Presented regardless of whether
+// that value looks like a well-formed session ID, because shape validation
+// is Authenticate's job, not the extractor's.
+//
+// Every subtest runs against both the default cookie name and a
+// non-default configured one: asserting only against DefaultConfig() would
+// leave a hardcoded "xbc_session" literal over Config.Name entirely
+// unnoticed by this suite.
+func TestPluginExtractCredentialClassifiesCookie(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cookies    func(configuredName string) []*http.Cookie
+		want       authentication.CredentialStatus
+		wantReason authentication.SafeReason
+	}{
+		{
+			name:    "no cookie at all is absent",
+			cookies: func(string) []*http.Cookie { return nil },
+			want:    authentication.CredentialStatusAbsent,
+		},
+		{
+			name: "a cookie under a different name is absent",
+			cookies: func(string) []*http.Cookie {
+				return []*http.Cookie{{Name: "unrelated_cookie", Value: "abc"}}
+			},
+			want: authentication.CredentialStatusAbsent,
+		},
+		{
+			name: "configured cookie with an empty value is malformed",
+			cookies: func(configuredName string) []*http.Cookie {
+				return []*http.Cookie{{Name: configuredName, Value: ""}}
+			},
+			want:       authentication.CredentialStatusMalformed,
+			wantReason: "malformed credential",
+		},
+		{
+			// Two cookies sharing the configured name: the extractor cannot pick
+			// a value, so this is Malformed, not Absent and not a silent
+			// first-wins.
+			name: "duplicate cookies under the configured name are malformed",
+			cookies: func(configuredName string) []*http.Cookie {
+				return []*http.Cookie{
+					{Name: configuredName, Value: "aaa"},
+					{Name: configuredName, Value: "bbb"},
+				}
+			},
+			want:       authentication.CredentialStatusMalformed,
+			wantReason: "malformed credential",
+		},
+		{
+			// A value that does not look like a well-formed opaque session ID is
+			// still Presented: validID is Authenticate's check, not the
+			// extractor's.
+			name: "configured cookie with a non-ID-shaped value is presented",
+			cookies: func(configuredName string) []*http.Cookie {
+				return []*http.Cookie{{Name: configuredName, Value: "not-an-opaque-id"}}
+			},
+			want: authentication.CredentialStatusPresented,
+		},
+		{
+			name: "configured cookie with a well-formed session ID is presented",
+			cookies: func(configuredName string) []*http.Cookie {
+				return []*http.Cookie{{Name: configuredName, Value: testID(1, 32)}}
+			},
+			want: authentication.CredentialStatusPresented,
+		},
+	}
+
+	for _, configuredName := range []string{defaultCookieName, "custom_session_cookie"} {
+		configuredName := configuredName
+		for _, test := range tests {
+			test := test
+			t.Run(configuredName+"/"+test.name, func(t *testing.T) {
+				t.Parallel()
+				p := configuredSessionPlugin(t, &recordingStore{}, func(cfg *Config) { cfg.Name = configuredName })
+				c := newTestContextWithCookies(t, test.cookies(configuredName))
+
+				got, err := p.ExtractCredential(c)
+				if err != nil {
+					t.Fatalf("ExtractCredential() error = %v", err)
+				}
+				if got.Status() != test.want {
+					t.Fatalf("status = %v, want %v", got.Status(), test.want)
+				}
+				// Ruling 17: session never advertises a WWW-Authenticate challenge,
+				// unlike jwt and apikey. Asserting only Status() would not catch a
+				// future edit that "fixes" this for symmetry by switching to
+				// AbsentWithChallenge/MalformedWithChallenge.
+				if challenge, ok := got.Challenge(); ok {
+					t.Fatalf("Challenge() = %q, want none", challenge)
+				}
+				switch test.want {
+				case authentication.CredentialStatusMalformed:
+					reason, ok := got.Reason()
+					if !ok || reason != test.wantReason {
+						t.Fatalf("Reason() = %q, ok=%v, want %q", reason, ok, test.wantReason)
+					}
+					if strings.Contains(string(reason), configuredName) {
+						t.Fatalf("reason leaked the configured cookie name: %q", reason)
+					}
+				case authentication.CredentialStatusPresented:
+					credential, ok := got.Credential()
+					if !ok {
+						t.Fatal("Credential() ok = false")
+					}
+					value, ok := credential.Value().(string)
+					if !ok || value == "" {
+						t.Fatalf("credential value = %#v, want the raw cookie value", credential.Value())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPluginExtractCredentialNilRequestIsAbsent(t *testing.T) {
+	t.Parallel()
+	p := configuredSessionPlugin(t, &recordingStore{}, nil)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	got, err := p.ExtractCredential(c)
+	if err != nil {
+		t.Fatalf("ExtractCredential() error = %v", err)
+	}
+	if got.Status() != authentication.CredentialStatusAbsent {
+		t.Fatalf("status = %v, want Absent", got.Status())
+	}
+	if challenge, ok := got.Challenge(); ok {
+		t.Fatalf("Challenge() = %q, want none", challenge)
+	}
+}
+
+func presentedSessionCredential(t *testing.T, value string) authentication.Credential {
+	t.Helper()
+	credential, ok := authentication.Presented(value).Credential()
+	if !ok {
+		t.Fatal("Credential() ok = false")
+	}
+	return credential
+}
+
+func assertSessionRejected(t *testing.T, result authentication.Result, err error, wantReason authentication.SafeReason) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if !result.Rejected() {
+		t.Fatal("Rejected() = false, want true")
+	}
+	reason, ok := result.Reason()
+	if !ok || reason != wantReason {
+		t.Fatalf("Reason() = %q, ok=%v, want %q", reason, ok, wantReason)
+	}
+	// Ruling 17: Authenticate's rejections never carry a challenge either --
+	// there is no session scheme token to advertise.
+	if challenges := result.Challenges(); len(challenges) != 0 {
+		t.Fatalf("Challenges() = %v, want none", challenges)
+	}
+}
+
+func TestPluginAuthenticateAcceptsValidSessionAndPublishesPrincipal(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	store := newControlledMemoryStore(t, &now)
 	id := testID(7, 32)
 	if err := store.Create(context.Background(), sessionValue(id, "alice", now, time.Hour), 30*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	p := initializedSessionPlugin(t, store, nil)
-	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
-	response := serveSessionRequest(p, route, []*http.Cookie{{Name: defaultCookieName, Value: id}}, func(c *gin.Context) {
-		principal, ok := web.CurrentPrincipal(c)
-		if !ok || principal.Subject != "alice" || principal.AuthMethod != "session" || principal.Attributes["role"] != "admin" {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		current, ok := Current(c)
-		if !ok || current.ID != id || current.Subject != "alice" {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		principal.Attributes["nested"].(map[string]any)["team"] = "principal-mutated"
-		again, _ := Current(c)
-		if again.Attributes["nested"].(map[string]any)["team"] != "core" {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		current.Attributes["nested"].(map[string]any)["team"] = "current-mutated"
-		again, _ = Current(c)
-		if again.Attributes["nested"].(map[string]any)["team"] != "core" {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-	}
-}
+	p := configuredSessionPlugin(t, store, nil)
 
-func TestMiddlewarePublicRouteBypassesAuthenticationAndBadCookie(t *testing.T) {
-	p, err := New(DefaultConfig())
+	result, err := p.Authenticate(context.Background(), presentedSessionCredential(t, id))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Authenticate() error = %v", err)
 	}
-	t.Cleanup(func() { _ = p.Stop(context.Background()) })
-	public := web.Public()
-	route := web.RouteInfo{Method: http.MethodGet, Path: "/health", Auth: &public}
-	response := serveSessionRequest(p, route, []*http.Cookie{{Name: defaultCookieName, Value: "malformed"}}, func(c *gin.Context) {
-		if _, ok := web.CurrentPrincipal(c); ok {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	if !result.Authenticated() {
+		t.Fatal("Authenticated() = false, want true")
+	}
+	principal, ok := result.Principal()
+	if !ok {
+		t.Fatal("Principal() ok = false")
+	}
+	typed, ok := principal.(web.Principal)
+	if !ok {
+		t.Fatalf("principal type = %T, want web.Principal", principal)
+	}
+	if typed.Subject != "alice" || typed.AuthMethod != "session" ||
+		typed.Attributes["role"] != "admin" || typed.Attributes["session_id"] != id {
+		t.Fatalf("principal = %#v", typed)
+	}
+
+	// The published Attributes must be a defensive copy: mutating it must not
+	// reach back into the store's retained value.
+	typed.Attributes["nested"].(map[string]any)["team"] = "principal-mutated"
+	again, found, err := store.Get(context.Background(), id)
+	if err != nil || !found {
+		t.Fatalf("Get() error = %v found = %v", err, found)
+	}
+	if again.Attributes["nested"].(map[string]any)["team"] != "core" {
+		t.Fatal("Authenticate leaked a mutable reference into the store")
 	}
 }
 
-func TestMiddlewareRejectsMissingMalformedDuplicateUnknownAndExpiredCookies(t *testing.T) {
-	now := time.Unix(1_700_000_000, 0).UTC()
-	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
-	for name, cookies := range map[string][]*http.Cookie{
-		"missing":   nil,
-		"malformed": {{Name: defaultCookieName, Value: "not-an-opaque-id"}},
-		"unknown":   {{Name: defaultCookieName, Value: testID(20, 32)}},
-		"duplicate": {{Name: defaultCookieName, Value: testID(21, 32)}, {Name: defaultCookieName, Value: testID(22, 32)}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			localNow := now
-			store := newControlledMemoryStore(t, &localNow)
-			p := initializedSessionPlugin(t, store, nil)
-			response := serveSessionRequest(p, route, cookies, func(c *gin.Context) { c.Status(http.StatusNoContent) })
-			assertUnauthorizedSession(t, response)
-			if len(response.Result().Cookies()) == 0 {
-				t.Fatal("rejected credential did not clear the session cookie")
-			}
-		})
+func TestPluginAuthenticateRejectsInvalidCredentialType(t *testing.T) {
+	p := configuredSessionPlugin(t, &recordingStore{}, nil)
+	credential, ok := authentication.Presented(42).Credential()
+	if !ok {
+		t.Fatal("Credential() ok = false")
 	}
+	result, err := p.Authenticate(context.Background(), credential)
+	assertSessionRejected(t, result, err, reasonInvalidCredential)
+}
 
-	t.Run("expired", func(t *testing.T) {
+// TestPluginAuthenticateCollapsesShapeStoreAndClosedReasons pins the
+// collapse required by Ruling 9/16's sibling ruling for Authenticate: an
+// ID that fails validID's shape check, an unknown ID, a store error, an
+// expired session, and a stopped plugin must all be indistinguishable to the
+// caller. Splitting any of these out would hand an unauthenticated caller an
+// oracle for whether a specific session ID exists or existed.
+func TestPluginAuthenticateCollapsesShapeStoreAndClosedReasons(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	t.Run("malformed session ID shape", func(t *testing.T) {
+		p := configuredSessionPlugin(t, &recordingStore{}, nil)
+		result, err := p.Authenticate(context.Background(), presentedSessionCredential(t, "not-an-opaque-id"))
+		assertSessionRejected(t, result, err, reasonInvalidCredential)
+	})
+
+	t.Run("unknown session ID", func(t *testing.T) {
+		store := newControlledMemoryStore(t, &now)
+		p := configuredSessionPlugin(t, store, nil)
+		result, err := p.Authenticate(context.Background(), presentedSessionCredential(t, testID(9, 32)))
+		assertSessionRejected(t, result, err, reasonInvalidCredential)
+	})
+
+	t.Run("expired session", func(t *testing.T) {
 		localNow := now
 		store := newControlledMemoryStore(t, &localNow)
-		id := testID(23, 32)
+		id := testID(10, 32)
 		if err := store.Create(context.Background(), sessionValue(id, "alice", localNow, time.Minute), time.Minute); err != nil {
 			t.Fatal(err)
 		}
 		localNow = localNow.Add(2 * time.Minute)
-		p := initializedSessionPlugin(t, store, nil)
-		response := serveSessionRequest(p, route, []*http.Cookie{{Name: defaultCookieName, Value: id}}, func(c *gin.Context) { c.Status(http.StatusNoContent) })
-		assertUnauthorizedSession(t, response)
+		p := configuredSessionPlugin(t, store, nil)
+		result, err := p.Authenticate(context.Background(), presentedSessionCredential(t, id))
+		assertSessionRejected(t, result, err, reasonInvalidCredential)
+	})
+
+	t.Run("store error", func(t *testing.T) {
+		store := &recordingStore{touch: func(context.Context, string, time.Duration, time.Duration) (Session, bool, error) {
+			return Session{}, false, errors.New("backend details")
+		}}
+		p := configuredSessionPlugin(t, store, nil)
+		result, err := p.Authenticate(context.Background(), presentedSessionCredential(t, testID(11, 32)))
+		assertSessionRejected(t, result, err, reasonInvalidCredential)
+	})
+
+	t.Run("stopped plugin", func(t *testing.T) {
+		store := &recordingStore{touch: func(context.Context, string, time.Duration, time.Duration) (Session, bool, error) {
+			t.Fatal("Authenticate must reject a stopped plugin before touching the store")
+			return Session{}, false, nil
+		}}
+		p := configuredSessionPlugin(t, store, nil)
+		if err := p.Stop(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		result, err := p.Authenticate(context.Background(), presentedSessionCredential(t, testID(12, 32)))
+		assertSessionRejected(t, result, err, reasonInvalidCredential)
 	})
 }
 
-func TestMiddlewareBoundsStoreOperationAndHidesBackendErrors(t *testing.T) {
+// TestPluginAuthenticateBoundsStoreOperationAndHidesBackendErrors proves the
+// configured operation timeout is actually applied to the store call and
+// that whatever the backend reports never reaches the caller's reason.
+func TestPluginAuthenticateBoundsStoreOperationAndHidesBackendErrors(t *testing.T) {
 	store := &recordingStore{touch: func(ctx context.Context, _ string, _, _ time.Duration) (Session, bool, error) {
 		<-ctx.Done()
 		return Session{}, false, ctx.Err()
 	}}
-	p := initializedSessionPlugin(t, store, func(cfg *Config) { cfg.OperationTimeout = time.Millisecond })
-	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
-	response := serveSessionRequest(p, route, []*http.Cookie{{Name: defaultCookieName, Value: testID(24, 32)}}, func(c *gin.Context) {
-		c.Status(http.StatusNoContent)
-	})
-	assertUnauthorizedSession(t, response)
-	if len(response.Result().Cookies()) != 0 {
-		t.Fatal("backend errors should not mutate the client cookie")
-	}
+	p := configuredSessionPlugin(t, store, func(cfg *Config) { cfg.OperationTimeout = time.Millisecond })
+	result, err := p.Authenticate(context.Background(), presentedSessionCredential(t, testID(13, 32)))
+	assertSessionRejected(t, result, err, reasonInvalidCredential)
 
 	errorStore := &recordingStore{touch: func(context.Context, string, time.Duration, time.Duration) (Session, bool, error) {
 		return Session{}, false, errors.New("backend details")
 	}}
-	errorPlugin := initializedSessionPlugin(t, errorStore, nil)
-	response = serveSessionRequest(errorPlugin, route, []*http.Cookie{{Name: defaultCookieName, Value: testID(25, 32)}}, func(c *gin.Context) {
-		c.Status(http.StatusNoContent)
-	})
-	assertUnauthorizedSession(t, response)
-	if strings.Contains(response.Body.String(), "backend details") {
-		t.Fatalf("backend details leaked: %q", response.Body.String())
+	errorPlugin := configuredSessionPlugin(t, errorStore, nil)
+	result, err = errorPlugin.Authenticate(context.Background(), presentedSessionCredential(t, testID(14, 32)))
+	if err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
 	}
-}
-
-func assertUnauthorizedSession(t *testing.T, response *httptest.ResponseRecorder) {
-	t.Helper()
-	if response.Code != http.StatusUnauthorized || !strings.HasPrefix(response.Header().Get("Content-Type"), "application/problem+json") {
-		t.Fatalf("response=%d headers=%v body=%q", response.Code, response.Header(), response.Body.String())
-	}
-	var problem web.ProblemDetail
-	if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
-		t.Fatalf("decode problem: %v", err)
-	}
-	if problem.Status != http.StatusUnauthorized || problem.Properties["code"] != "unauthorized" || problem.Instance != "/private" {
-		t.Fatalf("problem=%#v", problem)
+	reason, _ := result.Reason()
+	if strings.Contains(string(reason), "backend details") {
+		t.Fatalf("backend details leaked: %q", reason)
 	}
 }
