@@ -188,12 +188,14 @@ func newPingServer(t *testing.T, cfg Config, inputs serverInputs) (*Server, *plu
 
 	// These tests exercise server lifecycle (routing, ordering, shutdown
 	// draining), not authentication policy, and none of them register an
-	// authenticator. Default an unset Security.Default to permit so /ping
-	// does not fall to the deny-by-default tier and demand an authenticator
-	// that has nothing to do with what each test actually verifies.
-	if cfg.Security.Default == "" {
-		cfg.Security.Default = SecurityPermit
-	}
+	// authenticator. Force Security.Default to permit unconditionally --
+	// not just when it is unset -- so /ping never falls to a deny-by-default
+	// tier and demands an authenticator that has nothing to do with what each
+	// test actually verifies. An "if unset" guard alone is not enough: a
+	// caller building cfg from DefaultConfig() (server_test.go and
+	// errors_test.go both do) already carries an explicit SecurityDeny, so a
+	// zero-value check silently skips exactly those callers.
+	cfg.Security.Default = SecurityPermit
 
 	middlewares := make([]plugin.Entry[Middleware], 0, len(inputs.middlewares)+1)
 	middlewares = append(middlewares, plugin.Entry[Middleware]{

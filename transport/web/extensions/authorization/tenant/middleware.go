@@ -6,9 +6,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/xbcio/xbc/authentication"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
+
+// Plugin declares authentication.RequiresPrincipal at compile time. tenant
+// does not otherwise import the authentication package, so it satisfies the
+// interface structurally; without this assertion, an upstream rename of the
+// marker method would silently unbind it and this package would still build.
+var _ authentication.RequiresPrincipal = (*Plugin)(nil)
 
 // casbinKey mirrors the stable plugin.Key identity owned by the optional
 // authorization/casbin plugin beneath the optional transport/web/extensions
@@ -52,11 +59,16 @@ func (p *Plugin) resolve(c *gin.Context) {
 	}
 	principal, ok := web.CurrentPrincipal(c)
 	if !ok {
-		// A missing principal on a non-exempt route cannot happen in
-		// production: the authentication middleware either publishes one
-		// before tenant runs or rejects the request itself. Authentication is
-		// no longer tenant's job to backstop, so this is a permit-route
-		// characteristic here, not an error.
+		// Reachable in production: an unmatched route (404/405). Per spec
+		// §4.3 the authentication middleware passes those straight through
+		// without marking them exempt or publishing a principal, and gin runs
+		// every global middleware -- including this one -- on its
+		// NoRoute/NoMethod path. There is no handler behind an unmatched path
+		// to protect, so proceeding here is correct: it leaves the response to
+		// gin's 404/405 instead of manufacturing a 403 for a route that does
+		// not exist. This is a deliberate divergence from casbin, which turns
+		// the same case into 403 via its own `!found` guard on CurrentRoute
+		// (see the comment there) -- Ruling 23 leaves both as they are.
 		c.Next()
 		return
 	}

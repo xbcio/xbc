@@ -102,6 +102,28 @@ func TestProtectedRoutesFailClosed(t *testing.T) {
 	}
 }
 
+// TestMissingCurrentRouteFailsClosedEvenWhenMissingPermissionIsAllowed pins
+// the `!found` guard on CurrentRoute independently of TestProtectedRoutesFailClosed's
+// "missing Perm" subtest. Deleting the guard (using `route, _ :=
+// web.CurrentRoute(c)` and ignoring `found`) still 403s the "missing
+// CurrentRoute" subtest there, because the resulting zero-value RouteInfo has
+// an empty Perm, which under the default MissingPermissionDeny falls through
+// to the same forbidden() call the "missing Perm" subtest already exercises --
+// so that subtest alone cannot prove the guard was ever there. Combining
+// MissingPermissionAllow with the default ConventionRoutePermission and no
+// CurrentRoute isolates it: with the guard deleted, an empty Perm on
+// MissingPermissionAllow takes the c.Next() branch and this request would
+// incorrectly succeed with 204 instead of 403.
+func TestMissingCurrentRouteFailsClosedEvenWhenMissingPermissionIsAllowed(t *testing.T) {
+	p, _ := initializedPlugin(t, func(cfg *Config) {
+		cfg.MissingPermission = MissingPermissionAllow
+	})
+	response := requestThroughOptionalRoute(p, nil, func(c *gin.Context) {
+		web.SetPrincipal(c, web.Principal{Subject: "alice"})
+	})
+	assertForbidden(t, response)
+}
+
 func TestMissingPermissionCanBeExplicitlyAllowedAfterAuthentication(t *testing.T) {
 	p, _ := initializedPlugin(t, func(cfg *Config) {
 		cfg.MissingPermission = MissingPermissionAllow

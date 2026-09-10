@@ -357,6 +357,143 @@ func TestAuthenticationMiddlewareReportsResolvedDecisions(t *testing.T) {
 	}
 }
 
+// TestAuthenticationMiddlewarePublishesExemptSignalToDownstream is the
+// producer-side counterpart to casbin's and tenant's exempt-consumer tests:
+// until this test existed, nothing in the repository drove a request through
+// the real authentication middleware and read AuthenticationExempt back from
+// a downstream middleware sharing the same *gin.Context. casbin and tenant
+// only ever simulated the flag by setting the context key directly, so a
+// producer-side regression -- markAuthenticationExempt deleted, or hoisted to
+// run unconditionally -- left every test in the repository green. Both
+// mutations are opposite-direction production incidents: the first 403s every
+// permitted route, the second bypasses casbin and tenant on every protected
+// one.
+func TestAuthenticationMiddlewarePublishesExemptSignalToDownstream(t *testing.T) {
+	t.Parallel()
+
+	public := Public()
+	permitRoute := RouteInfo{Method: http.MethodGet, Path: "/health", Auth: &public}
+	denyRoute := RouteInfo{Method: http.MethodGet, Path: "/orders"}
+	middleware := buildTestAuthMiddleware(
+		t,
+		SecurityConfig{Default: SecurityDeny},
+		[]RouteInfo{permitRoute, denyRoute},
+		authentication.Presented("token"),
+		&stubAuth{
+			scheme: "jwt",
+			result: authentication.Accepted(Principal{Subject: "u-1", AuthMethod: "jwt"}),
+		},
+	)
+
+	// buildEngine wires the real authentication middleware followed by a
+	// downstream middleware standing in for a Require(AuthenticationMiddlewareKey)
+	// consumer such as casbin or tenant: it reads AuthenticationExempt and
+	// CurrentPrincipal from the same context the authentication middleware just
+	// populated, exactly as those two extensions do in production.
+	buildEngine := func(route RouteInfo, registerRoute bool) (engine *gin.Engine, exempt, hadPrincipal *bool) {
+		gin.SetMode(gin.TestMode)
+		exempt = new(bool)
+		hadPrincipal = new(bool)
+		engine = gin.New()
+		engine.Use(func(c *gin.Context) {
+			if registerRoute {
+				setCurrentRouteForTest(c, route)
+			}
+			c.Next()
+		})
+		engine.Use(middleware.Handler())
+		engine.Use(func(c *gin.Context) {
+			*exempt = AuthenticationExempt(c)
+			_, *hadPrincipal = CurrentPrincipal(c)
+			c.Next()
+		})
+		engine.Handle(route.Method, route.Path, func(c *gin.Context) { c.Status(http.StatusOK) })
+		engine.NoRoute(func(c *gin.Context) { c.Status(http.StatusNotFound) })
+		return engine, exempt, hadPrincipal
+	}
+
+	t.Run("permit route", func(t *testing.T) {
+		engine, exempt, _ := buildEngine(permitRoute, true)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(permitRoute.Method, permitRoute.Path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+		}
+		if !*exempt {
+			t.Fatal("AuthenticationExempt() = false on a permit route, want true")
+		}
+	})
+
+	t.Run("deny route authenticates", func(t *testing.T) {
+		engine, exempt, hadPrincipal := buildEngine(denyRoute, true)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(denyRoute.Method, denyRoute.Path, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+		}
+		if *exempt {
+			t.Fatal("AuthenticationExempt() = true on an authenticated deny route, want false: " +
+				"this would bypass casbin and tenant on every protected route")
+		}
+		if !*hadPrincipal {
+			t.Fatal("CurrentPrincipal() missing after a successful authentication")
+		}
+	})
+
+	t.Run("unmatched route", func(t *testing.T) {
+		unmatched := RouteInfo{Method: http.MethodGet, Path: "/does-not-exist"}
+		gin.SetMode(gin.TestMode)
+		exempt := new(bool)
+		hadPrincipal := new(bool)
+		engine := gin.New()
+		// No setCurrentRouteForTest stand-in: CurrentRoute misses, exactly as it
+		// does for a request gin resolves through allNoRoute.
+		engine.Use(middleware.Handler())
+		engine.Use(func(c *gin.Context) {
+			*exempt = AuthenticationExempt(c)
+			_, *hadPrincipal = CurrentPrincipal(c)
+			c.Next()
+		})
+		engine.Handle(permitRoute.Method, permitRoute.Path, func(c *gin.Context) { c.Status(http.StatusOK) })
+		engine.NoRoute(func(c *gin.Context) { c.Status(http.StatusNotFound) })
+
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(unmatched.Method, unmatched.Path, nil))
+		if recorder.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+		}
+		if *exempt {
+			t.Fatal("AuthenticationExempt() = true on an unmatched route, want false")
+		}
+		if *hadPrincipal {
+			t.Fatal("CurrentPrincipal() present on an unmatched route, want absent")
+		}
+	})
+}
+
+// TestAuthenticationExemptContextKeyIsStable pins the exact string literal
+// markAuthenticationExempt writes and AuthenticationExempt reads. casbin and
+// tenant cannot import the private authenticationExemptContextKey constant, so
+// each mirrors it as its own hardcoded test-only literal
+// (authenticationExemptKeyForTest) to simulate an exempt request without
+// driving the real middleware. Those two mirrors do catch a drift in the
+// constant's value, but nothing inside this package did: every call here goes
+// through the exported functions, so both sides of a value change move
+// together and stay green. Hardcoding the literal independently here closes
+// that gap: a change to authenticationExemptContextKey's value now fails in
+// this package too, not only in the two downstream modules.
+func TestAuthenticationExemptContextKeyIsStable(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("xbc/transport/web.authenticationExempt", true)
+	if !AuthenticationExempt(c) {
+		t.Fatal("AuthenticationExempt() = false after setting the documented literal " +
+			`"xbc/transport/web.authenticationExempt" directly, want true`)
+	}
+}
+
 func TestAuthenticationMiddlewareOrderIsAuthPhase(t *testing.T) {
 	t.Parallel()
 
