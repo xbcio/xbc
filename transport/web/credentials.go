@@ -18,14 +18,16 @@ import (
 // the framework wraps the registered extractors in a per-request adapter, and a
 // future gRPC transport will supply its own equivalent.
 //
-// An extractor decides only whether a credential syntactically belongs to its
-// scheme. Signature checks, expiry, and revocation belong to the Authenticator.
-// Two plugins sharing one header (jwt and apikey both read Authorization) must
-// therefore agree on the Absent/Malformed/Presented boundary:
+// An extractor decides only belonging and extractability: does this request
+// carry a credential naming its scheme, and can a value be pulled out of it.
+// Signature checks, expiry, and every other structural or semantic check
+// belong to the Authenticator. Two plugins sharing one header (jwt and apikey
+// both read Authorization) must therefore agree on the
+// Absent/Malformed/Presented boundary:
 //
 //   - header missing, or present but not this scheme's prefix -> Absent
-//   - this scheme's prefix but unparseable structure           -> Malformed
-//   - this scheme's prefix and structurally complete           -> Presented
+//   - this scheme's prefix but no value follows it            -> Malformed
+//   - this scheme's prefix and a value follows it             -> Presented
 type CredentialExtractor interface {
 	Scheme() authentication.Scheme
 	ExtractCredential(*gin.Context) (authentication.CredentialResult, error)

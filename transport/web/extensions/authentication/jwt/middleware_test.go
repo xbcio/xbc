@@ -45,17 +45,20 @@ func newTestContextWithHeader(t *testing.T, header, value string) *gin.Context {
 func TestPluginExtractCredentialClassifiesAuthorizationHeader(t *testing.T) {
 	t.Parallel()
 
+	const wantChallenge = authentication.Challenge("Bearer")
+
 	tests := []struct {
-		name   string
-		header string
-		want   authentication.CredentialStatus
+		name          string
+		header        string
+		want          authentication.CredentialStatus
+		wantChallenge bool
 	}{
-		{name: "no header is absent", header: "", want: authentication.CredentialStatusAbsent},
-		{name: "other scheme is absent", header: "ApiKey abc", want: authentication.CredentialStatusAbsent},
-		{name: "bearer with no token is malformed", header: "Bearer", want: authentication.CredentialStatusMalformed},
-		{name: "bearer with empty token is malformed", header: "Bearer  ", want: authentication.CredentialStatusMalformed},
-		{name: "bearer with token is presented", header: "Bearer abc.def.ghi", want: authentication.CredentialStatusPresented},
-		{name: "structurally wrong jwt is still presented", header: "Bearer not-a-jwt", want: authentication.CredentialStatusPresented},
+		{name: "no header is absent", header: "", want: authentication.CredentialStatusAbsent, wantChallenge: true},
+		{name: "other scheme is absent", header: "ApiKey abc", want: authentication.CredentialStatusAbsent, wantChallenge: true},
+		{name: "bearer with no token is malformed", header: "Bearer", want: authentication.CredentialStatusMalformed, wantChallenge: true},
+		{name: "bearer with empty token is malformed", header: "Bearer  ", want: authentication.CredentialStatusMalformed, wantChallenge: true},
+		{name: "bearer with token is presented", header: "Bearer abc.def.ghi", want: authentication.CredentialStatusPresented, wantChallenge: false},
+		{name: "structurally wrong jwt is still presented", header: "Bearer not-a-jwt", want: authentication.CredentialStatusPresented, wantChallenge: false},
 	}
 
 	for _, test := range tests {
@@ -70,6 +73,14 @@ func TestPluginExtractCredentialClassifiesAuthorizationHeader(t *testing.T) {
 			}
 			if got.Status() != test.want {
 				t.Fatalf("status = %v, want %v", got.Status(), test.want)
+			}
+			challenge, ok := got.Challenge()
+			if test.wantChallenge {
+				if !ok || challenge != wantChallenge {
+					t.Fatalf("Challenge() = %q, ok=%v, want %q", challenge, ok, wantChallenge)
+				}
+			} else if ok {
+				t.Fatalf("Challenge() = %q, want none", challenge)
 			}
 		})
 	}
@@ -106,6 +117,10 @@ func TestPluginExtractCredentialUsesConfiguredHeaderAndScheme(t *testing.T) {
 	}
 	if got.Status() != authentication.CredentialStatusAbsent {
 		t.Fatalf("status = %v, want Absent", got.Status())
+	}
+	// The challenge must follow the configured scheme, not a hardcoded Bearer.
+	if challenge, ok := got.Challenge(); !ok || challenge != authentication.Challenge("JWT") {
+		t.Fatalf("Challenge() = %q, ok=%v, want %q", challenge, ok, "JWT")
 	}
 }
 
@@ -154,8 +169,8 @@ func TestPluginAuthenticateRejectsInvalidCredentialType(t *testing.T) {
 	if !result.Rejected() {
 		t.Fatal("Rejected() = false, want true")
 	}
-	if challenges := result.Challenges(); len(challenges) != 0 {
-		t.Fatalf("Challenges() = %v, want none", challenges)
+	if challenges := result.Challenges(); len(challenges) != 1 || challenges[0] != authentication.Challenge("Bearer") {
+		t.Fatalf("Challenges() = %v, want [Bearer]", challenges)
 	}
 }
 
@@ -245,7 +260,13 @@ func TestPluginAuthenticateRejectsInvalidTokens(t *testing.T) {
 			}
 			// Deliberately do not leak signature, expiry, issuer, or parser
 			// detail: the reason is a fixed, generic string regardless of why
-			// verification failed.
+			// verification failed, including the missing-subject case.
+			const wantReason = "invalid token"
+			if string(reason) != wantReason {
+				t.Fatalf("reason = %q, want %q", reason, wantReason)
+			}
+			// The equality check above subsumes this, but it documents the
+			// intent explicitly for the next reader.
 			if strings.Contains(string(reason), tt.token) {
 				t.Fatalf("reason leaked token material: %q", reason)
 			}
