@@ -129,13 +129,13 @@ func TestMiddlewareNeverTrustsAnonymousOrNonMemberHeader(t *testing.T) {
 	assertTenantError(t, nonMember, http.StatusForbidden, "forbidden")
 }
 
-// TestMiddlewareUsesUniform401And403Responses pins Ruling 4: authentication is
-// no longer tenant's job to backstop. A missing Principal on a non-exempt
-// route is no longer a tenant error -- the authentication middleware either
-// already published one or already rejected the request itself, upstream of
-// tenant. Only an authenticated request that fails tenant membership still
-// gets tenant's own 403.
-func TestMiddlewareUsesUniform401And403Responses(t *testing.T) {
+// TestMiddlewarePassesOnMissingPrincipalButEnforces403OnMembership pins Ruling
+// 4: authentication is no longer tenant's job to backstop. A missing
+// Principal on a non-exempt route is no longer a tenant error -- the
+// authentication middleware either already published one or already rejected
+// the request itself, upstream of tenant. Only an authenticated request that
+// fails tenant membership still gets tenant's own 403.
+func TestMiddlewarePassesOnMissingPrincipalButEnforces403OnMembership(t *testing.T) {
 	uninitialized := New()
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
 	response := serveTenantRequest(uninitialized, route, nil, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) })
