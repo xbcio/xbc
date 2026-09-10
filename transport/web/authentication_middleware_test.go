@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +16,9 @@ import (
 type stubAuth struct {
 	scheme authentication.Scheme
 	result authentication.Result
+	// calls counts Authenticate invocations so a test can assert that a request
+	// reached, or never reached, policy resolution.
+	calls int
 }
 
 func (s *stubAuth) Scheme() authentication.Scheme { return s.scheme }
@@ -22,6 +26,7 @@ func (s *stubAuth) Scheme() authentication.Scheme { return s.scheme }
 func (s *stubAuth) Authenticate(
 	context.Context, authentication.Credential,
 ) (authentication.Result, error) {
+	s.calls++
 	return s.result, nil
 }
 
@@ -40,13 +45,13 @@ func setCurrentRouteForTest(c *gin.Context, route RouteInfo) {
 }
 
 // buildTestAuthMiddleware wires a middleware over one scheme and one frozen
-// route, mirroring what the plugin definition does at startup.
+// route, mirroring what the Server does at startup.
 func buildTestAuthMiddleware(
 	t *testing.T,
 	cfg SecurityConfig,
 	routes []RouteInfo,
 	extraction authentication.CredentialResult,
-	outcome authentication.Result,
+	authenticator *stubAuth,
 ) *authenticationMiddleware {
 	t.Helper()
 	middleware, err := newAuthenticationMiddleware(
@@ -54,7 +59,7 @@ func buildTestAuthMiddleware(
 		[]plugin.Entry[authentication.Authenticator]{
 			{
 				Identity: plugin.Identity{Plugin: "jwt"},
-				Value:    &stubAuth{scheme: "jwt", result: outcome},
+				Value:    authenticator,
 			},
 		},
 		[]plugin.Entry[CredentialExtractor]{
@@ -100,18 +105,64 @@ func runThroughAuth(
 func TestAuthenticationMiddlewarePassesUnmatchedRouteWithoutResolving(t *testing.T) {
 	t.Parallel()
 
-	route := RouteInfo{Method: http.MethodGet, Path: "/missing"}
+	// The compiled table is deliberately populated with a denying route: a
+	// request that matched no frozen route must fall through before any lookup,
+	// so an implementation that dropped the CurrentRoute check would land in the
+	// uncompiled-route branch and answer 500 instead of gin's 404.
+	route := RouteInfo{Method: http.MethodGet, Path: "/orders"}
+	authenticator := &stubAuth{scheme: "jwt", result: authentication.Rejected("should not run")}
 	middleware := buildTestAuthMiddleware(
 		t,
 		SecurityConfig{Default: SecurityDeny},
-		nil,
+		[]RouteInfo{route},
 		authentication.Absent(),
-		authentication.Rejected("should not run"),
+		authenticator,
 	)
 
-	got := runThroughAuth(t, middleware, route, false)
-	if got.Code == http.StatusUnauthorized {
-		t.Fatal("a request that matched no frozen route must not become 401")
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	// No recordCurrentRoute stand-in: CurrentRoute misses, exactly as it does
+	// for a request gin resolves through allNoRoute.
+	engine.Use(middleware.Handler())
+	engine.Handle(route.Method, route.Path, func(c *gin.Context) { c.Status(http.StatusOK) })
+	engine.NoRoute(func(c *gin.Context) { c.Status(http.StatusNotFound) })
+
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/missing", nil))
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d from gin's NoRoute handler", recorder.Code, http.StatusNotFound)
+	}
+	if authenticator.calls != 0 {
+		t.Fatalf(
+			"authenticator calls = %d, want 0: an unmatched route must not resolve a policy",
+			authenticator.calls,
+		)
+	}
+}
+
+func TestAuthenticationMiddlewareFailsClosedOnUncompiledRoute(t *testing.T) {
+	t.Parallel()
+
+	// A recorded route that the compiled table does not know can only mean the
+	// table is stale or was never built. That must fail closed, not release the
+	// request unauthenticated.
+	public := Public()
+	authenticator := &stubAuth{scheme: "jwt", result: authentication.Rejected("should not run")}
+	middleware := buildTestAuthMiddleware(
+		t,
+		SecurityConfig{Default: SecurityDeny},
+		[]RouteInfo{{Method: http.MethodGet, Path: "/health", Auth: &public}},
+		authentication.Absent(),
+		authenticator,
+	)
+
+	got := runThroughAuth(t, middleware, RouteInfo{Method: http.MethodGet, Path: "/orders"}, true)
+	if got.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", got.Code, http.StatusInternalServerError)
+	}
+	if authenticator.calls != 0 {
+		t.Fatalf("authenticator calls = %d, want 0", authenticator.calls)
 	}
 }
 
@@ -125,7 +176,7 @@ func TestAuthenticationMiddlewarePermitsPublicRoute(t *testing.T) {
 		SecurityConfig{Default: SecurityDeny},
 		[]RouteInfo{route},
 		authentication.Absent(),
-		authentication.Rejected("should not run"),
+		&stubAuth{scheme: "jwt", result: authentication.Rejected("should not run")},
 	)
 
 	if got := runThroughAuth(t, middleware, route, true); got.Code != http.StatusOK {
@@ -142,7 +193,10 @@ func TestAuthenticationMiddlewarePublishesPrincipalOnce(t *testing.T) {
 		SecurityConfig{Default: SecurityDeny},
 		[]RouteInfo{route},
 		authentication.Presented("token"),
-		authentication.Accepted(Principal{Subject: "u-1", AuthMethod: "jwt"}),
+		&stubAuth{
+			scheme: "jwt",
+			result: authentication.Accepted(Principal{Subject: "u-1", AuthMethod: "jwt"}),
+		},
 	)
 
 	gin.SetMode(gin.TestMode)
@@ -180,7 +234,7 @@ func TestAuthenticationMiddlewareRejectsWithSeparateChallengeHeaders(t *testing.
 		SecurityConfig{Default: SecurityDeny},
 		[]RouteInfo{route},
 		authentication.AbsentWithChallenge(`Bearer realm="api"`),
-		authentication.Rejected("unused"),
+		&stubAuth{scheme: "jwt", result: authentication.Rejected("unused")},
 	)
 
 	got := runThroughAuth(t, middleware, route, true)
@@ -220,6 +274,11 @@ func TestAuthenticationMiddlewareRoutesReadyRejectsUnknownScheme(t *testing.T) {
 	if err == nil {
 		t.Fatal("RoutesReady() error = nil, want unknown scheme error")
 	}
+	// The message must name the offending scheme: an assertion on err != nil
+	// alone would also accept a failure from an unrelated validation.
+	if !strings.Contains(err.Error(), `"nope"`) {
+		t.Fatalf("RoutesReady() error = %v, want it to name scheme \"nope\"", err)
+	}
 }
 
 func TestAuthenticationMiddlewareRoutesReadyRejectsMissingAuthenticator(t *testing.T) {
@@ -236,6 +295,10 @@ func TestAuthenticationMiddlewareRoutesReadyRejectsMissingAuthenticator(t *testi
 	}))
 	if err == nil {
 		t.Fatal("RoutesReady() error = nil, want missing authenticator error")
+	}
+	if !strings.Contains(err.Error(), "GET /orders") ||
+		!strings.Contains(err.Error(), "no authenticator is registered") {
+		t.Fatalf("RoutesReady() error = %v, want it to name the route and the cause", err)
 	}
 }
 
@@ -269,7 +332,7 @@ func TestAuthenticationMiddlewareReportsResolvedDecisions(t *testing.T) {
 		SecurityConfig{Default: SecurityDeny},
 		routes,
 		authentication.Absent(),
-		authentication.Rejected("unused"),
+		&stubAuth{scheme: "jwt", result: authentication.Rejected("unused")},
 	)
 
 	open := middleware.publicRoutes()

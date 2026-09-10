@@ -143,7 +143,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	// resolve against a real entry.
 	authenticator, err := newAuthenticationMiddleware(cfg.Security, s.authenticators, s.extractors)
 	if err != nil {
-		return err
+		return fmt.Errorf("xbc: web authentication: %w", err)
 	}
 	middlewares := append(
 		[]plugin.Entry[Middleware]{{Identity: authenticationIdentity, Value: authenticator}},

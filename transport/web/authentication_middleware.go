@@ -32,8 +32,12 @@ type authenticationMiddleware struct {
 	policies   *policySet
 	extractors map[authentication.Scheme]CredentialExtractor
 
-	compiled  map[string]effectivePolicy
-	resolved  []policyDecision
+	compiled map[string]effectivePolicy
+	resolved []policyDecision
+	// permitAll records that the whole service runs fail-open. Nothing on the
+	// request path reads it: it exists for the startup report, which must print
+	// a prominent warning when "default: permit" is in effect, alongside
+	// publicRoutes and decisions.
 	permitAll bool
 }
 
@@ -165,7 +169,20 @@ func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
 		}
 
 		policy, known := m.compiled[routeKey(route.Method, route.Path)]
-		if !known || policy.permit {
+		if !known {
+			// The compiled table is built from the same frozen route table that
+			// recorded this route, so a miss means the table is stale or was
+			// never built at all. Releasing the request would be precisely the
+			// silently permissive service RoutesReady exists to prevent, so an
+			// internal inconsistency fails closed.
+			_ = c.Error(fmt.Errorf(
+				"xbc: web route %s %s has no compiled authentication policy",
+				route.Method, route.Path,
+			))
+			AbortProblem(c, NewProblem(http.StatusInternalServerError, "authentication_failed"))
+			return
+		}
+		if policy.permit {
 			c.Next()
 			return
 		}
