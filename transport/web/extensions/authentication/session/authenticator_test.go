@@ -516,9 +516,34 @@ func TestPluginAuthenticateAppliesConfiguredStoreParameters(t *testing.T) {
 			if !gotDeadlineOK {
 				t.Fatal("store call context carried no deadline")
 			}
-			if gotRemaining <= 0 || gotRemaining > normalized.operationTimeout {
-				t.Fatalf("remaining deadline = %v, want in (0, %v]", gotRemaining, normalized.operationTimeout)
+			// The gap between context.WithTimeout and the store call executing
+			// is microseconds, so a lower bound of half the configured timeout
+			// is ample margin with no flakiness risk. It catches a silently
+			// shortened timeout (store calls cancelled early, users rejected)
+			// the same way the upper bound catches a silently lengthened one.
+			if lower := normalized.operationTimeout / 2; gotRemaining <= lower || gotRemaining > normalized.operationTimeout {
+				t.Fatalf("remaining deadline = %v, want in (%v, %v]", gotRemaining, lower, normalized.operationTimeout)
 			}
 		})
 	}
+}
+
+// TestPluginAuthenticateRejectsWrongShapedIDBeforeTouchingStore pins Ruling
+// 15's move of the session-ID shape check (validID) into Authenticate. Every
+// other rejection test uses a store double that reports "not found" by
+// default, so removing the validID call outright would still leave those
+// tests passing: the wrong-shaped ID would simply fall through to the same
+// store-miss path and produce the identical collapsed reason. This test uses
+// a store double that reports found=true for any ID, so the only thing that
+// can still reject a wrong-shaped ID is the shape check itself.
+func TestPluginAuthenticateRejectsWrongShapedIDBeforeTouchingStore(t *testing.T) {
+	store := &recordingStore{touch: func(_ context.Context, id string, _, _ time.Duration) (Session, bool, error) {
+		return Session{ID: id, Subject: "alice", Attributes: map[string]any{"role": "admin"}}, true, nil
+	}}
+	p := configuredSessionPlugin(t, store, nil)
+
+	// DefaultConfig's id_bytes is 32; 16 decoded bytes is the wrong shape.
+	wrongShaped := testID(60, 16)
+	result, err := p.Authenticate(context.Background(), presentedSessionCredential(t, wrongShaped))
+	assertSessionRejected(t, result, err, reasonInvalidCredential)
 }
