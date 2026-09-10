@@ -43,6 +43,30 @@ func TestNewExtractorIndexRejectsDuplicateScheme(t *testing.T) {
 	}
 }
 
+func TestNewExtractorIndexRejectsInvalidScheme(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]authentication.Scheme{
+		"empty":     "",
+		"uppercase": "JWT",
+	}
+
+	for name, scheme := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			entries := []plugin.Entry[CredentialExtractor]{
+				{Identity: plugin.Identity{Plugin: "jwt"}, Value: &stubExtractor{scheme: scheme}},
+			}
+
+			_, err := newExtractorIndex(entries)
+			if err == nil {
+				t.Fatal("newExtractorIndex() error = nil, want invalid scheme error")
+			}
+		})
+	}
+}
+
 func TestRequestCredentialSourceDelegatesToExtractor(t *testing.T) {
 	t.Parallel()
 
