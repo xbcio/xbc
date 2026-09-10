@@ -75,6 +75,38 @@ func TestGatherFailureReturnsServerError(t *testing.T) {
 	}
 }
 
+func TestDisabledEndpointReturnsNotFound(t *testing.T) {
+	p, err := newPlugin(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	engine := gin.New()
+	engine.GET("/metrics", p.handleMetrics)
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("disabled endpoint handler status = %d body=%s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/problem+json") {
+		t.Fatalf("content type = %q", got)
+	}
+}
+
+func TestNormalizeConfigPropagatesCustomEndpointPath(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.HTTP.Enabled = true
+	cfg.HTTP.Path = "/ops/metrics"
+	normalized, err := normalizeConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.endpoint.path != "/ops/metrics" {
+		t.Fatalf("endpoint path = %q, want the configured plugins.metrics.http.path", normalized.endpoint.path)
+	}
+}
+
 func TestConfigValidation(t *testing.T) {
 	cases := []Config{
 		{Namespace: "bad-name", HTTP: HTTPConfig{Path: defaultPath}},

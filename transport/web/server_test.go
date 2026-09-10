@@ -384,6 +384,56 @@ func TestOpenTrafficReturnsRouteFreezeErrorWithoutNotifyingListeners(t *testing.
 	assert.False(t, host.trafficReleased())
 }
 
+// TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator pins the
+// deny-by-default promise every management plugin now relies on. metrics, pprof
+// and gracefulshutdown deliberately register their endpoints without declaring
+// .Auth(...), so an enabled endpoint resolves through tier-3 "default: deny";
+// an application that turned one on without registering an authenticator must
+// fail startup in the RoutesReady phase instead of serving it.
+//
+// newPingServer cannot be reused here: it forces Security.Default = permit,
+// which is exactly the tier under test. RoutesReady runs only inside
+// OpenTraffic, so Start alone must still succeed -- asserting that separately is
+// what keeps this test honest about which phase produces the failure.
+func TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	require.Equal(t, SecurityDeny, cfg.Security.Default,
+		"the factory default must stay fail-closed, otherwise this test proves nothing")
+
+	management := fakeRouteContributor{register: func(router *Router) {
+		router.GET("/-/metrics", func(*gin.Context) {}).Name("management.metrics")
+	}}
+	host := newFakeHost()
+	ctx := contextFromHost(host)
+	server := newServer(
+		cfg,
+		[]plugin.Entry[Middleware]{{
+			Identity: plugin.Identity{Plugin: ErrorBoundaryKey},
+			Value:    &errorBoundary{},
+		}},
+		[]plugin.Entry[RouteContributor]{{
+			Identity: plugin.Identity{Plugin: "managementtest"},
+			Value:    management,
+		}},
+		nil, nil, nil,
+	)
+	t.Cleanup(func() {
+		assert.NoError(t, server.Stop(context.Background()))
+		host.shutdown()
+	})
+
+	require.NoError(t, server.Start(ctx), "route policy is validated in OpenTraffic, not in Start")
+
+	err := server.OpenTraffic(ctx)
+	require.Error(t, err, "an endpoint without an auth policy must not open traffic without an authenticator")
+	assert.ErrorContains(t, err, "GET /-/metrics")
+	assert.ErrorContains(t, err, "requires authentication but no authenticator is registered")
+	assert.False(t, host.trafficReleased())
+}
+
 // servingPingServer starts a server, prepares it, releases the runtime gate,
 // and returns the bound address once the managed serving task is answering.
 // Every drain assertion needs a server that is genuinely serving traffic, not
