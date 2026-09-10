@@ -294,6 +294,10 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 		logger.Info(renderSoftMisses(misses))
 	}
 	logger.Info(renderRouteTable(catalog.All()))
+	if authenticator != nil {
+		logger.Info(renderPublicEndpoints(authenticator.publicRoutes(), authenticator.permitAll))
+		logger.Info(renderPolicyDecisions(authenticator.decisions()))
+	}
 
 	s.mu.Lock()
 	s.catalog = catalog
