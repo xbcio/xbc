@@ -178,8 +178,11 @@ func (s *policySet) referencedSchemes() []authentication.Scheme {
 // the credential it was meant to accept is rejected in production.
 //
 // Under default deny the check is skipped: uncovered routes resolve through the
-// manager's restrictive default selection, so every registered scheme remains
-// reachable without appearing in any rule.
+// manager's restrictive default selection. This is sound only because the
+// server builds the Manager with DefaultSchemes set to every registered scheme,
+// so an unnamed scheme is still reachable. Narrowing DefaultSchemes to a subset
+// would turn this skip into a hole and this check must then compare against the
+// union of referenced schemes and the manager's actual defaults.
 func (s *policySet) validateSchemeCoverage(registered []authentication.Scheme) error {
 	if s.defaultDecision == SecurityDeny {
 		return nil
