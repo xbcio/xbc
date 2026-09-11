@@ -78,9 +78,12 @@ func (s requestCredentialSource) Credential(
 ) (authentication.CredentialResult, error) {
 	extractor, ok := s.extractors[scheme]
 	if !ok {
-		// Startup validation should have caught this. Reaching it means the
-		// manager and the extractor index disagree, which is a framework bug
-		// rather than a rejected request.
+		// No startup validation guarantees the manager's scheme set and the
+		// extractor index agree; the two are consistent today only because
+		// every authentication plugin exports its Authenticator and
+		// CredentialExtractor from the same value. Reaching this branch means
+		// some plugin exported only half of that pair, which is a
+		// framework/plugin assembly defect rather than a rejected request.
 		return authentication.CredentialResult{}, fmt.Errorf(
 			"xbc: web has no credential extractor for scheme %q", scheme,
 		)

@@ -38,6 +38,14 @@ type SecurityConfig struct {
 // order and the first match wins, so a specific rule must be written before the
 // broader rule it carves an exception out of.
 //
+// Match is matched against the route's full path, including the web.base_path
+// prefix -- not the relative path registered by a plugin. A route whose
+// FullPath() ends in a trailing slash keeps that trailing slash in
+// RouteInfo.Path on purpose (see router.go's joinPaths), because gin's own
+// CurrentRoute compares by exact string equality against FullPath() at request
+// time. A wildcard pattern is unaffected, but an exact-match pattern for such a
+// route must include the trailing slash itself.
+//
 // Permit and Authenticate are mutually exclusive and exactly one must be set:
 // a rule that decides nothing is a configuration mistake, not a no-op.
 type PolicyRule struct {

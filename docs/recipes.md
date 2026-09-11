@@ -286,7 +286,11 @@ This mechanism provides at-most-one-active-owner coordination, not exactly-once 
 
 ## Operational endpoints and secrets
 
-Health endpoints return aggregate status by default. Use `detail_policy: never` to prevent unauthenticated probes from receiving dependency errors. pprof and remote shutdown are disabled by default. Neither endpoint carries its own authentication mechanism: they fall through to the `web.security` global default, which is `deny` out of the box. An application that enables them must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`. To restrict them to a specific scheme, write a tier-1 policy rule:
+Health endpoints return aggregate status by default. Use `detail_policy: never` to prevent unauthenticated probes from receiving dependency errors. pprof and remote shutdown are disabled by default. Neither endpoint carries its own authentication mechanism: they fall through to the `web.security` global default, which is `deny` out of the box. An application that enables them must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`.
+
+The `deny` default only means "must authenticate" -- it accepts any registered scheme, not "reachable by operators only". If the application registers an authenticator for any purpose and writes no tier-1 rule for these routes, pprof, metrics, and remote shutdown become reachable by any authenticated principal, not just operators. Restricting them to operators requires two things: a tier-1 rule that narrows the accepted scheme, and an authorization layer on top of authentication, because none of these three routes carries a `.Perm` for Casbin or another authorizer to check (see below).
+
+A tier-1 `match` pattern is matched against the route's full path, including the `web.base_path` prefix (`RouteInfo.Path` is built by joining the base path with the route's relative path). The example below only matches as written when `base_path: "/"`; an application running with `base_path: "/api/v1"` must write `/api/v1/debug/pprof/**` instead -- see the quickstart's own `/api/v1/docs/**` rule for a working example at a non-root base path.
 
 ```yaml
 web:
@@ -296,6 +300,8 @@ web:
       - match: "/debug/pprof/**"
         authenticate: [jwt]
 ```
+
+When Casbin is also selected, its `missing_permission` setting defaults to `deny`: a route with no `Perm` is rejected for everyone once Casbin's convention-based enforcement is active. The metrics route carries neither `Auth(web.Public())` nor a `.Perm`, so upgrading straight into that convention silently breaks Prometheus scraping with no startup warning. Fix this with a tier-1 `permit` rule for the exposition endpoint -- it takes effect before authentication and authorization run at all -- rather than flipping `missing_permission` to `allow`, which would also loosen every other `.Perm`-less route.
 
 ```yaml
 plugins:
