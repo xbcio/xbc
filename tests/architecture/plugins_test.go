@@ -401,8 +401,17 @@ func archPluginImplementationRoots(t *testing.T) []string {
 		roots = append(roots, filepath.Join(webRoot, "extensions", filepath.FromSlash(extensionPath)))
 	}
 
-	protocolNeutral := archExtensionModuleRoots(t, filepath.Join(repositoryRoot, "extensions"))
-	require.Len(t, protocolNeutral, 11, "expected 11 protocol-neutral extension plugins")
+	// The authentication contract module lives beneath extensions but publishes
+	// a vocabulary rather than a plugin, so it owns no Definition or Bundle and
+	// must stay out of the plugin implementation roots.
+	authenticationContract := filepath.Join(repositoryRoot, "extensions", "authentication")
+	var protocolNeutral []string
+	for _, moduleRoot := range archExtensionModuleRoots(t, filepath.Join(repositoryRoot, "extensions")) {
+		if moduleRoot != authenticationContract {
+			protocolNeutral = append(protocolNeutral, moduleRoot)
+		}
+	}
+	require.Len(t, protocolNeutral, 11, "expected 11 protocol-neutral extension plugins plus the non-plugin authentication contract")
 	roots = append(roots, protocolNeutral...)
 
 	webAdapter := filepath.Join(webRoot, "extensions", "authorization", "rbac")

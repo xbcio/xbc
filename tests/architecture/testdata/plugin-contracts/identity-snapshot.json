@@ -13,7 +13,7 @@
       "config_path": "plugins.apikey",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/authentication.Authenticator",
+        "github.com/xbcio/xbc/extensions/authentication.Authenticator",
         "github.com/xbcio/xbc/transport/web.CredentialExtractor"
       ]
     },
@@ -130,7 +130,7 @@
       "config_path": "plugins.jwt",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/authentication.Authenticator",
+        "github.com/xbcio/xbc/extensions/authentication.Authenticator",
         "github.com/xbcio/xbc/transport/web.CredentialExtractor"
       ]
     },
@@ -234,7 +234,7 @@
       "config_path": "plugins.session",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/authentication.Authenticator",
+        "github.com/xbcio/xbc/extensions/authentication.Authenticator",
         "github.com/xbcio/xbc/transport/web.CredentialExtractor",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/session.Manager"
       ]
