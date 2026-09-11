@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xbcio/xbc/authentication"
+	"github.com/xbcio/xbc/extensions/authentication"
 )
 
 func TestSecurityConfigNormalizeDefaultsToDeny(t *testing.T) {

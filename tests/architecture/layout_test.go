@@ -65,6 +65,17 @@ var archProtocolNeutralExtensionGroups = []string{
 	"messaging",
 }
 
+// archProtocolNeutralContractModules is the intentional set of contract-only
+// modules that sit directly beneath extensions rather than inside a capability
+// group. A contract module owns no Definition, Config, or Bundle: it publishes
+// the protocol-neutral vocabulary that transports and their plugins implement.
+// It cannot live in core, because core's dependency closure must exclude
+// everything beneath extensions, and it cannot be a capability group leaf,
+// because it is not a plugin. Adding one is an architecture decision.
+var archProtocolNeutralContractModules = []string{
+	"authentication",
+}
+
 var archWebExtensionGroups = []string{
 	"authentication",
 	"authorization",
@@ -84,7 +95,7 @@ var archWebExtensionGroups = []string{
 func TestArchRetiredPathsStayRetired(t *testing.T) {
 	root := archRepositoryRoot(t)
 	for _, canonical := range []string{
-		"authentication",
+		"extensions/authentication",
 		"runtime",
 		"plugin",
 		"plugin/assembly",
@@ -102,6 +113,7 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	}
 
 	retiredPaths := []string{
+		"authentication",
 		"authn",
 		"extensions/data",
 		"transport/web/extensions/presentation",
@@ -155,14 +167,14 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		retiredPath := filepath.Join(root, filepath.FromSlash(retired))
 		_, err := os.Stat(retiredPath)
 		if err == nil {
-			t.Errorf("old path %s must not be revived; use the canonical authentication, extensions, runtime, plugin, or transport owner", retired)
+			t.Errorf("old path %s must not be revived; use the canonical extensions, runtime, plugin, or transport owner", retired)
 			continue
 		}
 		require.ErrorIs(t, err, os.ErrNotExist, "checking old path %s failed", retired)
 	}
 
-	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "extensions"), archProtocolNeutralExtensionGroups, nil)
-	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "web", "extensions"), archWebExtensionGroups, archWebPackageExtensionPaths)
+	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "extensions"), archProtocolNeutralExtensionGroups, nil, archProtocolNeutralContractModules)
+	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "web", "extensions"), archWebExtensionGroups, archWebPackageExtensionPaths, nil)
 
 	webRoot := filepath.Join(root, "transport", "web")
 	preludeRoot := filepath.Join(webRoot, "prelude")
@@ -188,13 +200,22 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 // archAssertGroupedExtensionNamespace requires the namespace and its declared
 // capability groups to remain organization-only directories. Every direct
 // child of a group is either an independently versioned module or one of the
-// explicitly declared package leaves owned by the parent module.
-func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expectedGroups, packageLeaves []string) {
+// explicitly declared package leaves owned by the parent module. A declared
+// contract module is the one exception that may sit directly in the namespace
+// instead of inside a group, because it publishes a shared vocabulary rather
+// than a plugin.
+func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expectedGroups, packageLeaves, contractModules []string) {
 	t.Helper()
 	entries, err := os.ReadDir(namespace)
 	require.NoError(t, err, "reading extension namespace %s failed", namespace)
 
+	contractModuleSet := make(map[string]bool, len(contractModules))
+	for _, name := range contractModules {
+		contractModuleSet[name] = true
+	}
+
 	var actualGroups []string
+	var actualContractModules []string
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			name := entry.Name()
@@ -203,8 +224,25 @@ func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expecte
 			}
 			continue
 		}
+		if contractModuleSet[entry.Name()] {
+			actualContractModules = append(actualContractModules, entry.Name())
+			continue
+		}
 		actualGroups = append(actualGroups, entry.Name())
 	}
+
+	sort.Strings(actualContractModules)
+	wantContractModules := append([]string(nil), contractModules...)
+	sort.Strings(wantContractModules)
+	require.Equal(t, wantContractModules, actualContractModules, "contract modules directly beneath %s changed; update the explicit ownership map", namespace)
+	for _, name := range actualContractModules {
+		moduleRoot := filepath.Join(namespace, name)
+		require.NotEmpty(t, archProductionGoFilesInDir(t, moduleRoot), "contract module %s must contain production Go files", moduleRoot)
+		info, err := os.Stat(filepath.Join(moduleRoot, "go.mod"))
+		require.NoError(t, err, "contract module %s must be independently versioned", moduleRoot)
+		require.False(t, info.IsDir(), "contract module manifest %s must be a file", filepath.Join(moduleRoot, "go.mod"))
+	}
+
 	sort.Strings(actualGroups)
 	wantGroups := append([]string(nil), expectedGroups...)
 	sort.Strings(wantGroups)

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xbcio/xbc/authentication"
+	"github.com/xbcio/xbc/extensions/authentication"
 )
 
 func mustPolicySet(t *testing.T, cfg SecurityConfig) *policySet {

@@ -3,7 +3,7 @@ package web
 import (
 	"fmt"
 
-	"github.com/xbcio/xbc/authentication"
+	"github.com/xbcio/xbc/extensions/authentication"
 )
 
 // policyTier names which precedence level decided a route's effective policy.

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xbcio/xbc/authentication"
+	"github.com/xbcio/xbc/extensions/authentication"
 )
 
 // SecurityDefault is the closed set of fallback decisions applied to a frozen

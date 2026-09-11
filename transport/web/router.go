@@ -6,7 +6,7 @@ import (
 	"path"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xbcio/xbc/authentication"
+	"github.com/xbcio/xbc/extensions/authentication"
 )
 
 // AuthPolicy is a sealed, route-level authentication override. Its fields are
