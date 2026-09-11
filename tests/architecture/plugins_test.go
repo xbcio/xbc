@@ -28,6 +28,12 @@ const (
 // archManagementEndpointPackages are the built-in Web extensions that expose an
 // operator endpoint. Their access control belongs to the application's
 // authentication policy, not to the route declaration.
+//
+// swag and health are deliberately excluded from this list even though they
+// also declare Auth(web.Public()): they expose API description and liveness
+// surfaces, not an operator control plane, and their Public() is a tier-2
+// declaration that an application can still override with a tier-1
+// web.security rule. Do not add them here.
 var archManagementEndpointPackages = []string{
 	filepath.Join("transport", "web", "extensions", "observability", "metrics"),
 	filepath.Join("transport", "web", "extensions", "observability", "pprof"),

@@ -25,7 +25,11 @@
 //
 // A plugins.swag section selects the generated instance and configures only
 // its public routes; API title, version, models, operations, and responses
-// belong to the generated document:
+// belong to the generated document. These routes' Auth(web.Public()) is a
+// tier-2 declaration: a browser loading the Swagger UI has no credential to
+// present. An application can still override it with a tier-1 web.security
+// rule, for example to move the documentation endpoints behind the internal
+// network or to require a specific authentication scheme.
 //
 //	plugins:
 //	  swag:

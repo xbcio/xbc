@@ -49,8 +49,9 @@ web:
   #
   # The quickstart has no authenticator, so only "permit" rules are valid here.
   # To switch a rule to "authenticate: [jwt]" you must first register a JWT
-  # authenticator by selecting its Bundle; otherwise startup fails because the
-  # scheme is not registered.
+  # authenticator by selecting its Bundle; otherwise startup fails with
+  # "requires authentication but no authenticator is registered", because the
+  # route now needs authentication and none is available to perform it.
   security:
     default: deny
     policies:
