@@ -1,17 +1,18 @@
-// Package plugin defines xbc's protocol-neutral plugin SPI: stable
-// identity, immutable Definitions, typed Inputs and contracts, static
-// Bundles, lifecycle capabilities, and the contexts a factory and its
-// lifecycle hooks receive. It has no process-global catalog: every
-// dependency and contract is declared statically on a Definition and
-// resolved by XBC's assembly stage before any factory runs, never looked
-// up live.
+// Package plugin defines xbc's protocol-neutral plugin SPI. A Definition is
+// the immutable declaration of one runtime unit: it owns a stable Key and,
+// where applicable, its configuration, typed Inputs, contracts, factory, and
+// lifecycle capabilities. A Bundle is an explicit, side-effect-free static
+// composition of zero or more canonical Definitions. XBC has no process-global
+// catalog: every dependency and contract is declared statically on a Definition
+// and resolved by its assembly stage before any factory runs, never looked up
+// live.
 //
-// A Plugin is not a marker interface and not a base type. A concrete
-// primary value P is a Plugin only because an immutable Definition
-// declares and owns it; an ordinary third-party type can be a primary
-// value directly, and a type that cannot implement XBC's lifecycle
-// interfaces itself is adapted through Options[P].Lifecycle (see below)
-// instead of being wrapped or subclassed.
+// Plugin names that runtime unit; it is not a marker interface, a base type, a
+// Go package, or a Bundle. A concrete primary value P belongs to a Plugin only
+// because an immutable Definition declares and owns it; an ordinary third-party
+// type can be a primary value directly, and a type that cannot implement XBC's
+// lifecycle interfaces itself is adapted through Options[P].Lifecycle (see
+// below) instead of being wrapped or subclassed.
 //
 // # Identity
 //
@@ -35,10 +36,12 @@
 // # Declaring a Definition
 //
 // Define, DefineConfigured, and DefinePlanned each build one canonical,
-// immutable Definition. An implementation package evaluates exactly one of
-// them at package scope and returns that same handle from Definition();
-// calling Define* again inside Definition() would mint a second handle for
-// the same Key, which XBC's Plan rejects as a source-aware collision.
+// immutable Definition. A package may declare zero or more Definitions, but
+// must evaluate every Definition it owns once at package scope. When a package
+// exposes Definition(), that accessor conventionally returns its primary
+// Definition; it does not say that Bundle() contains only that Definition.
+// Calling Define* again inside an accessor would mint a second handle for the
+// same Key, which XBC's Plan rejects as a source-aware collision.
 //
 // Define is for a factory that needs no configuration and whose Inputs are
 // fixed:
@@ -207,18 +210,31 @@
 //
 // # Bundles
 //
-// Bundle is a side-effect-free static collection of canonical Definitions;
-// it has no Key, configuration, dependencies, or lifecycle of its own, and
-// it is never itself a Plugin. A leaf implementation package composes its
-// own Definitions with BundleOf:
+// Bundle is an explicit, side-effect-free static composition of zero or more
+// canonical Definitions. It has no Key, configuration, dependencies, or
+// lifecycle of its own, and is never itself a Plugin or runtime unit. A
+// package's optional Definition() accessor identifies its primary Definition;
+// Bundle() instead describes the package's full selectable composition. It may
+// contain only that primary Definition, additional independently declared
+// Definitions, or no Definitions at all.
+//
+// A package that owns several runtime units composes them with BundleOf. For
+// example, transport/web exposes its HTTP server Definition as its primary
+// Definition while its Bundle also selects an independently ordered error
+// boundary. gracefulshutdown similarly selects its programmatic Controller and
+// its HTTP route contributor as separate Definitions, so each keeps its own
+// Key, configuration, contracts, dependencies, and lifecycle behavior:
 //
 //	var bundle = plugin.BundleOf(controllerDefinition, httpDefinition)
 //
+//	func Definition() plugin.Definition { return controllerDefinition }
+//
 //	func Bundle() plugin.Bundle { return bundle }
 //
-// An aggregating package, such as a curated prelude, flattens several
-// members' Bundles with CombineBundles instead, preserving each entry's
-// original declaration source for diagnostics:
+// A pure aggregating package owns no Definition of its own and can expose only
+// Bundle. For example, transport/web/prelude flattens several members' Bundles
+// with CombineBundles, preserving each entry's original declaration source for
+// diagnostics:
 //
 //	var bundle = plugin.CombineBundles(
 //		web.Bundle(),

@@ -1,11 +1,14 @@
 // Package prelude provides XBC's lightweight, production-safe Web baseline as
-// side-effect-free composition data.
+// side-effect-free composition data. It is a pure aggregate: it declares no
+// Definition and creates no runtime unit of its own.
 //
-// The Bundle combines the HTTP server plus recovery, request IDs, structured
-// access logging, security headers, compression, cooperative request timeouts,
-// and health probes. It preserves every member's canonical Definition,
-// activation policy, and configuration path; it neither clones declarations nor
-// registers from init.
+// Its Bundle explicitly combines member Bundles for the HTTP server, recovery,
+// request IDs, structured access logging, security headers, compression,
+// cooperative request timeouts, and health probes. Every Definition contributed
+// by those members remains independent: web.Bundle(), for example, contributes
+// both the primary HTTP server Definition and its independently ordered error
+// boundary. Prelude preserves each member Definition's activation policy and
+// configuration path; it neither clones declarations nor registers from init.
 //
 // Business response envelopes, CORS, authentication, authorization,
 // persistence, telemetry exporters, and API documentation are deliberately not

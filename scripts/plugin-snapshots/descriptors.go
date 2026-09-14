@@ -6,28 +6,46 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/xbcio/xbc/plugin"
 	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
-// collectDescriptors evaluates every registered Definition accessor and
-// returns the resulting descriptors sorted by plugin key. It only reads the
-// already-built package-level Definition value; it never invokes a factory,
-// a planner, or plugin/assembly's Construct.
+// collectDescriptors expands every registered Bundle accessor and returns the
+// resulting descriptors sorted by plugin key. It only reads static Bundle
+// entries and Definition metadata; it never invokes a factory, a planner, or
+// plugin/assembly's Construct.
 func collectDescriptors() ([]pluginmodel.DefinitionDescriptor, error) {
-	descriptors := make([]pluginmodel.DefinitionDescriptor, 0, len(definitionProviders))
-	seen := make(map[string]string, len(definitionProviders))
-	for _, provider := range definitionProviders {
-		definition := provider()
-		descriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(definition))
-		if !ok {
-			return nil, fmt.Errorf("plugin-snapshots: a definition provider returned a zero-value plugin.Definition")
+	return collectDescriptorsFromBundles(bundleProviders)
+}
+
+// collectDescriptorsFromBundles mirrors plugin/assembly's bundle freeze
+// semantics: repeat occurrences of the same immutable Definition handle are
+// harmless, while two distinct handles claiming one key are rejected with
+// both declaration and Bundle-entry origins.
+func collectDescriptorsFromBundles(providers []func() plugin.Bundle) ([]pluginmodel.DefinitionDescriptor, error) {
+	descriptors := make([]pluginmodel.DefinitionDescriptor, 0, len(providers))
+	byHandle := make(map[pluginmodel.Definition]pluginmodel.BundleEntry)
+	byKey := make(map[pluginmodel.Key]pluginmodel.BundleEntry)
+	for _, provider := range providers {
+		for _, entry := range pluginmodel.BundleEntries(pluginmodel.Bundle(provider())) {
+			if _, repeated := byHandle[entry.Definition]; repeated {
+				continue
+			}
+			descriptor, ok := pluginmodel.DescribeDefinition(entry.Definition)
+			if !ok {
+				return nil, fmt.Errorf("plugin-snapshots: bundle %s contains a zero Definition", entry.Origin)
+			}
+			if previous, collision := byKey[descriptor.Key]; collision {
+				previousDescriptor, _ := pluginmodel.DescribeDefinition(previous.Definition)
+				return nil, fmt.Errorf(
+					"plugin-snapshots: plugin key %q is claimed by different Definition handles\n  first: %s (included by %s)\n  second: %s (included by %s)",
+					descriptor.Key, previousDescriptor.Origin, previous.Origin, descriptor.Origin, entry.Origin,
+				)
+			}
+			byHandle[entry.Definition] = entry
+			byKey[descriptor.Key] = entry
+			descriptors = append(descriptors, descriptor)
 		}
-		key := descriptor.Key.String()
-		if origin, duplicate := seen[key]; duplicate {
-			return nil, fmt.Errorf("plugin-snapshots: duplicate plugin key %q declared at %s and %s", key, origin, descriptor.Origin)
-		}
-		seen[key] = descriptor.Origin
-		descriptors = append(descriptors, descriptor)
 	}
 	sort.Slice(descriptors, func(i, j int) bool { return descriptors[i].Key < descriptors[j].Key })
 	return descriptors, nil

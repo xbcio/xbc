@@ -2,8 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/xbcio/xbc/plugin"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
+
+type snapshotTestPlugin struct{}
 
 func TestSnapshotsAreDeterministic(t *testing.T) {
 	descriptorsA, err := collectDescriptors()
@@ -81,6 +87,84 @@ func TestSessionDescriptorRoundTrips(t *testing.T) {
 	for contract, found := range wantContracts {
 		if !found {
 			t.Errorf("session.Contracts is missing %q", contract)
+		}
+	}
+}
+
+func TestCollectDescriptorsIncludesEveryBundleEntry(t *testing.T) {
+	descriptors, err := collectDescriptors()
+	if err != nil {
+		t.Fatalf("collectDescriptors: %v", err)
+	}
+
+	want := map[string]bool{
+		"web-error-boundary":    false,
+		"gracefulshutdown-http": false,
+	}
+	for _, descriptor := range descriptors {
+		if _, expected := want[descriptor.Key.String()]; expected {
+			want[descriptor.Key.String()] = true
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Errorf("collected descriptors are missing Bundle-only Definition %q", key)
+		}
+	}
+}
+
+func TestCollectDescriptorsDeduplicatesRepeatedDefinitionHandles(t *testing.T) {
+	definition := plugin.Define("snapshot-deduplicate", func(plugin.BuildContext) (*snapshotTestPlugin, error) {
+		return &snapshotTestPlugin{}, nil
+	})
+	bundle := plugin.BundleOf(definition)
+
+	descriptors, err := collectDescriptorsFromBundles([]func() plugin.Bundle{
+		func() plugin.Bundle { return bundle },
+		func() plugin.Bundle { return bundle },
+	})
+	if err != nil {
+		t.Fatalf("collectDescriptorsFromBundles: %v", err)
+	}
+	if len(descriptors) != 1 {
+		t.Fatalf("collected %d descriptors, want 1 after repeated Definition handle", len(descriptors))
+	}
+	if got := descriptors[0].Key.String(); got != "snapshot-deduplicate" {
+		t.Errorf("collected key = %q, want %q", got, "snapshot-deduplicate")
+	}
+}
+
+func TestCollectDescriptorsRejectsDistinctDefinitionHandlesWithSameKey(t *testing.T) {
+	first := plugin.Define("snapshot-collision", func(plugin.BuildContext) (*snapshotTestPlugin, error) {
+		return &snapshotTestPlugin{}, nil
+	})
+	second := plugin.Define("snapshot-collision", func(plugin.BuildContext) (*snapshotTestPlugin, error) {
+		return &snapshotTestPlugin{}, nil
+	})
+	firstBundle := plugin.BundleOf(first)
+	secondBundle := plugin.BundleOf(second)
+
+	_, err := collectDescriptorsFromBundles([]func() plugin.Bundle{
+		func() plugin.Bundle { return firstBundle },
+		func() plugin.Bundle { return secondBundle },
+	})
+	if err == nil {
+		t.Fatal("collectDescriptorsFromBundles succeeded for distinct Definition handles with the same key")
+	}
+
+	firstDescriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(first))
+	if !ok {
+		t.Fatal("DescribeDefinition(first) returned false")
+	}
+	secondDescriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(second))
+	if !ok {
+		t.Fatal("DescribeDefinition(second) returned false")
+	}
+	firstEntry := pluginmodel.BundleEntries(pluginmodel.Bundle(firstBundle))[0]
+	secondEntry := pluginmodel.BundleEntries(pluginmodel.Bundle(secondBundle))[0]
+	for _, origin := range []string{firstDescriptor.Origin, firstEntry.Origin, secondDescriptor.Origin, secondEntry.Origin} {
+		if !strings.Contains(err.Error(), origin) {
+			t.Errorf("collision error does not report origin %q:\n%s", origin, err)
 		}
 	}
 }
