@@ -59,7 +59,7 @@ func TestRecoversWithSafe500AndSafeLog(t *testing.T) {
 	p.state.Store(&runtimeState{stack: false, logger: logger})
 
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/panic", func(c *gin.Context) {
 		c.Header("Content-Encoding", "br")
 		c.Header("Content-Length", "999")
@@ -106,7 +106,7 @@ func TestDoesNotOverwriteCommittedResponse(t *testing.T) {
 	p := New()
 	p.state.Store(&runtimeState{logger: corelog.Nop()})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/partial", func(c *gin.Context) {
 		c.String(http.StatusAccepted, "already written")
 		panic("boom")

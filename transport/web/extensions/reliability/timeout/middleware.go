@@ -15,23 +15,27 @@ import (
 	"github.com/xbcio/xbc/transport/web"
 )
 
-func (p *Plugin) handle(c *gin.Context) {
+func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	state := p.state.Load()
-	if state == nil || c.Writer.Written() || state.config.bypass(c) {
+	gc := c.Gin()
+	if state == nil || c.Writer().Written() || state.config.bypass(gc) {
 		c.Next()
-		return
+		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), state.config.duration)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), state.config.duration)
 	defer cancel()
-	c.Request = c.Request.WithContext(ctx)
+	c.SetContext(ctx)
 
-	original := c.Writer
+	// Phase 4 debt: timeoutWriter embeds gin.ResponseWriter, so the writer
+	// swap stays on gc until Ctx gains a neutral SetWriter (see plan §2
+	// correction 2).
+	original := gc.Writer
 	writer := newTimeoutWriter(original)
-	c.Writer = writer
+	gc.Writer = writer
 	defer func() {
 		recovered := recover()
-		c.Writer = original
+		gc.Writer = original
 		if recovered != nil {
 			// Nothing buffered by this middleware reached the connection.
 			panic(recovered)
@@ -43,7 +47,7 @@ func (p *Plugin) handle(c *gin.Context) {
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			c.Abort()
-			writeTimeoutResponse(c, original)
+			writeTimeoutResponse(gc, original)
 			return
 		}
 		if err := writer.commit(); err != nil {
@@ -51,6 +55,7 @@ func (p *Plugin) handle(c *gin.Context) {
 		}
 	}()
 	c.Next()
+	return nil
 }
 
 func writeTimeoutResponse(c *gin.Context, writer gin.ResponseWriter) {

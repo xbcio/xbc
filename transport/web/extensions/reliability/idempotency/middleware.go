@@ -20,7 +20,7 @@ import (
 )
 
 // Handler implements web.Middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handle }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
 
 // Order implements web.Middleware. It runs in PhaseBusiness so authentication
 // has already published the principal included in the fingerprint.
@@ -28,79 +28,85 @@ func (p *Plugin) Order() web.Order {
 	return web.Order{Phase: web.PhaseBusiness}
 }
 
-func (p *Plugin) handle(c *gin.Context) {
-	route, found := web.CurrentRoute(c)
+func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
+	gc := c.Gin()
+	route, found := web.CurrentRoute(gc)
 	if !found || !route.Idempotent {
 		c.Next()
-		return
+		return nil
 	}
 	state := p.state
 	key, ok := idempotencyHeader(c, state.config.header)
 	if !ok || !validIdempotencyKey(key, state.config.minKeyLength, state.config.maxKeyLength) {
-		abortJSON(c, http.StatusBadRequest, "invalid_idempotency_key")
-		return
+		abortJSON(gc, http.StatusBadRequest, "invalid_idempotency_key")
+		return nil
 	}
-	body, err := readBody(c.Request, state.config.maxRequestBytes)
+	body, err := readBody(c.Request(), state.config.maxRequestBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
-			abortJSON(c, http.StatusRequestEntityTooLarge, "request_too_large")
+			abortJSON(gc, http.StatusRequestEntityTooLarge, "request_too_large")
 		} else {
-			abortJSON(c, http.StatusBadRequest, "invalid_request_body")
+			abortJSON(gc, http.StatusBadRequest, "invalid_request_body")
 		}
-		return
+		return nil
 	}
-	principal, _ := web.CurrentPrincipal(c)
+	principal, _ := web.CurrentPrincipal(gc)
 	rawQuery := ""
 	contentType := ""
-	if c.Request.URL != nil {
-		rawQuery = c.Request.URL.RawQuery
+	if c.Request().URL != nil {
+		rawQuery = c.Request().URL.RawQuery
 	}
 	contentType = strings.TrimSpace(c.GetHeader("Content-Type"))
-	fingerprint := requestFingerprint(c.Request.Method, route.Path, principal.Subject, rawQuery, contentType, body)
-	storageKey := digestParts(c.Request.Method, route.Path, principal.Subject, key)
+	fingerprint := requestFingerprint(c.Request().Method, route.Path, principal.Subject, rawQuery, contentType, body)
+	storageKey := digestParts(c.Request().Method, route.Path, principal.Subject, key)
 	owner, err := newOwner()
 	if err != nil {
-		abortJSON(c, http.StatusInternalServerError, "idempotency_unavailable")
-		return
+		abortJSON(gc, http.StatusInternalServerError, "idempotency_unavailable")
+		return nil
 	}
 
-	result, err := state.store.Acquire(c.Request.Context(), storageKey, fingerprint, owner, state.config.pendingTTL)
+	result, err := state.store.Acquire(c.Request().Context(), storageKey, fingerprint, owner, state.config.pendingTTL)
 	if err != nil {
 		state.logger.Error("idempotency acquire failed", "error", err)
-		abortJSON(c, http.StatusServiceUnavailable, "idempotency_unavailable")
-		return
+		abortJSON(gc, http.StatusServiceUnavailable, "idempotency_unavailable")
+		return nil
 	}
 	switch result.State {
 	case Pending:
-		abortJSON(c, state.config.pendingStatus, "request_in_progress")
-		return
+		abortJSON(gc, state.config.pendingStatus, "request_in_progress")
+		return nil
 	case Conflict:
-		abortJSON(c, http.StatusConflict, "idempotency_conflict")
-		return
+		abortJSON(gc, http.StatusConflict, "idempotency_conflict")
+		return nil
 	case Completed:
 		if !validReplay(result.Response, state.config.maxResponseBytes) {
 			state.logger.Error("idempotency store returned an invalid replay response")
-			abortJSON(c, http.StatusServiceUnavailable, "idempotency_unavailable")
-			return
+			abortJSON(gc, http.StatusServiceUnavailable, "idempotency_unavailable")
+			return nil
 		}
 		replay(c, result.Response)
-		return
+		return nil
 	case Acquired:
 		p.executeOwned(c, state, storageKey, fingerprint, owner)
 	default:
-		abortJSON(c, http.StatusServiceUnavailable, "idempotency_unavailable")
+		abortJSON(gc, http.StatusServiceUnavailable, "idempotency_unavailable")
 	}
+	return nil
 }
 
-func (p *Plugin) executeOwned(c *gin.Context, state *runtimeState, key, fingerprint, owner string) {
-	writer := &captureWriter{ResponseWriter: c.Writer, limit: state.config.maxResponseBytes}
-	c.Writer = writer
+func (p *Plugin) executeOwned(c *web.Ctx, state *runtimeState, key, fingerprint, owner string) {
+	// Phase 4 debt: captureWriter embeds gin.ResponseWriter, so the writer
+	// swap stays on gc until Ctx gains a neutral SetWriter (see plan §2
+	// correction 2).
+	gc := c.Gin()
+	writer := &captureWriter{ResponseWriter: gc.Writer, limit: state.config.maxResponseBytes}
+	gc.Writer = writer
 	committed := false
 	defer func() {
 		if committed {
 			return
 		}
-		cleanupCtx, cancel := detachedTimeout(c.Request.Context(), state.config.operationTimeout)
+		cleanupCtx, cancel := detachedTimeout(c.Request().Context(), state.config.operationTimeout)
 		defer cancel()
 		if err := state.store.Release(cleanupCtx, key, fingerprint, owner); err != nil && !errors.Is(err, ErrOwnershipLost) {
 			state.logger.Error("idempotency release failed", "error", err)
@@ -108,7 +114,7 @@ func (p *Plugin) executeOwned(c *gin.Context, state *runtimeState, key, fingerpr
 	}()
 
 	c.Next()
-	if c.Request.Context().Err() != nil || writer.tooLarge || writer.Status() >= http.StatusInternalServerError {
+	if c.Request().Context().Err() != nil || writer.tooLarge || writer.Status() >= http.StatusInternalServerError {
 		return
 	}
 	response := Response{
@@ -116,7 +122,7 @@ func (p *Plugin) executeOwned(c *gin.Context, state *runtimeState, key, fingerpr
 		ContentType: safeContentType(writer.Header().Get("Content-Type")),
 		Body:        append([]byte(nil), writer.body.Bytes()...),
 	}
-	completeCtx, cancel := detachedTimeout(c.Request.Context(), state.config.operationTimeout)
+	completeCtx, cancel := detachedTimeout(c.Request().Context(), state.config.operationTimeout)
 	defer cancel()
 	if err := state.store.Complete(completeCtx, key, fingerprint, owner, response, state.config.ttl); err != nil {
 		state.logger.Error("idempotency completion failed", "error", err)
@@ -180,11 +186,11 @@ func newOwner() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
-func idempotencyHeader(c *gin.Context, name string) (string, bool) {
-	if c == nil || c.Request == nil {
+func idempotencyHeader(c *web.Ctx, name string) (string, bool) {
+	if c == nil || c.Request() == nil {
 		return "", false
 	}
-	values := c.Request.Header.Values(name)
+	values := c.Request().Header.Values(name)
 	if len(values) != 1 {
 		return "", false
 	}
@@ -219,14 +225,14 @@ func validReplay(response Response, maximum int64) bool {
 		int64(len(response.Body)) <= maximum && len(response.ContentType) <= 1024 && !containsControl(response.ContentType)
 }
 
-func replay(c *gin.Context, response Response) {
-	c.Header("Idempotency-Replayed", "true")
+func replay(c *web.Ctx, response Response) {
+	c.SetHeader("Idempotency-Replayed", "true")
 	if contentType := safeContentType(response.ContentType); contentType != "" {
-		c.Header("Content-Type", contentType)
+		c.SetHeader("Content-Type", contentType)
 	}
 	c.Status(response.Status)
 	if len(response.Body) != 0 {
-		_, _ = c.Writer.Write(response.Body)
+		_, _ = c.Writer().Write(response.Body)
 	}
 	c.Abort()
 }

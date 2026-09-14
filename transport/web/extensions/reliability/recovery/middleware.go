@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"reflect"
@@ -13,12 +14,13 @@ import (
 	"github.com/xbcio/xbc/transport/web"
 )
 
-func (p *Plugin) handle(c *gin.Context) {
+func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	defer func() {
 		recovered := recover()
 		if recovered == nil {
 			return
 		}
+		gc := c.Gin()
 
 		state := p.state.Load()
 		logger := corelog.L()
@@ -29,12 +31,12 @@ func (p *Plugin) handle(c *gin.Context) {
 		}
 
 		fields := []any{
-			"method", c.Request.Method,
-			"path", c.Request.URL.Path,
+			"method", c.Request().Method,
+			"path", c.Request().URL.Path,
 			"panic_type", reflect.TypeOf(recovered).String(),
-			"response_written", c.Writer.Written(),
+			"response_written", c.Writer().Written(),
 		}
-		if route, ok := web.CurrentRoute(c); ok {
+		if route, ok := web.CurrentRoute(gc); ok {
 			fields = append(fields, "route", route.Path)
 		}
 		if includeStack {
@@ -44,7 +46,10 @@ func (p *Plugin) handle(c *gin.Context) {
 		if brokenConnection(recovered) {
 			logger.Warn("http request aborted after connection failure", fields...)
 			if err, ok := recovered.(error); ok {
-				_ = c.Error(err)
+				// Phase 4 debt: gin.Context.Errors has no neutral equivalent
+				// yet (see plan §2 debt table), so recording the recovered
+				// error stays on gc.
+				_ = gc.Error(err)
 			}
 			c.Abort()
 			return
@@ -54,15 +59,16 @@ func (p *Plugin) handle(c *gin.Context) {
 		// credentials or user-controlled data. The type and stack are enough to
 		// diagnose the code path without copying request secrets into logs.
 		logger.Error("http request panic recovered", fields...)
-		if c.Writer.Written() {
+		if c.Writer().Written() {
 			// The status/body are already on the wire and cannot safely be replaced.
 			c.Abort()
 			return
 		}
-		writeInternalServerError(c)
+		writeInternalServerError(gc)
 	}()
 
 	c.Next()
+	return nil
 }
 
 func writeInternalServerError(c *gin.Context) {

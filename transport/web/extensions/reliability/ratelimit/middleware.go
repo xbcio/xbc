@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"math"
 	"net"
 	"net/http"
@@ -9,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"golang.org/x/time/rate"
 
 	"github.com/xbcio/xbc/transport/web"
@@ -48,27 +48,29 @@ func newLimiterState(cfg Config) (*limiterState, error) {
 	return state, nil
 }
 
-func (p *Plugin) handle(c *gin.Context) {
+func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
+	gc := c.Gin()
 	p.mu.RLock()
 	state := p.state
 	p.mu.RUnlock()
 	if state == nil {
-		web.AbortProblem(c, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
-		return
+		web.AbortProblem(gc, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
+		return nil
 	}
 
 	now := time.Now()
 	limiter := state.limiterFor(c, now)
 	if limiter.AllowN(now, 1) {
 		c.Next()
-		return
+		return nil
 	}
 
-	c.Header("Retry-After", strconv.Itoa(retryAfterSeconds(limiter, now)))
-	web.AbortProblem(c, web.NewProblem(http.StatusTooManyRequests, "rate_limit_exceeded"))
+	c.SetHeader("Retry-After", strconv.Itoa(retryAfterSeconds(limiter, now)))
+	web.AbortProblem(gc, web.NewProblem(http.StatusTooManyRequests, "rate_limit_exceeded"))
+	return nil
 }
 
-func (s *limiterState) limiterFor(c *gin.Context, now time.Time) *rate.Limiter {
+func (s *limiterState) limiterFor(c *web.Ctx, now time.Time) *rate.Limiter {
 	if s.cfg.Scope == ScopeGlobal {
 		return s.global
 	}
@@ -94,11 +96,16 @@ func (s *limiterState) limiterFor(c *gin.Context, now time.Time) *rate.Limiter {
 	return entry.limiter
 }
 
-func clientIP(c *gin.Context) string {
-	if ip := net.ParseIP(strings.TrimSpace(c.ClientIP())); ip != nil {
+func clientIP(c *web.Ctx) string {
+	// Phase 4 debt: ClientIP has no neutral RequestContext equivalent yet --
+	// the spec's RequestContext method list omits it (see plan §2 debt
+	// table) -- so it stays on the underlying gin.Context until that
+	// contract is defined.
+	gc := c.Gin()
+	if ip := net.ParseIP(strings.TrimSpace(gc.ClientIP())); ip != nil {
 		return ip.String()
 	}
-	if host, _, err := net.SplitHostPort(c.Request.RemoteAddr); err == nil {
+	if host, _, err := net.SplitHostPort(c.Request().RemoteAddr); err == nil {
 		if ip := net.ParseIP(host); ip != nil {
 			return ip.String()
 		}

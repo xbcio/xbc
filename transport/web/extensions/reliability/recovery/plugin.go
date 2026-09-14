@@ -64,7 +64,7 @@ func newPlugin(cfg Config, logger corelog.Logger) *Plugin {
 }
 
 // Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handle }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
 
 // Order places recovery outside every normal Web middleware phase.
 func (*Plugin) Order() web.Order {

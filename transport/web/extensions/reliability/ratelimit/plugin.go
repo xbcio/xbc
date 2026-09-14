@@ -57,7 +57,7 @@ func prepareConfig(cfg Config) (Config, error) {
 }
 
 // Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handle }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
 
 // Order lets optional CORS handling short-circuit preflight requests before
 // they consume rate-limit capacity.
