@@ -299,6 +299,56 @@ func TestWriteStringBuffersBodyAndDeferredHeaders(t *testing.T) {
 	}
 }
 
+// TestStatusAndSizeReportBufferedStateBeforeCommit pins Status and Size as
+// load-bearing. Both are embedded-method overrides, so deleting either one
+// still compiles and still satisfies the gin.ResponseWriter assertion at the
+// bottom of middleware.go -- the call is simply promoted to the embedded
+// writer, which answers about its own untouched state rather than about the
+// buffer.
+//
+// Neither method can be pinned from outside this middleware. Every production
+// reader of Status/Size (metrics, tracing, accesslog, auditlog) runs in a
+// phase where the wrapper is already gone, so it reads the real writer after
+// commit and sees the same value either way. The observations below are
+// therefore taken from inside the handler, while the wrapper is still
+// installed and before the deferred restore swaps c.Writer back to the
+// original writer.
+//
+// Status: c.Status only records the code into the wrapper's own w.status
+// field, because bufferingWriter.WriteHeader deliberately does not touch the
+// embedded writer, which stays at its default 200. Reading 418 back through
+// c.Writer.Status() is therefore only possible while Status is overridden --
+// delete it and the promoted method reports the embedded writer's 200. The
+// observedWritten check guards that argument rather than repeating coverage:
+// the status read only proves something because the status is still buffered
+// and uncommitted, since a committed status would have reached the embedded
+// writer too and let the mutation survive.
+//
+// Size: gin documents -1 as "no write has happened yet", which accesslog and
+// auditlog both normalize to 0. The first observation is taken before any
+// write, so it pins the sentinel branch itself rather than just the byte
+// count -- rewriting that branch to return 0 fails this assertion while every
+// byte-count assertion elsewhere in the package still passes.
+func TestStatusAndSizeReportBufferedStateBeforeCommit(t *testing.T) {
+	var observedInitialSize, observedStatus int
+	var observedWritten bool
+	perform(t, DefaultConfig(), http.MethodGet, "/status", map[string]string{"Accept-Encoding": "gzip"}, func(c *gin.Context) {
+		observedInitialSize = c.Writer.Size()
+		c.Status(http.StatusTeapot)
+		observedStatus = c.Writer.Status()
+		observedWritten = c.Writer.Written()
+	})
+	if observedInitialSize != -1 {
+		t.Fatalf("bufferingWriter reported size %d before any write, want the -1 sentinel", observedInitialSize)
+	}
+	if observedWritten {
+		t.Fatal("c.Status must leave the response uncommitted, or the status assertion below proves nothing")
+	}
+	if observedStatus != http.StatusTeapot {
+		t.Fatalf("bufferingWriter reported status %d while buffering, want %d", observedStatus, http.StatusTeapot)
+	}
+}
+
 // TestFlushCommitsBufferedBodyBeforeStreaming pins Flush as load-bearing.
 // bufferingWriter.Flush commits whatever is already buffered before falling
 // back to passthrough streaming, so a handler that flushes and then panics
