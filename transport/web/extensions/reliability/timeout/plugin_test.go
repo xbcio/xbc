@@ -2,6 +2,7 @@ package timeout
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -198,4 +199,152 @@ func pluginFor(t *testing.T, cfg Config) *Plugin {
 	p := New()
 	p.state.Store(&runtimeState{config: normalized})
 	return p
+}
+
+// TestTimeoutWriterUnwrapReachesUnderlyingWriter pins Unwrap as load-bearing
+// rather than boilerplate. http.ResponseController follows Unwrap() to find
+// the real writer, and that is the route Hijack takes once the response
+// contract no longer exposes Hijack directly. Without this test Unwrap could
+// be deleted while every other test stayed green.
+//
+// The interface assertion below is deliberate and must not be "simplified"
+// into a direct writer.Unwrap() call. gin.ResponseWriter has no Unwrap
+// method, so a direct call would stop compiling the moment Unwrap is
+// deleted -- the package would fail to build, no test would run at all, and
+// that build failure is easily misread as this test catching the deletion.
+// Asserting through an interface compiles either way and turns the deletion
+// into an honest failed assertion.
+func TestTimeoutWriterUnwrapReachesUnderlyingWriter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	gc, _ := gin.CreateTestContext(recorder)
+	gc.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	original := gc.Writer
+	writer := newTimeoutWriter(original)
+
+	unwrapper, ok := any(writer).(interface{ Unwrap() http.ResponseWriter })
+	if !ok {
+		t.Fatal("timeoutWriter must expose Unwrap")
+	}
+	if unwrapper.Unwrap() != http.ResponseWriter(original) {
+		t.Fatal("Unwrap must return the writer the wrapper was built around")
+	}
+}
+
+// TestAbortWithStatusCommitsBufferedStatus pins WriteHeaderNow as
+// load-bearing. gin's own Context.AbortWithStatus calls WriteHeaderNow
+// directly, and timeoutWriter.WriteHeader only ever records the status into
+// its own buffered field -- the embedded writer's status field is never
+// touched until commit. If WriteHeaderNow is deleted, the promoted method
+// operates on the embedded writer's own (still-default 200) status instead
+// of the buffered one, so the real response is sent prematurely with the
+// wrong status and the later deferred commit is a no-op superfluous call.
+func TestAbortWithStatusCommitsBufferedStatus(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	p := pluginFor(t, Config{Duration: time.Second})
+	router := gin.New()
+	router.Use(p.handle)
+	router.GET("/abort", func(c *gin.Context) {
+		c.AbortWithStatus(http.StatusTeapot)
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/abort", nil))
+	if response.Code != http.StatusTeapot {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusTeapot)
+	}
+}
+
+// TestWriteStringBuffersBodyAndDeferredHeaders pins WriteString as
+// load-bearing. gin.ResponseWriter exposes WriteString as a direct part of
+// its public contract. If WriteString is deleted, the promoted method
+// forwards straight to the embedded writer's own WriteString, which sends
+// real headers and body immediately using the embedded writer's own header
+// map -- skipping timeoutWriter's header buffer entirely, so a header set
+// via c.Header after wrapping never reaches the response actually sent.
+// response.Result().Header is used rather than response.Header() because
+// httptest.ResponseRecorder.Header() always returns the live, still-mutable
+// map; only Result().Header is the frozen snapshot taken at the moment
+// headers were actually sent, matching real connection behavior.
+func TestWriteStringBuffersBodyAndDeferredHeaders(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	p := pluginFor(t, Config{Duration: time.Second})
+	router := gin.New()
+	router.Use(p.handle)
+	router.GET("/tiny", func(c *gin.Context) {
+		c.Header("X-Custom", "yes")
+		if _, err := c.Writer.WriteString("tiny"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/tiny", nil))
+	if response.Result().Header.Get("X-Custom") != "yes" || response.Body.String() != "tiny" {
+		t.Fatalf("headers=%v body=%q", response.Result().Header, response.Body.String())
+	}
+}
+
+// TestFlushCommitsBufferedBodyBeforeStreaming pins Flush as load-bearing.
+// timeoutWriter.Flush commits whatever is already buffered before falling
+// back to passthrough streaming, so a handler that flushes and then panics
+// still has its pre-flush output reach the client. If Flush is deleted, the
+// promoted method only calls the embedded writer's real Flush -- it never
+// commits the buffer -- so a subsequent panic (which skips the deferred
+// commit) leaves nothing written at all.
+func TestFlushCommitsBufferedBodyBeforeStreaming(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	p := pluginFor(t, Config{Duration: time.Second})
+	router := gin.New()
+	router.Use(p.handle)
+	router.GET("/flush", func(c *gin.Context) {
+		c.String(http.StatusOK, "buffered-before-flush")
+		c.Writer.Flush()
+		panic("boom")
+	})
+	response := httptest.NewRecorder()
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != "boom" {
+				t.Fatalf("recovered = %#v", recovered)
+			}
+		}()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/flush", nil))
+	}()
+	if response.Body.String() != "buffered-before-flush" {
+		t.Fatalf("flush did not commit buffered body before streaming began: body=%q", response.Body.String())
+	}
+}
+
+// TestHijackRejectsAfterBufferedWrite pins Hijack as load-bearing. Once a
+// response write has been buffered, letting the caller take over the raw
+// connection would abandon that buffered data with no way to send it, so
+// timeoutWriter.Hijack refuses. If Hijack is deleted, the promoted method
+// forwards straight to the embedded writer's real Hijack with no such check,
+// silently allowing the takeover.
+func TestHijackRejectsAfterBufferedWrite(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	p := pluginFor(t, Config{Duration: time.Second})
+	router := gin.New()
+	router.Use(p.handle)
+	done := make(chan error, 1)
+	router.GET("/hijack", func(c *gin.Context) {
+		c.String(http.StatusOK, "buffered")
+		hijacker, ok := c.Writer.(http.Hijacker)
+		if !ok {
+			done <- errors.New("writer does not implement http.Hijacker")
+			return
+		}
+		_, _, err := hijacker.Hijack()
+		done <- err
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+	resp, err := http.Get(server.URL + "/hijack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if hijackErr := <-done; hijackErr == nil {
+		t.Fatal("Hijack must reject once a buffered response write occurred")
+	}
 }
