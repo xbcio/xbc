@@ -159,8 +159,6 @@ func (w *bufferingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return conn, rw, err
 }
 
-func (w *bufferingWriter) CloseNotify() <-chan bool { return w.ResponseWriter.CloseNotify() }
-func (w *bufferingWriter) Pusher() http.Pusher      { return w.ResponseWriter.Pusher() }
 func (w *bufferingWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
