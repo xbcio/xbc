@@ -97,13 +97,31 @@ type RouteInfo struct {
 }
 
 // Route is the metadata handle returned by Router.Handle and the
-// method-specific registration helpers. A handle remains writable only until
-// the shared route table is frozen; changing metadata afterwards panics for
-// the same reason adding a late route does.
+// method-specific registration helpers. It embeds *Router so every
+// registration method (GET, POST, Group, Perm, Auth, ...) is promoted onto
+// it, restoring gin's own cascaded call style: r.GET("/a", h).POST("/b", h)
+// registers two routes on the same underlying group. A handle remains
+// writable only until the shared route table is frozen; changing metadata
+// afterwards panics for the same reason adding a late route does.
+//
+// Route.Perm and Route.Auth shadow the promoted Router.Perm and Router.Auth:
+// Go's method resolution always picks the shallower declaration, so calling
+// .Perm/.Auth on a *Route resolves to Route's own route-level method, never
+// to Router's group-level default setter -- regardless of what the embedded
+// *Router looks like. The same method name therefore means two different
+// things depending on which type the variable holds:
+//
+//	g := router.Group("/x").Perm("A") // group-level default (receiver *Router)
+//	g.GET("/y", h).Perm("B")          // route-level override (receiver *Route)
+//
+// This is a deliberate consequence of the embedding, not an accidental name
+// collision -- see the design doc's improvement 8.
 type Route struct {
-	routes *[]RouteInfo
-	frozen *bool
-	index  int
+	*Router // promotes every Router method, including the registration helpers
+	// indexes are the route-table positions this handle covers. Single-method
+	// registrations produce one; Any and Match produce one per method, so a
+	// single .Perm call applies to every route the registration created.
+	indexes []int
 }
 
 // Name sets the human-readable operation name used by documentation and
@@ -134,26 +152,46 @@ func (r *Route) Idempotent() *Route {
 }
 
 func (r *Route) update(fn func(*RouteInfo)) {
-	if r == nil || r.routes == nil || r.frozen == nil || r.index < 0 || r.index >= len(*r.routes) {
+	// r.Router must be checked before r.routes/r.frozen: those two fields are
+	// promoted from the embedded *Router, so reading them through a nil
+	// *Router panics with an unhelpful nil-pointer-dereference runtime error
+	// instead of this method's own diagnostic. Short-circuit evaluation of ||
+	// guarantees r.Router is only read once r is known non-nil, and
+	// r.routes/r.frozen are only read once r.Router is known non-nil.
+	if r == nil || r.Router == nil || r.routes == nil || r.frozen == nil || len(r.indexes) == 0 {
 		panic("xbc: invalid route metadata handle")
 	}
 	if *r.frozen {
 		panic("xbc: route table is frozen, RouteCatalogListener phase cannot change route metadata")
 	}
-	fn(&(*r.routes)[r.index])
+	for _, index := range r.indexes {
+		if index < 0 || index >= len(*r.routes) {
+			panic("xbc: invalid route metadata handle")
+		}
+		fn(&(*r.routes)[index])
+	}
 }
 
 // Router wraps a *gin.RouterGroup with route-table recording and a freeze
 // switch. routes, frozen and index are pointers so every Router returned by
 // Group shares the same underlying slice/flag/map as the root -- freezing
 // the root freezes every group derived from it too.
+//
+// defaultPerm and defaultAuth are the opposite: plain values, copied by Group
+// the same way basePath already is. They name a group-level policy default,
+// and a default only makes sense scoped to the subtree that declared it --
+// sharing it through a pointer would let a child's .Perm/.Auth call leak back
+// into the parent and every sibling derived from the same root, which is
+// exactly the cross-subtree bleed a per-group default exists to prevent.
 type Router struct {
-	engine   *gin.Engine
-	group    *gin.RouterGroup
-	basePath string
-	routes   *[]RouteInfo
-	frozen   *bool
-	index    *map[string]RouteInfo
+	engine      *gin.Engine
+	group       *gin.RouterGroup
+	basePath    string
+	routes      *[]RouteInfo
+	frozen      *bool
+	index       *map[string]RouteInfo
+	defaultPerm string
+	defaultAuth *AuthPolicy
 }
 
 // newRouteTable allocates the three pieces of shared, pointer-identity
@@ -263,20 +301,67 @@ func validateRouteAuth(route RouteInfo) error {
 }
 
 // Group returns a sub-router rooted at relativePath, sharing this router's
-// route table and freeze flag.
-func (r *Router) Group(relativePath string) *Router {
+// route table and freeze flag. Handlers passed here run for every route
+// registered on the returned sub-router and on any sub-router derived from it.
+//
+// This is the only way to scope middleware to part of the route tree: there is
+// deliberately no Router.Use. gin's RouterGroup.Group snapshots its parent's
+// handler slice by value at call time (combineHandlers copies, it never
+// re-reads the parent), so a Use call would silently fail to reach groups that
+// already exist -- the middleware would appear registered while protecting
+// nothing. Declaring the handlers at the point the group is created makes that
+// failure mode unrepresentable.
+func (r *Router) Group(relativePath string, h ...gin.HandlerFunc) *Router {
 	return &Router{
-		engine:   r.engine,
-		group:    r.group.Group(relativePath),
-		basePath: r.basePath,
-		routes:   r.routes,
-		frozen:   r.frozen,
-		index:    r.index,
+		engine:      r.engine,
+		group:       r.group.Group(relativePath, h...),
+		basePath:    r.basePath,
+		routes:      r.routes,
+		frozen:      r.frozen,
+		index:       r.index,
+		defaultPerm: r.defaultPerm,
+		defaultAuth: cloneAuthPolicy(r.defaultAuth),
 	}
 }
 
-// Handle registers a route and records it in the route table. Calling it
-// after freeze panics -- RouteCatalogListener runs after the route table is
+// Perm sets this group's default permission: every route registered on this
+// Router from this call onward, and on any sub-router derived afterward via
+// Group, has it written into its RouteInfo at registration time unless that
+// route's own .Perm call overrides it. The default is a snapshot, not a live
+// reference -- see the Router.defaultPerm field comment -- so it follows the
+// same ordering rule gin's own combineHandlers uses for parent handlers: a
+// route or sub-group already registered before this call keeps what it had,
+// and only registrations that come after see the new default.
+//
+// An empty permission means "not declared" everywhere else this package reads
+// Perm, so passing "" here would silently make .Perm a no-op instead of
+// clearing a previous default; call it with a non-empty permission.
+func (r *Router) Perm(permission string) *Router {
+	r.defaultPerm = permission
+	return r
+}
+
+// Auth sets this group's default authentication policy, following the same
+// registration-time snapshot semantics as Perm: it reaches routes and
+// sub-groups registered after this call, never ones registered before it, and
+// a route's own .Auth call always overrides the group default that would
+// otherwise have applied. The policy is cloned on the way in, and cloned again
+// per route when Handle writes it into a RouteInfo, so no two routes -- or
+// this Router and a route derived from it -- ever share the same *AuthPolicy
+// or its backing schemes slice.
+func (r *Router) Auth(policy AuthPolicy) *Router {
+	r.defaultAuth = cloneAuthPolicy(&policy)
+	return r
+}
+
+// Handle registers a route and records it in the route table. The recorded
+// RouteInfo starts from this Router's current defaultPerm/defaultAuth (see
+// Router.Perm and Router.Auth), so group-level policy is written in at
+// registration time rather than looked up from a parent later; the route
+// table stays self-describing and RouteCatalog's enumeration never needs to
+// know groups exist. A subsequent .Perm/.Auth call on the returned *Route
+// still overrides whatever default was written here. Calling Handle after
+// freeze panics -- RouteCatalogListener runs after the route table is
 // supposed to be complete, so a plugin adding a route there is a
 // programming mistake, not a runtime condition worth recovering from.
 func (r *Router) Handle(method, relativePath string, h ...gin.HandlerFunc) *Route {
@@ -287,8 +372,10 @@ func (r *Router) Handle(method, relativePath string, h ...gin.HandlerFunc) *Rout
 	*r.routes = append(*r.routes, RouteInfo{
 		Method: method,
 		Path:   joinPaths(r.group.BasePath(), relativePath),
+		Auth:   cloneAuthPolicy(r.defaultAuth),
+		Perm:   r.defaultPerm,
 	})
-	return &Route{routes: r.routes, frozen: r.frozen, index: len(*r.routes) - 1}
+	return &Route{Router: r, indexes: []int{len(*r.routes) - 1}}
 }
 
 // joinPaths mirrors gin's own private routergroup.go joinPaths (gin
@@ -328,6 +415,46 @@ func (r *Router) DELETE(relativePath string, h ...gin.HandlerFunc) *Route {
 
 func (r *Router) PATCH(relativePath string, h ...gin.HandlerFunc) *Route {
 	return r.Handle(http.MethodPatch, relativePath, h...)
+}
+
+func (r *Router) HEAD(relativePath string, h ...gin.HandlerFunc) *Route {
+	return r.Handle(http.MethodHead, relativePath, h...)
+}
+
+func (r *Router) OPTIONS(relativePath string, h ...gin.HandlerFunc) *Route {
+	return r.Handle(http.MethodOptions, relativePath, h...)
+}
+
+// anyMethods are the methods Any registers. It mirrors gin's own anyMethods
+// (gin v1.12.0 routergroup.go) so Any behaves the same as the router it wraps,
+// minus CONNECT and TRACE, which gin includes but which no XBC service should
+// expose by default: CONNECT is for proxies and TRACE reflects request headers
+// back to the caller, a known cross-site tracing vector.
+var anyMethods = []string{
+	http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+	http.MethodHead, http.MethodOptions, http.MethodDelete,
+}
+
+// Any registers the same handlers for every method in anyMethods. The returned
+// Route covers all of them, so one .Perm or .Auth call applies uniformly --
+// a per-method policy needs per-method registration instead.
+func (r *Router) Any(relativePath string, h ...gin.HandlerFunc) *Route {
+	return r.Match(anyMethods, relativePath, h...)
+}
+
+// Match registers the same handlers for each listed method. An empty method
+// list is a programming mistake: it would register nothing while returning a
+// handle whose .Perm silently applies to no route, which is exactly the kind
+// of invisible policy gap the route table exists to prevent.
+func (r *Router) Match(methods []string, relativePath string, h ...gin.HandlerFunc) *Route {
+	if len(methods) == 0 {
+		panic("xbc: Match requires at least one HTTP method")
+	}
+	indexes := make([]int, 0, len(methods))
+	for _, method := range methods {
+		indexes = append(indexes, r.Handle(method, relativePath, h...).indexes...)
+	}
+	return &Route{Router: r, indexes: indexes}
 }
 
 // RouteCatalog is the frozen, read-only route table handed to
