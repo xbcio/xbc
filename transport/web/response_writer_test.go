@@ -47,6 +47,16 @@ func TestGinResponseWriterSatisfiesContract(t *testing.T) {
 		"gin.ResponseWriter must satisfy web.ResponseWriter")
 }
 
+// Ctx.Writer must return the neutral contract, not gin's. Go function types
+// are invariant in their results, so widening the return type back to
+// gin.ResponseWriter stops this assignment from compiling. This is the only
+// construct that can pin a return type: a runtime assertion cannot tell the
+// two apart, because gin.ResponseWriter already satisfies ResponseWriter.
+//
+// A build failure is the correct and intended signal here, unlike elsewhere in
+// this package where a build failure would be a false red.
+var _ func(*Ctx) ResponseWriter = (*Ctx).Writer
+
 // TestCtxWriterReportsCommitAndReachesFlusher covers the two capabilities the
 // framework's own guards depend on: Written() must flip once a response is
 // committed (problem.go and errors.go read it to avoid writing a second
