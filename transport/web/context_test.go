@@ -335,3 +335,62 @@ func TestNewCtxWrapsTheGivenGinContextWithoutValidating(t *testing.T) {
 	noRequest, _ := gin.CreateTestContext(httptest.NewRecorder())
 	assert.Nil(t, NewCtx(noRequest).Request())
 }
+
+// TestCtxNextRunsDownstreamHandlerBeforeReturning pins that Next suspends the
+// current handler until the rest of the chain has run. A Next that merely
+// returned would still let gin run the downstream handler -- just afterwards --
+// so only the interleaving distinguishes a real Next from a no-op.
+func TestCtxNextRunsDownstreamHandlerBeforeReturning(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+
+	var order []string
+	engine.Use(Handle(func(_ context.Context, c *Ctx) error {
+		order = append(order, "outer-pre")
+		c.Next()
+		order = append(order, "outer-post")
+		return nil
+	}))
+	engine.GET("/", func(c *gin.Context) {
+		order = append(order, "inner")
+		c.Status(http.StatusNoContent)
+	})
+
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	assert.Equal(t, []string{"outer-pre", "inner", "outer-post"}, order)
+}
+
+// TestCtxSetContextPublishesThroughTheRequest pins that SetContext rewrites the
+// request rather than storing a context on Ctx. The single source of truth must
+// stay the request itself: a downstream third-party gin handler reads
+// c.Request.Context() and would silently see the old value otherwise.
+func TestCtxSetContextPublishesThroughTheRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+
+	type markerKey struct{}
+	var seenByCtx, seenByGin any
+
+	engine.Use(Handle(func(ctx context.Context, c *Ctx) error {
+		c.SetContext(context.WithValue(ctx, markerKey{}, "published"))
+		c.Next()
+		return nil
+	}))
+	engine.Use(Handle(func(_ context.Context, c *Ctx) error {
+		seenByCtx = c.Request().Context().Value(markerKey{})
+		c.Next()
+		return nil
+	}))
+	engine.GET("/", func(c *gin.Context) {
+		seenByGin = c.Request.Context().Value(markerKey{})
+		c.Status(http.StatusNoContent)
+	})
+
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	assert.Equal(t, "published", seenByCtx)
+	assert.Equal(t, "published", seenByGin)
+}
