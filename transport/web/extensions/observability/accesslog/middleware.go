@@ -23,29 +23,29 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		return nil
 	}
 
-	gc := c.Gin()
 	started := time.Now()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			p.write(state, gc, started, true)
+			p.write(state, c, started, true)
 			panic(recovered)
 		}
-		p.write(state, gc, started, false)
+		p.write(state, c, started, false)
 	}()
 	c.Next()
 	return nil
 }
 
-func (p *Plugin) write(state *runtimeState, gc *gin.Context, started time.Time, panicked bool) {
+func (p *Plugin) write(state *runtimeState, c *web.Ctx, started time.Time, panicked bool) {
 	latency := time.Since(started)
-	status := gc.Writer.Status()
-	if panicked && !gc.Writer.Written() {
+	status := c.Writer().Status()
+	if panicked && !c.Writer().Written() {
 		status = http.StatusInternalServerError
 	}
-	bytes := gc.Writer.Size()
+	bytes := c.Writer().Size()
 	if bytes < 0 {
 		bytes = 0
 	}
+	gc := c.Gin()
 	route := gc.FullPath()
 	routeName := ""
 	if info, ok := web.CurrentRoute(gc); ok {
@@ -55,10 +55,10 @@ func (p *Plugin) write(state *runtimeState, gc *gin.Context, started time.Time, 
 	// Only consume the response header produced by the requestid middleware.
 	// Falling back to the raw inbound header would let an unvalidated,
 	// attacker-controlled value enter structured logs when requestid is absent.
-	requestID := safeRequestID(gc.Writer.Header(), state.config.requestIDHeader)
+	requestID := safeRequestID(c.Writer().Header(), state.config.requestIDHeader)
 	fields := []any{
-		"method", gc.Request.Method,
-		"path", gc.Request.URL.Path,
+		"method", c.Request().Method,
+		"path", c.Request().URL.Path,
 		"route", route,
 		"route_name", routeName,
 		"status", status,
