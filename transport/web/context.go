@@ -135,7 +135,26 @@ func (c *Ctx) Principal() (Principal, bool) {
 	return CurrentPrincipal(c.c)
 }
 
+// SetContext publishes ctx to every downstream reader by rewriting the
+// request. Ctx deliberately does not hold a context.Context of its own: the
+// single source of truth must stay the request, because Handler's first
+// parameter is read off c.Request().Context() at call time, and third-party
+// gin middleware reads c.Request.Context() too. A Ctx-owned context would fork
+// from the request's and leave both sets of readers silently on a stale value.
+func (c *Ctx) SetContext(ctx context.Context) {
+	c.c.Request = c.c.Request.WithContext(ctx)
+}
+
 // -- Chain control --
+
+// Next suspends the calling middleware until the rest of the chain has run,
+// then resumes it. It is deliberately kept instead of a wrapping
+// Wrap(next) Handler model: a third-party gin.HandlerFunc calls gin's own
+// c.Next(), and only a chain the engine itself advances can splice xbc
+// middleware and gin-ecosystem middleware into one ordered list.
+func (c *Ctx) Next() {
+	c.c.Next()
+}
 
 // Abort prevents any pending handlers in the chain from running. Abort does
 // not render a response by itself; a handler that aborts is responsible for
