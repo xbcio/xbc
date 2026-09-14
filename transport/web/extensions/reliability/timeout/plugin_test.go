@@ -2,7 +2,7 @@ package timeout
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -240,18 +240,37 @@ func TestTimeoutWriterUnwrapReachesUnderlyingWriter(t *testing.T) {
 // operates on the embedded writer's own (still-default 200) status instead
 // of the buffered one, so the real response is sent prematurely with the
 // wrong status and the later deferred commit is a no-op superfluous call.
+//
+// Asserting only the final response.Code is not enough: p.handle's deferred
+// commit always writes w.status onto the real writer regardless of whether
+// WriteHeaderNow ran, so response.Code stays 418 even if WriteHeaderNow's
+// body is emptied out and never marks the writer written. The
+// observedWritten and observedSize checks below read c.Writer.Written()/
+// Size() while the wrapper is still installed (before the deferred restore
+// swaps c.Writer back to the original writer) -- those two proxy methods
+// return w.written/w.body.Len() only once WriteHeaderNow has set w.written,
+// which is the exact commit-state guard that transport/web/problem.go,
+// errors.go, extensions/response/biz and extensions/reliability/recovery
+// rely on to avoid writing a response twice.
 func TestAbortWithStatusCommitsBufferedStatus(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
 	router.Use(p.handle)
+	var observedWritten bool
+	var observedSize int
 	router.GET("/abort", func(c *gin.Context) {
 		c.AbortWithStatus(http.StatusTeapot)
+		observedWritten = c.Writer.Written()
+		observedSize = c.Writer.Size()
 	})
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/abort", nil))
 	if response.Code != http.StatusTeapot {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusTeapot)
+	}
+	if !observedWritten || observedSize == -1 {
+		t.Fatalf("timeoutWriter did not record commit state after WriteHeaderNow: written=%v size=%d", observedWritten, observedSize)
 	}
 }
 
@@ -266,21 +285,48 @@ func TestAbortWithStatusCommitsBufferedStatus(t *testing.T) {
 // httptest.ResponseRecorder.Header() always returns the live, still-mutable
 // map; only Result().Header is the frozen snapshot taken at the moment
 // headers were actually sent, matching real connection behavior.
+// TestWriteStringBuffersBodyAndDeferredHeaders pins WriteString as
+// load-bearing. gin.ResponseWriter exposes WriteString as a direct part of
+// its public contract. If WriteString is deleted, the promoted method
+// forwards straight to the embedded writer's own WriteString, which sends
+// real headers and body immediately using the embedded writer's own header
+// map -- skipping timeoutWriter's header buffer entirely, so a header set
+// via c.Header after wrapping never reaches the response actually sent.
+// response.Result().Header is used rather than response.Header() because
+// httptest.ResponseRecorder.Header() always returns the live, still-mutable
+// map; only Result().Header is the frozen snapshot taken at the moment
+// headers were actually sent, matching real connection behavior.
+//
+// The write itself always lands in the body buffer regardless of whether
+// WriteString marks the writer written -- timeoutWriter.commit copies
+// w.body unconditionally, so the header/body assertions above pass even if
+// the w.written assignment inside WriteString is deleted. The
+// observedWritten and observedSize checks below read c.Writer.Written()/
+// Size() while the wrapper is still installed, which only report the write
+// once WriteString has set w.written -- the same commit-state guard other
+// packages rely on to avoid writing a response twice.
 func TestWriteStringBuffersBodyAndDeferredHeaders(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
 	router.Use(p.handle)
+	var observedWritten bool
+	var observedSize int
 	router.GET("/tiny", func(c *gin.Context) {
 		c.Header("X-Custom", "yes")
 		if _, err := c.Writer.WriteString("tiny"); err != nil {
 			t.Fatal(err)
 		}
+		observedWritten = c.Writer.Written()
+		observedSize = c.Writer.Size()
 	})
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/tiny", nil))
 	if response.Result().Header.Get("X-Custom") != "yes" || response.Body.String() != "tiny" {
 		t.Fatalf("headers=%v body=%q", response.Result().Header, response.Body.String())
+	}
+	if !observedWritten || observedSize != len("tiny") {
+		t.Fatalf("timeoutWriter did not record commit state after WriteString: written=%v size=%d", observedWritten, observedSize)
 	}
 }
 
@@ -321,7 +367,21 @@ func TestFlushCommitsBufferedBodyBeforeStreaming(t *testing.T) {
 // timeoutWriter.Hijack refuses. If Hijack is deleted, the promoted method
 // forwards straight to the embedded writer's real Hijack with no such check,
 // silently allowing the takeover.
+//
+// A real net/http server is used (rather than httptest.ResponseRecorder,
+// which does not implement http.Hijacker at all) so the !ok branch below is
+// unreachable in the passing case: the wrapper must genuinely implement
+// http.Hijacker and genuinely refuse. The !ok branch and the genuine
+// rejection both feed the same channel, so the final assertion checks the
+// wrapper's exact rejection text (read from timeoutWriter.Hijack in
+// middleware.go) rather than merely "err != nil".
+// Re-running this mutation must pass an explicit -timeout (this package's
+// default is 10 minutes): the deleted-guard mutation lets Hijack succeed on
+// the real connection, and since the handler never uses it, the client's
+// http.Get blocks forever waiting for a response, so the mutation is killed
+// by a timeout rather than a conventional test failure.
 func TestHijackRejectsAfterBufferedWrite(t *testing.T) {
+	const wantRejection = "timeout: cannot hijack after a buffered response write"
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
@@ -331,7 +391,7 @@ func TestHijackRejectsAfterBufferedWrite(t *testing.T) {
 		c.String(http.StatusOK, "buffered")
 		hijacker, ok := c.Writer.(http.Hijacker)
 		if !ok {
-			done <- errors.New("writer does not implement http.Hijacker")
+			done <- fmt.Errorf("writer %T does not implement http.Hijacker", c.Writer)
 			return
 		}
 		_, _, err := hijacker.Hijack()
@@ -344,7 +404,11 @@ func TestHijackRejectsAfterBufferedWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if hijackErr := <-done; hijackErr == nil {
+	hijackErr := <-done
+	if hijackErr == nil {
 		t.Fatal("Hijack must reject once a buffered response write occurred")
+	}
+	if hijackErr.Error() != wantRejection {
+		t.Fatalf("Hijack rejected for the wrong reason: got %q, want %q", hijackErr.Error(), wantRejection)
 	}
 }
