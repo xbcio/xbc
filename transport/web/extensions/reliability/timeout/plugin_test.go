@@ -285,17 +285,6 @@ func TestAbortWithStatusCommitsBufferedStatus(t *testing.T) {
 // httptest.ResponseRecorder.Header() always returns the live, still-mutable
 // map; only Result().Header is the frozen snapshot taken at the moment
 // headers were actually sent, matching real connection behavior.
-// TestWriteStringBuffersBodyAndDeferredHeaders pins WriteString as
-// load-bearing. gin.ResponseWriter exposes WriteString as a direct part of
-// its public contract. If WriteString is deleted, the promoted method
-// forwards straight to the embedded writer's own WriteString, which sends
-// real headers and body immediately using the embedded writer's own header
-// map -- skipping timeoutWriter's header buffer entirely, so a header set
-// via c.Header after wrapping never reaches the response actually sent.
-// response.Result().Header is used rather than response.Header() because
-// httptest.ResponseRecorder.Header() always returns the live, still-mutable
-// map; only Result().Header is the frozen snapshot taken at the moment
-// headers were actually sent, matching real connection behavior.
 //
 // The write itself always lands in the body buffer regardless of whether
 // WriteString marks the writer written -- timeoutWriter.commit copies
