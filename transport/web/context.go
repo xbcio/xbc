@@ -153,9 +153,14 @@ func (c *Ctx) Request() *http.Request {
 	return c.c.Request
 }
 
-// Writer returns the underlying gin.ResponseWriter, for streaming, SSE, or
-// other response-writing needs that Ctx's fixed method set does not cover.
-func (c *Ctx) Writer() gin.ResponseWriter {
+// Writer returns the response writer, for streaming, SSE, or other
+// response-writing needs that Ctx's fixed method set does not cover.
+//
+// The return type is the neutral ResponseWriter rather than gin's: everything
+// the framework and its middleware actually read is in that contract, and
+// naming the narrower type here is what keeps a gin-shaped method from
+// leaking into middleware through an inferred variable.
+func (c *Ctx) Writer() ResponseWriter {
 	return c.c.Writer
 }
 
