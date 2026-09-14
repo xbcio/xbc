@@ -233,9 +233,10 @@ func TestServerUsesInjectedErrorMapperAndObservationSeesMappedStatus(t *testing.
 	observedStatus := 0
 	observer := fakeMiddleware{
 		order: Order{Phase: PhaseObserve},
-		handler: func(c *gin.Context) {
+		handler: func(_ context.Context, c *Ctx) error {
 			c.Next()
-			observedStatus = c.Writer.Status()
+			observedStatus = c.Writer().Status()
+			return nil
 		},
 	}
 	cfg := DefaultConfig()

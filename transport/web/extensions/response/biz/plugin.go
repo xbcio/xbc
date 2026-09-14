@@ -4,8 +4,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
-
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
@@ -53,8 +51,8 @@ func (p *Plugin) log() corelog.Logger {
 // Handler contributes the business error converter as a focused OnError
 // boundary. Web's outer boundary remains the final safe fallback for unknown
 // errors and invalid mapper output.
-func (p *Plugin) Handler() gin.HandlerFunc {
-	return web.Handle(web.OnError(web.ErrorMapperFunc(p.mapError)))
+func (p *Plugin) Handler() web.Handler {
+	return web.OnError(web.ErrorMapperFunc(p.mapError))
 }
 
 // Order places the business error mapper in Web's error phase.

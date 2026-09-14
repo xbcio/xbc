@@ -3,8 +3,6 @@ package ratelimit
 import (
 	"sync"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
@@ -56,8 +54,8 @@ func prepareConfig(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-// Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
+// Handler returns the middleware handler.
+func (p *Plugin) Handler() web.Handler { return p.handle }
 
 // Order lets optional CORS handling short-circuit preflight requests before
 // they consume rate-limit capacity.

@@ -39,7 +39,7 @@ func TestMiddlewareExtractsW3CContextAndUsesFrozenRouteTemplate(t *testing.T) {
 		})
 		c.Next()
 	})
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.GET("/users/:id", func(c *gin.Context) {
 		baggageValue = baggage.FromContext(c.Request.Context()).Member("tenant").Value()
 		c.Status(http.StatusCreated)
@@ -105,7 +105,7 @@ func TestMiddlewareRecordsAndRethrowsPanic(t *testing.T) {
 		c.Set(currentRouteKeyForTest, web.RouteInfo{Method: http.MethodGet, Path: "/panic"})
 		c.Next()
 	})
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.GET("/panic", func(*gin.Context) { panic("boom") })
 
 	func() {
@@ -137,7 +137,7 @@ func TestMiddlewareUsesBoundedUnmatchedName(t *testing.T) {
 	p := newTestPlugin(t, func(c *Config) { c.Batch.BatchTimeout = time.Hour }, exporter)
 
 	engine := gin.New()
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.Handle("CUSTOM", "/raw/:id", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("CUSTOM", "/raw/secret", nil))
 	if err := p.Handle().ForceFlush(context.Background()); err != nil {

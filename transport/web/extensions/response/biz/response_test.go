@@ -35,7 +35,7 @@ func TestSuccessWritersUseEnvelopeAndValidatedRequestID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			requestIDs := requestid.New()
 			engine := gin.New()
-			engine.Use(requestIDs.Handler())
+			engine.Use(web.Handle(requestIDs.Handler()))
 			engine.GET("/response", web.Handle(tt.write))
 
 			response := httptest.NewRecorder()

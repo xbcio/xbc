@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/xbcio/xbc/transport/web"
 )
 
 func corsEngine(t *testing.T, cfg Config, downstream *int) *gin.Engine {
@@ -18,7 +20,7 @@ func corsEngine(t *testing.T, cfg Config, downstream *int) *gin.Engine {
 		t.Fatal(err)
 	}
 	engine := gin.New()
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.Any("/resource", func(c *gin.Context) {
 		(*downstream)++
 		c.Status(http.StatusOK)

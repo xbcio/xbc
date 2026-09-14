@@ -23,12 +23,12 @@ import (
 )
 
 type fakeMiddleware struct {
-	handler gin.HandlerFunc
+	handler Handler
 	order   Order
 }
 
-func (m fakeMiddleware) Handler() gin.HandlerFunc { return m.handler }
-func (m fakeMiddleware) Order() Order             { return m.order }
+func (m fakeMiddleware) Handler() Handler { return m.handler }
+func (m fakeMiddleware) Order() Order     { return m.order }
 
 type fakeRouteContributor struct{ register func(*Router) }
 
@@ -319,9 +319,10 @@ func TestStartAppliesContributedMiddlewareToRoutesUnderBasePath(t *testing.T) {
 	var ran bool
 	middleware := fakeMiddleware{
 		order: Order{Phase: PhaseBusiness},
-		handler: func(c *gin.Context) {
+		handler: func(_ context.Context, c *Ctx) error {
 			ran = true
 			c.Next()
+			return nil
 		},
 	}
 	server, ctx, _ := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/api"}, serverInputs{

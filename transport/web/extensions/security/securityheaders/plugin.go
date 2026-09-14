@@ -3,8 +3,6 @@ package securityheaders
 import (
 	"sync/atomic"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit"
@@ -65,8 +63,8 @@ func newPlugin(cfg Config) (*Plugin, error) {
 	return value, nil
 }
 
-// Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
+// Handler returns the middleware handler.
+func (p *Plugin) Handler() web.Handler { return p.handle }
 
 // Order runs security headers outside optional same-phase middleware that can
 // short-circuit, so preflight and rejected responses receive the headers too.

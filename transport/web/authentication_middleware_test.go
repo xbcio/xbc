@@ -101,7 +101,7 @@ func runThroughAuth(
 		}
 		c.Next()
 	})
-	engine.Use(middleware.Handler())
+	engine.Use(Handle(middleware.Handler()))
 	engine.Handle(route.Method, route.Path, func(c *gin.Context) { c.Status(http.StatusOK) })
 	engine.NoRoute(func(c *gin.Context) { c.Status(http.StatusNotFound) })
 
@@ -131,7 +131,7 @@ func TestAuthenticationMiddlewarePassesUnmatchedRouteWithoutResolving(t *testing
 	engine := gin.New()
 	// No recordCurrentRoute stand-in: CurrentRoute misses, exactly as it does
 	// for a request gin resolves through allNoRoute.
-	engine.Use(middleware.Handler())
+	engine.Use(Handle(middleware.Handler()))
 	engine.Handle(route.Method, route.Path, func(c *gin.Context) { c.Status(http.StatusOK) })
 	engine.NoRoute(func(c *gin.Context) { c.Status(http.StatusNotFound) })
 
@@ -210,7 +210,7 @@ func TestAuthenticationMiddlewarePublishesPrincipalOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) { setCurrentRouteForTest(c, route); c.Next() })
-	engine.Use(middleware.Handler())
+	engine.Use(Handle(middleware.Handler()))
 
 	var seen Principal
 	var found bool
@@ -409,7 +409,7 @@ func TestAuthenticationMiddlewarePublishesExemptSignalToDownstream(t *testing.T)
 			}
 			c.Next()
 		})
-		engine.Use(middleware.Handler())
+		engine.Use(Handle(middleware.Handler()))
 		engine.Use(func(c *gin.Context) {
 			*exempt = AuthenticationExempt(c)
 			_, *hadPrincipal = CurrentPrincipal(c)
@@ -456,7 +456,7 @@ func TestAuthenticationMiddlewarePublishesExemptSignalToDownstream(t *testing.T)
 		engine := gin.New()
 		// No setCurrentRouteForTest stand-in: CurrentRoute misses, exactly as it
 		// does for a request gin resolves through allNoRoute.
-		engine.Use(middleware.Handler())
+		engine.Use(Handle(middleware.Handler()))
 		engine.Use(func(c *gin.Context) {
 			*exempt = AuthenticationExempt(c)
 			_, *hadPrincipal = CurrentPrincipal(c)
@@ -578,7 +578,7 @@ func runThroughAuthWithLogger(
 		setCurrentRouteForTest(c, route)
 		c.Next()
 	})
-	engine.Use(middleware.Handler())
+	engine.Use(Handle(middleware.Handler()))
 	engine.Handle(route.Method, route.Path, func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	recorder := httptest.NewRecorder()

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
@@ -17,7 +16,7 @@ import (
 )
 
 // Handler implements web.Middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handleRequest) }
+func (p *Plugin) Handler() web.Handler { return p.handleRequest }
 
 // Order implements web.Middleware. It runs in the observation phase, ahead
 // of metrics and access logging, so those middlewares observe a request that

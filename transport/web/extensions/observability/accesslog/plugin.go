@@ -3,8 +3,6 @@ package accesslog
 import (
 	"sync/atomic"
 
-	"github.com/gin-gonic/gin"
-
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
@@ -72,8 +70,8 @@ func newPlugin(cfg Config, logger corelog.Logger) (*Plugin, error) {
 	return value, nil
 }
 
-// Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
+// Handler returns the middleware handler.
+func (p *Plugin) Handler() web.Handler { return p.handle }
 
 // Order places access logging in the observation phase. The optional
 // request-ID relationship is declared by requestid to avoid duplicate edges.

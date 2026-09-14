@@ -39,9 +39,9 @@ func TestPluginMapsWrappedBizErrorAndPropagatesRequestID(t *testing.T) {
 	requestIDs := requestid.New()
 	business := New()
 	engine := gin.New()
-	engine.Use(requestIDs.Handler())
+	engine.Use(web.Handle(requestIDs.Handler()))
 	engine.Use(web.Handle(web.OnError()))
-	engine.Use(business.Handler())
+	engine.Use(web.Handle(business.Handler()))
 	engine.GET("/orders/:id", web.Handle(func(context.Context, *web.Ctx) error {
 		return fmt.Errorf("application boundary: %w", NewError(
 			"ORDER.ALREADY_PAID",
@@ -68,7 +68,7 @@ func TestPluginOnErrorKeepsWebSafeFallbackForUnknownErrors(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	engine.Use(web.Handle(web.OnError()))
-	engine.Use(New().Handler())
+	engine.Use(web.Handle(New().Handler()))
 	engine.GET("/orders", web.Handle(func(context.Context, *web.Ctx) error {
 		return errors.New("postgres://admin:private-password@database/orders")
 	}))
@@ -176,7 +176,7 @@ func TestPluginLogsCauseOfNon5xxBusinessFailure(t *testing.T) {
 	business := &Plugin{logger: logger}
 	engine := gin.New()
 	engine.Use(web.Handle(web.OnError()))
-	engine.Use(business.Handler())
+	engine.Use(web.Handle(business.Handler()))
 	engine.GET("/orders", web.Handle(func(context.Context, *web.Ctx) error {
 		return NewError("ORDER.ALREADY_PAID", "The order has already been paid.").
 			WithStatus(http.StatusConflict).

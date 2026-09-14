@@ -192,8 +192,8 @@ func (m *authenticationMiddleware) RoutesReady(catalog RouteCatalog) error {
 
 // Handler resolves policy with a single map lookup. The linear rule scan was
 // already paid once during RoutesReady.
-func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
-	return Handle(func(_ context.Context, c *Ctx) error {
+func (m *authenticationMiddleware) Handler() Handler {
+	return func(_ context.Context, c *Ctx) error {
 		gc := c.Gin()
 		route, matched := CurrentRoute(gc)
 		if !matched {
@@ -255,7 +255,7 @@ func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
 
 		writeAuthenticationRejection(gc, result)
 		return nil
-	})
+	}
 }
 
 // abortAuthenticationFailure answers an internal authentication failure with a

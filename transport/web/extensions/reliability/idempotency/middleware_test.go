@@ -39,7 +39,7 @@ func engineFor(p *Plugin, route web.RouteInfo, handler gin.HandlerFunc) *gin.Eng
 		web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "test"})
 		c.Next()
 	})
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.Handle(route.Method, route.Path, handler)
 	return engine
 }

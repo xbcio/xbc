@@ -63,7 +63,7 @@ func serveTenantRequestWithExempt(p *Plugin, route web.RouteInfo, principal *web
 		}
 		c.Next()
 	})
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.Handle(route.Method, route.Path, handler)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(route.Method, route.Path, nil)

@@ -3,8 +3,6 @@ package requestid
 import (
 	"sync/atomic"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog"
@@ -64,8 +62,8 @@ func newPlugin(cfg Config) (*Plugin, error) {
 	return value, nil
 }
 
-// Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
+// Handler returns the middleware handler.
+func (p *Plugin) Handler() web.Handler { return p.handle }
 
 // Order makes the validated/generated ID available to optional access logging.
 func (*Plugin) Order() web.Order {

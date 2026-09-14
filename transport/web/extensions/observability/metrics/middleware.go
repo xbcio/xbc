@@ -6,14 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog"
 )
 
-// Handler returns the Gin request-instrumentation middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handleRequest) }
+// Handler returns the request-instrumentation middleware handler.
+func (p *Plugin) Handler() web.Handler { return p.handleRequest }
 
 // Order places metrics in the observation phase before optional access
 // logging. Tracing owns its optional edge into metrics, avoiding a reciprocal

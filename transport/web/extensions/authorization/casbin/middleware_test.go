@@ -222,7 +222,7 @@ func requestThroughOptionalRouteWithHeader(p *Plugin, route *web.RouteInfo, befo
 		}
 		c.Next()
 	})
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	method, path := http.MethodGet, "/test"
 	if route != nil {
 		method, path = route.Method, route.Path

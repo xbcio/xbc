@@ -34,7 +34,7 @@ func initialized(t *testing.T, sink Sink, configure func(*Config)) *Plugin {
 func auditEngine(p *Plugin, route web.RouteInfo, handler gin.HandlerFunc) *gin.Engine {
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) { c.Set(currentRouteKeyForTest, route); c.Next() })
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.Use(func(c *gin.Context) {
 		web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "apikey"})
 		c.Next()

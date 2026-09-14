@@ -11,7 +11,7 @@ import (
 )
 
 // Handler implements web.Middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.authorize) }
+func (p *Plugin) Handler() web.Handler { return p.authorize }
 
 // Order implements web.Middleware.
 func (p *Plugin) Order() web.Order {

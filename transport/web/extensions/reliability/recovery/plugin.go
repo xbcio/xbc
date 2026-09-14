@@ -3,8 +3,6 @@ package recovery
 import (
 	"sync/atomic"
 
-	"github.com/gin-gonic/gin"
-
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
@@ -63,8 +61,8 @@ func newPlugin(cfg Config, logger corelog.Logger) *Plugin {
 	return value
 }
 
-// Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
+// Handler returns the middleware handler.
+func (p *Plugin) Handler() web.Handler { return p.handle }
 
 // Order places recovery outside every normal Web middleware phase.
 func (*Plugin) Order() web.Order {
