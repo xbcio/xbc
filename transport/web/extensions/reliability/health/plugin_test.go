@@ -9,12 +9,27 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
 
 type contributorFunc func() []NamedChecker
 
 func (f contributorFunc) HealthChecks() []NamedChecker { return f() }
+
+type healthTestHost struct {
+	execution context.Context
+}
+
+var _ plugin.RuntimeHost = healthTestHost{}
+
+func (h healthTestHost) ExecutionContext() context.Context { return h.execution }
+func (healthTestHost) Logger() corelog.Logger              { return corelog.Nop() }
+func (healthTestHost) TrafficGate() <-chan struct{}        { return nil }
+func (healthTestHost) SubmitTask(plugin.Identity, func(context.Context), bool) bool {
+	return false
+}
+func (healthTestHost) RequestShutdown(plugin.Identity, string) bool { return false }
 
 func TestNewUsesSafeDefaults(t *testing.T) {
 	p := New()

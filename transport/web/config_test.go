@@ -34,6 +34,7 @@ func TestConfigUsesProductionHTTPAndPayloadDefaults(t *testing.T) {
 	assert.Equal(t, int64(10<<20), cfg.MaxRequestBodyBytes)
 	assert.Equal(t, int64(8<<20), cfg.MaxMultipartMemory)
 	assert.Empty(t, cfg.TrustedProxies)
+	assert.Zero(t, cfg.Shutdown.PreDrainDelay, "pre-drain is explicit opt-in")
 }
 
 func TestConfigRejectsMalformedSecuritySettings(t *testing.T) {
@@ -45,6 +46,7 @@ func TestConfigRejectsMalformedSecuritySettings(t *testing.T) {
 		{"base path query", func(c *Config) { c.BasePath = "/api?admin=true" }},
 		{"zero timeout", func(c *Config) { c.ReadHeaderTimeout = 0 }},
 		{"negative body limit", func(c *Config) { c.MaxRequestBodyBytes = -1 }},
+		{"negative pre-drain delay", func(c *Config) { c.Shutdown.PreDrainDelay = -time.Second }},
 		{"invalid proxy", func(c *Config) { c.TrustedProxies = []string{"proxy.example.com"} }},
 		{"invalid cidr", func(c *Config) { c.TrustedProxies = []string{"10.0.0.0/99"} }},
 		{"padded proxy", func(c *Config) { c.TrustedProxies = []string{" 127.0.0.1"} }},
@@ -59,5 +61,6 @@ func TestConfigRejectsMalformedSecuritySettings(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.TrustedProxies = []string{"127.0.0.1", "10.0.0.0/8", "2001:db8::/32"}
+	cfg.Shutdown.PreDrainDelay = 250 * time.Millisecond
 	assert.NoError(t, cfg.Validate())
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -326,12 +327,19 @@ func (s *Server) Stop(ctx context.Context) error {
 	served := s.served
 	srv := s.srv
 	ln := s.ln
+	preDrainDelay := s.cfg.Shutdown.PreDrainDelay
 	s.mu.Unlock()
 	if !started {
 		return nil
 	}
 
 	if served && srv != nil {
+		// Runtime cancels every lifecycle context before it starts the reverse
+		// cleanup walk. When a health plugin is selected, its readiness route
+		// therefore reports Down here while this listener still serves probes.
+		// Shutdown itself closes listeners immediately, so the propagation window
+		// must precede it. It consumes only the runtime-owned remaining deadline.
+		waitForPreDrain(ctx, preDrainDelay)
 		if err := srv.Shutdown(ctx); err != nil {
 			if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
 				return fmt.Errorf("xbc: graceful shutdown failed (%v) and forced close failed: %w", err, closeErr)
@@ -346,4 +354,20 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// waitForPreDrain preserves an externally reachable readiness window without
+// inventing a Web-local shutdown budget. A cancelled deadline ends the window
+// immediately so the subsequent Shutdown can force-close the listener under
+// the same runtime budget.
+func waitForPreDrain(ctx context.Context, delay time.Duration) {
+	if delay <= 0 {
+		return
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
 }

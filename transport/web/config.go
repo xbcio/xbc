@@ -40,7 +40,20 @@ type Config struct {
 	MaxRequestBodyBytes int64          `yaml:"max_request_body_bytes" default:"10485760" validate:"gt=0"`
 	MaxMultipartMemory  int64          `yaml:"max_multipart_memory"   default:"8388608" validate:"gt=0"`
 	TrustedProxies      []string       `yaml:"trusted_proxies"                          validate:"dive,required"`
+	Shutdown            ShutdownConfig `yaml:"shutdown"`
 	Security            SecurityConfig `yaml:"security"`
+}
+
+// ShutdownConfig controls Web-owned behavior after runtime cancellation. The
+// shared application shutdown deadline remains owned by runtime; Web never
+// creates a second budget.
+type ShutdownConfig struct {
+	// PreDrainDelay keeps a serving listener open after lifecycle contexts have
+	// been cancelled and before http.Server.Shutdown closes it. This gives a
+	// readiness endpoint an externally reachable propagation window. It is an
+	// opportunity, not confirmation that a load balancer has removed the
+	// instance, and normal application routes remain available during it.
+	PreDrainDelay time.Duration `yaml:"pre_drain_delay" default:"0s" validate:"gte=0"`
 }
 
 // DefaultConfig returns the production-safe defaults used by New and by the
@@ -56,6 +69,7 @@ func DefaultConfig() Config {
 		MaxHeaderBytes:      defaultMaxHeaderBytes,
 		MaxRequestBodyBytes: defaultMaxRequestBodyBytes,
 		MaxMultipartMemory:  defaultMaxMultipartMemory,
+		Shutdown:            ShutdownConfig{PreDrainDelay: 0},
 		Security:            SecurityConfig{Default: SecurityDeny},
 	}
 }
@@ -73,6 +87,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxHeaderBytes <= 0 || c.MaxRequestBodyBytes <= 0 || c.MaxMultipartMemory <= 0 {
 		return fmt.Errorf("web: request size limits must be greater than zero")
+	}
+	if c.Shutdown.PreDrainDelay < 0 {
+		return fmt.Errorf("web: shutdown.pre_drain_delay must not be negative")
 	}
 	for _, proxy := range c.TrustedProxies {
 		if proxy == "" || proxy != strings.TrimSpace(proxy) {

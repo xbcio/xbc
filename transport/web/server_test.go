@@ -539,6 +539,41 @@ func TestShutdownDrainsAnInFlightRequestBeforeReturning(t *testing.T) {
 	require.NoError(t, listener.Close())
 }
 
+// TestShutdownPreDrainUsesTheSharedDeadline keeps the optional readiness
+// propagation interval inside runtime's one shutdown budget. A Web-local timer
+// that ignored ctx would delay every later Stop and violate the core contract.
+func TestShutdownPreDrainUsesTheSharedDeadline(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.Shutdown.PreDrainDelay = time.Second
+	server, ctx, host := newPingServer(t, cfg, serverInputs{})
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+	host.releaseTraffic()
+	addr := server.Addr()
+	require.True(t, pollUntil(2*time.Second, 20*time.Millisecond, func() bool {
+		return probe(addr, "/ping", 250*time.Millisecond) == nil
+	}), "the serving task never began answering after the gate was released")
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := server.Stop(stopCtx)
+	elapsed := time.Since(started)
+
+	require.NoError(t, err, "an idle server can still close cleanly after the budget expires")
+	assert.ErrorIs(t, stopCtx.Err(), context.DeadlineExceeded,
+		"pre-drain must observe the supplied runtime deadline")
+	assert.GreaterOrEqual(t, elapsed, 50*time.Millisecond,
+		"pre-drain must not be skipped while its shared deadline is still live")
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"pre-drain must stop at the supplied runtime deadline, not wait for its configured delay")
+
+	listener, listenErr := net.Listen("tcp", addr)
+	require.NoError(t, listenErr, "a deadline-expired Stop must still force-close the listener")
+	require.NoError(t, listener.Close())
+}
+
 // TestShutdownIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline pins
 // the other half: a handler that outlives the shutdown deadline must not make
 // Stop unbounded. Stop force-closes, reports the deadline, and releases the
@@ -609,5 +644,83 @@ func TestShutdownIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline(t
 	case <-finished:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the forcibly closed request never finished")
+	}
+}
+
+// fallbackKey is a non-string context key, which matters: gin's Context.Value
+// consults its own Keys map only for string keys, so a struct key can only be
+// answered by the request context. It therefore isolates the fallback.
+type fallbackKey struct{}
+
+type fallbackObservation struct {
+	hasDoneChannel  bool
+	sawCancellation bool
+	requestValue    string
+}
+
+// TestServerEnablesGinContextFallback pins the one line in Start that decides
+// whether a *gin.Context behaves like a real context.Context.
+//
+// Both assertions are discriminating against ContextWithFallback left off:
+// Done() would be nil, so the handler's select would hit its failure deadline
+// with sawCancellation false, and Value would skip the request context and
+// return an empty string. Asserting only that the request completes would pass
+// either way, because a handler that never observes cancellation still returns.
+func TestServerEnablesGinContextFallback(t *testing.T) {
+	entered := make(chan struct{})
+	observed := make(chan fallbackObservation, 1)
+	_, addr := servingPingServer(t, serverInputs{
+		routes: []plugin.Entry[RouteContributor]{{
+			Identity: plugin.Identity{Plugin: "fallbacktest"},
+			Value: fakeRouteContributor{register: func(router *Router) {
+				router.GET("/fallback", func(c *gin.Context) {
+					c.Request = c.Request.WithContext(
+						context.WithValue(c.Request.Context(), fallbackKey{}, "from request context"),
+					)
+					result := fallbackObservation{hasDoneChannel: c.Done() != nil}
+					result.requestValue, _ = c.Value(fallbackKey{}).(string)
+
+					close(entered)
+					// A nil Done channel blocks forever, so the deadline is the
+					// failure bound rather than the success signal.
+					select {
+					case <-c.Done():
+						result.sawCancellation = true
+					case <-time.After(2 * time.Second):
+					}
+					observed <- result
+					c.String(http.StatusOK, "done")
+				})
+			}},
+		}},
+	})
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, "http://"+addr+"/fallback", nil)
+	require.NoError(t, err)
+	go func() {
+		response, err := http.DefaultClient.Do(request)
+		if err == nil {
+			_ = response.Body.Close()
+		}
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler was never entered")
+	}
+	cancelRequest()
+
+	select {
+	case result := <-observed:
+		assert.True(t, result.hasDoneChannel,
+			"c.Done() is nil, so every WithContext(c) call silently loses cancellation")
+		assert.True(t, result.sawCancellation,
+			"the client disconnected but the handler's context was never cancelled")
+		assert.Equal(t, "from request context", result.requestValue,
+			"c.Value did not fall back to the request context for a non-string key")
+	case <-time.After(4 * time.Second):
+		t.Fatal("the handler never reported its observation")
 	}
 }

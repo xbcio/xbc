@@ -46,8 +46,12 @@
 // the aggregate report is stable and name-sorted.
 //
 // The plugin exports web.RouteContributor and registers public liveness and
-// readiness routes. Diagnostic errors are hidden by DetailNever by default to
-// avoid exposing internal addresses or dependency details. Bundle and ordinary
-// imports are side-effect free; executables using xbc.Run may opt into the leaf
-// autoload adapter.
+// readiness routes. Once XBC begins graceful shutdown, readiness immediately
+// reports Down while liveness remains Up. With a nonzero
+// web.shutdown.pre_drain_delay, Web leaves its listener up so external probes
+// can observe 503 before HTTP draining starts; at the 0s default, drain begins
+// immediately. Diagnostic errors are hidden by DetailNever by default to avoid
+// exposing internal addresses or dependency details. Bundle and ordinary imports
+// are side-effect free; executables using xbc.Run may opt into the leaf autoload
+// adapter.
 package health

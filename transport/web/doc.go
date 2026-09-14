@@ -82,6 +82,13 @@
 // so one failure leaves every ingress blocked. Stop drains a serving server or
 // closes a listener that never crossed the gate.
 //
+// When runtime cancellation begins, Stop optionally leaves a serving listener
+// up for web.shutdown.pre_drain_delay before calling http.Server.Shutdown. The
+// default is 0s. A nonzero delay lets readiness probes receive 503 before HTTP
+// draining begins, but consumes the shared runtime shutdown budget, continues
+// to accept ordinary traffic, and is not acknowledgement that a load balancer
+// has withdrawn the instance.
+//
 // # Configuration and proxy trust
 //
 // Config is bound from the root-level "web" section. Its defaults provide
@@ -90,6 +97,8 @@
 //	web:
 //	  addr: ":8080"
 //	  base_path: "/api/v1"
+//	  shutdown:
+//	    pre_drain_delay: 0s
 //	  read_timeout: 10s
 //	  read_header_timeout: 5s
 //	  write_timeout: 30s

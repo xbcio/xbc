@@ -31,6 +31,12 @@ web:
   # Plugin routes are relative to this prefix. Probe and documentation URLs
   # therefore become /api/v1/healthz, /api/v1/readyz, and /api/v1/docs.
   base_path: "/api/v1"
+  shutdown:
+    # Default is 0s. Keep the listener up after cancellation so /readyz can
+    # return 503 before HTTP draining begins. This consumes the shared shutdown
+    # budget, still accepts ordinary traffic, and is not acknowledgement that a
+    # load balancer has withdrawn the instance.
+    pre_drain_delay: 2s
   read_timeout: 10s
   read_header_timeout: 5s
   write_timeout: 30s
@@ -112,6 +118,8 @@ plugins:
   health:
     timeout: 2s
     liveness_path: "/healthz"
+    # Returns 503 after shutdown begins; the delay above keeps it reachable
+    # before HTTP drain.
     readiness_path: "/readyz"
     # Do not expose dependency errors on public probes.
     detail_policy: never

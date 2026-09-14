@@ -80,6 +80,8 @@ The runnable baseline is [`examples/quickstart/application.yml`](../examples/qui
 
 Only Bundles selected at the composition root can own configuration sections. A misspelled section, an unknown field in a typed section, or configuration for an unselected plugin fails startup instead of being ignored.
 
+The example sets `web.shutdown.pre_drain_delay: 2s` so `/readyz` can return 503 after runtime cancellation before HTTP draining begins. The transport default is `0s`; a nonzero deployment-specific interval consumes the shared shutdown budget and still accepts ordinary traffic, so it is a propagation opportunity rather than acknowledgement that a load balancer has withdrawn the instance.
+
 ### Files and profiles
 
 Without `--config`, XBC uses the first file found in the current working directory:

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -64,6 +65,55 @@ func TestWebProbesReturnStatusCodesStableJSONAndHideDetailsByDefault(t *testing.
 	assert.Equal(t, "dependency/a-database", readyBody.Checks[0].Name)
 	assert.Equal(t, "dependency/z-cache", readyBody.Checks[1].Name)
 	assert.Empty(t, readyBody.Checks[0].Error, "error details must be absent by default")
+}
+
+func TestReadinessTurnsDownImmediatelyWhenRuntimeShutdownBegins(t *testing.T) {
+	execution, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	contributorCalls := make(chan struct{}, 1)
+	p, err := newPlugin(DefaultConfig(), []plugin.Entry[Contributor]{{
+		Identity: plugin.Identity{Plugin: "dependency", Instance: plugin.DefaultInstance},
+		Value: contributorFunc(func() []NamedChecker {
+			contributorCalls <- struct{}{}
+			return []NamedChecker{{
+				Kind: Readiness,
+				Checker: CheckFunc(func(context.Context) error {
+					return errors.New("this check must not run during shutdown")
+				}),
+			}}
+		}),
+	}})
+	require.NoError(t, err)
+	require.NoError(t, p.Init(plugin.NewRuntimeContext(healthTestHost{execution: execution}, plugin.Identity{Plugin: Key})))
+
+	readyCode, readyBody := invokeProbe(t, p, Readiness, "/readyz")
+	assert.Equal(t, http.StatusServiceUnavailable, readyCode, "the normal readiness contributor is down before shutdown")
+	assert.Equal(t, Down, readyBody.Status)
+	select {
+	case <-contributorCalls:
+	case <-time.After(time.Second):
+		t.Fatal("the normal readiness probe did not call its contributor")
+	}
+
+	cancel()
+
+	readyCode, readyBody = invokeProbe(t, p, Readiness, "/readyz")
+	assert.Equal(t, http.StatusServiceUnavailable, readyCode)
+	assert.Equal(t, Down, readyBody.Status)
+	require.Len(t, readyBody.Checks, 1)
+	assert.Equal(t, runtimeCheckName, readyBody.Checks[0].Name)
+	assert.Empty(t, readyBody.Checks[0].Error, "default detail policy must not expose the shutdown reason")
+	select {
+	case <-contributorCalls:
+		t.Fatal("shutdown readiness must short-circuit before it calls contributors")
+	default:
+	}
+
+	liveCode, liveBody := invokeProbe(t, p, Liveness, "/healthz")
+	assert.Equal(t, http.StatusOK, liveCode)
+	assert.Equal(t, Up, liveBody.Status)
+	require.Len(t, liveBody.Checks, 0, "the contributor offers only readiness")
 }
 
 func TestWebProbeHandlerHonorsConfiguredDetailPolicy(t *testing.T) {
