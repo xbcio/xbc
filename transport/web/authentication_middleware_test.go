@@ -19,6 +19,11 @@ import (
 type stubAuth struct {
 	scheme authentication.Scheme
 	result authentication.Result
+	// err, when non-nil, is returned as the authenticator's own operational
+	// failure instead of result -- the manager wraps it as an OperationalError
+	// before the middleware ever sees it. Zero value nil, so every existing
+	// literal that omits this field keeps returning result unchanged.
+	err error
 	// calls counts Authenticate invocations so a test can assert that a request
 	// reached, or never reached, policy resolution.
 	calls int
@@ -30,7 +35,7 @@ func (s *stubAuth) Authenticate(
 	context.Context, authentication.Credential,
 ) (authentication.Result, error) {
 	s.calls++
-	return s.result, nil
+	return s.result, s.err
 }
 
 // newTestCatalog builds a frozen catalog directly. routeCatalog is package
@@ -690,6 +695,81 @@ func TestAuthenticationFailureKeepsCauseOutOfResponse(t *testing.T) {
 		t.Fatalf(
 			"log = %q, want the full cause: this one is framework-built and safe, "+
 				"so eliding it would leave the failure undiagnosable",
+			logged,
+		)
+	}
+}
+
+// TestAuthenticationFailureKeepsAuthenticatorErrorGeneric covers a third
+// failure site -- the authenticator's own Authenticate error, wrapped by the
+// manager into an OperationalError before this middleware ever sees it. It is
+// the most dangerous of the three sites: the cause originates from a
+// third-party authenticator (jwt/session/apikey), the source most likely to
+// carry credential material.
+//
+// The failing implementation this pins: the middleware body has an error
+// return now, so "return err" instead of "abortAuthenticationFailure(gc,
+// err); return nil" type-checks. That routes the error through Handle's
+// AbortError and the OnError mapper chain -- which renders
+// "internal_server_error", not the fixed "authentication_failed" problem --
+// and would let an application-registered mapper that recognizes the
+// authenticator's error type turn it into a revealing response. No test
+// before this one drove the manager error non-nil at this exact call site
+// with a body assertion strict enough to tell the two implementations apart;
+// TestAuthenticationFailureLogsOperationalErrorWithoutItsCause only checked
+// status and log content, and both stay identical between "authentication_
+// failed" and "internal_server_error" because OperationalError.Error() is
+// safe either way it is logged.
+func TestAuthenticationFailureKeepsAuthenticatorErrorGeneric(t *testing.T) {
+	t.Parallel()
+
+	const marker = "operational-secret-should-not-leak"
+	route := RouteInfo{Method: http.MethodGet, Path: "/orders"}
+	middleware := buildTestAuthMiddleware(
+		t,
+		SecurityConfig{Default: SecurityDeny},
+		[]RouteInfo{route},
+		authentication.Presented("token"),
+		&stubAuth{scheme: "jwt", err: fmt.Errorf("verify signature: %s", marker)},
+	)
+
+	response, logger := runThroughAuthWithLogger(t, middleware, route)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+	body := response.Body.String()
+	if strings.Contains(body, marker) {
+		t.Fatalf(
+			"response body = %q, must not contain the authenticator's cause %q",
+			body, marker,
+		)
+	}
+	if !strings.Contains(body, "authentication_failed") {
+		t.Fatalf(
+			"response body = %q, want the generic authentication_failed problem: "+
+				"routing this error through the OnError mapper chain instead of "+
+				"abortAuthenticationFailure produces internal_server_error instead",
+			body,
+		)
+	}
+	// OperationalError.Error() deliberately omits the wrapped cause (see
+	// authentication.OperationalError), so the log can only ever carry the
+	// safe operation-and-scheme summary -- never the marker. Asserting that
+	// summary is present is what rules out the failure silently swallowing
+	// the error instead of logging it.
+	logged := logger.rendered()
+	if strings.Contains(logged, marker) {
+		t.Fatalf(
+			"log = %q, must not contain the authenticator's cause %q: "+
+				"only the safe operation and scheme may reach the log",
+			logged, marker,
+		)
+	}
+	if !strings.Contains(logged, "authentication failed") || !strings.Contains(logged, `"jwt"`) {
+		t.Fatalf(
+			"log = %q, want the operational summary naming the failed operation and scheme: "+
+				"an internal authentication failure must leave a server-side trace",
 			logged,
 		)
 	}
