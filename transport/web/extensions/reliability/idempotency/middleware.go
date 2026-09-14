@@ -96,8 +96,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 
 func (p *Plugin) executeOwned(c *web.Ctx, state *runtimeState, key, fingerprint, owner string) {
 	// Phase 4 debt: captureWriter embeds gin.ResponseWriter, so the writer
-	// swap stays on gc until Ctx gains a neutral SetWriter (see plan §2
-	// correction 2).
+	// swap stays on gc until Ctx gains a neutral SetWriter.
 	gc := c.Gin()
 	writer := &captureWriter{ResponseWriter: gc.Writer, limit: state.config.maxResponseBytes}
 	gc.Writer = writer

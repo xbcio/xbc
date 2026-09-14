@@ -28,8 +28,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	c.SetContext(ctx)
 
 	// Phase 4 debt: timeoutWriter embeds gin.ResponseWriter, so the writer
-	// swap stays on gc until Ctx gains a neutral SetWriter (see plan §2
-	// correction 2).
+	// swap stays on gc until Ctx gains a neutral SetWriter.
 	original := gc.Writer
 	writer := newTimeoutWriter(original)
 	gc.Writer = writer
