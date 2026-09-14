@@ -135,7 +135,7 @@ func TestPanicDoesNotCommitBufferedBody(t *testing.T) {
 	state, _ := normalizeConfig(cfg)
 	p.state.Store(&state)
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/panic", func(c *gin.Context) {
 		c.Header("X-Partial", "must-not-leak")
 		c.String(http.StatusOK, "secret partial body")
@@ -167,7 +167,7 @@ func perform(t *testing.T, cfg Config, method, path string, headers map[string]s
 	}
 	p.state.Store(&state)
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.Handle(method, path, handler)
 	request := httptest.NewRequest(method, path, nil)
 	for key, value := range headers {
@@ -366,7 +366,7 @@ func TestFlushCommitsBufferedBodyBeforeStreaming(t *testing.T) {
 	}
 	p.state.Store(&state)
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/flush", func(c *gin.Context) {
 		c.String(http.StatusOK, "buffered-before-flush")
 		c.Writer.Flush()
@@ -423,7 +423,7 @@ func TestHijackRejectsAfterBufferedWrite(t *testing.T) {
 	}
 	p.state.Store(&state)
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	done := make(chan error, 1)
 	router.GET("/hijack", func(c *gin.Context) {
 		c.String(http.StatusOK, "buffered")

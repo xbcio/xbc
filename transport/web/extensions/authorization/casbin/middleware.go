@@ -1,6 +1,7 @@
 package casbin
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // Handler implements web.Middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.authorize }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.authorize) }
 
 // Order implements web.Middleware.
 func (p *Plugin) Order() web.Order {
@@ -20,16 +21,17 @@ func (p *Plugin) Order() web.Order {
 	}
 }
 
-func (p *Plugin) authorize(c *gin.Context) {
+func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
+	gc := c.Gin()
 	// Ask the framework what exemption actually applied to this request,
 	// never the route's own .Auth() declaration: an application rule in
 	// web.security is the final arbiter and may have tightened a route that
 	// declared itself public.
-	if web.AuthenticationExempt(c) {
+	if web.AuthenticationExempt(gc) {
 		c.Next()
-		return
+		return nil
 	}
-	route, found := web.CurrentRoute(c)
+	route, found := web.CurrentRoute(gc)
 	if !found {
 		// This is a deliberate divergence from tenant, which passes an
 		// unmatched route (404/405) straight through to preserve gin's own
@@ -37,23 +39,22 @@ func (p *Plugin) authorize(c *gin.Context) {
 		// it to 403 here is pre-existing behavior, not introduced by the
 		// exemption-model change: flipping it would alter the observable
 		// response for every unmatched path in every casbin application, and
-		// fail-closed is the safer side to leave standing. Ruling 23 leaves
-		// both extensions as they are.
-		forbidden(c)
-		return
+		// fail-closed is the safer side to leave standing.
+		forbidden(gc)
+		return nil
 	}
 
 	if p.stopped.Load() {
-		forbidden(c)
-		return
+		forbidden(gc)
+		return nil
 	}
 	state := p.state
 
-	subject, ok := state.resolver.ResolveSubject(c)
+	subject, ok := state.resolver.ResolveSubject(gc)
 	subject = strings.TrimSpace(subject)
 	if !ok || subject == "" {
-		forbidden(c)
-		return
+		forbidden(gc)
+		return nil
 	}
 
 	var request []any
@@ -63,37 +64,38 @@ func (p *Plugin) authorize(c *gin.Context) {
 		if permission == "" {
 			if state.cfg.missingPermission == MissingPermissionAllow {
 				c.Next()
-				return
+				return nil
 			}
-			forbidden(c)
-			return
+			forbidden(gc)
+			return nil
 		}
 		request = []any{subject, permission}
 	case ConventionPathMethod:
 		object := strings.TrimSpace(route.Path)
 		action := strings.ToUpper(strings.TrimSpace(route.Method))
 		if object == "" || action == "" {
-			forbidden(c)
-			return
+			forbidden(gc)
+			return nil
 		}
 		request = []any{subject, object, action}
 	default:
-		forbidden(c)
-		return
+		forbidden(gc)
+		return nil
 	}
 
 	allowed, err := state.enforcer.Enforce(request...)
 	if err != nil {
 		state.logger.Error("casbin: authorization evaluation failed",
 			"method", route.Method, "path", route.Path, "error", err)
-		forbidden(c)
-		return
+		forbidden(gc)
+		return nil
 	}
 	if !allowed {
-		forbidden(c)
-		return
+		forbidden(gc)
+		return nil
 	}
 	c.Next()
+	return nil
 }
 
 func forbidden(c *gin.Context) {

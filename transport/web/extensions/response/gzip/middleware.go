@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	compressgzip "compress/gzip"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -12,41 +13,49 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/xbcio/xbc/transport/web"
 )
 
-func (p *Plugin) handle(c *gin.Context) {
+func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	cfg := p.state.Load()
-	if cfg == nil || cfg.excludedPath(c.Request.URL.Path) || isUpgrade(c.Request) ||
-		acceptsEventStream(c.Request.Header.Values("Accept")) ||
-		c.Request.Header.Get("Range") != "" {
+	if cfg == nil || cfg.excludedPath(c.Request().URL.Path) || isUpgrade(c.Request()) ||
+		acceptsEventStream(c.Request().Header.Values("Accept")) ||
+		c.Request().Header.Get("Range") != "" {
 		c.Next()
-		return
+		return nil
 	}
 
 	// A cache must distinguish compressed and identity representations even
 	// when this particular request selected identity (including HEAD).
-	addVary(c.Writer.Header(), "Accept-Encoding")
-	if c.Request.Method == http.MethodHead || !gzipAccepted(c.Request.Header.Get("Accept-Encoding")) {
+	addVary(c.Writer().Header(), "Accept-Encoding")
+	if c.Request().Method == http.MethodHead || !gzipAccepted(c.Request().Header.Get("Accept-Encoding")) {
 		c.Next()
-		return
+		return nil
 	}
 
-	original := c.Writer
+	// Phase 4 debt: the buffering writer embeds gin.ResponseWriter, so
+	// constructing and installing it needs the concrete gin type. It reads
+	// and writes gc.Writer directly until Ctx grows a neutral SetWriter in
+	// that later phase.
+	gc := c.Gin()
+	original := gc.Writer
 	writer := newBufferingWriter(original)
-	c.Writer = writer
+	gc.Writer = writer
 	defer func() {
 		recovered := recover()
-		c.Writer = original
+		gc.Writer = original
 		if recovered != nil {
 			// Both body and handler-owned headers are isolated until finish, so
 			// the outer recovery boundary can still emit a clean response.
 			panic(recovered)
 		}
-		if err := writer.finish(c.Request, *cfg); err != nil {
+		if err := writer.finish(c.Request(), *cfg); err != nil {
 			panic(err)
 		}
 	}()
 	c.Next()
+	return nil
 }
 
 type bufferingWriter struct {
