@@ -1,12 +1,11 @@
 package cors
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/gin-gonic/gin"
 
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -75,18 +74,20 @@ type ConfigError struct {
 
 func (e *ConfigError) Error() string { return "cors: " + e.Field + " " + e.Message }
 
-func (p *Plugin) handle(c *gin.Context) {
+func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	p.mu.RLock()
 	compiled := p.policy
 	p.mu.RUnlock()
 	if compiled == nil {
-		web.AbortProblem(c, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
-		return
+		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
+		return nil
 	}
 	compiled.handle(c)
+	return nil
 }
 
-func (p *policy) handle(c *gin.Context) {
+func (p *policy) handle(c *web.Ctx) {
+	gc := c.Gin()
 	origin := c.GetHeader("Origin")
 	if origin == "" {
 		c.Next()
@@ -94,20 +95,20 @@ func (p *policy) handle(c *gin.Context) {
 	}
 
 	if !p.originAllowed(origin) {
-		addVary(c.Writer.Header(), "Origin")
-		web.AbortProblem(c, web.NewProblem(http.StatusForbidden, "forbidden"))
+		addVary(c.Writer().Header(), "Origin")
+		web.AbortProblem(gc, web.NewProblem(http.StatusForbidden, "forbidden"))
 		return
 	}
 
 	requestedMethod := c.GetHeader("Access-Control-Request-Method")
-	preflight := c.Request.Method == http.MethodOptions && requestedMethod != ""
+	preflight := c.Request().Method == http.MethodOptions && requestedMethod != ""
 	var requestedHeaders []string
 	if preflight {
 		var ok bool
 		requestedHeaders, ok = parseRequestedHeaders(c.GetHeader("Access-Control-Request-Headers"))
 		if !ok || !p.preflightAllowed(requestedMethod, requestedHeaders) {
-			addPreflightVary(c.Writer.Header())
-			web.AbortProblem(c, web.NewProblem(http.StatusForbidden, "forbidden"))
+			addPreflightVary(c.Writer().Header())
+			web.AbortProblem(gc, web.NewProblem(http.StatusForbidden, "forbidden"))
 			return
 		}
 	}
@@ -115,29 +116,36 @@ func (p *policy) handle(c *gin.Context) {
 	p.writeOriginHeaders(c, origin)
 	if !preflight {
 		if len(p.exposeHeaders) != 0 {
-			c.Header("Access-Control-Expose-Headers", strings.Join(p.exposeHeaders, ", "))
+			c.SetHeader("Access-Control-Expose-Headers", strings.Join(p.exposeHeaders, ", "))
 		}
 		c.Next()
 		return
 	}
 
-	addPreflightVary(c.Writer.Header())
+	addPreflightVary(c.Writer().Header())
 	if p.anyMethod {
-		c.Header("Access-Control-Allow-Methods", strings.TrimSpace(requestedMethod))
+		c.SetHeader("Access-Control-Allow-Methods", strings.TrimSpace(requestedMethod))
 	} else {
-		c.Header("Access-Control-Allow-Methods", strings.Join(p.methods, ", "))
+		c.SetHeader("Access-Control-Allow-Methods", strings.Join(p.methods, ", "))
 	}
 	if p.anyHeader {
 		if len(requestedHeaders) != 0 {
-			c.Header("Access-Control-Allow-Headers", strings.Join(requestedHeaders, ", "))
+			c.SetHeader("Access-Control-Allow-Headers", strings.Join(requestedHeaders, ", "))
 		}
 	} else if len(p.headers) != 0 {
-		c.Header("Access-Control-Allow-Headers", strings.Join(p.headers, ", "))
+		c.SetHeader("Access-Control-Allow-Headers", strings.Join(p.headers, ", "))
 	}
 	if p.maxAgeSeconds > 0 {
-		c.Header("Access-Control-Max-Age", strconv.FormatInt(p.maxAgeSeconds, 10))
+		c.SetHeader("Access-Control-Max-Age", strconv.FormatInt(p.maxAgeSeconds, 10))
 	}
-	c.AbortWithStatus(http.StatusNoContent)
+	// Phase 4 debt: gin's AbortWithStatus is Status + WriteHeaderNow + Abort.
+	// Rewriting this as Ctx's Status followed by Abort would flip Written()
+	// from true to false on this middleware's unwind path, and the shared
+	// "don't double-write the response" guards in biz, recovery, and problem
+	// read exactly that flag to decide whether a response already went out.
+	// This stays on gc until the two-step commit is pushed down into a gin
+	// shim in a later phase.
+	gc.AbortWithStatus(http.StatusNoContent)
 }
 
 func (p *policy) originAllowed(origin string) bool {
@@ -170,15 +178,15 @@ func (p *policy) preflightAllowed(method string, headers []string) bool {
 	return true
 }
 
-func (p *policy) writeOriginHeaders(c *gin.Context, origin string) {
+func (p *policy) writeOriginHeaders(c *web.Ctx, origin string) {
 	if p.anyOrigin {
-		c.Header("Access-Control-Allow-Origin", "*")
+		c.SetHeader("Access-Control-Allow-Origin", "*")
 	} else {
-		c.Header("Access-Control-Allow-Origin", origin)
-		addVary(c.Writer.Header(), "Origin")
+		c.SetHeader("Access-Control-Allow-Origin", origin)
+		addVary(c.Writer().Header(), "Origin")
 	}
 	if p.allowCredentials {
-		c.Header("Access-Control-Allow-Credentials", "true")
+		c.SetHeader("Access-Control-Allow-Credentials", "true")
 	}
 }
 

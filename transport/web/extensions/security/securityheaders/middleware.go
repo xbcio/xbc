@@ -1,30 +1,32 @@
 package securityheaders
 
 import (
+	"context"
 	"strings"
 
-	"github.com/gin-gonic/gin"
+	"github.com/xbcio/xbc/transport/web"
 )
 
-func (p *Plugin) handle(c *gin.Context) {
+func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	state := p.state.Load()
 	if state == nil {
 		c.Next()
-		return
+		return nil
 	}
 	for _, header := range state.headers {
 		if header.value != "" {
-			c.Header(header.name, header.value)
+			c.SetHeader(header.name, header.value)
 		}
 	}
 	if state.hsts != "" && (!state.hstsOnlyHTTPS || requestIsHTTPS(c, state.hstsTrustForwardedProto)) {
-		c.Header("Strict-Transport-Security", state.hsts)
+		c.SetHeader("Strict-Transport-Security", state.hsts)
 	}
 	c.Next()
+	return nil
 }
 
-func requestIsHTTPS(c *gin.Context, trustForwardedProto bool) bool {
-	if c.Request.TLS != nil {
+func requestIsHTTPS(c *web.Ctx, trustForwardedProto bool) bool {
+	if c.Request().TLS != nil {
 		return true
 	}
 	return trustForwardedProto && strings.EqualFold(strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")), "https")

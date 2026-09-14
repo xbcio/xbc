@@ -66,7 +66,7 @@ func newPlugin(cfg Config) (*Plugin, error) {
 }
 
 // Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handle }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
 
 // Order runs compression inside timeout's complete-response buffer when that
 // optional middleware is present.

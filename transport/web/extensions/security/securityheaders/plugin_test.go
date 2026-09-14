@@ -37,7 +37,7 @@ func TestSafeDefaultsAndHTTPSOnlyHSTS(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := New()
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
 	httpResponse := httptest.NewRecorder()
@@ -80,7 +80,7 @@ func TestConfigurationDisablesPoliciesAndRejectsInjection(t *testing.T) {
 	p := New()
 	p.state.Store(&state)
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))

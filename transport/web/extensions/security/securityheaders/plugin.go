@@ -66,7 +66,7 @@ func newPlugin(cfg Config) (*Plugin, error) {
 }
 
 // Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handle }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
 
 // Order runs security headers outside optional same-phase middleware that can
 // short-circuit, so preflight and rejected responses receive the headers too.
