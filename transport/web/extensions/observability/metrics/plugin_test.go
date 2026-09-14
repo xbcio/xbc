@@ -71,7 +71,7 @@ func TestRecordsRouteTemplateAndBoundedLabels(t *testing.T) {
 		c.Set(currentRouteKeyForTest, web.RouteInfo{Method: http.MethodGet, Path: "/users/:id", Name: "users.get"})
 		c.Next()
 	})
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.GET("/users/:id", func(c *gin.Context) { c.Status(http.StatusCreated) })
 
 	response := httptest.NewRecorder()
@@ -126,7 +126,7 @@ func TestConcurrentRequestsAndGather(t *testing.T) {
 		c.Set(currentRouteKeyForTest, web.RouteInfo{Method: http.MethodGet, Path: "/items/:id"})
 		c.Next()
 	})
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.GET("/items/:id", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
 	const count = 100

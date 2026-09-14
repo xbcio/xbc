@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
@@ -26,8 +24,8 @@ var _ authentication.RequiresPrincipal = (*Plugin)(nil)
 // authorization stack remains valid when casbin is absent.
 const casbinKey plugin.Key = "casbin"
 
-// Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.resolve) }
+// Handler returns the middleware handler.
+func (p *Plugin) Handler() web.Handler { return p.resolve }
 
 // Order places tenant resolution after the authentication middleware and
 // before Casbin.

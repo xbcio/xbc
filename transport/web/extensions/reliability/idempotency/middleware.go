@@ -20,7 +20,7 @@ import (
 )
 
 // Handler implements web.Middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
+func (p *Plugin) Handler() web.Handler { return p.handle }
 
 // Order implements web.Middleware. It runs in PhaseBusiness so authentication
 // has already published the principal included in the fingerprint.

@@ -152,8 +152,8 @@ func newPlugin(cfg Config, logger log.Logger, opts ...Option) (*Plugin, error) {
 	return value, nil
 }
 
-// Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.observe) }
+// Handler returns the middleware handler.
+func (p *Plugin) Handler() web.Handler { return p.observe }
 
 // Order places audit logging in the outer observation phase.
 func (*Plugin) Order() web.Order { return web.Order{Phase: web.PhaseObserve} }

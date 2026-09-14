@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/ordering"
 )
@@ -22,8 +20,8 @@ type errorBoundary struct {
 	mappers []ErrorMapper
 }
 
-func (b *errorBoundary) Handler() gin.HandlerFunc { return Handle(OnError(b.mappers...)) }
-func (*errorBoundary) Order() Order               { return Order{Phase: PhaseError} }
+func (b *errorBoundary) Handler() Handler { return OnError(b.mappers...) }
+func (*errorBoundary) Order() Order       { return Order{Phase: PhaseError} }
 
 var errorMapperInput = plugin.Collect[ErrorMapper]()
 

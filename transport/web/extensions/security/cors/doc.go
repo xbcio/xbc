@@ -42,7 +42,7 @@
 //	if err != nil {
 //		return err
 //	}
-//	engine.Use(middleware.Handler())
+//	engine.Use(web.Handle(middleware.Handler()))
 //
 // Bundle and ordinary imports are side-effect free. Applications that prefer
 // xbc.Run may opt into process-global composition through this package's

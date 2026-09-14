@@ -179,7 +179,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		return err
 	}
 	for _, entry := range ordered {
-		engine.Use(entry.Value.Handler())
+		engine.Use(Handle(entry.Value.Handler()))
 	}
 	engine.NoRoute(func(c *gin.Context) {
 		AbortProblem(c, NewProblem(http.StatusNotFound, "not_found"))

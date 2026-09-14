@@ -3,8 +3,6 @@ package web
 import (
 	"fmt"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -26,11 +24,16 @@ const (
 	PhaseBusiness Phase = 400 // business middleware
 )
 
-// Middleware is the consumer-owned contract for one independently ordered Gin
+// Middleware is the consumer-owned contract for one independently ordered Web
 // middleware. Its identity is the Identity of the plugin.Entry that carries it;
 // the contract deliberately has no third name or identity component.
+//
+// Handler returns the engine-neutral Handler shape. A middleware advances the
+// chain with Ctx.Next and stops it with Ctx.Abort, exactly as before; keeping
+// Next rather than a wrapping Wrap(next) model is what lets third-party
+// gin.HandlerFunc middleware splice into the same ordered list.
 type Middleware interface {
-	Handler() gin.HandlerFunc
+	Handler() Handler
 	Order() Order
 }
 

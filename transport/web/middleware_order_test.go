@@ -1,10 +1,10 @@
 package web
 
 import (
+	"context"
 	"slices"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -13,18 +13,18 @@ import (
 )
 
 type fixtureMiddleware struct {
-	handler gin.HandlerFunc
+	handler Handler
 	order   Order
 }
 
-func (m fixtureMiddleware) Handler() gin.HandlerFunc { return m.handler }
-func (m fixtureMiddleware) Order() Order             { return m.order }
+func (m fixtureMiddleware) Handler() Handler { return m.handler }
+func (m fixtureMiddleware) Order() Order     { return m.order }
 
 func middlewareEntry(key plugin.Key, instance string, order Order) plugin.Entry[Middleware] {
 	return plugin.Entry[Middleware]{
 		Identity: plugin.Identity{Plugin: key, Instance: instance},
 		Value: fixtureMiddleware{
-			handler: func(*gin.Context) {},
+			handler: func(context.Context, *Ctx) error { return nil },
 			order:   order,
 		},
 	}
@@ -571,3 +571,11 @@ func TestOrderMiddlewaresFrameworkAfterPinHonorsHardPhaseBoundary(t *testing.T) 
 	require.ErrorAs(t, err, &conflict)
 	assert.Equal(t, ordering.After, conflict.Direction)
 }
+
+// Go function types are invariant in their results, so this stops compiling the
+// moment Middleware.Handler is widened back to gin.HandlerFunc -- and a build
+// failure is the CORRECT signal here, not the false red this repo's mutation
+// rules normally treat it as. A runtime assertion cannot do this job: any value
+// satisfying the narrower shape still satisfies a widened one. Do not
+// "simplify" this into `var _ Handler = someMiddleware.Handler()`.
+var _ func(fixtureMiddleware) Handler = fixtureMiddleware.Handler

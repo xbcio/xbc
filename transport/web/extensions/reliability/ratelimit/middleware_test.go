@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/xbcio/xbc/transport/web"
 )
 
 func rateLimitEngine(t *testing.T, cfg Config, downstream *atomic.Int64) *gin.Engine {
@@ -19,7 +21,7 @@ func rateLimitEngine(t *testing.T, cfg Config, downstream *atomic.Int64) *gin.En
 		t.Fatal(err)
 	}
 	engine := gin.New()
-	engine.Use(p.Handler())
+	engine.Use(web.Handle(p.Handler()))
 	engine.GET("/resource", func(c *gin.Context) {
 		downstream.Add(1)
 		c.Status(http.StatusOK)
