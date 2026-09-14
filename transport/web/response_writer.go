@@ -14,11 +14,13 @@ import "net/http"
 // response twice" guard would not fire and the response body would be written
 // twice. Only the writer the request is currently writing through knows that.
 //
-// Written is the one method this interface has a production consumer for
-// today: extensions/response/biz/response.go reads c.Writer().Written()
-// before rendering an envelope. The framework's other duplicate-write guards
-// -- problem.go, errors.go, and the recovery middleware -- read Written too,
-// but off *gin.Context rather than through this interface.
+// Of that trio, Written is the only one with a production consumer through
+// this interface today: extensions/response/biz/response.go reads
+// c.Writer().Written() before rendering an envelope, and then writes the
+// payload through the embedded http.ResponseWriter. The framework's other
+// duplicate-write guards -- problem.go, errors.go, and the recovery
+// middleware -- read Written too, but off *gin.Context rather than through
+// this interface.
 //
 // Status and Size are in the contract because the observability middleware
 // (metrics, tracing, accesslog, auditlog) reads them off the response writer
