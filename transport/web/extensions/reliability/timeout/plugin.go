@@ -68,7 +68,7 @@ func newPlugin(cfg Config) (*Plugin, error) {
 }
 
 // Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handle }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
 
 // Order places the timeout buffer in the business phase. Gzip declares the
 // optional edge that keeps compression inside this buffer.

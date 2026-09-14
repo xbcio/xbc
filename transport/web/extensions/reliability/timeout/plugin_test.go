@@ -34,7 +34,7 @@ func TestReturnsClean504AndCancelsRequestContext(t *testing.T) {
 	p := pluginFor(t, Config{Duration: 20 * time.Millisecond})
 	contextCanceled := make(chan struct{})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/slow", func(c *gin.Context) {
 		c.Header("X-Partial", "must-not-leak")
 		c.String(http.StatusCreated, "partial response")
@@ -68,7 +68,7 @@ func TestFastResponseCommitsExactlyOnce(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/fast", func(c *gin.Context) {
 		c.Header("X-Test", "yes")
 		c.String(http.StatusCreated, "created")
@@ -84,7 +84,7 @@ func TestPanicIsRethrownWithoutLeakingBufferedResponse(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/panic", func(c *gin.Context) {
 		c.Header("X-Partial", "must-not-leak")
 		c.String(http.StatusCreated, "secret partial body")
@@ -116,7 +116,7 @@ func TestOuterObserverSeesFinalTimeoutStatusAndBytes(t *testing.T) {
 		observedBytes = c.Writer.Size()
 		observedWritten = c.Writer.Written()
 	})
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/slow", func(c *gin.Context) {
 		<-c.Request.Context().Done()
 	})
@@ -132,7 +132,7 @@ func TestStreamingUpgradeAndExcludedPathsBypassTimeout(t *testing.T) {
 	p := pluginFor(t, Config{Duration: time.Millisecond, ExcludePaths: []string{"/jobs/*"}})
 	var calls atomic.Int32
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.Any("/*path", func(c *gin.Context) {
 		calls.Add(1)
 		time.Sleep(5 * time.Millisecond)
@@ -256,7 +256,7 @@ func TestAbortWithStatusCommitsBufferedStatus(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	var observedWritten bool
 	var observedSize int
 	router.GET("/abort", func(c *gin.Context) {
@@ -298,7 +298,7 @@ func TestWriteStringBuffersBodyAndDeferredHeaders(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	var observedWritten bool
 	var observedSize int
 	router.GET("/tiny", func(c *gin.Context) {
@@ -353,7 +353,7 @@ func TestStatusAndSizeReportBufferedStateBeforeCommit(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	var observedInitialSize, observedStatus int
 	var observedWritten bool
 	router.GET("/status", func(c *gin.Context) {
@@ -385,7 +385,7 @@ func TestFlushCommitsBufferedBodyBeforeStreaming(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/flush", func(c *gin.Context) {
 		c.String(http.StatusOK, "buffered-before-flush")
 		c.Writer.Flush()
@@ -429,7 +429,7 @@ func TestHijackRejectsAfterBufferedWrite(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := pluginFor(t, Config{Duration: time.Second})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	done := make(chan error, 1)
 	router.GET("/hijack", func(c *gin.Context) {
 		c.String(http.StatusOK, "buffered")
