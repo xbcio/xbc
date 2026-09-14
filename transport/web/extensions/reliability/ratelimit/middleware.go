@@ -97,10 +97,9 @@ func (s *limiterState) limiterFor(c *web.Ctx, now time.Time) *rate.Limiter {
 }
 
 func clientIP(c *web.Ctx) string {
-	// Phase 4 debt: ClientIP has no neutral RequestContext equivalent yet --
-	// the spec's RequestContext method list omits it (see plan §2 debt
-	// table) -- so it stays on the underlying gin.Context until that
-	// contract is defined.
+	// Phase 4 debt: ClientIP has no neutral RequestContext equivalent
+	// yet, so it stays on the underlying gin.Context until that contract
+	// is defined.
 	gc := c.Gin()
 	if ip := net.ParseIP(strings.TrimSpace(gc.ClientIP())); ip != nil {
 		return ip.String()
