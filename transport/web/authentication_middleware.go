@@ -210,11 +210,10 @@ func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
 			// never built at all. Releasing the request would be precisely the
 			// silently permissive service RoutesReady exists to prevent, so an
 			// internal inconsistency fails closed.
-			_ = c.Error(fmt.Errorf(
+			abortAuthenticationFailure(c, fmt.Errorf(
 				"xbc: web route %s %s has no compiled authentication policy",
 				route.Method, route.Path,
 			))
-			AbortProblem(c, NewProblem(http.StatusInternalServerError, "authentication_failed"))
 			return
 		}
 		if policy.permit {
@@ -229,26 +228,23 @@ func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
 			requestCredentialSource{gc: c, extractors: m.extractors},
 		)
 		if err != nil {
-			// An operational failure may carry an unsafe cause. Record it for
-			// the error boundary to log and answer with a generic problem.
-			_ = c.Error(err)
-			AbortProblem(c, NewProblem(http.StatusInternalServerError, "authentication_failed"))
+			// An operational failure may carry an unsafe cause, so it is logged
+			// server-side and never reflected in the response.
+			abortAuthenticationFailure(c, err)
 			return
 		}
 
 		if result.Authenticated() {
 			principal, ok := result.Principal()
 			if !ok {
-				_ = c.Error(errors.New("xbc: authenticated result carried no principal"))
-				AbortProblem(c, NewProblem(http.StatusInternalServerError, "authentication_failed"))
+				abortAuthenticationFailure(c, errors.New("xbc: authenticated result carried no principal"))
 				return
 			}
 			typed, ok := principal.(Principal)
 			if !ok || !SetPrincipal(c, typed) {
-				_ = c.Error(fmt.Errorf(
+				abortAuthenticationFailure(c, fmt.Errorf(
 					"xbc: authenticator returned %T, want web.Principal", principal,
 				))
-				AbortProblem(c, NewProblem(http.StatusInternalServerError, "authentication_failed"))
 				return
 			}
 			c.Next()
@@ -257,6 +253,36 @@ func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
 
 		writeAuthenticationRejection(c, result)
 	}
+}
+
+// abortAuthenticationFailure answers an internal authentication failure with a
+// fixed generic problem and records the cause server-side.
+//
+// It deliberately does not route err through AbortError and the OnError mapper
+// chain. A failure raised here routinely carries credential material or
+// infrastructure detail, and an application-registered mapper is free to turn
+// an error it recognizes into a revealing response. The response is therefore
+// chosen here and is identical for every cause, so it cannot be used as an
+// oracle for which internal step failed.
+//
+// Logging must happen here too, not at the error boundary: AbortProblem writes
+// the response, and errorResolver.resolveErrors skips any request whose
+// response is already written. err is still recorded on gin.Context for
+// middleware that inspects c.Errors, but nothing in Web reads it afterwards.
+//
+// Only err.Error() reaches the log, and that is deliberate. An
+// authentication.OperationalError renders the failed operation and scheme while
+// omitting its wrapped cause, precisely because an extractor's cause may quote
+// the credential it rejected. Do not unwrap here to "improve" the diagnostic:
+// that would copy credential material into the log, the leak the eliding
+// Error() exists to prevent.
+func abortAuthenticationFailure(c *gin.Context, err error) {
+	problem := NewProblem(http.StatusInternalServerError, "authentication_failed")
+	if err != nil {
+		_ = c.Error(err)
+		resolverFor(c).log(err, problem.Status, c, false)
+	}
+	AbortProblem(c, problem)
 }
 
 // writeAuthenticationRejection renders 401 with one WWW-Authenticate header per

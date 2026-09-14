@@ -2,14 +2,17 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/xbcio/xbc/extensions/authentication"
+	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -500,5 +503,194 @@ func TestAuthenticationMiddlewareOrderIsAuthPhase(t *testing.T) {
 	var middleware Middleware = &authenticationMiddleware{}
 	if got := middleware.Order(); got.Phase != PhaseAuth {
 		t.Fatalf("Order().Phase = %v, want %v", got.Phase, PhaseAuth)
+	}
+}
+
+// authCaptureLogger records what abortAuthenticationFailure hands to the
+// resolver so a test can assert on the log the way an operator would read it.
+type authCaptureLogger struct {
+	mu      sync.Mutex
+	entries []authCaptureEntry
+}
+
+type authCaptureEntry struct {
+	msg    string
+	fields []any
+}
+
+func (l *authCaptureLogger) add(msg string, fields ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, authCaptureEntry{msg: msg, fields: append([]any(nil), fields...)})
+}
+
+func (l *authCaptureLogger) Debug(msg string, kv ...any) { l.add(msg, kv...) }
+func (l *authCaptureLogger) Info(msg string, kv ...any)  { l.add(msg, kv...) }
+func (l *authCaptureLogger) Warn(msg string, kv ...any)  { l.add(msg, kv...) }
+func (l *authCaptureLogger) Error(msg string, kv ...any) { l.add(msg, kv...) }
+func (*authCaptureLogger) Fatal(string, ...any)          { panic("unexpected fatal") }
+func (l *authCaptureLogger) With(...any) log.Logger      { return l }
+func (*authCaptureLogger) Enabled(log.Level) bool        { return true }
+
+// rendered joins each entry the way the real logger does: only err.Error() is
+// encoded, never the unwrapped chain. A test asserting on this string therefore
+// sees exactly what would reach the log sink.
+func (l *authCaptureLogger) rendered() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var b strings.Builder
+	for _, entry := range l.entries {
+		b.WriteString(entry.msg)
+		for _, field := range entry.fields {
+			if err, ok := field.(error); ok {
+				b.WriteString(" " + err.Error())
+				continue
+			}
+			b.WriteString(" " + fmt.Sprint(field))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// runThroughAuthWithLogger drives one request with a logger-bearing error
+// resolver attached, which is what the Server does at startup. Without the
+// attach step resolverFor falls back to a no-op logger and nothing can be
+// observed.
+func runThroughAuthWithLogger(
+	t *testing.T,
+	middleware *authenticationMiddleware,
+	route RouteInfo,
+) (*httptest.ResponseRecorder, *authCaptureLogger) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	logger := &authCaptureLogger{}
+	resolver := newErrorResolver(logger)
+
+	engine := gin.New()
+	engine.Use(resolver.attach)
+	engine.Use(func(c *gin.Context) {
+		setCurrentRouteForTest(c, route)
+		c.Next()
+	})
+	engine.Use(middleware.Handler())
+	engine.Handle(route.Method, route.Path, func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(route.Method, route.Path, nil))
+	return recorder, logger
+}
+
+// TestAuthenticationFailureLogsOperationalErrorWithoutItsCause pins both halves
+// of the policy for the one failure site whose cause arrives from outside the
+// framework.
+//
+// The failing half it was written for: the middleware used to call c.Error(err)
+// and rely on the error boundary to log it, but AbortProblem writes the
+// response first and resolveErrors skips a request that already has one. The
+// cause reached no mapper and no log -- it evaporated.
+//
+// The other half is the eliding contract: authentication.OperationalError
+// renders its operation and scheme but never its wrapped cause, because an
+// extractor's cause may quote the credential it rejected. The marker below must
+// therefore appear in neither the response nor the log; an "improved"
+// implementation that unwraps the chain before logging fails here.
+func TestAuthenticationFailureLogsOperationalErrorWithoutItsCause(t *testing.T) {
+	t.Parallel()
+
+	const marker = "Bearer eyJhbGciOi-LEAKED-CREDENTIAL"
+	route := RouteInfo{Method: http.MethodGet, Path: "/orders"}
+	middleware, err := newAuthenticationMiddleware(
+		SecurityConfig{Default: SecurityDeny},
+		[]plugin.Entry[authentication.Authenticator]{
+			{
+				Identity: plugin.Identity{Plugin: "jwt"},
+				Value:    &stubAuth{scheme: "jwt", result: authentication.Rejected("should not run")},
+			},
+		},
+		[]plugin.Entry[CredentialExtractor]{
+			{
+				Identity: plugin.Identity{Plugin: "jwt"},
+				Value: &stubExtractor{
+					scheme: "jwt",
+					err:    fmt.Errorf("malformed authorization header %q", marker),
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("newAuthenticationMiddleware() error = %v", err)
+	}
+	if err := middleware.RoutesReady(newTestCatalog([]RouteInfo{route})); err != nil {
+		t.Fatalf("RoutesReady() error = %v", err)
+	}
+
+	response, logger := runThroughAuthWithLogger(t, middleware, route)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+	logged := logger.rendered()
+	if !strings.Contains(logged, "credential collection") || !strings.Contains(logged, `"jwt"`) {
+		t.Fatalf(
+			"log = %q, want the operational summary naming the failed operation and scheme: "+
+				"an internal authentication failure must leave a server-side trace",
+			logged,
+		)
+	}
+	if strings.Contains(logged, marker) {
+		t.Fatalf(
+			"log = %q, must not contain the rejected credential %q: "+
+				"only err.Error() may be logged, never the unwrapped cause",
+			logged, marker,
+		)
+	}
+	if body := response.Body.String(); strings.Contains(body, marker) {
+		t.Fatalf("response body = %q, must not contain the rejected credential %q", body, marker)
+	}
+}
+
+// TestAuthenticationFailureKeepsCauseOutOfResponse covers a second failure site
+// -- one whose cause the framework builds itself and is therefore fully
+// rendered by Error(). That makes it the site that discriminates on the
+// response: the full text is available to leak, so an implementation that put
+// the cause in ProblemDetail.Detail, or routed it through the OnError mapper
+// chain where an application mapper could surface it, fails here.
+func TestAuthenticationFailureKeepsCauseOutOfResponse(t *testing.T) {
+	t.Parallel()
+
+	route := RouteInfo{Method: http.MethodGet, Path: "/orders"}
+	middleware := buildTestAuthMiddleware(
+		t,
+		SecurityConfig{Default: SecurityDeny},
+		[]RouteInfo{route},
+		authentication.Presented("token"),
+		// A principal that is not a web.Principal: the manager accepts it, the
+		// middleware cannot publish it, and the resulting error names the type.
+		&stubAuth{scheme: "jwt", result: authentication.Accepted("not-a-web-principal")},
+	)
+
+	response, logger := runThroughAuthWithLogger(t, middleware, route)
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+	body := response.Body.String()
+	if strings.Contains(body, "web.Principal") || strings.Contains(body, "not-a-web-principal") {
+		t.Fatalf(
+			"response body = %q, must not describe the internal cause: the response is fixed "+
+				"for every cause so it cannot be used as an oracle",
+			body,
+		)
+	}
+	if !strings.Contains(body, "authentication_failed") {
+		t.Fatalf("response body = %q, want the generic authentication_failed problem", body)
+	}
+	if logged := logger.rendered(); !strings.Contains(logged, "want web.Principal") {
+		t.Fatalf(
+			"log = %q, want the full cause: this one is framework-built and safe, "+
+				"so eliding it would leave the failure undiagnosable",
+			logged,
+		)
 	}
 }
