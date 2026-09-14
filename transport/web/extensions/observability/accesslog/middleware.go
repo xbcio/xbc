@@ -1,6 +1,7 @@
 package accesslog
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
@@ -11,58 +12,60 @@ import (
 	"github.com/xbcio/xbc/transport/web"
 )
 
-func (p *Plugin) handle(c *gin.Context) {
+func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	state := p.state.Load()
 	if state == nil {
 		c.Next()
-		return
+		return nil
 	}
-	if state.config.skip(c.Request.URL.Path) {
+	if state.config.skip(c.Request().URL.Path) {
 		c.Next()
-		return
+		return nil
 	}
 
+	gc := c.Gin()
 	started := time.Now()
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			p.write(state, c, started, true)
+			p.write(state, gc, started, true)
 			panic(recovered)
 		}
-		p.write(state, c, started, false)
+		p.write(state, gc, started, false)
 	}()
 	c.Next()
+	return nil
 }
 
-func (p *Plugin) write(state *runtimeState, c *gin.Context, started time.Time, panicked bool) {
+func (p *Plugin) write(state *runtimeState, gc *gin.Context, started time.Time, panicked bool) {
 	latency := time.Since(started)
-	status := c.Writer.Status()
-	if panicked && !c.Writer.Written() {
+	status := gc.Writer.Status()
+	if panicked && !gc.Writer.Written() {
 		status = http.StatusInternalServerError
 	}
-	bytes := c.Writer.Size()
+	bytes := gc.Writer.Size()
 	if bytes < 0 {
 		bytes = 0
 	}
-	route := c.FullPath()
+	route := gc.FullPath()
 	routeName := ""
-	if info, ok := web.CurrentRoute(c); ok {
+	if info, ok := web.CurrentRoute(gc); ok {
 		route = info.Path
 		routeName = info.Name
 	}
 	// Only consume the response header produced by the requestid middleware.
 	// Falling back to the raw inbound header would let an unvalidated,
 	// attacker-controlled value enter structured logs when requestid is absent.
-	requestID := safeRequestID(c.Writer.Header(), state.config.requestIDHeader)
+	requestID := safeRequestID(gc.Writer.Header(), state.config.requestIDHeader)
 	fields := []any{
-		"method", c.Request.Method,
-		"path", c.Request.URL.Path,
+		"method", gc.Request.Method,
+		"path", gc.Request.URL.Path,
 		"route", route,
 		"route_name", routeName,
 		"status", status,
 		"bytes", bytes,
 		"latency", latency,
 		"request_id", requestID,
-		"client_ip", state.config.clientIP(c),
+		"client_ip", state.config.clientIP(gc),
 		"panicked", panicked,
 	}
 

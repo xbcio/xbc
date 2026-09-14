@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -12,7 +13,7 @@ import (
 )
 
 // Handler returns the Gin request-instrumentation middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handleRequest }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handleRequest) }
 
 // Order places metrics in the observation phase before optional access
 // logging. Tracing owns its optional edge into metrics, avoiding a reciprocal
@@ -24,16 +25,17 @@ func (*Plugin) Order() web.Order {
 	}
 }
 
-func (p *Plugin) handleRequest(c *gin.Context) {
+func (p *Plugin) handleRequest(_ context.Context, c *web.Ctx) error {
 	state := p.state.Load()
 	if state == nil {
 		c.Next()
-		return
+		return nil
 	}
 
-	method := boundedMethod(c.Request.Method)
+	gc := c.Gin()
+	method := boundedMethod(c.Request().Method)
 	route := "unmatched"
-	if info, ok := web.CurrentRoute(c); ok && info.Path != "" {
+	if info, ok := web.CurrentRoute(gc); ok && info.Path != "" {
 		route = info.Path
 	}
 
@@ -42,8 +44,8 @@ func (p *Plugin) handleRequest(c *gin.Context) {
 	panicked := true
 	defer func() {
 		state.inflight.WithLabelValues(method, route).Dec()
-		status := c.Writer.Status()
-		if panicked && !c.Writer.Written() {
+		status := c.Writer().Status()
+		if panicked && !c.Writer().Written() {
 			status = http.StatusInternalServerError
 		}
 		statusClass := boundedStatusClass(status)
@@ -52,6 +54,7 @@ func (p *Plugin) handleRequest(c *gin.Context) {
 	}()
 	c.Next()
 	panicked = false
+	return nil
 }
 
 func boundedMethod(method string) string {

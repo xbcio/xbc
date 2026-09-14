@@ -73,7 +73,7 @@ func newPlugin(cfg Config, logger corelog.Logger) (*Plugin, error) {
 }
 
 // Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handle }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
 
 // Order places access logging in the observation phase. The optional
 // request-ID relationship is declared by requestid to avoid duplicate edges.

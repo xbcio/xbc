@@ -34,7 +34,7 @@ func TestPropagatesValidatedIncomingID(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := New()
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/", func(c *gin.Context) {
 		fromGin, okGin := FromGin(c)
 		fromRequest, okRequest := FromRequest(c.Request)
@@ -58,7 +58,7 @@ func TestRejectsMalformedDuplicateAndOversizedIDsByReplacingThem(t *testing.T) {
 		t.Run(strings.Join(values, "_"), func(t *testing.T) {
 			p := New()
 			router := gin.New()
-			router.Use(p.handle)
+			router.Use(web.Handle(p.handle))
 			router.GET("/", func(c *gin.Context) {
 				id, _ := FromGin(c)
 				c.String(http.StatusOK, id)
@@ -86,7 +86,7 @@ func TestGeneratedIDsAreConcurrentAndUnique(t *testing.T) {
 	gin.SetMode(gin.ReleaseMode)
 	p := New()
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/", func(c *gin.Context) {
 		id, _ := FromGin(c)
 		c.String(http.StatusOK, id)
