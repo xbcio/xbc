@@ -53,17 +53,19 @@ func (ErrorMapperFunc) ErrorOrder() ErrorOrder { return ErrorOrder{} }
 // OnError handles ordinary errors only. Panics remain the responsibility of a
 // recovery middleware, which can safely account for partially written
 // responses and broken connections.
-func OnError(mappers ...ErrorMapper) gin.HandlerFunc {
+func OnError(mappers ...ErrorMapper) Handler {
 	scopedMappers := append([]ErrorMapper(nil), mappers...)
-	return func(c *gin.Context) {
+	return func(_ context.Context, c *Ctx) error {
 		if c == nil {
-			return
+			return nil
 		}
-		parent := resolverFor(c)
+		gc := c.Gin()
+		parent := resolverFor(gc)
 		resolver := parent.withMappers(scopedMappers)
-		c.Set(errorResolverContextKey, resolver)
-		defer c.Set(errorResolverContextKey, parent)
-		resolver.resolveErrors(c)
+		gc.Set(errorResolverContextKey, resolver)
+		defer gc.Set(errorResolverContextKey, parent)
+		resolver.resolveErrors(gc)
+		return nil
 	}
 }
 

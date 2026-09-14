@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -192,15 +193,16 @@ func (m *authenticationMiddleware) RoutesReady(catalog RouteCatalog) error {
 // Handler resolves policy with a single map lookup. The linear rule scan was
 // already paid once during RoutesReady.
 func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		route, matched := CurrentRoute(c)
+	return Handle(func(_ context.Context, c *Ctx) error {
+		gc := c.Gin()
+		route, matched := CurrentRoute(gc)
 		if !matched {
 			// 404 and 405 requests reach here because gin's allNoRoute chain
 			// includes every global middleware. Turning them into 401 would
 			// pollute the response semantics and leak which paths exist, and
 			// there is no handler behind them to protect.
 			c.Next()
-			return
+			return nil
 		}
 
 		policy, known := m.compiled[routeKey(route.Method, route.Path)]
@@ -210,49 +212,50 @@ func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
 			// never built at all. Releasing the request would be precisely the
 			// silently permissive service RoutesReady exists to prevent, so an
 			// internal inconsistency fails closed.
-			abortAuthenticationFailure(c, fmt.Errorf(
+			abortAuthenticationFailure(gc, fmt.Errorf(
 				"xbc: web route %s %s has no compiled authentication policy",
 				route.Method, route.Path,
 			))
-			return
+			return nil
 		}
 		if policy.permit {
-			markAuthenticationExempt(c)
+			markAuthenticationExempt(gc)
 			c.Next()
-			return
+			return nil
 		}
 
 		result, err := m.manager.Authenticate(
-			c.Request.Context(),
+			c.Request().Context(),
 			policy.selection,
-			requestCredentialSource{ctx: newCtx(c), extractors: m.extractors},
+			requestCredentialSource{ctx: c, extractors: m.extractors},
 		)
 		if err != nil {
 			// An operational failure may carry an unsafe cause, so it is logged
 			// server-side and never reflected in the response.
-			abortAuthenticationFailure(c, err)
-			return
+			abortAuthenticationFailure(gc, err)
+			return nil
 		}
 
 		if result.Authenticated() {
 			principal, ok := result.Principal()
 			if !ok {
-				abortAuthenticationFailure(c, errors.New("xbc: authenticated result carried no principal"))
-				return
+				abortAuthenticationFailure(gc, errors.New("xbc: authenticated result carried no principal"))
+				return nil
 			}
 			typed, ok := principal.(Principal)
-			if !ok || !SetPrincipal(c, typed) {
-				abortAuthenticationFailure(c, fmt.Errorf(
+			if !ok || !SetPrincipal(gc, typed) {
+				abortAuthenticationFailure(gc, fmt.Errorf(
 					"xbc: authenticator returned %T, want web.Principal", principal,
 				))
-				return
+				return nil
 			}
 			c.Next()
-			return
+			return nil
 		}
 
-		writeAuthenticationRejection(c, result)
-	}
+		writeAuthenticationRejection(gc, result)
+		return nil
+	})
 }
 
 // abortAuthenticationFailure answers an internal authentication failure with a

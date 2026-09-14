@@ -22,7 +22,7 @@ type errorBoundary struct {
 	mappers []ErrorMapper
 }
 
-func (b *errorBoundary) Handler() gin.HandlerFunc { return OnError(b.mappers...) }
+func (b *errorBoundary) Handler() gin.HandlerFunc { return Handle(OnError(b.mappers...)) }
 func (*errorBoundary) Order() Order               { return Order{Phase: PhaseError} }
 
 var errorMapperInput = plugin.Collect[ErrorMapper]()
