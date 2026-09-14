@@ -1,6 +1,7 @@
 package tracing
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,7 +17,7 @@ import (
 )
 
 // Handler implements web.Middleware.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handleRequest }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handleRequest) }
 
 // Order implements web.Middleware. It runs in the observation phase, ahead
 // of metrics and access logging, so those middlewares observe a request that
@@ -28,22 +29,23 @@ func (*Plugin) Order() web.Order {
 	}
 }
 
-func (p *Plugin) handleRequest(c *gin.Context) {
-	if c.Request == nil || p.handle == nil {
+func (p *Plugin) handleRequest(_ context.Context, c *web.Ctx) error {
+	if c.Request() == nil || p.handle == nil {
 		c.Next()
-		return
+		return nil
 	}
 
-	method := boundedMethod(c.Request.Method)
+	gc := c.Gin()
+	method := boundedMethod(c.Request().Method)
 	route := "unmatched"
-	if info, ok := web.CurrentRoute(c); ok && info.Path != "" {
+	if info, ok := web.CurrentRoute(gc); ok && info.Path != "" {
 		route = info.Path
 	}
-	parent := p.handle.Extract(c.Request.Context(), propagation.HeaderCarrier(c.Request.Header))
+	parent := p.handle.Extract(c.Request().Context(), propagation.HeaderCarrier(c.Request().Header))
 	tracer := p.handle.Tracer(instrumentationName)
 	if tracer == nil {
 		c.Next()
-		return
+		return nil
 	}
 	requestContext, span := tracer.Start(
 		parent,
@@ -54,18 +56,18 @@ func (p *Plugin) handleRequest(c *gin.Context) {
 			semconv.HTTPRoute(route),
 		),
 	)
-	c.Request = c.Request.WithContext(requestContext)
+	c.SetContext(requestContext)
 	if headers := p.config.responseHeaders; headers.Enabled {
 		spanContext := span.SpanContext()
 		if spanContext.IsValid() {
-			c.Header(headers.TraceIDHeader, spanContext.TraceID().String())
-			c.Header(headers.SpanIDHeader, spanContext.SpanID().String())
+			c.SetHeader(headers.TraceIDHeader, spanContext.TraceID().String())
+			c.SetHeader(headers.SpanIDHeader, spanContext.SpanID().String())
 		}
 	}
 
 	defer func() {
 		panicValue := recover()
-		status := c.Writer.Status()
+		status := c.Writer().Status()
 		if panicValue != nil {
 			status = http.StatusInternalServerError
 		} else if status <= 0 {
@@ -84,6 +86,7 @@ func (p *Plugin) handleRequest(c *gin.Context) {
 		}
 	}()
 	c.Next()
+	return nil
 }
 
 func panicAsError(value any) error {

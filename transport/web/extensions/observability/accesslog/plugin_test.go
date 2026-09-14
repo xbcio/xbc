@@ -60,7 +60,7 @@ func TestStructuredFieldsAndSecretMinimization(t *testing.T) {
 	p.state.Store(&runtimeState{config: cfg, logger: logger})
 
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/users/:id", func(c *gin.Context) {
 		c.Header(defaultRequestIDHeader, "request-1")
 		c.String(http.StatusCreated, "hello")
@@ -103,7 +103,7 @@ func TestPanicIsLoggedAndRethrown(t *testing.T) {
 	cfg, _ := normalizeConfig(DefaultConfig())
 	p.state.Store(&runtimeState{config: cfg, logger: logger})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/panic", func(*gin.Context) { panic("boom") })
 
 	func() {
@@ -127,7 +127,7 @@ func TestUnvalidatedInboundRequestIDIsNotLogged(t *testing.T) {
 	cfg, _ := normalizeConfig(DefaultConfig())
 	p.state.Store(&runtimeState{config: cfg, logger: logger})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -152,7 +152,7 @@ func TestSkipPathsAndUntrustedForwardedFor(t *testing.T) {
 	p := New()
 	p.state.Store(&runtimeState{config: normalized, logger: logger})
 	router := gin.New()
-	router.Use(p.handle)
+	router.Use(web.Handle(p.handle))
 	router.GET("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	for _, path := range []string{"/health", "/assets/app.js"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)

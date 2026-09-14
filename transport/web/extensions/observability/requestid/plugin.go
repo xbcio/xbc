@@ -65,7 +65,7 @@ func newPlugin(cfg Config) (*Plugin, error) {
 }
 
 // Handler returns the Gin middleware function.
-func (p *Plugin) Handler() gin.HandlerFunc { return p.handle }
+func (p *Plugin) Handler() gin.HandlerFunc { return web.Handle(p.handle) }
 
 // Order makes the validated/generated ID available to optional access logging.
 func (*Plugin) Order() web.Order {

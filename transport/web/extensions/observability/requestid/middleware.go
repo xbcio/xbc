@@ -1,39 +1,41 @@
 package requestid
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
 )
 
-func (p *Plugin) handle(c *gin.Context) {
+func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
+	gc := c.Gin()
 	state := p.state.Load()
 	if state == nil {
-		web.AbortProblem(c, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
-		return
+		web.AbortProblem(gc, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
+		return nil
 	}
 
 	id := ""
 	if state.trustIncoming {
-		id = validIncomingID(c.Request.Header.Values(state.header), state.maxLength)
+		id = validIncomingID(c.Request().Header.Values(state.header), state.maxLength)
 	}
 	if id == "" {
 		var err error
 		id, err = generateID()
 		if err != nil {
-			web.AbortProblem(c, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
-			return
+			web.AbortProblem(gc, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
+			return nil
 		}
 	}
 
 	c.Set(ginContextKey, id)
-	c.Request = c.Request.WithContext(withRequestID(c.Request.Context(), id))
-	c.Header(state.header, id)
+	newCtx := withRequestID(c.Request().Context(), id)
+	c.SetContext(newCtx)
+	c.SetHeader(state.header, id)
 	c.Next()
+	return nil
 }
 
 func validIncomingID(values []string, maxLength int) string {
