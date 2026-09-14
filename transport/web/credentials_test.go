@@ -21,7 +21,7 @@ type stubExtractor struct {
 
 func (s *stubExtractor) Scheme() authentication.Scheme { return s.scheme }
 
-func (s *stubExtractor) ExtractCredential(*gin.Context) (authentication.CredentialResult, error) {
+func (s *stubExtractor) ExtractCredential(*Ctx) (authentication.CredentialResult, error) {
 	s.calls++
 	return s.result, s.err
 }
@@ -72,7 +72,7 @@ func TestRequestCredentialSourceDelegatesToExtractor(t *testing.T) {
 
 	extractor := &stubExtractor{scheme: "jwt", result: authentication.Presented("token")}
 	source := requestCredentialSource{
-		gc:         newTestGinContext(),
+		ctx:        newCtx(newTestGinContext()),
 		extractors: map[authentication.Scheme]CredentialExtractor{"jwt": extractor},
 	}
 
@@ -92,7 +92,7 @@ func TestRequestCredentialSourceReportsMissingExtractor(t *testing.T) {
 	t.Parallel()
 
 	source := requestCredentialSource{
-		gc:         newTestGinContext(),
+		ctx:        newCtx(newTestGinContext()),
 		extractors: map[authentication.Scheme]CredentialExtractor{},
 	}
 

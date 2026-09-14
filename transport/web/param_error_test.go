@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -30,8 +31,11 @@ func serveJSONBindingRequest(body string, maximum int64, destination any) *httpt
 	if maximum > 0 {
 		engine.Use(limitRequestBody(maximum))
 	}
-	engine.POST("/requests", Handle(func(c *gin.Context) error {
-		if err := c.ShouldBindJSON(destination); err != nil {
+	// These tests exercise ParamError's mapping of raw binding failures, so they
+	// call gin's binding directly rather than Ctx.Bind, which would wrap the
+	// error in ParamError before the test ever sees it.
+	engine.POST("/requests", Handle(func(_ context.Context, c *Ctx) error {
+		if err := c.Gin().ShouldBindJSON(destination); err != nil {
 			return ParamError(err, destination)
 		}
 		c.Status(http.StatusNoContent)
@@ -125,9 +129,9 @@ func TestParamErrorAdaptsGinQueryBinding(t *testing.T) {
 	serve := func(rawQuery string) *httptest.ResponseRecorder {
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		engine.GET("/requests", Handle(func(c *gin.Context) error {
+		engine.GET("/requests", Handle(func(_ context.Context, c *Ctx) error {
 			var request queryRequest
-			if err := c.ShouldBindQuery(&request); err != nil {
+			if err := c.Gin().ShouldBindQuery(&request); err != nil {
 				return ParamError(err, &request)
 			}
 			c.Status(http.StatusNoContent)
@@ -173,9 +177,9 @@ func TestParamErrorMapsBothKnownAndStreamedBodyOverflowTo413(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			engine := gin.New()
 			engine.Use(limitRequestBody(32))
-			engine.POST("/requests", Handle(func(c *gin.Context) error {
+			engine.POST("/requests", Handle(func(_ context.Context, c *Ctx) error {
 				var destination bindingRequest
-				if err := c.ShouldBindJSON(&destination); err != nil {
+				if err := c.Gin().ShouldBindJSON(&destination); err != nil {
 					return ParamError(err, &destination)
 				}
 				c.Status(http.StatusNoContent)
@@ -207,7 +211,7 @@ func TestParamErrorTreatsProgrammerErrorsAsInternalFailures(t *testing.T) {
 	t.Run("invalid validator target", func(t *testing.T) {
 		gin.SetMode(gin.TestMode)
 		engine := gin.New()
-		engine.GET("/requests", Handle(func(*gin.Context) error {
+		engine.GET("/requests", Handle(func(context.Context, *Ctx) error {
 			return ParamError(&validator.InvalidValidationError{Type: reflect.TypeOf(0)}, nil)
 		}))
 		response := httptest.NewRecorder()

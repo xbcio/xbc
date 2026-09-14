@@ -225,7 +225,7 @@ func (m *authenticationMiddleware) Handler() gin.HandlerFunc {
 		result, err := m.manager.Authenticate(
 			c.Request.Context(),
 			policy.selection,
-			requestCredentialSource{gc: c, extractors: m.extractors},
+			requestCredentialSource{ctx: newCtx(c), extractors: m.extractors},
 		)
 		if err != nil {
 			// An operational failure may carry an unsafe cause, so it is logged

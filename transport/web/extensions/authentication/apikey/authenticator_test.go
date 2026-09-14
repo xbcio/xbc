@@ -41,7 +41,7 @@ func configuredPlugin(t *testing.T, requireAppID bool) *Plugin {
 // newTestContextWithHeaders builds a bare *gin.Context carrying the given
 // headers on its request. A nil slice for a header name means the header is
 // not set; multiple values mean the header line is duplicated.
-func newTestContextWithHeaders(t *testing.T, headers map[string][]string) *gin.Context {
+func newTestContextWithHeaders(t *testing.T, headers map[string][]string) *web.Ctx {
 	t.Helper()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -51,7 +51,7 @@ func newTestContextWithHeaders(t *testing.T, headers map[string][]string) *gin.C
 		}
 	}
 	c.Request = req
-	return c
+	return web.NewCtx(c)
 }
 
 func TestPluginExtractCredentialClassifiesHeaders(t *testing.T) {

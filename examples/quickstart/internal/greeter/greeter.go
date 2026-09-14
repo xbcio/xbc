@@ -3,7 +3,7 @@
 package greeter
 
 import (
-	"github.com/gin-gonic/gin"
+	"context"
 
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
@@ -65,8 +65,8 @@ func (p *Plugin) RegisterRoutes(router *web.Router) {
 // @Success 200 {object} biz.Response[Greeting]
 // @Failure 500 {object} web.ProblemDetail
 // @Router /hello [get]
-func (*Plugin) getGreeting(gc *gin.Context) error {
-	return biz.OK(gc, Greeting{Message: "hello from xbc"})
+func (*Plugin) getGreeting(_ context.Context, c *web.Ctx) error {
+	return biz.OK(c, Greeting{Message: "hello from xbc"})
 }
 
 // createGreeting returns a greeting for the submitted name.
@@ -80,10 +80,10 @@ func (*Plugin) getGreeting(gc *gin.Context) error {
 // @Failure 400 {object} web.ProblemDetail
 // @Failure 500 {object} web.ProblemDetail
 // @Router /hello [post]
-func (*Plugin) createGreeting(gc *gin.Context) error {
+func (*Plugin) createGreeting(_ context.Context, c *web.Ctx) error {
 	var request GreetingRequest
-	if err := gc.ShouldBindJSON(&request); err != nil {
-		return web.ParamError(err, &request)
+	if err := c.Bind(&request); err != nil {
+		return err
 	}
-	return biz.OK(gc, Greeting{Message: "hello " + request.Name + " from xbc"})
+	return biz.OK(c, Greeting{Message: "hello " + request.Name + " from xbc"})
 }

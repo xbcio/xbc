@@ -126,15 +126,16 @@
 //
 // # Request binding and validation
 //
-// Use a Gin ShouldBind method and adapt failures with ParamError; Web does not
-// duplicate Gin's binder APIs:
+// Use Ctx.Bind or Ctx.BindURI, which already adapt failures through
+// ParamError. For a binder Ctx does not expose, reach through Ctx.Gin and
+// adapt the failure yourself; Web does not duplicate Gin's binder APIs:
 //
-//	router.POST("/orders", web.Handle(func(c *gin.Context) error {
+//	router.POST("/orders", web.Handle(func(ctx context.Context, c *web.Ctx) error {
 //		var request CreateOrderRequest
-//		if err := c.ShouldBindJSON(&request); err != nil {
-//			return web.ParamError(err, &request)
+//		if err := c.Bind(&request); err != nil {
+//			return err
 //		}
-//		c.JSON(http.StatusCreated, createOrder(request))
+//		c.JSON(http.StatusCreated, createOrder(ctx, request))
 //		return nil
 //	}))
 //

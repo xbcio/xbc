@@ -1,6 +1,7 @@
 package biz
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,12 +23,12 @@ func TestSuccessWritersUseEnvelopeAndValidatedRequestID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
 		name       string
-		write      func(*gin.Context) error
+		write      func(context.Context, *web.Ctx) error
 		wantStatus int
 	}{
-		{name: "ok", write: func(c *gin.Context) error { return OK(c, responseItem{ID: "42"}) }, wantStatus: http.StatusOK},
-		{name: "created", write: func(c *gin.Context) error { return Created(c, responseItem{ID: "42"}) }, wantStatus: http.StatusCreated},
-		{name: "accepted", write: func(c *gin.Context) error { return Accepted(c, responseItem{ID: "42"}) }, wantStatus: http.StatusAccepted},
+		{name: "ok", write: func(_ context.Context, c *web.Ctx) error { return OK(c, responseItem{ID: "42"}) }, wantStatus: http.StatusOK},
+		{name: "created", write: func(_ context.Context, c *web.Ctx) error { return Created(c, responseItem{ID: "42"}) }, wantStatus: http.StatusCreated},
+		{name: "accepted", write: func(_ context.Context, c *web.Ctx) error { return Accepted(c, responseItem{ID: "42"}) }, wantStatus: http.StatusAccepted},
 	}
 
 	for _, tt := range tests {
@@ -57,26 +58,26 @@ func TestSuccessWritersUseEnvelopeAndValidatedRequestID(t *testing.T) {
 func TestPaginatedNormalizesNilItemsToEmptyArray(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.GET("/items", web.Handle(func(c *gin.Context) error {
-		return Paginated[responseItem](c, nil, 0)
+	engine.GET("/items", web.Handle(func(_ context.Context, c *web.Ctx) error {
+		return OK(c, Paginated[responseItem](nil, 0))
 	}))
 
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/items", nil))
 
 	assert.Equal(t, http.StatusOK, response.Code)
-	var envelope Response[Page[responseItem]]
+	var envelope Response[PaginatedData[responseItem]]
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &envelope))
-	assert.NotNil(t, envelope.Data.Items)
-	assert.Empty(t, envelope.Data.Items)
+	assert.NotNil(t, envelope.Data.List)
+	assert.Empty(t, envelope.Data.List)
 	assert.EqualValues(t, 0, envelope.Data.Total)
-	assert.Contains(t, response.Body.String(), `"items":[]`)
+	assert.Contains(t, response.Body.String(), `"list":[]`)
 }
 
 func TestEncodingFailureIsMappedBeforeSuccessIsCommitted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.GET("/failure", web.Handle(func(c *gin.Context) error {
+	engine.GET("/failure", web.Handle(func(_ context.Context, c *web.Ctx) error {
 		return OK(c, make(chan int))
 	}))
 
@@ -92,21 +93,24 @@ func TestEncodingFailureIsMappedBeforeSuccessIsCommitted(t *testing.T) {
 func TestWriteRejectsStatusesThatCannotCarrySuccessEnvelope(t *testing.T) {
 	for _, status := range []int{0, http.StatusContinue, http.StatusNoContent, http.StatusResetContent, http.StatusMultipleChoices, http.StatusBadRequest} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			context, _ := gin.CreateTestContext(httptest.NewRecorder())
-			err := Write(context, status, responseItem{})
+			gc, _ := gin.CreateTestContext(httptest.NewRecorder())
+			err := Write(web.NewCtx(gc), status, responseItem{})
 			require.Error(t, err)
-			assert.False(t, context.Writer.Written())
+			assert.False(t, gc.Writer.Written())
 		})
 	}
 }
 
-func TestWriteRejectsCommittedResponseAndNegativePageTotal(t *testing.T) {
-	context, _ := gin.CreateTestContext(httptest.NewRecorder())
-	context.Status(http.StatusOK)
-	context.Writer.WriteHeaderNow()
-	require.Error(t, OK(context, responseItem{}))
+func TestWriteRejectsCommittedResponse(t *testing.T) {
+	gc, _ := gin.CreateTestContext(httptest.NewRecorder())
+	gc.Status(http.StatusOK)
+	gc.Writer.WriteHeaderNow()
+	require.Error(t, OK(web.NewCtx(gc), responseItem{}))
+}
 
-	fresh, _ := gin.CreateTestContext(httptest.NewRecorder())
-	require.Error(t, Paginated(fresh, []responseItem{}, -1))
-	assert.False(t, fresh.Writer.Written())
+func TestPaginatedClampsNegativeTotal(t *testing.T) {
+	// total 为负是调用方的 bug，没有可发布的渲染形式，钳到 0 而不是发出去。
+	page := Paginated([]responseItem{}, -1)
+	assert.EqualValues(t, 0, page.Total)
+	assert.NotNil(t, page.List)
 }

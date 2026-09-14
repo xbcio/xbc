@@ -34,11 +34,11 @@ func performRequest(engine *gin.Engine, method, path string) *httptest.ResponseR
 func TestHandleUsesFirstMapperThatRecognizesWrappedError(t *testing.T) {
 	domainErr := errors.New("order version conflict")
 	calls := make([]string, 0, 3)
-	first := ErrorMapperFunc(func(*gin.Context, error) (ProblemDetail, bool) {
+	first := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
 		calls = append(calls, "first")
 		return ProblemDetail{}, false
 	})
-	second := ErrorMapperFunc(func(_ *gin.Context, err error) (ProblemDetail, bool) {
+	second := ErrorMapperFunc(func(_ *Ctx, err error) (ProblemDetail, bool) {
 		calls = append(calls, "second")
 		if !errors.Is(err, domainErr) {
 			return ProblemDetail{}, false
@@ -47,12 +47,12 @@ func TestHandleUsesFirstMapperThatRecognizesWrappedError(t *testing.T) {
 		problem.Detail = "The order was changed by another request."
 		return problem, true
 	})
-	third := ErrorMapperFunc(func(*gin.Context, error) (ProblemDetail, bool) {
+	third := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
 		calls = append(calls, "third")
 		return NewProblem(http.StatusTeapot, "must_not_run"), true
 	})
 	engine, _ := errorEngine(first, second, third)
-	engine.GET("/orders/:id", Handle(func(*gin.Context) error {
+	engine.GET("/orders/:id", Handle(func(context.Context, *Ctx) error {
 		return fmt.Errorf("update order: %w", domainErr)
 	}))
 
@@ -70,18 +70,18 @@ func TestHandleUsesFirstMapperThatRecognizesWrappedError(t *testing.T) {
 func TestNestedOnErrorComposesMappersOuterToInner(t *testing.T) {
 	domainErr := errors.New("inventory conflict")
 	calls := make([]string, 0, 3)
-	outer := ErrorMapperFunc(func(*gin.Context, error) (ProblemDetail, bool) {
+	outer := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
 		calls = append(calls, "outer")
 		return ProblemDetail{}, false
 	})
-	inner := ErrorMapperFunc(func(_ *gin.Context, err error) (ProblemDetail, bool) {
+	inner := ErrorMapperFunc(func(_ *Ctx, err error) (ProblemDetail, bool) {
 		calls = append(calls, "inner")
 		if !errors.Is(err, domainErr) {
 			return ProblemDetail{}, false
 		}
 		return NewProblem(http.StatusConflict, "inventory_conflict"), true
 	})
-	last := ErrorMapperFunc(func(*gin.Context, error) (ProblemDetail, bool) {
+	last := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
 		calls = append(calls, "last")
 		return NewProblem(http.StatusTeapot, "must_not_run"), true
 	})
@@ -90,7 +90,7 @@ func TestNestedOnErrorComposesMappersOuterToInner(t *testing.T) {
 	engine := gin.New()
 	engine.Use(OnError(outer))
 	engine.Use(OnError(inner, last))
-	engine.GET("/inventory", Handle(func(*gin.Context) error {
+	engine.GET("/inventory", Handle(func(context.Context, *Ctx) error {
 		return fmt.Errorf("reserve inventory: %w", domainErr)
 	}))
 
@@ -115,7 +115,7 @@ func TestUnknownAndDeadlineErrorsUseSafeDefaults(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			engine, _ := errorEngine()
-			engine.GET("/failure", Handle(func(*gin.Context) error { return test.err }))
+			engine.GET("/failure", Handle(func(context.Context, *Ctx) error { return test.err }))
 
 			response := performRequest(engine, http.MethodGet, "/failure")
 
@@ -133,7 +133,7 @@ func TestHandleAbortsRemainingHandlersAndPreservesCommittedResponse(t *testing.T
 		engine, _ := errorEngine()
 		nextRan := false
 		engine.GET("/failure",
-			Handle(func(*gin.Context) error { return errors.New("failed") }),
+			Handle(func(context.Context, *Ctx) error { return errors.New("failed") }),
 			func(c *gin.Context) {
 				nextRan = true
 				c.Status(http.StatusNoContent)
@@ -148,7 +148,7 @@ func TestHandleAbortsRemainingHandlersAndPreservesCommittedResponse(t *testing.T
 
 	t.Run("committed response is not overwritten", func(t *testing.T) {
 		engine, _ := errorEngine()
-		engine.GET("/committed", Handle(func(c *gin.Context) error {
+		engine.GET("/committed", Handle(func(_ context.Context, c *Ctx) error {
 			c.String(http.StatusAccepted, "already committed")
 			return errors.New("late secret failure")
 		}))
@@ -163,7 +163,7 @@ func TestHandleAbortsRemainingHandlersAndPreservesCommittedResponse(t *testing.T
 
 func TestGinReportedErrorsAreJoinedBeforeMapping(t *testing.T) {
 	domainErr := errors.New("domain failure")
-	mapper := ErrorMapperFunc(func(_ *gin.Context, err error) (ProblemDetail, bool) {
+	mapper := ErrorMapperFunc(func(_ *Ctx, err error) (ProblemDetail, bool) {
 		if errors.Is(err, domainErr) {
 			return NewProblem(http.StatusUnprocessableEntity, "domain_failure"), true
 		}
@@ -185,7 +185,7 @@ func TestGinReportedErrorsAreJoinedBeforeMapping(t *testing.T) {
 func TestMapperCannotTurnAnErrorIntoNonErrorHTTPStatus(t *testing.T) {
 	for _, status := range []int{0, http.StatusContinue, http.StatusOK, http.StatusFound, 399, 600} {
 		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
-			mapper := ErrorMapperFunc(func(*gin.Context, error) (ProblemDetail, bool) {
+			mapper := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
 				problem := ProblemDetail{
 					Status:     status,
 					Detail:     "mapper secret",
@@ -194,7 +194,7 @@ func TestMapperCannotTurnAnErrorIntoNonErrorHTTPStatus(t *testing.T) {
 				return problem, true
 			})
 			engine, _ := errorEngine(mapper)
-			engine.GET("/failure", Handle(func(*gin.Context) error { return errors.New("failed") }))
+			engine.GET("/failure", Handle(func(context.Context, *Ctx) error { return errors.New("failed") }))
 
 			response := performRequest(engine, http.MethodGet, "/failure")
 
@@ -213,12 +213,12 @@ type mappedRoutePlugin struct {
 }
 
 func (p *mappedRoutePlugin) RegisterRoutes(r *Router) {
-	r.GET("/mapped-error", Handle(func(*gin.Context) error {
+	r.GET("/mapped-error", Handle(func(context.Context, *Ctx) error {
 		return fmt.Errorf("service failed: %w", p.domainErr)
 	})).Name("mapped.error")
 }
 
-func (p *mappedRoutePlugin) MapError(_ *gin.Context, err error) (ProblemDetail, bool) {
+func (p *mappedRoutePlugin) MapError(_ *Ctx, err error) (ProblemDetail, bool) {
 	if !errors.Is(err, p.domainErr) {
 		return ProblemDetail{}, false
 	}
@@ -259,7 +259,7 @@ func TestServerUsesInjectedErrorMapperAndObservationSeesMappedStatus(t *testing.
 }
 
 func TestErrorMapperPublicAdaptersHaveExpectedShape(t *testing.T) {
-	var mapper ErrorMapper = ErrorMapperFunc(func(*gin.Context, error) (ProblemDetail, bool) {
+	var mapper ErrorMapper = ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
 		return ProblemDetail{}, false
 	})
 	assert.NotNil(t, mapper)

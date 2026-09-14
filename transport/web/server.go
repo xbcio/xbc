@@ -131,6 +131,15 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	engine.HandleMethodNotAllowed = true
 	engine.MaxMultipartMemory = cfg.MaxMultipartMemory
 
+	// gin's Context carries two unrelated stores: its own Keys map and the
+	// inbound Request.Context(). Without this flag a lookup that misses Keys
+	// returns nothing, so code that treats the gin Context as a context.Context
+	// silently loses cancellation and deadline instead of failing. Enabling the
+	// fallback does not merge the two stores -- values set with c.Set remain
+	// invisible to the request context -- but it makes the miss direction fall
+	// through to the real request context rather than into a void.
+	engine.ContextWithFallback = true
+
 	routes, frozen, index := newRouteTable()
 	engine.Use(recordCurrentRoute(frozen, index))
 	engine.Use(limitRequestBody(cfg.MaxRequestBodyBytes))

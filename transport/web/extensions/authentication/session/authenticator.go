@@ -3,8 +3,6 @@ package session
 import (
 	"context"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -49,11 +47,11 @@ func (*Plugin) Scheme() authentication.Scheme { return Scheme }
 // tested exception to the challenge-on-every-result pattern jwt and apikey
 // follow -- see TestPluginExtractCredentialClassifiesCookie's Challenge
 // assertions.
-func (p *Plugin) ExtractCredential(c *gin.Context) (authentication.CredentialResult, error) {
-	if c == nil || c.Request == nil {
+func (p *Plugin) ExtractCredential(c *web.Ctx) (authentication.CredentialResult, error) {
+	if c == nil || c.Request() == nil {
 		return authentication.Absent(), nil
 	}
-	cookies := c.Request.CookiesNamed(p.config.name)
+	cookies := c.Request().CookiesNamed(p.config.name)
 	if len(cookies) == 0 {
 		return authentication.Absent(), nil
 	}
