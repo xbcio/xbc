@@ -28,18 +28,18 @@ func newTestPlugin(t *testing.T) *Plugin {
 	return configuredPlugin(t, nil)
 }
 
-// newTestContextWithHeader builds a bare *gin.Context carrying header=value on
-// its request -- the minimum ExtractCredential needs to read an HTTP header.
-// An empty value means the header is not set at all.
-func newTestContextWithHeader(t *testing.T, header, value string) *gin.Context {
+// newTestContextWithHeader builds a *web.Ctx wrapping a bare request carrying
+// header=value on it -- the minimum ExtractCredential needs to read an HTTP
+// header. An empty value means the header is not set at all.
+func newTestContextWithHeader(t *testing.T, header, value string) *web.Ctx {
 	t.Helper()
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	gc, _ := gin.CreateTestContext(httptest.NewRecorder())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	if value != "" {
 		req.Header.Set(header, value)
 	}
-	c.Request = req
-	return c
+	gc.Request = req
+	return web.NewCtx(gc)
 }
 
 func TestPluginExtractCredentialClassifiesAuthorizationHeader(t *testing.T) {

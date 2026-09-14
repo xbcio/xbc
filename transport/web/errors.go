@@ -13,27 +13,28 @@ import (
 
 const errorResolverContextKey = "xbc/web.errorResolver"
 
-// Handler is an HTTP handler that reports failure through Go's normal error
-// return path. Handle adapts it to Gin and sends every returned error through
-// the request's OnError mapper chain.
-type Handler func(*gin.Context) error
+// Handler is an application handler that reports failure through Go's normal
+// error return path. It receives the request's own cancellable context and
+// its Ctx. Handle adapts it to Gin and sends every returned error through the
+// request's OnError mapper chain.
+type Handler func(ctx context.Context, c *Ctx) error
 
 // ErrorMapper turns application or infrastructure errors into safe HTTP
 // Problem Details and declares its precedence independently of construction
 // order. The first matching mapper wins. Mappers should use errors.Is/errors.As
 // so wrapped domain errors retain their meaning.
 type ErrorMapper interface {
-	MapError(*gin.Context, error) (ProblemDetail, bool)
+	MapError(*Ctx, error) (ProblemDetail, bool)
 	ErrorOrder() ErrorOrder
 }
 
 // ErrorMapperFunc adapts a function to an unconstrained ErrorMapper. Plugins
 // that need explicit precedence should use a named type and implement both
 // ErrorMapper methods.
-type ErrorMapperFunc func(*gin.Context, error) (ProblemDetail, bool)
+type ErrorMapperFunc func(*Ctx, error) (ProblemDetail, bool)
 
 // MapError implements ErrorMapper.
-func (f ErrorMapperFunc) MapError(c *gin.Context, err error) (ProblemDetail, bool) {
+func (f ErrorMapperFunc) MapError(c *Ctx, err error) (ProblemDetail, bool) {
 	if f == nil {
 		return ProblemDetail{}, false
 	}
@@ -66,17 +67,20 @@ func OnError(mappers ...ErrorMapper) gin.HandlerFunc {
 	}
 }
 
-// Handle adapts an error-returning Handler to gin.HandlerFunc. Errors are
-// recorded on gin.Context for diagnostics, abort the remaining handler chain,
-// and are rendered immediately. Immediate rendering is important: buffering
-// middleware such as timeout, gzip, and idempotency must observe the final
-// response while their own deferred work unwinds.
+// Handle adapts an error-returning Handler to gin.HandlerFunc. ctx is the
+// request's own context (gin.Context.Request.Context()), not
+// context.Background(), so cancellation and deadlines set by upstream
+// middleware (timeouts, client disconnects) propagate into the handler.
+// Errors are recorded on gin.Context for diagnostics, abort the remaining
+// handler chain, and are rendered immediately. Immediate rendering is
+// important: buffering middleware such as timeout, gzip, and idempotency
+// must observe the final response while their own deferred work unwinds.
 func Handle(handler Handler) gin.HandlerFunc {
 	if handler == nil {
 		panic("xbc: web.Handle requires a non-nil handler")
 	}
 	return func(c *gin.Context) {
-		if err := handler(c); err != nil {
+		if err := handler(c.Request.Context(), newCtx(c)); err != nil {
 			AbortError(c, err)
 		}
 	}
@@ -174,12 +178,18 @@ func (r *errorResolver) write(c *gin.Context, err error) {
 	AbortProblem(c, problem)
 }
 
+// mapError still takes the live *gin.Context: it is called only from write,
+// which is reached exclusively from framework-internal transport plumbing
+// (AbortError and resolveErrors), never from application code. It wraps c
+// into a Ctx once so every configured ErrorMapper -- the application-facing
+// contract -- sees the same fixed surface a Handle-registered handler does.
 func (r *errorResolver) mapError(c *gin.Context, err error) ProblemDetail {
+	ctx := newCtx(c)
 	for _, mapper := range r.mappers {
 		if mapper == nil {
 			continue
 		}
-		if problem, ok := mapper.MapError(c, err); ok {
+		if problem, ok := mapper.MapError(ctx, err); ok {
 			// A mapper claiming an error must produce an error status. In
 			// particular, never reproduce the common but operationally harmful
 			// convention of returning a business failure with HTTP 200.

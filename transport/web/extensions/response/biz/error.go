@@ -20,28 +20,56 @@ type Error struct {
 }
 
 // NewError creates a business-rule failure with HTTP 422 Unprocessable Entity.
-// Use NewStatusError when another HTTP error status is semantically correct.
+// Status and cause are optional dimensions supplied by WithStatus and WithCause
+// rather than by one constructor per combination, so a third dimension would
+// add one method instead of doubling the constructor set.
 func NewError(code, detail string) *Error {
-	return NewStatusError(http.StatusUnprocessableEntity, code, detail)
+	return &Error{status: http.StatusUnprocessableEntity, code: code, detail: detail}
 }
 
-// NewStatusError creates a business failure with an explicit HTTP status.
-// Plugin accepts only 4xx/5xx statuses and a non-empty stable code; invalid
-// values are converted to a safe internal_server_error response.
-func NewStatusError(status int, code, detail string) *Error {
-	return &Error{status: status, code: code, detail: detail}
+// WithStatus returns a copy published with an explicit HTTP status. Plugin
+// accepts only 4xx/5xx statuses; an invalid value is converted to a safe
+// internal_server_error response rather than leaking the original.
+func (e *Error) WithStatus(status int) *Error {
+	if e == nil {
+		return nil
+	}
+	clone := *e
+	clone.status = status
+	return &clone
 }
 
-// WrapError creates an HTTP 422 business failure that retains cause for error
-// chain inspection and internal diagnostics.
-func WrapError(cause error, code, detail string) *Error {
-	return WrapStatusError(cause, http.StatusUnprocessableEntity, code, detail)
+// WithCause returns a copy retaining cause for errors.Is/errors.As and internal
+// diagnostics. Because the receiver is copied rather than mutated, a package
+// level Error stays usable as a template: ErrOrderClosed.WithCause(dbErr) never
+// writes back into ErrOrderClosed.
+func (e *Error) WithCause(cause error) *Error {
+	if e == nil {
+		return nil
+	}
+	clone := *e
+	clone.cause = cause
+	return &clone
 }
 
-// WrapStatusError creates an explicit-status business failure that retains
-// cause for error chain inspection and internal diagnostics.
-func WrapStatusError(cause error, status int, code, detail string) *Error {
-	return &Error{status: status, code: code, detail: detail, cause: cause}
+// WithDetail returns a copy whose detail is the receiver's detail treated as a
+// printf format and filled with args. It completes the template pattern that
+// WithStatus and WithCause start: a package-level Error carries the wording
+// once and each call site supplies only the values that vary.
+//
+//	var ErrQuotaExhausted = biz.NewError("QUOTA.EXHAUSTED", "Quota of %d is exhausted.")
+//
+//	return ErrQuotaExhausted.WithDetail(limit)
+//
+// args are published to the client verbatim, so pass only client-safe values.
+// An internal cause belongs in WithCause, which never reaches the response.
+func (e *Error) WithDetail(args ...any) *Error {
+	if e == nil {
+		return nil
+	}
+	clone := *e
+	clone.detail = fmt.Sprintf(clone.detail, args...)
+	return &clone
 }
 
 // Error implements error. A wrapped cause is included for internal logging;
@@ -93,6 +121,18 @@ func (e *Error) Detail() string {
 		return ""
 	}
 	return e.detail
+}
+
+// maxStatusCode is the top of the HTTP status code space. RFC 9110 assigns no
+// class above 5xx, so a larger value is a programming error rather than a
+// status this package could publish.
+const maxStatusCode = 599
+
+// publishableStatus reports whether status may leave the boundary as-is. Only
+// 4xx and 5xx qualify: a success or redirect status would contradict the
+// Problem Detail the failure is rendered into.
+func publishableStatus(status int) bool {
+	return status >= http.StatusBadRequest && status <= maxStatusCode
 }
 
 func validCode(code string) bool {

@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -30,7 +28,7 @@ import (
 //   - this scheme's prefix and a value follows it             -> Presented
 type CredentialExtractor interface {
 	Scheme() authentication.Scheme
-	ExtractCredential(*gin.Context) (authentication.CredentialResult, error)
+	ExtractCredential(*Ctx) (authentication.CredentialResult, error)
 }
 
 // newExtractorIndex keys extractors by scheme. Two extractors claiming one
@@ -63,10 +61,12 @@ func newExtractorIndex(
 }
 
 // requestCredentialSource adapts the extractor index to one live request. It is
-// created per request and never stored, so the *gin.Context it captures cannot
-// outlive the handler.
+// created per request and never stored, so the Ctx it captures cannot outlive
+// the handler. The Ctx is wrapped once at construction rather than per lookup:
+// Credential runs once per scheme in the selection, and every extractor must
+// see the same request surface.
 type requestCredentialSource struct {
-	gc         *gin.Context
+	ctx        *Ctx
 	extractors map[authentication.Scheme]CredentialExtractor
 }
 
@@ -88,5 +88,5 @@ func (s requestCredentialSource) Credential(
 			"xbc: web has no credential extractor for scheme %q", scheme,
 		)
 	}
-	return extractor.ExtractCredential(s.gc)
+	return extractor.ExtractCredential(s.ctx)
 }

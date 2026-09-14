@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -50,11 +48,11 @@ const (
 // singleHeader classifies exactly one header's values. It never returns a
 // usable value for any state but headerOK, so a caller cannot accidentally
 // treat a duplicated or blank-padded header as a clean credential.
-func singleHeader(c *gin.Context, name string) (value string, present bool, state headerState) {
-	if c == nil || c.Request == nil {
+func singleHeader(c *web.Ctx, name string) (value string, present bool, state headerState) {
+	if c == nil || c.Request() == nil {
 		return "", false, headerAbsent
 	}
-	values := c.Request.Header.Values(name)
+	values := c.Request().Header.Values(name)
 	if len(values) == 0 {
 		return "", false, headerAbsent
 	}
@@ -83,7 +81,7 @@ func singleHeader(c *gin.Context, name string) (value string, present bool, stat
 // key header and no Authorization value names nothing of apikey's). Phase B,
 // reached only once Phase A says yes, applies the extractability checks that
 // produce this plugin's Malformed reasons.
-func (p *Plugin) ExtractCredential(c *gin.Context) (authentication.CredentialResult, error) {
+func (p *Plugin) ExtractCredential(c *web.Ctx) (authentication.CredentialResult, error) {
 	cfg := p.state.config
 	challenge := authentication.Challenge(cfg.bearerScheme)
 

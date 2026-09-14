@@ -34,18 +34,18 @@ func configuredSessionPlugin(t *testing.T, store Store, mutate func(*Config)) *P
 	return p
 }
 
-// newTestContextWithCookies builds a bare *gin.Context carrying the given
-// cookies on its request. A nil slice means the request has no cookies at
-// all -- the minimum ExtractCredential needs to classify a request.
-func newTestContextWithCookies(t *testing.T, cookies []*http.Cookie) *gin.Context {
+// newTestContextWithCookies builds a *web.Ctx wrapping a bare request
+// carrying the given cookies. A nil slice means the request has no cookies
+// at all -- the minimum ExtractCredential needs to classify a request.
+func newTestContextWithCookies(t *testing.T, cookies []*http.Cookie) *web.Ctx {
 	t.Helper()
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	gc, _ := gin.CreateTestContext(httptest.NewRecorder())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	for _, cookie := range cookies {
 		req.AddCookie(cookie)
 	}
-	c.Request = req
-	return c
+	gc.Request = req
+	return web.NewCtx(gc)
 }
 
 // TestPluginExtractCredentialClassifiesCookie exercises the three-state
@@ -169,20 +169,32 @@ func TestPluginExtractCredentialClassifiesCookie(t *testing.T) {
 	}
 }
 
-func TestPluginExtractCredentialNilRequestIsAbsent(t *testing.T) {
+// TestPluginExtractCredentialWithoutRequestIsAbsent exercises both halves of
+// ExtractCredential's defensive guard: a nil *web.Ctx, and a *web.Ctx wrapping
+// a gin.Context that carries no request. web.NewCtx performs no validation, so
+// the second case is reachable from outside the web package; a Ctx the
+// framework itself hands a handler always wraps a live request.
+func TestPluginExtractCredentialWithoutRequestIsAbsent(t *testing.T) {
 	t.Parallel()
 	p := configuredSessionPlugin(t, &recordingStore{}, nil)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 
-	got, err := p.ExtractCredential(c)
-	if err != nil {
-		t.Fatalf("ExtractCredential() error = %v", err)
-	}
-	if got.Status() != authentication.CredentialStatusAbsent {
-		t.Fatalf("status = %v, want Absent", got.Status())
-	}
-	if challenge, ok := got.Challenge(); ok {
-		t.Fatalf("Challenge() = %q, want none", challenge)
+	noRequest, _ := gin.CreateTestContext(httptest.NewRecorder())
+	for name, c := range map[string]*web.Ctx{
+		"nil ctx":     nil,
+		"nil request": web.NewCtx(noRequest),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := p.ExtractCredential(c)
+			if err != nil {
+				t.Fatalf("ExtractCredential() error = %v", err)
+			}
+			if got.Status() != authentication.CredentialStatusAbsent {
+				t.Fatalf("status = %v, want Absent", got.Status())
+			}
+			if challenge, ok := got.Challenge(); ok {
+				t.Fatalf("Challenge() = %q, want none", challenge)
+			}
+		})
 	}
 }
 

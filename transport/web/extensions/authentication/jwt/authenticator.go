@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -27,7 +25,7 @@ func (*Plugin) Scheme() authentication.Scheme { return Scheme }
 // belongs to this scheme. Signature, expiry, and revocation are Authenticate's
 // job -- splitting them this way is what lets jwt and another bearer-style
 // scheme share one header without either shadowing the other.
-func (p *Plugin) ExtractCredential(c *gin.Context) (authentication.CredentialResult, error) {
+func (p *Plugin) ExtractCredential(c *web.Ctx) (authentication.CredentialResult, error) {
 	runtime := p.compiled
 	raw := c.GetHeader(runtime.header)
 	if strings.TrimSpace(raw) == "" {
