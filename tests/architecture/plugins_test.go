@@ -48,6 +48,9 @@ var archWebAuthPolicyConstructors = map[string]bool{
 }
 
 // archRouteRegistrationMethods are the Router methods that contribute a route.
+// TestArchRouterExposesNoUnguardedRegistrationMethod holds this list to
+// Router's actual exported surface in both directions, so a name here that no
+// longer exists, and a new registration method that never got added, both fail.
 var archRouteRegistrationMethods = map[string]bool{
 	"GET":     true,
 	"POST":    true,
@@ -57,6 +60,21 @@ var archRouteRegistrationMethods = map[string]bool{
 	"HEAD":    true,
 	"OPTIONS": true,
 	"Handle":  true,
+	"Any":     true,
+	"Match":   true,
+}
+
+// archRouterNonRegistrationMethods are Router's remaining exported methods:
+// the ones that do not add a row to the route table. Group derives a
+// sub-router that shares the parent's table rather than registering anything
+// itself, so it belongs here instead. Perm and Auth set this Router's
+// group-level policy default for routes registered afterward -- they return
+// *Router, not *Route, so they belong here too even though they influence
+// what Handle later writes into a RouteInfo.
+var archRouterNonRegistrationMethods = map[string]bool{
+	"Group": true,
+	"Perm":  true,
+	"Auth":  true,
 }
 
 type archTopValue struct {
@@ -347,6 +365,76 @@ func TestArchManagementEndpointsDeclareNoAuthenticationExemption(t *testing.T) {
 			require.NotZero(t, registrations, "%s RegisterRoutes must still register routes", relative)
 		})
 	}
+}
+
+// TestArchRouterExposesNoUnguardedRegistrationMethod pins Router's exported
+// surface to the two lists above. It exists because
+// archRouteRegistrationMethods is the input to a scan that counts route
+// registrations, so the list being wrong is invisible at the call site: a
+// registration method missing from it makes that scan silently undercount,
+// and a name in it that Router never had makes the list read as coverage it
+// does not have. Both directions are asserted here.
+//
+// The structural signal is the return type. Every Router method that appends
+// to the route table hands back the *web.Route metadata handle for the rows it
+// just added, which is also what makes .Auth and .Perm declarable at the
+// registration site. A future method that registers a route without returning
+// *Route would therefore evade this guard -- but it would also be undeclarable
+// policy-wise, which is the larger design error the reviewer is meant to catch.
+func TestArchRouterExposesNoUnguardedRegistrationMethod(t *testing.T) {
+	root := archRepositoryRoot(t)
+	files := archParseProductionGoFiles(t, filepath.Join(root, "transport", "web"))
+
+	found := make(map[string]bool)
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || archReceiverTypeName(function.Recv) != "Router" || !function.Name.IsExported() {
+				continue
+			}
+			name := function.Name.Name
+			found[name] = true
+			registers := archReturnsWebRoute(function)
+			if registers {
+				assert.Truef(t, archRouteRegistrationMethods[name],
+					"Router.%s returns *Route, so it registers routes; add it to archRouteRegistrationMethods or the route-registration scans will not see it",
+					name)
+				continue
+			}
+			assert.Truef(t, archRouterNonRegistrationMethods[name],
+				"Router.%s is exported but is in neither registration list; classify it deliberately",
+				name)
+		}
+	}
+
+	// Positive control: the scan above proves nothing if it matched no method
+	// at all, which is exactly what a renamed receiver would produce.
+	require.NotEmpty(t, found, "no exported Router methods were found; the scan is looking at the wrong type")
+	for name := range archRouteRegistrationMethods {
+		assert.Truef(t, found[name],
+			"archRouteRegistrationMethods names Router.%s, which does not exist; the list overstates its coverage",
+			name)
+	}
+	for name := range archRouterNonRegistrationMethods {
+		assert.Truef(t, found[name],
+			"archRouterNonRegistrationMethods names Router.%s, which does not exist", name)
+	}
+}
+
+// archReturnsWebRoute reports whether function returns the *Route metadata
+// handle. The web package declares Route locally, so the result type is a bare
+// identifier rather than a qualified one.
+func archReturnsWebRoute(function *ast.FuncDecl) bool {
+	results := function.Type.Results
+	if results == nil || len(results.List) != 1 {
+		return false
+	}
+	star, ok := results.List[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	identifier, ok := star.X.(*ast.Ident)
+	return ok && identifier.Name == "Route"
 }
 
 // TestArchPluginContractsAreCurrent guards the committed plugin identity and

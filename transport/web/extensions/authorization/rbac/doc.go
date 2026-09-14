@@ -9,10 +9,17 @@
 //
 // # Usage
 //
-//	func mount(router *gin.Engine, manager businessrbac.Manager) {
-//		settings := router.Group("/settings")
-//		settings.Use(webrbac.RequireAll(manager,
+// Scope the middleware by declaring it on the group, so every route registered
+// on that sub-router is covered:
+//
+//	func (*Settings) RegisterRoutes(r *web.Router) {
+//		settings := r.Group("/settings", webrbac.RequireAll(manager,
 //			businessrbac.Permission{Object: "settings.audit", Action: "read"},
 //		))
+//		settings.GET("/audit", handleAudit).Name("settings.audit.read")
 //	}
+//
+// Register through *web.Router rather than the underlying *gin.Engine: only
+// the former records a RouteInfo, and a route missing from that table is
+// invisible to the authentication policy and to every RouteCatalogListener.
 package rbac
