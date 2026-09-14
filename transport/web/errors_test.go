@@ -21,7 +21,7 @@ func errorEngine(mappers ...ErrorMapper) (*gin.Engine, *errorResolver) {
 	resolver := newErrorResolver(log.Nop())
 	engine := gin.New()
 	engine.Use(resolver.attach)
-	engine.Use(OnError(mappers...))
+	engine.Use(Handle(OnError(mappers...)))
 	return engine, resolver
 }
 
@@ -88,8 +88,8 @@ func TestNestedOnErrorComposesMappersOuterToInner(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.Use(OnError(outer))
-	engine.Use(OnError(inner, last))
+	engine.Use(Handle(OnError(outer)))
+	engine.Use(Handle(OnError(inner, last)))
 	engine.GET("/inventory", Handle(func(context.Context, *Ctx) error {
 		return fmt.Errorf("reserve inventory: %w", domainErr)
 	}))

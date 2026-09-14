@@ -54,7 +54,7 @@ func (p *Plugin) log() corelog.Logger {
 // boundary. Web's outer boundary remains the final safe fallback for unknown
 // errors and invalid mapper output.
 func (p *Plugin) Handler() gin.HandlerFunc {
-	return web.OnError(web.ErrorMapperFunc(p.mapError))
+	return web.Handle(web.OnError(web.ErrorMapperFunc(p.mapError)))
 }
 
 // Order places the business error mapper in Web's error phase.

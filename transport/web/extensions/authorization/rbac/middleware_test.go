@@ -152,7 +152,7 @@ func serveRBAC(t *testing.T, middleware gin.HandlerFunc, principal *web.Principa
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.Use(web.OnError())
+	engine.Use(web.Handle(web.OnError()))
 	if principal != nil {
 		engine.Use(func(ctx *gin.Context) {
 			if !web.SetPrincipal(ctx, *principal) {
