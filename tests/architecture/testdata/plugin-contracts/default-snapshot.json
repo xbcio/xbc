@@ -208,6 +208,16 @@
       }
     },
     {
+      "key": "gracefulshutdown-http",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/reliability/gracefulshutdown.Config",
+      "defaults": {
+        "HTTP": {
+          "Enabled": false,
+          "Path": "/-/shutdown"
+        }
+      }
+    },
+    {
       "key": "gzip",
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/response/gzip.Config",
       "defaults": {

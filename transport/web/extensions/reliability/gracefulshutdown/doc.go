@@ -3,9 +3,13 @@
 //
 // # Usage
 //
-// Bundle contains two canonical Definitions: Key produces *Controller and
-// HTTPKey produces the Web route contributor. The latter receives Controller
-// through plugin.RefTo; no value is published from a lifecycle hook.
+// Definition() returns this package's primary Definition: Key produces
+// *Controller. Bundle() deliberately selects two independent runtime units:
+// that Controller and HTTPKey, which produces the Web route contributor. The
+// route contributor has its own Key, configuration, and contract, and receives
+// Controller through plugin.RefTo; no value is published from a lifecycle hook.
+// Keeping both Definitions in one Bundle makes the optional HTTP adapter easy
+// to select without conflating it with the programmatic controller.
 //
 // A plugin that needs to trigger a clean process stop declares the same typed
 // construction dependency:

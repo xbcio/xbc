@@ -42,51 +42,52 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/security/securityheaders"
 )
 
-// definitionProviders is the exhaustive, manually curated list of every
-// canonical plugin package's Definition accessor. Membership mirrors
+// bundleProviders is the exhaustive, manually curated list of every reusable
+// plugin implementation package's Bundle accessor. Membership mirrors
 //
-//	grep -rl '^func Definition() plugin.Definition' --include='*.go' .
+//	grep -rl '^func Bundle() plugin.Bundle' --include='*.go' .
 //
-// run from the repository root (excluding scripts/plugin-migration-inventory
-// test fixtures and examples/quickstart/internal/greeter, which is demo code
-// rather than a real integration). Regenerate this list by re-running that
-// grep whenever a plugin package is added or removed.
-var definitionProviders = []func() plugin.Definition{
-	asynq.Definition,
-	cron.Definition,
-	elasticsearch.Definition,
-	gorm.Definition,
-	kafka.Definition,
-	objectstorage.Definition,
-	outbox.Definition,
-	raft.Definition,
-	redis.Definition,
-	webhook.Definition,
+// run from the repository root after excluding aggregate Bundles (such as
+// transport/web/prelude, whose entries belong to the implementation packages
+// below), scripts/plugin-migration-inventory test fixtures, and
+// examples/quickstart/internal/greeter demo code. Regenerate this list by
+// re-running that grep whenever a plugin package is added or removed.
+var bundleProviders = []func() plugin.Bundle{
+	asynq.Bundle,
+	cron.Bundle,
+	elasticsearch.Bundle,
+	gorm.Bundle,
+	kafka.Bundle,
+	objectstorage.Bundle,
+	outbox.Bundle,
+	raft.Bundle,
+	redis.Bundle,
+	webhook.Bundle,
 
-	web.Definition,
-	accesslog.Definition,
-	apikey.Definition,
-	auditlog.Definition,
-	biz.Definition,
-	cors.Definition,
-	gracefulshutdown.Definition,
-	gzip.Definition,
-	health.Definition,
-	casbin.Definition,
-	casbingorm.Definition,
-	casbinredis.Definition,
-	idempotency.Definition,
-	jwt.Definition,
-	metrics.Definition,
-	session.Definition,
-	swag.Definition,
-	tracing.Definition,
-	pprof.Definition,
-	ratelimit.Definition,
-	recovery.Definition,
-	requestid.Definition,
-	rbac.Definition,
-	securityheaders.Definition,
-	tenant.Definition,
-	timeout.Definition,
+	web.Bundle,
+	accesslog.Bundle,
+	apikey.Bundle,
+	auditlog.Bundle,
+	biz.Bundle,
+	cors.Bundle,
+	gracefulshutdown.Bundle,
+	gzip.Bundle,
+	health.Bundle,
+	casbin.Bundle,
+	casbingorm.Bundle,
+	casbinredis.Bundle,
+	idempotency.Bundle,
+	jwt.Bundle,
+	metrics.Bundle,
+	session.Bundle,
+	swag.Bundle,
+	tracing.Bundle,
+	pprof.Bundle,
+	ratelimit.Bundle,
+	recovery.Bundle,
+	requestid.Bundle,
+	rbac.Bundle,
+	securityheaders.Bundle,
+	tenant.Bundle,
+	timeout.Bundle,
 }

@@ -102,6 +102,14 @@
       "contracts": []
     },
     {
+      "key": "gracefulshutdown-http",
+      "config_path": "plugins.gracefulshutdown",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
       "key": "gzip",
       "config_path": "plugins.gzip",
       "cardinality": "single",
@@ -278,6 +286,14 @@
       "config_path": "web",
       "cardinality": "single",
       "contracts": []
+    },
+    {
+      "key": "web-error-boundary",
+      "config_path": "plugins.web-error-boundary",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
     },
     {
       "key": "webhook",
