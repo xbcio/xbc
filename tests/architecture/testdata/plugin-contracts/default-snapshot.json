@@ -606,6 +606,9 @@
         "MaxRequestBodyBytes": 10485760,
         "MaxMultipartMemory": 8388608,
         "TrustedProxies": null,
+        "Shutdown": {
+          "PreDrainDelay": 0
+        },
         "Security": {
           "Default": "deny",
           "Policies": null

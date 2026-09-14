@@ -62,6 +62,58 @@ func TestCallerCancellationStopsTheRunWithoutOwningTheProcess(t *testing.T) {
 	assert.Equal(t, stopReasonContext, app.currentStopReason())
 }
 
+// TestRequestStopCancelsExecutionBeforePublishingStop ensures all lifecycle
+// consumers see cancellation before wait can enter reverse cleanup. In
+// particular, health readiness must turn Down before a Web server begins
+// draining its listener.
+func TestRequestStopCancelsExecutionBeforePublishingStop(t *testing.T) {
+	app := newApp(nil)
+	execution, cancelExecution := context.WithCancelCause(context.Background())
+	defer cancelExecution(nil)
+
+	cancelEntered := make(chan struct{})
+	releaseCancel := make(chan struct{})
+	owner := plugin.Identity{Plugin: "shutdown-order"}
+	app.tasks = newTaskRuntime(nil, nil)
+	require.True(t, app.tasks.openStart(owner))
+	app.executionCtx = execution
+	app.cancelExec = func(cause error) {
+		close(cancelEntered)
+		<-releaseCancel
+		cancelExecution(cause)
+	}
+
+	requested := make(chan bool, 1)
+	go func() { requested <- app.requestStop(stopReasonSignal) }()
+
+	func() {
+		defer close(releaseCancel)
+		select {
+		case <-cancelEntered:
+		case <-time.After(runtimeTestTimeout):
+			t.Fatal("requestStop did not begin execution-context cancellation")
+		}
+		assertChannelOpen(t, app.stopCh,
+			"requestStop published stop before execution-context cancellation completed")
+		assert.False(t, app.tasks.submit(owner, func(context.Context) {}, false),
+			"requestStop left managed-task admission open while cancellation callbacks run")
+	}()
+
+	select {
+	case accepted := <-requested:
+		assert.True(t, accepted)
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("requestStop did not return after cancellation completed")
+	}
+	select {
+	case <-app.stopCh:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("requestStop did not publish stop after cancellation completed")
+	}
+	require.Error(t, execution.Err())
+	assert.Equal(t, "xbc: stop requested: signal", context.Cause(execution).Error())
+}
+
 func TestUsageErrorsExitTwoWhileRuntimeFailuresExitOne(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		args []string

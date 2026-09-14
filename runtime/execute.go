@@ -141,7 +141,9 @@ func (a *App) ensureStarting(stage string) error {
 
 // requestStop and releaseTraffic use the same mutex. Consequently a shutdown
 // request cannot land between a successful check and an unconditional gate
-// release: exactly one transition wins.
+// release: exactly one transition wins. It also cancels the execution context
+// before publishing stopCh, so readiness consumers observe shutdown before
+// reverse cleanup can begin draining a transport.
 func (a *App) requestStop(reason string) bool {
 	a.stateMu.Lock()
 	if a.stopRequestedFlag {
@@ -150,16 +152,16 @@ func (a *App) requestStop(reason string) bool {
 	}
 	a.stopRequestedFlag = true
 	a.stopReason = reason
-	close(a.stopCh)
 	cancel := a.cancelExec
 	tasks := a.tasks
-	a.stateMu.Unlock()
 	if tasks != nil {
 		tasks.closeAdmission()
 	}
 	if cancel != nil {
 		cancel(fmt.Errorf("xbc: stop requested: %s", reason))
 	}
+	close(a.stopCh)
+	a.stateMu.Unlock()
 	return true
 }
 
