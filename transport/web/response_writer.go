@@ -14,20 +14,17 @@ import "net/http"
 // response twice" guard would not fire and the response body would be written
 // twice. Only the writer the request is currently writing through knows that.
 //
-// Of that trio, Written is the only one with a production consumer through
-// this interface today: extensions/response/biz/response.go reads
-// c.Writer().Written() before rendering an envelope, and then writes the
-// payload through the embedded http.ResponseWriter. The framework's other
-// duplicate-write guards -- problem.go, errors.go, and the recovery
-// middleware -- read Written too, but off *gin.Context rather than through
-// this interface.
+// All three of them have production call sites through this interface.
+// Written gates the duplicate-write guards in the biz, recovery, and timeout
+// middleware; biz reads it before rendering an envelope and then writes the
+// payload through the embedded http.ResponseWriter. Status and Size are what
+// the observability middleware (metrics, tracing, accesslog, auditlog) records
+// for a finished request, so narrowing either one breaks a byte count or a
+// status label that ships today.
 //
-// Status and Size are in the contract because the observability middleware
-// (metrics, tracing, accesslog, auditlog) reads them off the response writer
-// to record a finished request's status code and byte count. That middleware
-// still reads them through gin's context today and moves onto this interface
-// once the engine seam is complete, so their presence here is deliberate
-// forward provisioning rather than a call site that exists now.
+// The framework's own duplicate-write guards in problem.go and errors.go
+// still read Written off *gin.Context rather than through this interface;
+// they move onto it with the rest of the engine seam.
 //
 // Flush is part of the contract for a compile-time reason, not a stylistic
 // one: a buffering wrapper's own Flush must commit its buffer and then

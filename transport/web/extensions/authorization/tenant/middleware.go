@@ -122,11 +122,12 @@ func singleHeader(c *web.Ctx, name string) (value string, present, valid bool) {
 }
 
 // forbidden takes *web.Ctx rather than the *gin.Context every other
-// converted package's forbidden helper keeps: resolve's own top guard can
-// reach here with a nil c (see the nil check above), and only a parameter
-// of the same type resolve actually holds can be checked for nil without a
-// panic. A *gin.Context parameter would require calling c.Gin() at the call
-// site first, which panics on a nil *web.Ctx before forbidden ever runs.
+// converted package's forbidden helper keeps, because resolve holds a
+// *web.Ctx: a *gin.Context parameter would mean calling c.Gin() at all seven
+// call sites. The nil check mirrors resolve's own top guard, which predates
+// the engine-neutral rewrite. Both are unreachable through web.Handle today,
+// since it dereferences the request before the handler runs; they stay as
+// the guard rail for a direct caller.
 func forbidden(c *web.Ctx) {
 	if c == nil {
 		return
