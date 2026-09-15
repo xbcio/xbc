@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -45,8 +43,10 @@ func (p *Plugin) write(state *runtimeState, c *web.Ctx, started time.Time, panic
 	if bytes < 0 {
 		bytes = 0
 	}
-	gc := c.Gin()
-	route := gc.FullPath()
+	// "" is the fallback initial value for an unmatched request: web.CurrentRoute
+	// overwrites it below whenever the request matched a frozen route, and gin
+	// itself reports "" from FullPath for a request that matched no route.
+	route := ""
 	routeName := ""
 	if info, ok := web.CurrentRoute(c); ok {
 		route = info.Path
@@ -65,7 +65,7 @@ func (p *Plugin) write(state *runtimeState, c *web.Ctx, started time.Time, panic
 		"bytes", bytes,
 		"latency", latency,
 		"request_id", requestID,
-		"client_ip", state.config.clientIP(gc),
+		"client_ip", state.config.clientIP(c),
 		"panicked", panicked,
 	}
 
@@ -107,15 +107,15 @@ func (c normalizedConfig) skip(path string) bool {
 	return false
 }
 
-func (c normalizedConfig) clientIP(gc *gin.Context) string {
+func (c normalizedConfig) clientIP(ctx *web.Ctx) string {
 	if c.trustProxyHeaders {
-		if ip := net.ParseIP(strings.TrimSpace(gc.ClientIP())); ip != nil {
+		if ip := net.ParseIP(strings.TrimSpace(ctx.ClientIP())); ip != nil {
 			return ip.String()
 		}
 	}
-	host, _, err := net.SplitHostPort(strings.TrimSpace(gc.Request.RemoteAddr))
+	host, _, err := net.SplitHostPort(strings.TrimSpace(ctx.Request().RemoteAddr))
 	if err != nil {
-		host = strings.TrimSpace(gc.Request.RemoteAddr)
+		host = strings.TrimSpace(ctx.Request().RemoteAddr)
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.String()

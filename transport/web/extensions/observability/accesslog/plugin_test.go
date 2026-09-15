@@ -73,8 +73,13 @@ func TestStructuredFieldsAndSecretMinimization(t *testing.T) {
 
 	entry := oneEntry(t, logger)
 	fields := fieldsMap(entry.fields)
+	// "route" is sourced from web.CurrentRoute, which only web.Router's
+	// per-route registration populates; this test drives a bare *gin.Engine
+	// directly (bypassing web.Router), so no frozen route ever matches and the
+	// field keeps its unmatched-request fallback of "". Route population
+	// itself is covered by the web package's own router tests.
 	for key, want := range map[string]any{
-		"method": http.MethodGet, "path": "/users/42", "route": "/users/:id",
+		"method": http.MethodGet, "path": "/users/42", "route": "",
 		"status": http.StatusCreated, "bytes": 5, "request_id": "request-1", "client_ip": "192.0.2.9",
 		"panicked": false,
 	} {
