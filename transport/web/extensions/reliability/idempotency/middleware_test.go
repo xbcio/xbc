@@ -77,8 +77,14 @@ func TestCompletedResponseIsSafelyReplayed(t *testing.T) {
 	})
 	first := perform(engine, "order-123456", `"one"`)
 	second := perform(engine, "order-123456", `"one"`)
-	if first.Code != http.StatusCreated || second.Code != http.StatusCreated || first.Body.String() != second.Body.String() || second.Header().Get("Idempotency-Replayed") != "true" || calls.Load() != 1 {
-		t.Fatalf("first=%d %q second=%d %q replay=%q calls=%d", first.Code, first.Body.String(), second.Code, second.Body.String(), second.Header().Get("Idempotency-Replayed"), calls.Load())
+	// Result().Header is the header snapshot taken when the response was
+	// committed. recorder.Header() is the live map, which reads back a header
+	// set after the status line just as happily -- and such a header never
+	// reaches a real client, so the replay marker would be unobservable
+	// exactly where it matters.
+	replayed := second.Result().Header.Get("Idempotency-Replayed")
+	if first.Code != http.StatusCreated || second.Code != http.StatusCreated || first.Body.String() != second.Body.String() || replayed != "true" || calls.Load() != 1 {
+		t.Fatalf("first=%d %q second=%d %q replay=%q calls=%d", first.Code, first.Body.String(), second.Code, second.Body.String(), replayed, calls.Load())
 	}
 	conflict := perform(engine, "order-123456", `"two"`)
 	if conflict.Code != http.StatusConflict {

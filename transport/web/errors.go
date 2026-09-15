@@ -172,11 +172,12 @@ func (r *errorResolver) write(c *Ctx, err error) {
 	AbortProblem(c, problem)
 }
 
-// mapError is called only from write, which is reached exclusively from
-// framework-internal transport plumbing (AbortError and resolveErrors), never
-// from application code. It hands c straight to every configured ErrorMapper
-// -- the application-facing contract -- so each one sees the same fixed
-// surface a Handle-registered handler does.
+// mapError is called only from write, whose sole caller is AbortError -- the
+// framework-internal rendering path that both a Handler's returned error (via
+// Handle) and an engine adapter's drained error accumulator funnel into. No
+// application code reaches it directly. It hands c straight to every
+// configured ErrorMapper -- the application-facing contract -- so each one
+// sees the same fixed surface a Handle-registered handler does.
 func (r *errorResolver) mapError(c *Ctx, err error) ProblemDetail {
 	for _, mapper := range r.mappers {
 		if mapper == nil {

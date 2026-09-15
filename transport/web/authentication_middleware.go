@@ -266,9 +266,13 @@ func (m *authenticationMiddleware) Handler() Handler {
 // oracle for which internal step failed.
 //
 // Logging must happen here too, not at the error boundary: AbortProblem writes
-// the response before this returns, and errorResolver.resolveErrors skips any
-// request whose response is already written -- so err would never reach the
-// error boundary's own log even if it were also recorded there.
+// the response before this returns, so err is never handed back to Handler's
+// return path -- every caller returns nil once the response has been chosen
+// here. Routing it there instead would not help either: the error boundary
+// reached with a response already committed can no longer map or render that
+// error, and an engine adapter draining an engine-native error accumulator
+// skips an already-written request outright. Either way the cause is lost
+// unless it is recorded here.
 //
 // Only err.Error() reaches the log, and that is deliberate. An
 // authentication.OperationalError renders the failed operation and scheme while

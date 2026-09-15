@@ -3,6 +3,7 @@ package gin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -88,6 +89,50 @@ func TestWrapReportsErrorsTheMiddlewareRecordedDuringItsOwnCall(t *testing.T) {
 	ginEngine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/captured", nil))
 
 	assert.ErrorIs(t, reported, recorded, "中间件在自身调用期间记录的错误必须被报告出来")
+}
+
+// TestWrapReportedErrorsAreRenderedThroughTheErrorBoundary is the end-to-end
+// half of the same seam, rebuilt here from TestGinReportedErrorsAreJoinedBeforeMapping,
+// which lived in transport/web/errors_test.go while that package still owned
+// gin. The test above proves only that Handler() returns the error; the whole
+// path from gin's accumulator through the error boundary to a rendered Problem
+// Detail could break with it still green, so the judgement here is the
+// response, never the returned error.
+//
+// Two errors are pushed on purpose, and only the first wraps the domain error
+// the mapper recognizes. Joining them is what keeps errors.Is reachable
+// through both: an implementation reporting only the last entry would miss the
+// mapper and fall through to the generic 500.
+func TestWrapReportedErrorsAreRenderedThroughTheErrorBoundary(t *testing.T) {
+	port, ginEngine := newTestEngine(t)
+
+	domainErr := errors.New("domain failure")
+	mapper := web.ErrorMapperFunc(func(_ *web.Ctx, err error) (web.ProblemDetail, bool) {
+		if errors.Is(err, domainErr) {
+			return web.NewProblem(http.StatusUnprocessableEntity, "domain_failure"), true
+		}
+		return web.ProblemDetail{}, false
+	})
+	thirdParty := ginlib.HandlerFunc(func(c *ginlib.Context) {
+		//nolint:errcheck // Error returns the entry it recorded; only the side effect matters here.
+		c.Error(fmt.Errorf("first: %w", domainErr))
+		//nolint:errcheck // Same: the unrelated second entry is pushed for its side effect.
+		c.Error(errors.New("unrelated later failure"))
+		c.Abort()
+	})
+
+	port.Handle(http.MethodGet, "/reported", []web.Handler{
+		web.OnError(mapper),
+		Wrap(thirdParty, web.Order{}).Handler(),
+	})
+
+	response := httptest.NewRecorder()
+	ginEngine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/reported", nil))
+
+	require.Equal(t, http.StatusUnprocessableEntity, response.Code,
+		"gin 原生中间件报告的错误必须经错误边界映射后渲染出来")
+	assert.Equal(t, "domain_failure", decodeProblem(t, response).Properties["code"],
+		"join 必须保住 errors.Is 可达性，否则只认得最后一个错误的实现也能全绿")
 }
 
 // TestWrapIgnoresErrorsRecordedBeforeItRan pins the before/after delta.

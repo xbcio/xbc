@@ -119,6 +119,92 @@ func TestShimSecondWriteHeaderAfterCommitIsIgnored(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code, "提交后的状态码不得被覆盖")
 }
 
+// bufferingWriter records a status without sending it and commits only when
+// asked to, which is the shape of the wrappers gzip, timeout and idempotency
+// install around a response. It is what makes the shim's own commit
+// observable: a base writer that auto-commits on its first write -- net/http's
+// contract, and what recordingWriter above models -- answers identically
+// whether or not the shim committed first, so ordering asserted against it
+// would be no assertion at all.
+type bufferingWriter struct {
+	header  http.Header
+	pending int
+	status  int
+	body    []byte
+	written bool
+	// calls records the base-writer operations in the order they arrive, which
+	// is the only place the header/body ordering is visible.
+	calls []string
+}
+
+func (w *bufferingWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *bufferingWriter) WriteHeader(code int) {
+	if w.written {
+		return
+	}
+	w.written = true
+	w.status = code
+	w.calls = append(w.calls, "commit")
+}
+
+func (w *bufferingWriter) Write(b []byte) (int, error) {
+	w.calls = append(w.calls, "body")
+	w.body = append(w.body, b...)
+	return len(b), nil
+}
+
+// Status answers the recorded status until the response is committed, the way
+// a wrapper holding a handler's chosen status does.
+func (w *bufferingWriter) Status() int {
+	if w.written {
+		return w.status
+	}
+	return w.pending
+}
+
+func (w *bufferingWriter) Size() int {
+	if w.body == nil {
+		return -1
+	}
+	return len(w.body)
+}
+
+func (w *bufferingWriter) Written() bool { return w.written }
+func (w *bufferingWriter) Flush()        {}
+
+var _ web.ResponseWriter = (*bufferingWriter)(nil)
+
+// TestShimWriteStringReportsBytesAndCommitsBeforeTheBody pins the entry point
+// gin's Context.String and Context.Redirect reach, which no other test in this
+// package drives. Two independent things can be wrong here, so both are
+// asserted: the byte count handed back -- gin credits it to Size, and every
+// access log, metric and audit record of a response length is derived from
+// that -- and the commit that must precede the body, without which the status
+// the handler recorded never goes out and the body is sent under whatever the
+// writer beneath defaults to.
+//
+// The string is deliberately multi-byte: a count taken in characters rather
+// than bytes agrees with a correct one on ASCII and only diverges here.
+func TestShimWriteStringReportsBytesAndCommitsBeforeTheBody(t *testing.T) {
+	base := &bufferingWriter{pending: http.StatusAccepted}
+	s := newShim(base)
+
+	n, err := s.WriteString("héllo")
+
+	require.NoError(t, err)
+	require.Equal(t, 6, n, "WriteString 必须返回写入的字节数，而不是字符数")
+	require.Equal(t, []string{"commit", "body"}, base.calls, "body 必须在 header 提交之后才写出")
+	require.Equal(t, http.StatusAccepted, base.Status(), "提交必须带上此前记录的状态码")
+	require.Equal(t, "héllo", string(base.body))
+	require.Equal(t, 6, base.Size(), "写入的字节数必须记到下层写入器上")
+}
+
 // TestGinResponseWriterSatisfiesContract is why the adapter can hand gin's own
 // writer straight to a handler: gin's writer already implements every method
 // the neutral contract asks for, so nothing has to be synthesized for the
