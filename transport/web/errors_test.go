@@ -251,3 +251,52 @@ func TestErrorMapperPublicAdaptersHaveExpectedShape(t *testing.T) {
 	assert.NotNil(t, mapper)
 	assert.PanicsWithValue(t, "xbc: web.Handle requires a non-nil handler", func() { web.Handle(nil) })
 }
+
+// stubLogger captures the fields of each Error entry so a test can tell a
+// failure that was recorded from one that was merely absorbed.
+type stubLogger struct {
+	log.Logger
+	entries [][]any
+}
+
+func (l *stubLogger) Error(_ string, kv ...any) {
+	l.entries = append(l.entries, kv)
+}
+
+// TestErrorAfterCommitIsLoggedAndNeverReachesTheClient pins the half of the
+// error boundary that has no response left to write: the failure must still be
+// recorded in full, and the response the client is already receiving must stay
+// exactly as it is.
+//
+// The mapper claims the error as 4xx on purpose. That is what makes this test
+// discriminating: the resolver's other logging branch only fires at 5xx, so a
+// regression that drops the already-committed branch would leave this failure
+// with no record anywhere while every other test stayed green. An engine
+// adapter draining a native middleware's error accumulator after the response
+// went out reaches exactly this path.
+func TestErrorAfterCommitIsLoggedAndNeverReachesTheClient(t *testing.T) {
+	logger := &stubLogger{Logger: log.Nop()}
+	internal := errors.New("connection string rejected by host db-7")
+	mapper := web.ErrorMapperFunc(func(*web.Ctx, error) (web.ProblemDetail, bool) {
+		return web.NewProblem(http.StatusConflict, "conflict"), true
+	})
+
+	resolver := web.NewErrorResolver(logger)
+	engine := enginetest.New()
+	engine.Use(func(_ context.Context, c *web.Ctx) error {
+		resolver.Attach(c)
+		return nil
+	})
+	engine.Use(web.OnError(mapper))
+	engine.GET("/committed", func(_ context.Context, c *web.Ctx) error {
+		c.String(http.StatusOK, "已发出的响应")
+		return internal
+	})
+
+	response := performRequest(engine, http.MethodGet, "/committed")
+
+	assert.Equal(t, http.StatusOK, response.Result().StatusCode, "已提交的响应不得被改写")
+	assert.Equal(t, "已发出的响应", response.Body.String(), "内部错误细节不得泄漏给调用方")
+	require.Len(t, logger.entries, 1, "响应已提交后错误必须落日志，不能无声消失")
+	assert.Contains(t, fmt.Sprint(logger.entries[0]...), internal.Error(), "日志必须记录完整细节")
+}

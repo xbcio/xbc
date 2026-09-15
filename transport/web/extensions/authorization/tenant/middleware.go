@@ -60,12 +60,12 @@ func (p *Plugin) resolve(_ context.Context, c *web.Ctx) error {
 	if !ok {
 		// Reachable in production: an unmatched route (404/405). The
 		// authentication middleware passes those straight through without
-		// marking them exempt or publishing a principal, and gin runs every
-		// global middleware -- including this one -- on its NoRoute/NoMethod
-		// path. There is no handler behind an unmatched path to protect, so
-		// proceeding here is correct: it leaves the response to gin's
-		// 404/405 instead of manufacturing a 403 for a route that does not
-		// exist. This is a deliberate divergence from casbin, which turns
+		// marking them exempt or publishing a principal, and Server splices
+		// the global chain -- including this one -- into the NoRoute and
+		// NoMethod chains. There is no handler behind an unmatched path to
+		// protect, so proceeding here is correct: it leaves the response to
+		// Web's own 404/405 instead of manufacturing a 403 for a route that
+		// does not exist. This is a deliberate divergence from casbin, which turns
 		// the same case into 403 via its own `!found` guard on CurrentRoute
 		// (see the comment there).
 		c.Next()

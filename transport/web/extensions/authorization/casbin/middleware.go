@@ -31,10 +31,10 @@ func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
 	route, found := web.CurrentRoute(c)
 	if !found {
 		// This is a deliberate divergence from tenant, which passes an
-		// unmatched route (404/405) straight through to preserve gin's own
-		// response (see the comment on tenant's equivalent branch). Rewriting
-		// it to 403 here is pre-existing behavior, not introduced by the
-		// exemption-model change: flipping it would alter the observable
+		// unmatched route (404/405) straight through to preserve Web's own
+		// 404/405 response (see the comment on tenant's equivalent branch).
+		// Rewriting it to 403 here is pre-existing behavior, not introduced by
+		// the exemption-model change: flipping it would alter the observable
 		// response for every unmatched path in every casbin application, and
 		// fail-closed is the safer side to leave standing.
 		forbidden(c)
