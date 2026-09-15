@@ -144,7 +144,10 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	routes, frozen, index := newRouteTable()
 	engine.Use(recordCurrentRoute(frozen, index))
 	engine.Use(limitRequestBody(cfg.MaxRequestBodyBytes))
-	engine.Use(newErrorResolver(logger).attach)
+	engine.Use(Handle(func(_ context.Context, c *Ctx) error {
+		newErrorResolver(logger).attach(c)
+		return nil
+	}))
 
 	// The framework's authentication middleware is assembled here rather than
 	// selected as a plugin: it enforces this Server's own web.security section,
@@ -182,10 +185,10 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		engine.Use(Handle(entry.Value.Handler()))
 	}
 	engine.NoRoute(func(c *gin.Context) {
-		AbortProblem(c, NewProblem(http.StatusNotFound, "not_found"))
+		AbortProblem(newCtx(c), NewProblem(http.StatusNotFound, "not_found"))
 	})
 	engine.NoMethod(func(c *gin.Context) {
-		AbortProblem(c, NewProblem(http.StatusMethodNotAllowed, "method_not_allowed"))
+		AbortProblem(newCtx(c), NewProblem(http.StatusMethodNotAllowed, "method_not_allowed"))
 	})
 
 	// Group snapshots the engine middleware slice, so this must happen after

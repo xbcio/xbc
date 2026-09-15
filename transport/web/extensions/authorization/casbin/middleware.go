@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -22,16 +20,15 @@ func (p *Plugin) Order() web.Order {
 }
 
 func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
-	gc := c.Gin()
 	// Ask the framework what exemption actually applied to this request,
 	// never the route's own .Auth() declaration: an application rule in
 	// web.security is the final arbiter and may have tightened a route that
 	// declared itself public.
-	if web.AuthenticationExempt(gc) {
+	if web.AuthenticationExempt(c) {
 		c.Next()
 		return nil
 	}
-	route, found := web.CurrentRoute(gc)
+	route, found := web.CurrentRoute(c)
 	if !found {
 		// This is a deliberate divergence from tenant, which passes an
 		// unmatched route (404/405) straight through to preserve gin's own
@@ -40,20 +37,20 @@ func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
 		// exemption-model change: flipping it would alter the observable
 		// response for every unmatched path in every casbin application, and
 		// fail-closed is the safer side to leave standing.
-		forbidden(gc)
+		forbidden(c)
 		return nil
 	}
 
 	if p.stopped.Load() {
-		forbidden(gc)
+		forbidden(c)
 		return nil
 	}
 	state := p.state
 
-	subject, ok := state.resolver.ResolveSubject(gc)
+	subject, ok := state.resolver.ResolveSubject(c)
 	subject = strings.TrimSpace(subject)
 	if !ok || subject == "" {
-		forbidden(gc)
+		forbidden(c)
 		return nil
 	}
 
@@ -66,7 +63,7 @@ func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
 				c.Next()
 				return nil
 			}
-			forbidden(gc)
+			forbidden(c)
 			return nil
 		}
 		request = []any{subject, permission}
@@ -74,12 +71,12 @@ func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
 		object := strings.TrimSpace(route.Path)
 		action := strings.ToUpper(strings.TrimSpace(route.Method))
 		if object == "" || action == "" {
-			forbidden(gc)
+			forbidden(c)
 			return nil
 		}
 		request = []any{subject, object, action}
 	default:
-		forbidden(gc)
+		forbidden(c)
 		return nil
 	}
 
@@ -87,17 +84,17 @@ func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
 	if err != nil {
 		state.logger.Error("casbin: authorization evaluation failed",
 			"method", route.Method, "path", route.Path, "error", err)
-		forbidden(gc)
+		forbidden(c)
 		return nil
 	}
 	if !allowed {
-		forbidden(gc)
+		forbidden(c)
 		return nil
 	}
 	c.Next()
 	return nil
 }
 
-func forbidden(c *gin.Context) {
+func forbidden(c *web.Ctx) {
 	web.AbortProblem(c, web.NewProblem(http.StatusForbidden, "forbidden"))
 }

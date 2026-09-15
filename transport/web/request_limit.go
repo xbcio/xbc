@@ -14,7 +14,7 @@ func limitRequestBody(maximum int64) gin.HandlerFunc {
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
 		if c.Request.ContentLength > maximum {
-			AbortProblem(c, NewProblem(http.StatusRequestEntityTooLarge, "request_body_too_large"))
+			AbortProblem(newCtx(c), NewProblem(http.StatusRequestEntityTooLarge, "request_body_too_large"))
 			return
 		}
 		c.Next()

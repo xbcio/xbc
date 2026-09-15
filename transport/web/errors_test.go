@@ -20,7 +20,10 @@ func errorEngine(mappers ...ErrorMapper) (*gin.Engine, *errorResolver) {
 	gin.SetMode(gin.TestMode)
 	resolver := newErrorResolver(log.Nop())
 	engine := gin.New()
-	engine.Use(resolver.attach)
+	engine.Use(Handle(func(_ context.Context, c *Ctx) error {
+		resolver.attach(c)
+		return nil
+	}))
 	engine.Use(Handle(OnError(mappers...)))
 	return engine, resolver
 }

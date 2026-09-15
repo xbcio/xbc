@@ -8,8 +8,6 @@ import (
 	"runtime/debug"
 	"syscall"
 
-	"github.com/gin-gonic/gin"
-
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -20,7 +18,6 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		if recovered == nil {
 			return
 		}
-		gc := c.Gin()
 
 		state := p.state.Load()
 		logger := corelog.L()
@@ -36,7 +33,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 			"panic_type", reflect.TypeOf(recovered).String(),
 			"response_written", c.Writer().Written(),
 		}
-		if route, ok := web.CurrentRoute(gc); ok {
+		if route, ok := web.CurrentRoute(c); ok {
 			fields = append(fields, "route", route.Path)
 		}
 		if includeStack {
@@ -47,8 +44,9 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 			logger.Warn("http request aborted after connection failure", fields...)
 			if err, ok := recovered.(error); ok {
 				// Phase 4 debt: gin.Context.Errors has no neutral equivalent
-				// yet, so recording the recovered error stays on gc.
-				_ = gc.Error(err)
+				// yet, so recording the recovered error stays on the
+				// underlying *gin.Context.
+				_ = c.Gin().Error(err)
 			}
 			c.Abort()
 			return
@@ -63,14 +61,14 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 			c.Abort()
 			return
 		}
-		writeInternalServerError(gc)
+		writeInternalServerError(c)
 	}()
 
 	c.Next()
 	return nil
 }
 
-func writeInternalServerError(c *gin.Context) {
+func writeInternalServerError(c *web.Ctx) {
 	web.AbortProblem(c, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
 }
 

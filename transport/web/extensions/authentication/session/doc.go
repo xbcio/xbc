@@ -13,9 +13,9 @@
 // "session_id" key:
 //
 //	func profile(ctx context.Context, c *web.Ctx) error {
-//		principal, ok := web.CurrentPrincipal(c.Gin())
+//		principal, ok := web.CurrentPrincipal(c)
 //		if !ok {
-//			web.AbortProblem(c.Gin(), web.NewProblem(http.StatusUnauthorized, "unauthorized"))
+//			web.AbortProblem(c, web.NewProblem(http.StatusUnauthorized, "unauthorized"))
 //			return nil
 //		}
 //		role, _ := principal.Attributes["role"].(string)
@@ -60,7 +60,7 @@
 //			"role": "admin",
 //		})
 //		if err == nil {
-//			err = p.sessions.SetCookie(c.Gin(), value)
+//			err = p.sessions.SetCookie(c, value)
 //		}
 //		if err != nil {
 //			return err

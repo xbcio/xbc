@@ -155,7 +155,7 @@ func serveRBAC(t *testing.T, middleware web.Handler, principal *web.Principal, r
 	engine.Use(web.Handle(web.OnError()))
 	if principal != nil {
 		engine.Use(func(ctx *gin.Context) {
-			if !web.SetPrincipal(ctx, *principal) {
+			if !web.SetPrincipal(web.NewCtx(ctx), *principal) {
 				t.Fatal("failed to install test principal")
 			}
 			ctx.Next()

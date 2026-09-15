@@ -176,7 +176,7 @@ func documentationPaths(routes []web.RouteInfo, fallbackJSON, fallbackUI string)
 func (p *Plugin) serveUI(_ context.Context, c *web.Ctx) error {
 	snapshot := p.ui.Load()
 	if snapshot == nil || snapshot.handler == nil {
-		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusServiceUnavailable, "documentation_not_ready"))
+		web.AbortProblem(c, web.NewProblem(http.StatusServiceUnavailable, "documentation_not_ready"))
 		return nil
 	}
 	snapshot.handler.ServeHTTP(c.Writer(), c.Request())

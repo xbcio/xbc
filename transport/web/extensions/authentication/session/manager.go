@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/xbcio/xbc/transport/web"
 )
 
 // Manager is the handler-facing session API. Create and Rotate return the
@@ -21,8 +21,8 @@ type Manager interface {
 	Create(ctx context.Context, subject string, attributes map[string]any) (Session, error)
 	Rotate(ctx context.Context, id string) (Session, error)
 	Revoke(ctx context.Context, id string) error
-	SetCookie(c *gin.Context, value Session) error
-	ClearCookie(c *gin.Context)
+	SetCookie(c *web.Ctx, value Session) error
+	ClearCookie(c *web.Ctx)
 }
 
 type manager struct {
@@ -117,11 +117,11 @@ func (m *manager) Revoke(ctx context.Context, id string) error {
 	return m.store.Delete(ctx, id)
 }
 
-func (m *manager) SetCookie(c *gin.Context, value Session) error {
+func (m *manager) SetCookie(c *web.Ctx, value Session) error {
 	if m.closed.Load() {
 		return ErrStopped
 	}
-	if c == nil || c.Writer == nil {
+	if c == nil || c.Writer() == nil {
 		return errors.New("session: cookie context cannot be nil")
 	}
 	if !validID(value.ID, m.cfg.idBytes) || !value.ExpiresAt.After(m.clock()) {
@@ -135,7 +135,7 @@ func (m *manager) SetCookie(c *gin.Context, value Session) error {
 	if maxAge < 1 {
 		return ErrInvalidCookie
 	}
-	http.SetCookie(c.Writer, &http.Cookie{
+	http.SetCookie(c.Writer(), &http.Cookie{
 		Name:     m.cfg.name,
 		Value:    value.ID,
 		Path:     m.cfg.path,
@@ -149,11 +149,11 @@ func (m *manager) SetCookie(c *gin.Context, value Session) error {
 	return nil
 }
 
-func (m *manager) ClearCookie(c *gin.Context) {
-	if c == nil || c.Writer == nil {
+func (m *manager) ClearCookie(c *web.Ctx) {
+	if c == nil || c.Writer() == nil {
 		return
 	}
-	http.SetCookie(c.Writer, &http.Cookie{
+	http.SetCookie(c.Writer(), &http.Cookie{
 		Name:     m.cfg.name,
 		Value:    "",
 		Path:     m.cfg.path,

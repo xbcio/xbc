@@ -3,8 +3,6 @@ package casbin
 import (
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -12,14 +10,14 @@ import (
 // upstream authentication middleware. Returning false denies the request.
 // Implementations must not treat an unverified header or token as an identity.
 type SubjectResolver interface {
-	ResolveSubject(*gin.Context) (subject string, ok bool)
+	ResolveSubject(*web.Ctx) (subject string, ok bool)
 }
 
 // SubjectResolverFunc adapts a function to SubjectResolver.
-type SubjectResolverFunc func(*gin.Context) (subject string, ok bool)
+type SubjectResolverFunc func(*web.Ctx) (subject string, ok bool)
 
 // ResolveSubject implements SubjectResolver.
-func (f SubjectResolverFunc) ResolveSubject(c *gin.Context) (string, bool) {
+func (f SubjectResolverFunc) ResolveSubject(c *web.Ctx) (string, bool) {
 	if f == nil {
 		return "", false
 	}
@@ -28,7 +26,7 @@ func (f SubjectResolverFunc) ResolveSubject(c *gin.Context) (string, bool) {
 
 type principalSubjectResolver struct{}
 
-func (principalSubjectResolver) ResolveSubject(c *gin.Context) (string, bool) {
+func (principalSubjectResolver) ResolveSubject(c *web.Ctx) (string, bool) {
 	principal, ok := web.CurrentPrincipal(c)
 	if !ok {
 		return "", false

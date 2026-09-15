@@ -36,7 +36,7 @@ func engineFor(p *Plugin, route web.RouteInfo, handler gin.HandlerFunc) *gin.Eng
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) {
 		c.Set(currentRouteKeyForTest, route)
-		web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "test"})
+		web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice", AuthMethod: "test"})
 		c.Next()
 	})
 	engine.Use(web.Handle(p.Handler()))

@@ -56,7 +56,7 @@ func serveTenantRequestWithExempt(p *Plugin, route web.RouteInfo, principal *web
 	engine.Use(func(c *gin.Context) {
 		c.Set(currentRouteKeyForTest, route)
 		if principal != nil {
-			web.SetPrincipal(c, *principal)
+			web.SetPrincipal(web.NewCtx(c), *principal)
 		}
 		if exempt {
 			c.Set(authenticationExemptKeyForTest, true)
@@ -84,13 +84,13 @@ func TestMiddlewarePublishesVerifiedTenantAndDefensiveAttributes(t *testing.T) {
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "beta")
 	response := serveTenantRequest(p, route, &principal, headers, func(c *gin.Context) {
-		resolved, ok := Current(c)
+		resolved, ok := Current(web.NewCtx(c))
 		if !ok || resolved.ID != "beta" || resolved.Attributes["plan"] != "enterprise" {
 			c.Status(http.StatusInternalServerError)
 			return
 		}
 		resolved.Attributes["nested"].(map[string]any)["region"] = "mutated"
-		again, _ := Current(c)
+		again, _ := Current(web.NewCtx(c))
 		if again.Attributes["nested"].(map[string]any)["region"] != "cn" {
 			c.Status(http.StatusInternalServerError)
 			return
@@ -114,7 +114,7 @@ func TestMiddlewareNeverTrustsAnonymousOrNonMemberHeader(t *testing.T) {
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "admin")
 	anonymous := serveTenantRequest(p, route, nil, headers, func(c *gin.Context) {
-		if _, ok := Current(c); ok {
+		if _, ok := Current(web.NewCtx(c)); ok {
 			c.Status(http.StatusInternalServerError)
 			return
 		}
@@ -195,7 +195,7 @@ func TestMiddlewareExemptRouteBypassesTenantResolution(t *testing.T) {
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "../../attacker")
 	response := serveExemptTenantRequest(uninitialized, route, principal, headers, func(c *gin.Context) {
-		if _, ok := Current(c); ok {
+		if _, ok := Current(web.NewCtx(c)); ok {
 			c.Status(http.StatusInternalServerError)
 			return
 		}
@@ -230,7 +230,7 @@ func TestMiddlewareOptionalTenantAllowsMissingMembership(t *testing.T) {
 	optional := initializedTenantPlugin(t, func(cfg *Config) { cfg.Required = false })
 	principal := &web.Principal{Subject: "alice"}
 	response := serveTenantRequest(optional, web.RouteInfo{Method: http.MethodGet, Path: "/optional"}, principal, nil, func(c *gin.Context) {
-		if _, ok := Current(c); ok {
+		if _, ok := Current(web.NewCtx(c)); ok {
 			c.Status(http.StatusInternalServerError)
 			return
 		}
@@ -263,7 +263,7 @@ func TestCustomResolverIsTrustedButMustMatchRequestedSelection(t *testing.T) {
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "external")
 	response := serveTenantRequest(p, route, principal, headers, func(c *gin.Context) {
-		resolved, ok := Current(c)
+		resolved, ok := Current(web.NewCtx(c))
 		if !ok || resolved.ID != "external" || resolved.Attributes["source"] != "database" {
 			c.Status(http.StatusInternalServerError)
 			return
@@ -302,7 +302,7 @@ func TestConcurrentRequestsDoNotLeakTenantContextOrTrustMaliciousHeaders(t *test
 			}
 			headers.Set(defaultHeader, want)
 			response := serveTenantRequest(p, route, principal, headers, func(c *gin.Context) {
-				resolved, ok := Current(c)
+				resolved, ok := Current(web.NewCtx(c))
 				if !ok || resolved.ID != want {
 					c.Status(http.StatusInternalServerError)
 					return

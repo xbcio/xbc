@@ -22,13 +22,13 @@ func (p *Plugin) handleShutdown(_ context.Context, c *web.Ctx) error {
 	cfg := p.endpoint
 	if !cfg.enabled {
 		c.SetHeader("Cache-Control", "no-store")
-		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusNotFound, "not_found"))
+		web.AbortProblem(c, web.NewProblem(http.StatusNotFound, "not_found"))
 		return nil
 	}
 
 	if p.controller == nil || !p.controller.Request("http operator request") {
 		c.SetHeader("Cache-Control", "no-store")
-		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusConflict, "shutdown_already_requested"))
+		web.AbortProblem(c, web.NewProblem(http.StatusConflict, "shutdown_already_requested"))
 		return nil
 	}
 	c.SetHeader("Cache-Control", "no-store")

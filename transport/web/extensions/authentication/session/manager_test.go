@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/xbcio/xbc/transport/web"
 )
 
 type failingReader struct{}
@@ -131,7 +133,7 @@ func TestManagerCookieAttributesAndClearCookie(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	if err := m.SetCookie(ctx, value); err != nil {
+	if err := m.SetCookie(web.NewCtx(ctx), value); err != nil {
 		t.Fatal(err)
 	}
 	cookies := recorder.Result().Cookies()
@@ -148,7 +150,7 @@ func TestManagerCookieAttributesAndClearCookie(t *testing.T) {
 
 	cleared := httptest.NewRecorder()
 	clearContext, _ := gin.CreateTestContext(cleared)
-	m.ClearCookie(clearContext)
+	m.ClearCookie(web.NewCtx(clearContext))
 	clearCookies := cleared.Result().Cookies()
 	if len(clearCookies) != 1 || clearCookies[0].Value != "" || clearCookies[0].MaxAge != -1 || !clearCookies[0].HttpOnly || !clearCookies[0].Secure {
 		t.Fatalf("clear cookie = %#v", clearCookies)

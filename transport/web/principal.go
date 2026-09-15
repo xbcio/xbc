@@ -2,8 +2,6 @@ package web
 
 import (
 	"strings"
-
-	"github.com/gin-gonic/gin"
 )
 
 const principalContextKey = "xbc/transport/web.principal"
@@ -26,7 +24,7 @@ type Principal struct {
 // SetPrincipal publishes a verified identity on the current request. It
 // rejects nil contexts and empty subjects, returning false rather than
 // installing an identity that downstream authorization could misinterpret.
-func SetPrincipal(c *gin.Context, principal Principal) bool {
+func SetPrincipal(c *Ctx, principal Principal) bool {
 	if c == nil {
 		return false
 	}
@@ -42,7 +40,7 @@ func SetPrincipal(c *gin.Context, principal Principal) bool {
 
 // CurrentPrincipal returns the verified identity published by an upstream
 // authentication plugin. The returned Attributes map is a defensive copy.
-func CurrentPrincipal(c *gin.Context) (Principal, bool) {
+func CurrentPrincipal(c *Ctx) (Principal, bool) {
 	if c == nil {
 		return Principal{}, false
 	}

@@ -215,7 +215,7 @@ func TestAuthenticationMiddlewarePublishesPrincipalOnce(t *testing.T) {
 	var seen Principal
 	var found bool
 	engine.GET("/orders", func(c *gin.Context) {
-		seen, found = CurrentPrincipal(c)
+		seen, found = CurrentPrincipal(newCtx(c))
 		c.Status(http.StatusOK)
 	})
 
@@ -411,8 +411,8 @@ func TestAuthenticationMiddlewarePublishesExemptSignalToDownstream(t *testing.T)
 		})
 		engine.Use(Handle(middleware.Handler()))
 		engine.Use(func(c *gin.Context) {
-			*exempt = AuthenticationExempt(c)
-			_, *hadPrincipal = CurrentPrincipal(c)
+			*exempt = AuthenticationExempt(newCtx(c))
+			_, *hadPrincipal = CurrentPrincipal(newCtx(c))
 			c.Next()
 		})
 		engine.Handle(route.Method, route.Path, func(c *gin.Context) { c.Status(http.StatusOK) })
@@ -458,8 +458,8 @@ func TestAuthenticationMiddlewarePublishesExemptSignalToDownstream(t *testing.T)
 		// does for a request gin resolves through allNoRoute.
 		engine.Use(Handle(middleware.Handler()))
 		engine.Use(func(c *gin.Context) {
-			*exempt = AuthenticationExempt(c)
-			_, *hadPrincipal = CurrentPrincipal(c)
+			*exempt = AuthenticationExempt(newCtx(c))
+			_, *hadPrincipal = CurrentPrincipal(newCtx(c))
 			c.Next()
 		})
 		engine.Handle(permitRoute.Method, permitRoute.Path, func(c *gin.Context) { c.Status(http.StatusOK) })
@@ -496,7 +496,7 @@ func TestAuthenticationExemptContextKeyIsStable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Set("xbc/transport/web.authenticationExempt", true)
-	if !AuthenticationExempt(c) {
+	if !AuthenticationExempt(newCtx(c)) {
 		t.Fatal("AuthenticationExempt() = false after setting the documented literal " +
 			`"xbc/transport/web.authenticationExempt" directly, want true`)
 	}
@@ -573,7 +573,10 @@ func runThroughAuthWithLogger(
 	resolver := newErrorResolver(logger)
 
 	engine := gin.New()
-	engine.Use(resolver.attach)
+	engine.Use(Handle(func(_ context.Context, c *Ctx) error {
+		resolver.attach(c)
+		return nil
+	}))
 	engine.Use(func(c *gin.Context) {
 		setCurrentRouteForTest(c, route)
 		c.Next()

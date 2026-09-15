@@ -28,7 +28,7 @@ func (p *Plugin) handler() web.Handler {
 		c.SetHeader("Cache-Control", "no-store")
 		c.SetHeader("X-Content-Type-Options", "nosniff")
 		if !cfg.enabled {
-			web.AbortProblem(c.Gin(), web.NewProblem(http.StatusNotFound, "not_found"))
+			web.AbortProblem(c, web.NewProblem(http.StatusNotFound, "not_found"))
 			return nil
 		}
 		serveProfile(c.Writer(), c.Request(), cfg.path)

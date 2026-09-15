@@ -132,7 +132,7 @@ func (c *Ctx) Get(key string) (any, bool) {
 // authentication plugin, if any. It reuses CurrentPrincipal so Ctx does not
 // duplicate principal storage or copy semantics.
 func (c *Ctx) Principal() (Principal, bool) {
-	return CurrentPrincipal(c.c)
+	return CurrentPrincipal(c)
 }
 
 // SetContext publishes ctx to every downstream reader by rewriting the
@@ -200,13 +200,13 @@ func (c *Ctx) Gin() *gin.Context {
 // with Gin.
 //
 // This function was named FromGin during design. That name was rejected:
-// transport/web/extensions/observability/requestid already exports
-// FromGin(c *gin.Context) (string, bool), which extracts a value out of a
-// *gin.Context. WrapGinHandler instead adapts one handler function into
-// another handler function -- a materially different operation -- and reusing
-// "FromGin" for it would be actively misleading at call sites that import
-// both packages together (a real scenario: transport/web/extensions/response
-// already imports requestid.FromGin).
+// transport/web/extensions/observability/requestid exports a similarly named
+// extractor (From, née FromGin), which pulls a value out of a Ctx.
+// WrapGinHandler instead adapts one handler function into another handler
+// function -- a materially different operation -- and reusing "FromGin" for
+// it would be actively misleading at call sites that import both packages
+// together (a real scenario: transport/web/extensions/response already
+// imports requestid.From).
 func WrapGinHandler(handler gin.HandlerFunc) Handler {
 	if handler == nil {
 		panic("xbc: web.WrapGinHandler requires a non-nil handler")

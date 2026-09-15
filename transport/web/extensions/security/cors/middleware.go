@@ -79,7 +79,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	compiled := p.policy
 	p.mu.RUnlock()
 	if compiled == nil {
-		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
+		web.AbortProblem(c, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
 		return nil
 	}
 	compiled.handle(c)
@@ -87,7 +87,6 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 }
 
 func (p *policy) handle(c *web.Ctx) {
-	gc := c.Gin()
 	origin := c.GetHeader("Origin")
 	if origin == "" {
 		c.Next()
@@ -96,7 +95,7 @@ func (p *policy) handle(c *web.Ctx) {
 
 	if !p.originAllowed(origin) {
 		addVary(c.Writer().Header(), "Origin")
-		web.AbortProblem(gc, web.NewProblem(http.StatusForbidden, "forbidden"))
+		web.AbortProblem(c, web.NewProblem(http.StatusForbidden, "forbidden"))
 		return
 	}
 
@@ -108,7 +107,7 @@ func (p *policy) handle(c *web.Ctx) {
 		requestedHeaders, ok = parseRequestedHeaders(c.GetHeader("Access-Control-Request-Headers"))
 		if !ok || !p.preflightAllowed(requestedMethod, requestedHeaders) {
 			addPreflightVary(c.Writer().Header())
-			web.AbortProblem(gc, web.NewProblem(http.StatusForbidden, "forbidden"))
+			web.AbortProblem(c, web.NewProblem(http.StatusForbidden, "forbidden"))
 			return
 		}
 	}
@@ -138,14 +137,17 @@ func (p *policy) handle(c *web.Ctx) {
 	if p.maxAgeSeconds > 0 {
 		c.SetHeader("Access-Control-Max-Age", strconv.FormatInt(p.maxAgeSeconds, 10))
 	}
-	// Phase 4 debt: gin's AbortWithStatus is Status + WriteHeaderNow + Abort.
-	// Rewriting this as Ctx's Status followed by Abort would flip Written()
-	// from true to false on this middleware's unwind path, and the shared
-	// "don't double-write the response" guards in biz, recovery, and problem
-	// read exactly that flag to decide whether a response already went out.
-	// This stays on gc until the two-step commit is pushed down into a gin
-	// shim in a later phase.
-	gc.AbortWithStatus(http.StatusNoContent)
+	// A preflight response has no body, but the response must still be
+	// committed here: gin's Status/WriteHeader only records a pending status
+	// code, it does not itself flip Written() to true (that happens on the
+	// underlying writer's first Write, via WriteHeaderNow). Writing a nil body
+	// commits the pending 204 immediately, so the shared "don't double-write
+	// the response" guards in biz, recovery, and problem observe Written() ==
+	// true through the same ResponseWriter this middleware just wrote to. See
+	// TestPreflightAbortIsObservableAsWrittenByOuterMiddleware.
+	c.Status(http.StatusNoContent)
+	_, _ = c.Writer().Write(nil)
+	c.Abort()
 }
 
 func (p *policy) originAllowed(origin string) bool {

@@ -34,10 +34,9 @@ func (p *Plugin) handleRequest(_ context.Context, c *web.Ctx) error {
 		return nil
 	}
 
-	gc := c.Gin()
 	method := boundedMethod(c.Request().Method)
 	route := "unmatched"
-	if info, ok := web.CurrentRoute(gc); ok && info.Path != "" {
+	if info, ok := web.CurrentRoute(c); ok && info.Path != "" {
 		route = info.Path
 	}
 	parent := p.handle.Extract(c.Request().Context(), propagation.HeaderCarrier(c.Request().Header))
