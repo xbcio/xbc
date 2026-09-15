@@ -1,12 +1,12 @@
 package swag
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync/atomic"
 
-	"github.com/gin-gonic/gin"
 	"github.com/swaggest/swgui/v5emb"
 	swaggo "github.com/swaggo/swag"
 
@@ -117,17 +117,18 @@ func Bundle() plugin.Bundle { return bundle }
 // RegisterRoutes contributes the generated JSON and optional embedded UI.
 func (p *Plugin) RegisterRoutes(r *web.Router) {
 	cfg := p.settings
-	r.GET(cfg.jsonPath, p.serveDocument).
+	r.GET(cfg.jsonPath, web.Handle(p.serveDocument)).
 		Name("swag.document").
 		Auth(web.Public())
 	if !cfg.uiEnabled {
 		return
 	}
 
-	r.GET(cfg.uiPath, p.serveUI).
+	ui := web.Handle(p.serveUI)
+	r.GET(cfg.uiPath, ui).
 		Name("swag.ui").
 		Auth(web.Public())
-	r.GET(cfg.uiPath+"/*asset", p.serveUI).
+	r.GET(cfg.uiPath+"/*asset", ui).
 		Name("swag.assets").
 		Auth(web.Public())
 }
@@ -172,15 +173,17 @@ func documentationPaths(routes []web.RouteInfo, fallbackJSON, fallbackUI string)
 	return jsonPath, uiPath
 }
 
-func (p *Plugin) serveUI(c *gin.Context) {
+func (p *Plugin) serveUI(_ context.Context, c *web.Ctx) error {
 	snapshot := p.ui.Load()
 	if snapshot == nil || snapshot.handler == nil {
-		web.AbortProblem(c, web.NewProblem(http.StatusServiceUnavailable, "documentation_not_ready"))
-		return
+		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusServiceUnavailable, "documentation_not_ready"))
+		return nil
 	}
-	snapshot.handler.ServeHTTP(c.Writer, c.Request)
+	snapshot.handler.ServeHTTP(c.Writer(), c.Request())
+	return nil
 }
 
-func (p *Plugin) serveDocument(c *gin.Context) {
+func (p *Plugin) serveDocument(_ context.Context, c *web.Ctx) error {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", p.document)
+	return nil
 }

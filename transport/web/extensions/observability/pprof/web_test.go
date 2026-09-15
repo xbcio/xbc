@@ -15,7 +15,7 @@ import (
 
 func init() { gin.SetMode(gin.TestMode) }
 
-func configuredHandler(t *testing.T, mutate func(*Config)) gin.HandlerFunc {
+func configuredHandler(t *testing.T, mutate func(*Config)) web.Handler {
 	t.Helper()
 	cfg := defaultConfig()
 	mutate(&cfg)
@@ -24,11 +24,11 @@ func configuredHandler(t *testing.T, mutate func(*Config)) gin.HandlerFunc {
 	return p.handler()
 }
 
-func invoke(handler gin.HandlerFunc, path string) *httptest.ResponseRecorder {
+func invoke(handler web.Handler, path string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, path, nil)
-	handler(ctx)
+	web.Handle(handler)(ctx)
 	return recorder
 }
 

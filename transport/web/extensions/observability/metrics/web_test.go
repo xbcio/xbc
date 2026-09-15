@@ -8,6 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/xbcio/xbc/transport/web"
 )
 
 type brokenCollector struct{}
@@ -30,7 +32,7 @@ func TestEndpointExposition(t *testing.T) {
 	}
 
 	engine := gin.New()
-	engine.GET("/metrics", p.handleMetrics)
+	engine.GET("/metrics", web.Handle(p.handleMetrics))
 	probe := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "endpoint_probe_total",
 		Help: "Metric used to verify exposition.",
@@ -68,7 +70,7 @@ func TestGatherFailureReturnsServerError(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	response := httptest.NewRecorder()
 	engine := gin.New()
-	engine.GET("/metrics", p.handleMetrics)
+	engine.GET("/metrics", web.Handle(p.handleMetrics))
 	engine.ServeHTTP(response, request)
 	if response.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
@@ -82,7 +84,7 @@ func TestDisabledEndpointReturnsNotFound(t *testing.T) {
 	}
 
 	engine := gin.New()
-	engine.GET("/metrics", p.handleMetrics)
+	engine.GET("/metrics", web.Handle(p.handleMetrics))
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, request)

@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/plugin"
+	transportweb "github.com/xbcio/xbc/transport/web"
 )
 
 func TestRenderReportHidesErrorsUnlessExplicitlyAllowed(t *testing.T) {
@@ -144,7 +145,7 @@ func invokeProbe(t *testing.T, p *Plugin, kind Kind, target string) (int, webRep
 	recorder := httptest.NewRecorder()
 	gc, _ := gin.CreateTestContext(recorder)
 	gc.Request = httptest.NewRequest(http.MethodGet, target, nil)
-	p.probeHandler(kind)(gc)
+	transportweb.Handle(p.probeHandler(kind))(gc)
 
 	var body webReport
 	require.NoError(t, json.NewDecoder(recorder.Body).Decode(&body))

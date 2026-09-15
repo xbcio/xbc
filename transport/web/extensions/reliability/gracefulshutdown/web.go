@@ -1,9 +1,8 @@
 package gracefulshutdown
 
 import (
+	"context"
 	"net/http"
-
-	"github.com/gin-gonic/gin"
 
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -15,23 +14,24 @@ func (p *Plugin) RegisterRoutes(router *web.Router) {
 	if !cfg.enabled {
 		return
 	}
-	router.POST(cfg.path, p.handleShutdown).
+	router.POST(cfg.path, web.Handle(p.handleShutdown)).
 		Name("management.shutdown")
 }
 
-func (p *Plugin) handleShutdown(c *gin.Context) {
+func (p *Plugin) handleShutdown(_ context.Context, c *web.Ctx) error {
 	cfg := p.endpoint
 	if !cfg.enabled {
-		c.Header("Cache-Control", "no-store")
-		web.AbortProblem(c, web.NewProblem(http.StatusNotFound, "not_found"))
-		return
+		c.SetHeader("Cache-Control", "no-store")
+		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusNotFound, "not_found"))
+		return nil
 	}
 
 	if p.controller == nil || !p.controller.Request("http operator request") {
-		c.Header("Cache-Control", "no-store")
-		web.AbortProblem(c, web.NewProblem(http.StatusConflict, "shutdown_already_requested"))
-		return
+		c.SetHeader("Cache-Control", "no-store")
+		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusConflict, "shutdown_already_requested"))
+		return nil
 	}
-	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusAccepted, gin.H{"status": "shutting_down"})
+	c.SetHeader("Cache-Control", "no-store")
+	c.JSON(http.StatusAccepted, map[string]string{"status": "shutting_down"})
+	return nil
 }

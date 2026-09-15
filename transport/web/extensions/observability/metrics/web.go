@@ -1,9 +1,9 @@
 package metrics
 
 import (
+	"context"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/xbcio/xbc/transport/web"
@@ -17,16 +17,17 @@ func (p *Plugin) RegisterRoutes(router *web.Router) {
 	if state == nil || !state.config.endpoint.enabled {
 		return
 	}
-	router.GET(state.config.endpoint.path, p.handleMetrics).
+	router.GET(state.config.endpoint.path, web.Handle(p.handleMetrics)).
 		Name("management.metrics")
 }
 
-func (p *Plugin) handleMetrics(c *gin.Context) {
+func (p *Plugin) handleMetrics(_ context.Context, c *web.Ctx) error {
 	state := p.state.Load()
 	if state == nil || !state.config.endpoint.enabled {
-		web.AbortProblem(c, web.NewProblem(http.StatusNotFound, "not_found"))
-		return
+		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusNotFound, "not_found"))
+		return nil
 	}
-	c.Header("Cache-Control", "no-store")
-	promhttp.HandlerFor(state.registry.inner, *state.handler).ServeHTTP(c.Writer, c.Request)
+	c.SetHeader("Cache-Control", "no-store")
+	promhttp.HandlerFor(state.registry.inner, *state.handler).ServeHTTP(c.Writer(), c.Request())
+	return nil
 }
