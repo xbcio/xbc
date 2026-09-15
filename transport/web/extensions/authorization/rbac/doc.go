@@ -1,5 +1,5 @@
 // Package rbac adapts the protocol-neutral extensions/authorization/rbac Manager to explicit
-// Gin route and group middleware.
+// Web route and group middleware.
 //
 // RequireAll and RequireAny authorize only the verified web.CurrentPrincipal.
 // An anonymous or denied request receives an RFC 9457 forbidden response, while

@@ -1,6 +1,7 @@
 package rbac
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,55 +15,61 @@ import (
 
 // RequireAll returns route/group middleware that requires every permission for
 // the verified web.CurrentPrincipal subject.
-func RequireAll(manager businessrbac.Manager, permissions ...businessrbac.Permission) gin.HandlerFunc {
-	return require(manager, append([]businessrbac.Permission(nil), permissions...), func(ctx *gin.Context, subject string, permissions []businessrbac.Permission) (bool, error) {
-		return manager.AuthorizeAll(ctx.Request.Context(), subject, permissions...)
+func RequireAll(manager businessrbac.Manager, permissions ...businessrbac.Permission) web.Handler {
+	return require(manager, append([]businessrbac.Permission(nil), permissions...), func(ctx context.Context, subject string, permissions []businessrbac.Permission) (bool, error) {
+		return manager.AuthorizeAll(ctx, subject, permissions...)
 	})
 }
 
 // RequireAny returns route/group middleware that requires at least one
 // permission for the verified web.CurrentPrincipal subject.
-func RequireAny(manager businessrbac.Manager, permissions ...businessrbac.Permission) gin.HandlerFunc {
-	return require(manager, append([]businessrbac.Permission(nil), permissions...), func(ctx *gin.Context, subject string, permissions []businessrbac.Permission) (bool, error) {
-		return manager.AuthorizeAny(ctx.Request.Context(), subject, permissions...)
+func RequireAny(manager businessrbac.Manager, permissions ...businessrbac.Permission) web.Handler {
+	return require(manager, append([]businessrbac.Permission(nil), permissions...), func(ctx context.Context, subject string, permissions []businessrbac.Permission) (bool, error) {
+		return manager.AuthorizeAny(ctx, subject, permissions...)
 	})
 }
 
-type middlewareCheck func(*gin.Context, string, []businessrbac.Permission) (bool, error)
+type middlewareCheck func(context.Context, string, []businessrbac.Permission) (bool, error)
 
-func require(manager businessrbac.Manager, permissions []businessrbac.Permission, check middlewareCheck) gin.HandlerFunc {
+func require(manager businessrbac.Manager, permissions []businessrbac.Permission, check middlewareCheck) web.Handler {
 	var constructionErr error
 	if isNilManager(manager) {
 		constructionErr = errors.New("rbac: middleware requires a non-nil Manager")
 	}
-	return func(ctx *gin.Context) {
-		if ctx == nil {
-			return
+	return func(ctx context.Context, c *web.Ctx) error {
+		if c == nil {
+			return nil
 		}
+		gc := c.Gin()
 		if constructionErr != nil {
-			web.AbortError(ctx, constructionErr)
-			return
+			web.AbortError(gc, constructionErr)
+			return nil
 		}
-		principal, ok := web.CurrentPrincipal(ctx)
+		principal, ok := web.CurrentPrincipal(gc)
 		if !ok {
-			forbidden(ctx)
-			return
+			forbidden(gc)
+			return nil
 		}
-		if ctx.Request == nil {
-			web.AbortError(ctx, errors.New("rbac: middleware request is unavailable"))
-			return
+		// Unreachable through web.Handle: Handle dereferences c.Request
+		// before invoking the handler, so a nil request would already have
+		// surfaced there. This guard remains for a direct caller that builds
+		// *web.Ctx itself (see web.NewCtx).
+		if c.Request() == nil {
+			web.AbortError(gc, errors.New("rbac: middleware request is unavailable"))
+			return nil
 		}
 
 		allowed, err := check(ctx, principal.Subject, permissions)
 		if err != nil {
-			web.AbortError(ctx, fmt.Errorf("rbac: authorize HTTP principal %q: %w", principal.Subject, err))
-			return
+			web.AbortError(gc, fmt.Errorf("rbac: authorize HTTP principal %q: %w", principal.Subject, err))
+			return nil
 		}
 		if !allowed {
-			forbidden(ctx)
-			return
+			forbidden(gc)
+			return nil
 		}
-		ctx.Next()
+		c.Next()
+		return nil
 	}
 }
 
