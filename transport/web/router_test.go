@@ -741,3 +741,59 @@ func TestRouteUpdatePanicsWithDiagnosticMessageForMalformedHandle(t *testing.T) 
 		"嵌入 *Router 之后，格式错误的句柄仍必须给出明确诊断信息，而不是裸露的 nil 指针解引用 panic",
 	)
 }
+
+// TestSiblingGroupsDoNotShareMiddlewareChain guards the aliasing hazard the
+// self-held handler stack introduces: append may write into the parent
+// chain's spare capacity, so two sibling groups derived from the same parent
+// would silently overwrite each other's middleware -- one authorization
+// boundary replaced by another's, with no compile error and no panic.
+//
+// Two details make the bug observable, and removing either one hides it.
+//
+// The parent carries five handlers because a five-element slice of function
+// values is 40 bytes, which append rounds up to the 48-byte size class: a
+// naive append(parent, extra...) then returns cap 6 > len 5, so both siblings
+// write the same backing array slot. A parent whose cap equals its len would
+// force an allocation and the naive version would look correct.
+//
+// Both groups are also created before either registers a route. gin's
+// combineHandlers copies the chain synchronously at registration, so the
+// interleaved order -- create /a, register /a, create /b -- would let /a
+// snapshot its chain before /b overwrote the shared slot, and the corruption
+// would never reach a request. Declaring both groups first is what a real
+// route tree does anyway.
+func TestSiblingGroupsDoNotShareMiddlewareChain(t *testing.T) {
+	engine, router, _, _ := newTestEngineAndRouter("/api")
+
+	var calls []string
+	mark := func(name string) gin.HandlerFunc {
+		return func(*gin.Context) { calls = append(calls, name) }
+	}
+	noop := func(gc *gin.Context) { gc.Status(http.StatusNoContent) }
+
+	admin := router.Group("/admin",
+		mark("p1"), mark("p2"), mark("p3"), mark("p4"), mark("p5"))
+	first := admin.Group("/a", mark("a"))
+	second := admin.Group("/b", mark("b"))
+	first.GET("/x", noop)
+	second.GET("/x", noop)
+
+	_, err := router.freeze()
+	require.NoError(t, err)
+
+	for _, tt := range []struct {
+		path string
+		want []string
+	}{
+		{path: "/api/admin/a/x", want: []string{"p1", "p2", "p3", "p4", "p5", "a"}},
+		{path: "/api/admin/b/x", want: []string{"p1", "p2", "p3", "p4", "p5", "b"}},
+	} {
+		t.Run(tt.path, func(t *testing.T) {
+			calls = nil
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, tt.path, nil))
+			require.Equal(t, http.StatusNoContent, recorder.Code, "路由本身必须仍然可达")
+			assert.Equal(t, tt.want, calls, "兄弟分组不得共享或覆盖彼此的中间件链")
+		})
+	}
+}

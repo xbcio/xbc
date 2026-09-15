@@ -177,6 +177,15 @@ func (r *Route) update(fn func(*RouteInfo)) {
 // Group shares the same underlying slice/flag/map as the root -- freezing
 // the root freezes every group derived from it too.
 //
+// handlers is this group's own middleware chain, snapshotted when Group
+// created it. The chain is accumulated here rather than handed to gin's
+// RouterGroup because the engine port this seam is heading for (design §4.2)
+// deliberately has no Group or Use: xbc flattens global + group + route
+// handlers before registration, so the engine only ever sees one chain per
+// route. The gin sub-group is still created, but handler-free -- it exists
+// purely to keep BasePath()'s path arithmetic, which RouteInfo.Path and
+// FullPath() must agree on byte for byte.
+//
 // defaultPerm and defaultAuth are the opposite: plain values, copied by Group
 // the same way basePath already is. They name a group-level policy default,
 // and a default only makes sense scoped to the subtree that declared it --
@@ -184,8 +193,8 @@ func (r *Route) update(fn func(*RouteInfo)) {
 // into the parent and every sibling derived from the same root, which is
 // exactly the cross-subtree bleed a per-group default exists to prevent.
 type Router struct {
-	engine      *gin.Engine
 	group       *gin.RouterGroup
+	handlers    []gin.HandlerFunc
 	basePath    string
 	routes      *[]RouteInfo
 	frozen      *bool
@@ -224,7 +233,6 @@ func newRouteTable() (routes *[]RouteInfo, frozen *bool, index *map[string]Route
 // moment it is called.
 func newRouter(engine *gin.Engine, basePath string, routes *[]RouteInfo, frozen *bool, index *map[string]RouteInfo) *Router {
 	return &Router{
-		engine:   engine,
 		group:    engine.Group(basePath),
 		basePath: basePath,
 		routes:   routes,
@@ -300,21 +308,31 @@ func validateRouteAuth(route RouteInfo) error {
 	}
 }
 
+// appendChain returns parent followed by extra in a freshly allocated slice.
+// Allocating unconditionally is the entire point: append(parent, extra...)
+// may write into parent's spare capacity, and two sibling groups derived from
+// the same parent would then share -- and overwrite -- each other's
+// middleware. See TestSiblingGroupsDoNotShareMiddlewareChain.
+func appendChain(parent []gin.HandlerFunc, extra ...gin.HandlerFunc) []gin.HandlerFunc {
+	chain := make([]gin.HandlerFunc, 0, len(parent)+len(extra))
+	chain = append(chain, parent...)
+	return append(chain, extra...)
+}
+
 // Group returns a sub-router rooted at relativePath, sharing this router's
 // route table and freeze flag. Handlers passed here run for every route
 // registered on the returned sub-router and on any sub-router derived from it.
 //
 // This is the only way to scope middleware to part of the route tree: there is
-// deliberately no Router.Use. gin's RouterGroup.Group snapshots its parent's
-// handler slice by value at call time (combineHandlers copies, it never
-// re-reads the parent), so a Use call would silently fail to reach groups that
+// deliberately no Router.Use. The returned Router owns a snapshot of the chain
+// taken at this call, so a later Use on the parent could not reach groups that
 // already exist -- the middleware would appear registered while protecting
 // nothing. Declaring the handlers at the point the group is created makes that
 // failure mode unrepresentable.
 func (r *Router) Group(relativePath string, h ...gin.HandlerFunc) *Router {
 	return &Router{
-		engine:      r.engine,
-		group:       r.group.Group(relativePath, h...),
+		group:       r.group.Group(relativePath),
+		handlers:    appendChain(r.handlers, h...),
 		basePath:    r.basePath,
 		routes:      r.routes,
 		frozen:      r.frozen,
@@ -368,7 +386,7 @@ func (r *Router) Handle(method, relativePath string, h ...gin.HandlerFunc) *Rout
 	if *r.frozen {
 		panic("xbc: route table is frozen, RouteCatalogListener phase cannot add routes")
 	}
-	r.group.Handle(method, relativePath, h...)
+	r.group.Handle(method, relativePath, appendChain(r.handlers, h...)...)
 	*r.routes = append(*r.routes, RouteInfo{
 		Method: method,
 		Path:   joinPaths(r.group.BasePath(), relativePath),
