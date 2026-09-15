@@ -248,8 +248,8 @@ func routeKey(method, path string) string {
 // freeze locks the route table -- called once, right after every plugin's
 // RegisterRoutes has run and before any RouteCatalogListener runs -- and
 // compiles it into a method+path-keyed map so CurrentRoute's request-time
-// lookup (via the internal middleware in server.go) is a map hit rather than
-// a scan. It returns an immutable RouteCatalog wrapping a defensive copy of
+// lookup (via each route's own recordCurrentRoute closure) is a map hit
+// rather than a scan. It returns an immutable RouteCatalog wrapping a defensive copy of
 // the table, which is the only handle RouteCatalogListener.RoutesReady ever
 // sees -- callers cannot reach back into the mutable *routes/*index this
 // Router still holds. Authentication policies are validated before any frozen
@@ -407,12 +407,13 @@ func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 
 // joinPaths mirrors gin's own private routergroup.go joinPaths (gin
 // v1.12.0), instead of the bare path.Join this used to call. path.Join alone
-// silently drops a trailing slash that gin's own router -- and therefore
-// (*gin.Context).FullPath() at request time -- always keeps. CurrentRoute's
-// entire contract depends on RouteInfo.Path matching FullPath() by exact
-// string equality, so a route registered with a trailing slash must record
-// that trailing slash here too, or CurrentRoute silently returns false for
-// every request to it.
+// silently drops a trailing slash that gin's own router always keeps, so a
+// route registered with a trailing slash would stop matching the requests it
+// is meant to serve the moment path.Join normalized it away. The fullPath
+// this produces is handed both to the engine (Handle's r.engine.Handle call)
+// and into RouteInfo.Path/recordCurrentRoute's baked-in key, so any drift from
+// gin's own joining would also desynchronize what the engine actually routes
+// from what CurrentRoute reports for it.
 func joinPaths(absolutePath, relativePath string) string {
 	if relativePath == "" {
 		return absolutePath
