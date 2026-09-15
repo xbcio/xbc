@@ -266,10 +266,9 @@ func (m *authenticationMiddleware) Handler() Handler {
 // oracle for which internal step failed.
 //
 // Logging must happen here too, not at the error boundary: AbortProblem writes
-// the response, and errorResolver.resolveErrors skips any request whose
-// response is already written. err is still recorded on the underlying
-// *gin.Context for third-party middleware that inspects c.Errors, but nothing
-// in Web reads it afterwards.
+// the response before this returns, and errorResolver.resolveErrors skips any
+// request whose response is already written -- so err would never reach the
+// error boundary's own log even if it were also recorded there.
 //
 // Only err.Error() reaches the log, and that is deliberate. An
 // authentication.OperationalError renders the failed operation and scheme while
@@ -280,7 +279,6 @@ func (m *authenticationMiddleware) Handler() Handler {
 func abortAuthenticationFailure(c *Ctx, err error) {
 	problem := NewProblem(http.StatusInternalServerError, "authentication_failed")
 	if err != nil {
-		_ = c.Gin().Error(err)
 		resolverFor(c).log(err, problem.Status, c, false)
 	}
 	AbortProblem(c, problem)

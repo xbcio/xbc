@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -116,6 +117,57 @@ func TestDoesNotOverwriteCommittedResponse(t *testing.T) {
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/partial", nil))
 	if response.Code != http.StatusAccepted || response.Body.String() != "already written" {
 		t.Fatalf("committed response changed: %d %q", response.Code, response.Body.String())
+	}
+}
+
+// TestBrokenConnectionRecoveryDoesNotReachTheErrorBoundary pins the D2 fix:
+// once recovery has itself logged and aborted a broken-connection panic, the
+// error boundary must see no error at all -- not merely render harmlessly.
+// Before this fix, recovery also recorded the recovered error on the
+// underlying *gin.Context, so the outer web.OnError boundary would find a
+// non-empty c.Errors after the aborted chain unwound, map it, log a second,
+// redundant 500-level entry, and attempt to write a Problem Detail response
+// onto a connection recovery had already given up on. Written()==false at
+// that point (Abort does not write), so this double-handling was silent in
+// production and only visible by inspecting the log and response together --
+// exactly what this test asserts. Any regression that brings back the
+// c.Gin().Error(err) call makes the injected mapper observe the error and
+// makes the recorder pick up a written response, so either assertion below
+// would fail without needing to reach into the error boundary's own logger.
+func TestBrokenConnectionRecoveryDoesNotReachTheErrorBoundary(t *testing.T) {
+	gin.SetMode(gin.ReleaseMode)
+	logger := &captureLogger{}
+	p := New()
+	p.state.Store(&runtimeState{logger: logger})
+
+	mapperCalled := false
+	mapper := web.ErrorMapperFunc(func(*web.Ctx, error) (web.ProblemDetail, bool) {
+		mapperCalled = true
+		return web.ProblemDetail{}, false
+	})
+
+	router := gin.New()
+	router.Use(web.Handle(web.OnError(mapper)))
+	router.Use(web.Handle(p.handle))
+	router.GET("/broken", func(c *gin.Context) {
+		panic(syscall.EPIPE)
+	})
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/broken", nil))
+
+	if mapperCalled {
+		t.Fatal("error boundary must never see the broken-connection panic recovery already handled")
+	}
+	if response.Code != http.StatusOK || response.Body.Len() != 0 {
+		t.Fatalf("error boundary must not write to a connection recovery already aborted: code=%d body=%q",
+			response.Code, response.Body.String())
+	}
+
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	if len(logger.entries) != 1 || logger.entries[0].level != "warn" {
+		t.Fatalf("expected exactly one Warn entry from recovery itself, got %#v", logger.entries)
 	}
 }
 

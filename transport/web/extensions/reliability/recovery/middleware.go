@@ -42,12 +42,6 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 
 		if brokenConnection(recovered) {
 			logger.Warn("http request aborted after connection failure", fields...)
-			if err, ok := recovered.(error); ok {
-				// Phase 4 debt: gin.Context.Errors has no neutral equivalent
-				// yet, so recording the recovered error stays on the
-				// underlying *gin.Context.
-				_ = c.Gin().Error(err)
-			}
 			c.Abort()
 			return
 		}
