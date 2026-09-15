@@ -124,7 +124,8 @@ func (c *Ctx) DefaultQuery(key, defaultValue string) string {
 // url.URL.Query allocates a fresh url.Values on every call, so a handler or a
 // middleware reading several parameters -- or one parameter in a loop -- paid
 // a full re-parse each time. Measured on the benchmark in engines/gin, one
-// lookup cost 413ns and three allocations without this cache and 6ns with it.
+// lookup cost 413ns and three allocations without this cache, and 14ns with no
+// allocation at all once it is in place.
 //
 // The cache is keyed by the RawQuery it was parsed from rather than simply
 // built once, because SetContext replaces the *http.Request. It preserves the
