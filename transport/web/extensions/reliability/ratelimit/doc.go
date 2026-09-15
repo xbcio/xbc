@@ -14,6 +14,7 @@
 //	func newApp() (*xbc.App, error) {
 //		return xbc.New(xbc.WithBundles(
 //			webprelude.Bundle(),
+//			ginengine.Bundle(),
 //			ratelimit.Bundle(),
 //		))
 //	}

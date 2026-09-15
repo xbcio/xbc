@@ -26,6 +26,7 @@ import (
 	"github.com/xbcio/xbc"
 	_ "github.com/xbcio/xbc/examples/quickstart/docs"
 	"github.com/xbcio/xbc/examples/quickstart/internal/greeter"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
 	"github.com/xbcio/xbc/transport/web/extensions/openapi/swag"
 	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
@@ -35,6 +36,7 @@ import (
 func main() {
 	app, err := xbc.New(xbc.WithBundles(
 		prelude.Bundle(),
+		ginengine.Bundle(),
 		biz.Bundle(),
 		cors.Bundle(),
 		swag.Bundle(),

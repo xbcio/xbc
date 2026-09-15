@@ -16,6 +16,7 @@ import (
 
 	"github.com/xbcio/xbc"
 	"github.com/xbcio/xbc/transport/web"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/health"
 )
 
@@ -48,7 +49,7 @@ web:
 `, shutdownTimeout, addr, preDrainDelay)
 	require.NoError(t, os.WriteFile(configPath, []byte(config), 0o600))
 
-	app, err := xbc.New(xbc.WithBundles(web.Bundle(), health.Bundle()))
+	app, err := xbc.New(xbc.WithBundles(web.Bundle(), ginengine.Bundle(), health.Bundle()))
 	require.NoError(t, err)
 
 	type executeResult struct {
