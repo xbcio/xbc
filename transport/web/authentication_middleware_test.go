@@ -107,9 +107,10 @@ func runThroughAuth(
 	}
 	engine.Use(middleware.Handler())
 	engine.GET(route.Path, okHandler)
-	// The global chain reaches an unmatched request through gin's allNoRoute;
-	// the neutral engine keeps its NoRoute chain separate, so the middleware is
-	// spliced in here explicitly to preserve that behaviour.
+	// This stands in for the Server's own assembly: (*Server).Start splices the
+	// global chain into the NoRoute and NoMethod chains, so the middleware must
+	// be listed here for this hand-built engine to have the topology a Server
+	// actually dispatches against.
 	engine.NoRoute([]web.Handler{middleware.Handler(), notFoundHandler})
 
 	recorder := httptest.NewRecorder()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -189,14 +190,34 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	for _, entry := range ordered {
 		handlers = append(handlers, entry.Value.Handler())
 	}
-	engine.NoRoute([]Handler{func(_ context.Context, c *Ctx) error {
+	// An unmatched request is still a request a client made, so the global
+	// chain must reach it: CORS, request ids, access logs, metrics, panic
+	// recovery and the request-body limit all lose their meaning the moment
+	// 404 and 405 slip past them. Splicing it here rather than relying on an
+	// engine to do it is the same division of labour the Engine port already
+	// has for routes -- the caller hands over one already-flattened chain, and
+	// the engine splices nothing.
+	//
+	// recordCurrentRoute is deliberately absent. Router bakes one per route,
+	// keyed by that route's own method and path; an unmatched request has no
+	// entry in the frozen table for it to find, and CurrentRoute reporting
+	// false is what the authentication middleware already reads as "no handler
+	// behind this to protect".
+	//
+	// The chain is cloned per use: handlers is snapshotted by newRouter below,
+	// and appending in place would let a terminal handler land in the spare
+	// capacity the Router's own chain grows into.
+	unmatchedChain := func(terminal Handler) []Handler {
+		return append(slices.Clone(handlers), terminal)
+	}
+	engine.NoRoute(unmatchedChain(func(_ context.Context, c *Ctx) error {
 		AbortProblem(c, NewProblem(http.StatusNotFound, "not_found"))
 		return nil
-	}})
-	engine.NoMethod([]Handler{func(_ context.Context, c *Ctx) error {
+	}))
+	engine.NoMethod(unmatchedChain(func(_ context.Context, c *Ctx) error {
 		AbortProblem(c, NewProblem(http.StatusMethodNotAllowed, "method_not_allowed"))
 		return nil
-	}})
+	}))
 
 	// Router snapshots the handlers slice, so this must happen after every
 	// entry above is appended.

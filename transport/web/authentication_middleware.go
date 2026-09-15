@@ -194,10 +194,10 @@ func (m *authenticationMiddleware) Handler() Handler {
 	return func(_ context.Context, c *Ctx) error {
 		route, matched := CurrentRoute(c)
 		if !matched {
-			// 404 and 405 requests reach here because gin's allNoRoute chain
-			// includes every global middleware. Turning them into 401 would
-			// pollute the response semantics and leak which paths exist, and
-			// there is no handler behind them to protect.
+			// 404 and 405 requests reach here because Server splices the global
+			// chain into the NoRoute and NoMethod chains. Turning them into 401
+			// would pollute the response semantics and leak which paths exist,
+			// and there is no handler behind them to protect.
 			c.Next()
 			return nil
 		}
