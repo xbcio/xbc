@@ -75,6 +75,24 @@ func TestJSONReportsRenderFailure(t *testing.T) {
 	assert.ErrorAs(t, err, &unsupported, "应原样报告引擎的渲染错误")
 }
 
+// TestBindNegotiatesTheContentType pins that Bind forwards to the engine's
+// content-negotiating entry point rather than to a single-format one. Binding
+// is exactly the kind of work the neutral face delegates instead of
+// reimplementing, and a forward to ShouldBindJSON would satisfy the signature,
+// pass every JSON test, and silently break form, XML, and multipart requests.
+func TestBindNegotiatesTheContentType(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	rc := newTestRequestContext(t, recorder)
+	rc.SetRequest(httptest.NewRequest(http.MethodPost, "/", strings.NewReader("name=xbc")))
+	rc.Request().Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	var payload struct {
+		Name string `form:"name"`
+	}
+	require.NoError(t, rc.Bind(&payload), "表单编码的请求体必须能绑定：Bind 应交给引擎自己的内容协商")
+	assert.Equal(t, "xbc", payload.Name, "Bind 应按 Content-Type 选择表单绑定器")
+}
+
 // TestBindReturnsTheEngineErrorUnwrapped pins that binding policy stays in
 // transport/web. ParamError turns a binding failure into a safe Problem
 // Detail, and doing that here would give every engine adapter its own copy of
