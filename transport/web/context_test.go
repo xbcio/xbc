@@ -332,6 +332,36 @@ func TestCtxNextRunsDownstreamHandlerBeforeReturning(t *testing.T) {
 	assert.Equal(t, []string{"outer-pre", "inner", "outer-post"}, order)
 }
 
+// TestCtxClientIPForwardsToTheEngineRatherThanDerivingItsOwn pins that
+// ClientIP reports the engine's own answer instead of independently parsing
+// RemoteAddr. An implementation that derived the answer from RemoteAddr and
+// blindly preferred a forwarded header would agree with the engine only by
+// accident; the discriminating case is an untrusted proxy, where the engine
+// itself ignores X-Forwarded-For and falls back to RemoteAddr. Only a real
+// forward to c.Gin().ClientIP() reproduces that trusted-proxy-aware decision.
+func TestCtxClientIPForwardsToTheEngineRatherThanDerivingItsOwn(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	require.NoError(t, engine.SetTrustedProxies([]string{"127.0.0.1"}))
+
+	var observed string
+	engine.GET("/whoami", Handle(func(_ context.Context, c *Ctx) error {
+		observed = c.ClientIP()
+		c.Status(http.StatusNoContent)
+		return nil
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "/whoami", nil)
+	request.RemoteAddr = "203.0.113.7:51234"
+	request.Header.Set("X-Forwarded-For", "9.9.9.9")
+
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+
+	assert.Equal(t, "203.0.113.7", observed,
+		"an untrusted proxy's X-Forwarded-For must be ignored, exactly as the engine itself ignores it")
+}
+
 // TestCtxSetContextPublishesThroughTheRequest pins that SetContext rewrites the
 // request rather than storing a context on Ctx. The single source of truth must
 // stay the request itself: a downstream third-party gin handler reads

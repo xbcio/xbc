@@ -88,6 +88,13 @@ func (c *Ctx) GetHeader(key string) string {
 	return c.c.GetHeader(key)
 }
 
+// ClientIP reports the engine's own answer for the request's client address.
+// It is forwarded rather than derived: the correct answer depends on how the
+// engine parsed its trusted-proxy configuration, and that state belongs to the
+// engine. Deriving it from RemoteAddr and headers here would fork from the
+// answer the engine itself gives.
+func (c *Ctx) ClientIP() string { return c.c.ClientIP() }
+
 // -- Writing the response --
 
 // Status sets the HTTP response status code.
