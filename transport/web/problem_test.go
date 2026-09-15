@@ -33,11 +33,14 @@ func TestAbortProblemAppliesSafeRFC9457Defaults(t *testing.T) {
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/orders/42?token=secret", nil))
 
 	assert.Equal(t, http.StatusForbidden, recorder.Code)
-	assert.Equal(t, web.ProblemContentType, recorder.Header().Get("Content-Type"))
-	assert.Equal(t, "no-store", recorder.Header().Get("Cache-Control"))
-	assert.Empty(t, recorder.Header().Get("Content-Encoding"))
-	assert.Empty(t, recorder.Header().Get("Content-Length"))
-	assert.Empty(t, recorder.Header().Get("ETag"))
+	// 判据取 Result().Header 而非 recorder.Header()：后者是活 map，请求跑完后再读，
+	// 冲突头是在状态行之前清掉还是之后清掉都读不出区别，而只有前者才真正到达客户端。
+	committed := recorder.Result().Header
+	assert.Equal(t, web.ProblemContentType, committed.Get("Content-Type"))
+	assert.Equal(t, "no-store", committed.Get("Cache-Control"))
+	assert.Empty(t, committed.Get("Content-Encoding"))
+	assert.Empty(t, committed.Get("Content-Length"))
+	assert.Empty(t, committed.Get("ETag"))
 	// AbortProblem 必须切断后续处理器，这是 IsAborted 在中立面上的可观测形式。
 	assert.False(t, downstreamRan, "AbortProblem 之后的处理器不应再运行")
 
