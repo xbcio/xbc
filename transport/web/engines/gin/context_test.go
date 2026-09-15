@@ -2,6 +2,7 @@ package gin
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,6 +74,24 @@ func TestJSONReportsRenderFailure(t *testing.T) {
 	require.Error(t, err, "渲染失败必须报告给调用方")
 	var unsupported *json.UnsupportedTypeError
 	assert.ErrorAs(t, err, &unsupported, "应原样报告引擎的渲染错误")
+}
+
+// TestJSONIgnoresErrorsRecordedBeforeTheRender pins that JSON reports on its
+// own render, not on whatever the chain has already accumulated. gin's Errors
+// is a shared per-request slice that third-party middleware appends to through
+// Context.Error, so an implementation testing len(Errors) > 0 instead of the
+// before/after delta would turn every successful render that follows such a
+// middleware into a reported failure, which the error boundary then renders as
+// a 500.
+func TestJSONIgnoresErrorsRecordedBeforeTheRender(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	rc := newTestRequestContext(t, recorder)
+	//nolint:errcheck // Error returns the entry it recorded; only the side effect matters here.
+	rc.c.Error(errors.New("recorded by earlier middleware"))
+
+	require.NoError(t, rc.JSON(http.StatusOK, map[string]string{"name": "xbc"}),
+		"渲染成功时不得因链上已有的错误而误报失败")
+	assert.JSONEq(t, `{"name":"xbc"}`, recorder.Body.String(), "响应体应正常写出")
 }
 
 // TestBindNegotiatesTheContentType pins that Bind forwards to the engine's
