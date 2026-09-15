@@ -148,7 +148,7 @@ func TestRequireAllTreatsNilAndTypedNilManagersAsInternalErrors(t *testing.T) {
 	}
 }
 
-func serveRBAC(t *testing.T, middleware gin.HandlerFunc, principal *web.Principal, requestContext context.Context, authorization string) (*httptest.ResponseRecorder, bool) {
+func serveRBAC(t *testing.T, middleware web.Handler, principal *web.Principal, requestContext context.Context, authorization string) (*httptest.ResponseRecorder, bool) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -161,7 +161,7 @@ func serveRBAC(t *testing.T, middleware gin.HandlerFunc, principal *web.Principa
 			ctx.Next()
 		})
 	}
-	engine.Use(middleware)
+	engine.Use(web.Handle(middleware))
 	reached := false
 	engine.GET("/reports", func(ctx *gin.Context) {
 		reached = true
