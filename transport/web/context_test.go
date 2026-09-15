@@ -141,6 +141,30 @@ func TestCtxRequestReadingMethods(t *testing.T) {
 	assert.Contains(t, response.Body.String(), `"agent":"probe"`)
 }
 
+// TestCtxQueryCacheFollowsTheRequestsRawQuery pins the cache Ctx keeps over the
+// parsed query string. Reading a parameter twice must not re-parse, and the
+// cache must not outlive the RawQuery it was built from.
+//
+// The second half is what makes this more than a performance test. A cache
+// built once and never rekeyed passes every test that reads only one request,
+// and then answers with the previous request's parameters the moment anything
+// replaces the URL -- a wrong value returned confidently, which is worse than
+// the re-parse the cache removed.
+func TestCtxQueryCacheFollowsTheRequestsRawQuery(t *testing.T) {
+	rc := enginetest.NewRequestContext(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/items?filter=active", nil))
+	c := web.NewCtx(rc)
+
+	require.Equal(t, "active", c.Query("filter"))
+
+	repeated := testing.AllocsPerRun(100, func() { _ = c.Query("filter") })
+	assert.Zero(t, repeated, "重复读取同一 query 必须命中缓存，不得每次重新解析并分配")
+
+	rc.SetRequest(httptest.NewRequest(http.MethodGet, "/items?filter=archived", nil))
+	assert.Equal(t, "archived", c.Query("filter"),
+		"请求的 RawQuery 变了，缓存必须随之重建，否则会自信地返回上一个请求的参数")
+}
+
 func TestCtxResponseWritingMethods(t *testing.T) {
 	engine := enginetest.New()
 	engine.GET("/status", func(_ context.Context, c *web.Ctx) error {
