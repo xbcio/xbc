@@ -20,8 +20,8 @@ func routeContracts() plugin.ContractSet[*Plugin] {
 // RegisterRoutes implements web.RouteContributor. Probe endpoints explicitly
 // bypass authentication so operational health never depends on credentials.
 func (p *Plugin) RegisterRoutes(router *transportweb.Router) {
-	router.GET(p.cfg.LivenessPath, transportweb.Handle(p.probeHandler(Liveness))).Auth(transportweb.Public())
-	router.GET(p.cfg.ReadinessPath, transportweb.Handle(p.probeHandler(Readiness))).Auth(transportweb.Public())
+	router.GET(p.cfg.LivenessPath, p.probeHandler(Liveness)).Auth(transportweb.Public())
+	router.GET(p.cfg.ReadinessPath, p.probeHandler(Readiness)).Auth(transportweb.Public())
 }
 
 func (p *Plugin) probeHandler(kind Kind) transportweb.Handler {

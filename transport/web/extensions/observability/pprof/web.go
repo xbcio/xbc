@@ -16,7 +16,7 @@ func (p *Plugin) RegisterRoutes(router *web.Router) {
 	if !cfg.enabled {
 		return
 	}
-	handler := web.Handle(p.handler())
+	handler := p.handler()
 	router.GET(cfg.path, handler).Name("management.pprof.index")
 	router.GET(cfg.path+"/*profile", handler).Name("management.pprof.profile")
 	router.POST(cfg.path+"/*profile", handler).Name("management.pprof.command")

@@ -35,11 +35,12 @@
 // []plugin.Entry[T] collections at construction. There is no lifecycle-time
 // capability scan or provider slice.
 //
-// A route contributor registers metadata beside each Gin handler:
+// A route contributor registers metadata beside each handler:
 //
 //	func (*Greeter) RegisterRoutes(router *web.Router) {
-//		router.GET("/hello", func(c *gin.Context) {
+//		router.GET("/hello", func(ctx context.Context, c *web.Ctx) error {
 //			c.String(http.StatusOK, "hello")
+//			return nil
 //		}).Name("greeting").Auth(web.Public())
 //	}
 //
@@ -139,14 +140,14 @@
 // ParamError. For a binder Ctx does not expose, reach through Ctx.Gin and
 // adapt the failure yourself; Web does not duplicate Gin's binder APIs:
 //
-//	router.POST("/orders", web.Handle(func(ctx context.Context, c *web.Ctx) error {
+//	router.POST("/orders", func(ctx context.Context, c *web.Ctx) error {
 //		var request CreateOrderRequest
 //		if err := c.Bind(&request); err != nil {
 //			return err
 //		}
 //		c.JSON(http.StatusCreated, createOrder(ctx, request))
 //		return nil
-//	}))
+//	})
 //
 // Do not use Gin's Bind or MustBind families: they write a 400 response before
 // the centralized error boundary can handle the failure. ParamError adapts an

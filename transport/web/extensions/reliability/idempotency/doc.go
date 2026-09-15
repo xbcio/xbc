@@ -11,8 +11,9 @@
 // resolves the named *redis.Client automatically:
 //
 //	func (*Orders) RegisterRoutes(r *web.Router) {
-//		r.POST("/orders", func(c *gin.Context) {
-//			c.JSON(http.StatusCreated, gin.H{"status": "created"})
+//		r.POST("/orders", func(ctx context.Context, c *web.Ctx) error {
+//			c.JSON(http.StatusCreated, map[string]string{"status": "created"})
+//			return nil
 //		}).Name("orders.create").Idempotent()
 //	}
 //

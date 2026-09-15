@@ -8,23 +8,24 @@
 //
 // session is a credential extractor and authenticator, not a middleware: it
 // plugs into the Web transport's built-in authentication middleware, which is
-// the only place a gin.Context is available. The session's stored attributes
+// the only place a credential extractor runs. The session's stored attributes
 // travel as web.Principal.Attributes, alongside its opaque ID under the
 // "session_id" key:
 //
-//	func profile(c *gin.Context) {
-//		principal, ok := web.CurrentPrincipal(c)
+//	func profile(ctx context.Context, c *web.Ctx) error {
+//		principal, ok := web.CurrentPrincipal(c.Gin())
 //		if !ok {
-//			c.AbortWithStatus(http.StatusUnauthorized)
-//			return
+//			web.AbortProblem(c.Gin(), web.NewProblem(http.StatusUnauthorized, "unauthorized"))
+//			return nil
 //		}
 //		role, _ := principal.Attributes["role"].(string)
 //		sessionID, _ := principal.Attributes["session_id"].(string)
-//		c.JSON(http.StatusOK, gin.H{
+//		c.JSON(http.StatusOK, map[string]any{
 //			"subject":    principal.Subject,
 //			"role":       role,
 //			"session_id": sessionID,
 //		})
+//		return nil
 //	}
 //
 // # Usage
@@ -53,19 +54,19 @@
 //		r.POST("/login", p.login).Name("login").Auth(web.Public())
 //	}
 //
-//	func (p *Login) login(c *gin.Context) {
+//	func (p *Login) login(ctx context.Context, c *web.Ctx) error {
 //		// Authenticate the submitted credentials before this point.
-//		value, err := p.sessions.Create(c.Request.Context(), "user:42", map[string]any{
+//		value, err := p.sessions.Create(ctx, "user:42", map[string]any{
 //			"role": "admin",
 //		})
 //		if err == nil {
-//			err = p.sessions.SetCookie(c, value)
+//			err = p.sessions.SetCookie(c.Gin(), value)
 //		}
 //		if err != nil {
-//			c.AbortWithStatus(http.StatusInternalServerError)
-//			return
+//			return err
 //		}
 //		c.Status(http.StatusNoContent)
+//		return nil
 //	}
 //
 // Protected handlers read the authenticated session's attributes and ID from

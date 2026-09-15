@@ -117,14 +117,14 @@ func Bundle() plugin.Bundle { return bundle }
 // RegisterRoutes contributes the generated JSON and optional embedded UI.
 func (p *Plugin) RegisterRoutes(r *web.Router) {
 	cfg := p.settings
-	r.GET(cfg.jsonPath, web.Handle(p.serveDocument)).
+	r.GET(cfg.jsonPath, p.serveDocument).
 		Name("swag.document").
 		Auth(web.Public())
 	if !cfg.uiEnabled {
 		return
 	}
 
-	ui := web.Handle(p.serveUI)
+	ui := p.serveUI
 	r.GET(cfg.uiPath, ui).
 		Name("swag.ui").
 		Auth(web.Public())

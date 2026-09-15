@@ -1,11 +1,11 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"reflect"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xbcio/xbc/extensions/authentication"
@@ -18,9 +18,9 @@ const (
 
 func TestRouteAuthenticationPolicyDistinguishesAbsentPublicAndExplicit(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
-	router.GET("/default", func(*gin.Context) {})
-	router.GET("/public", func(*gin.Context) {}).Auth(Public())
-	router.GET("/explicit", func(*gin.Context) {}).Auth(Accepts(testSchemeJWT, testSchemeAPIKey))
+	router.GET("/default", func(context.Context, *Ctx) error { return nil })
+	router.GET("/public", func(context.Context, *Ctx) error { return nil }).Auth(Public())
+	router.GET("/explicit", func(context.Context, *Ctx) error { return nil }).Auth(Accepts(testSchemeJWT, testSchemeAPIKey))
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -75,7 +75,7 @@ func TestRouteFreezeRejectsInvalidExplicitAuthenticationSchemes(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			_, router, frozen, _ := newTestEngineAndRouter("/api")
-			route := router.GET("/private", func(*gin.Context) {}).Auth(test.policy)
+			route := router.GET("/private", func(context.Context, *Ctx) error { return nil }).Auth(test.policy)
 
 			catalog, err := router.freeze()
 			require.Error(t, err)
@@ -94,7 +94,7 @@ func TestRouteAuthenticationPolicyIsDefensivelyCopied(t *testing.T) {
 	source[0] = "mutated-source"
 
 	_, router, _, _ := newTestEngineAndRouter("/api")
-	router.GET("/private", func(*gin.Context) {}).Auth(policy)
+	router.GET("/private", func(context.Context, *Ctx) error { return nil }).Auth(policy)
 	policy.schemes[0] = "mutated-policy"
 
 	catalog, err := router.freeze()

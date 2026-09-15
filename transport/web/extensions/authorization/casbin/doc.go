@@ -14,8 +14,9 @@
 // is missing:
 //
 //	func (*Orders) RegisterRoutes(r *web.Router) {
-//		r.GET("/orders", func(c *gin.Context) {
+//		r.GET("/orders", func(ctx context.Context, c *web.Ctx) error {
 //			c.Status(http.StatusNoContent)
+//			return nil
 //		}).Name("orders.list").Perm("orders:read")
 //	}
 //

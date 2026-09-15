@@ -194,7 +194,7 @@ func (r *Route) update(fn func(*RouteInfo)) {
 // exactly the cross-subtree bleed a per-group default exists to prevent.
 type Router struct {
 	group       *gin.RouterGroup
-	handlers    []gin.HandlerFunc
+	handlers    []Handler
 	basePath    string
 	routes      *[]RouteInfo
 	frozen      *bool
@@ -313,8 +313,8 @@ func validateRouteAuth(route RouteInfo) error {
 // may write into parent's spare capacity, and two sibling groups derived from
 // the same parent would then share -- and overwrite -- each other's
 // middleware. See TestSiblingGroupsDoNotShareMiddlewareChain.
-func appendChain(parent []gin.HandlerFunc, extra ...gin.HandlerFunc) []gin.HandlerFunc {
-	chain := make([]gin.HandlerFunc, 0, len(parent)+len(extra))
+func appendChain(parent []Handler, extra ...Handler) []Handler {
+	chain := make([]Handler, 0, len(parent)+len(extra))
 	chain = append(chain, parent...)
 	return append(chain, extra...)
 }
@@ -329,7 +329,7 @@ func appendChain(parent []gin.HandlerFunc, extra ...gin.HandlerFunc) []gin.Handl
 // already exist -- the middleware would appear registered while protecting
 // nothing. Declaring the handlers at the point the group is created makes that
 // failure mode unrepresentable.
-func (r *Router) Group(relativePath string, h ...gin.HandlerFunc) *Router {
+func (r *Router) Group(relativePath string, h ...Handler) *Router {
 	return &Router{
 		group:       r.group.Group(relativePath),
 		handlers:    appendChain(r.handlers, h...),
@@ -372,6 +372,18 @@ func (r *Router) Auth(policy AuthPolicy) *Router {
 	return r
 }
 
+// toGinChain converts a neutral chain into the gin chain the engine registers
+// today. It is the only place the router crosses the engine boundary; the
+// Engine port (design §4.2) takes a []Handler directly, so this function is
+// what the gin adapter absorbs when the port lands.
+func toGinChain(chain []Handler) []gin.HandlerFunc {
+	converted := make([]gin.HandlerFunc, len(chain))
+	for i, handler := range chain {
+		converted[i] = Handle(handler)
+	}
+	return converted
+}
+
 // Handle registers a route and records it in the route table. The recorded
 // RouteInfo starts from this Router's current defaultPerm/defaultAuth (see
 // Router.Perm and Router.Auth), so group-level policy is written in at
@@ -382,11 +394,11 @@ func (r *Router) Auth(policy AuthPolicy) *Router {
 // freeze panics -- RouteCatalogListener runs after the route table is
 // supposed to be complete, so a plugin adding a route there is a
 // programming mistake, not a runtime condition worth recovering from.
-func (r *Router) Handle(method, relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 	if *r.frozen {
 		panic("xbc: route table is frozen, RouteCatalogListener phase cannot add routes")
 	}
-	r.group.Handle(method, relativePath, appendChain(r.handlers, h...)...)
+	r.group.Handle(method, relativePath, toGinChain(appendChain(r.handlers, h...))...)
 	*r.routes = append(*r.routes, RouteInfo{
 		Method: method,
 		Path:   joinPaths(r.group.BasePath(), relativePath),
@@ -415,31 +427,31 @@ func joinPaths(absolutePath, relativePath string) string {
 	return finalPath
 }
 
-func (r *Router) GET(relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) GET(relativePath string, h ...Handler) *Route {
 	return r.Handle(http.MethodGet, relativePath, h...)
 }
 
-func (r *Router) POST(relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) POST(relativePath string, h ...Handler) *Route {
 	return r.Handle(http.MethodPost, relativePath, h...)
 }
 
-func (r *Router) PUT(relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) PUT(relativePath string, h ...Handler) *Route {
 	return r.Handle(http.MethodPut, relativePath, h...)
 }
 
-func (r *Router) DELETE(relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) DELETE(relativePath string, h ...Handler) *Route {
 	return r.Handle(http.MethodDelete, relativePath, h...)
 }
 
-func (r *Router) PATCH(relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) PATCH(relativePath string, h ...Handler) *Route {
 	return r.Handle(http.MethodPatch, relativePath, h...)
 }
 
-func (r *Router) HEAD(relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) HEAD(relativePath string, h ...Handler) *Route {
 	return r.Handle(http.MethodHead, relativePath, h...)
 }
 
-func (r *Router) OPTIONS(relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) OPTIONS(relativePath string, h ...Handler) *Route {
 	return r.Handle(http.MethodOptions, relativePath, h...)
 }
 
@@ -456,7 +468,7 @@ var anyMethods = []string{
 // Any registers the same handlers for every method in anyMethods. The returned
 // Route covers all of them, so one .Perm or .Auth call applies uniformly --
 // a per-method policy needs per-method registration instead.
-func (r *Router) Any(relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) Any(relativePath string, h ...Handler) *Route {
 	return r.Match(anyMethods, relativePath, h...)
 }
 
@@ -464,7 +476,7 @@ func (r *Router) Any(relativePath string, h ...gin.HandlerFunc) *Route {
 // list is a programming mistake: it would register nothing while returning a
 // handle whose .Perm silently applies to no route, which is exactly the kind
 // of invisible policy gap the route table exists to prevent.
-func (r *Router) Match(methods []string, relativePath string, h ...gin.HandlerFunc) *Route {
+func (r *Router) Match(methods []string, relativePath string, h ...Handler) *Route {
 	if len(methods) == 0 {
 		panic("xbc: Match requires at least one HTTP method")
 	}

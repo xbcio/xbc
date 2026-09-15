@@ -213,9 +213,9 @@ type mappedRoutePlugin struct {
 }
 
 func (p *mappedRoutePlugin) RegisterRoutes(r *Router) {
-	r.GET("/mapped-error", Handle(func(context.Context, *Ctx) error {
+	r.GET("/mapped-error", func(context.Context, *Ctx) error {
 		return fmt.Errorf("service failed: %w", p.domainErr)
-	})).Name("mapped.error")
+	}).Name("mapped.error")
 }
 
 func (p *mappedRoutePlugin) MapError(_ *Ctx, err error) (ProblemDetail, bool) {

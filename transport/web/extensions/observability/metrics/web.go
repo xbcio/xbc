@@ -17,7 +17,7 @@ func (p *Plugin) RegisterRoutes(router *web.Router) {
 	if state == nil || !state.config.endpoint.enabled {
 		return
 	}
-	router.GET(state.config.endpoint.path, web.Handle(p.handleMetrics)).
+	router.GET(state.config.endpoint.path, p.handleMetrics).
 		Name("management.metrics")
 }
 

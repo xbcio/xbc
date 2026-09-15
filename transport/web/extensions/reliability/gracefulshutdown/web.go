@@ -14,7 +14,7 @@ func (p *Plugin) RegisterRoutes(router *web.Router) {
 	if !cfg.enabled {
 		return
 	}
-	router.POST(cfg.path, web.Handle(p.handleShutdown)).
+	router.POST(cfg.path, p.handleShutdown).
 		Name("management.shutdown")
 }
 

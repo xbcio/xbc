@@ -92,7 +92,7 @@ func TestStartAppliesProductionHTTPServerSettings(t *testing.T) {
 
 func TestTrustedProxiesAreOptIn(t *testing.T) {
 	clientIPRoute := fakeRouteContributor{register: func(router *Router) {
-		router.GET("/client-ip", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
+		router.GET("/client-ip", func(_ context.Context, c *Ctx) error { c.String(http.StatusOK, c.Gin().ClientIP()); return nil })
 	}}
 	clientIPEntry := plugin.Entry[RouteContributor]{
 		Identity: plugin.Identity{Plugin: "clientiptest"},
@@ -131,7 +131,7 @@ func TestTrustedProxiesAreOptIn(t *testing.T) {
 
 func TestServerReturnsProblemDetailsForRoutingAndKnownBodyOverflow(t *testing.T) {
 	bodyRoute := fakeRouteContributor{register: func(router *Router) {
-		router.POST("/body", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+		router.POST("/body", func(_ context.Context, c *Ctx) error { c.Status(http.StatusNoContent); return nil })
 	}}
 	cfg := DefaultConfig()
 	cfg.Addr = "127.0.0.1:0"
@@ -208,7 +208,7 @@ func newPingServer(t *testing.T, cfg Config, inputs serverInputs) (*Server, *plu
 	routes = append(routes, plugin.Entry[RouteContributor]{
 		Identity: plugin.Identity{Plugin: "pingtest"},
 		Value: fakeRouteContributor{register: func(router *Router) {
-			router.GET("/ping", func(c *gin.Context) { c.Status(http.StatusOK) })
+			router.GET("/ping", func(_ context.Context, c *Ctx) error { c.Status(http.StatusOK); return nil })
 		}},
 	})
 	routes = append(routes, inputs.routes...)
@@ -362,7 +362,7 @@ func TestOpenTrafficPropagatesRouteCatalogListenerErrorWithoutReleasingGate(t *t
 func TestOpenTrafficReturnsRouteFreezeErrorWithoutNotifyingListeners(t *testing.T) {
 	listenerCalled := false
 	invalidRoute := fakeRouteContributor{register: func(router *Router) {
-		router.GET("/private", func(*gin.Context) {}).Auth(Accepts())
+		router.GET("/private", func(context.Context, *Ctx) error { return nil }).Auth(Accepts())
 	}}
 	listener := fakeRouteCatalogListener{ready: func(RouteCatalog) error {
 		listenerCalled = true
@@ -405,7 +405,7 @@ func TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator(t *testing.T)
 		"the factory default must stay fail-closed, otherwise this test proves nothing")
 
 	management := fakeRouteContributor{register: func(router *Router) {
-		router.GET("/-/metrics", func(*gin.Context) {}).Name("management.metrics")
+		router.GET("/-/metrics", func(context.Context, *Ctx) error { return nil }).Name("management.metrics")
 	}}
 	host := newFakeHost()
 	ctx := contextFromHost(host)
@@ -459,11 +459,12 @@ func slowRoute(entered chan<- struct{}, release <-chan struct{}, completed *atom
 	return plugin.Entry[RouteContributor]{
 		Identity: plugin.Identity{Plugin: "slowtest"},
 		Value: fakeRouteContributor{register: func(router *Router) {
-			router.GET("/slow", func(c *gin.Context) {
+			router.GET("/slow", func(_ context.Context, c *Ctx) error {
 				enteredOnce.Do(func() { close(entered) })
 				<-release
 				completed.Store(true)
 				c.String(http.StatusOK, "drained")
+				return nil
 			})
 		}},
 	}
@@ -674,7 +675,13 @@ func TestServerEnablesGinContextFallback(t *testing.T) {
 		routes: []plugin.Entry[RouteContributor]{{
 			Identity: plugin.Identity{Plugin: "fallbacktest"},
 			Value: fakeRouteContributor{register: func(router *Router) {
-				router.GET("/fallback", func(c *gin.Context) {
+				// The body deliberately stays on *gin.Context: this test pins
+				// gin's own ContextWithFallback behaviour, so Done/Value must
+				// be observed through the gin context itself. Reading them off
+				// Handler's ctx parameter would assert the request context
+				// directly and stop discriminating against the flag being off.
+				router.GET("/fallback", func(_ context.Context, ginCtx *Ctx) error {
+					c := ginCtx.Gin()
 					c.Request = c.Request.WithContext(
 						context.WithValue(c.Request.Context(), fallbackKey{}, "from request context"),
 					)
@@ -691,6 +698,7 @@ func TestServerEnablesGinContextFallback(t *testing.T) {
 					}
 					observed <- result
 					c.String(http.StatusOK, "done")
+					return nil
 				})
 			}},
 		}},
