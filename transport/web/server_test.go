@@ -181,6 +181,14 @@ func TestServerReturnsProblemDetailsForRoutingAndKnownBodyOverflow(t *testing.T)
 			name: "content length exceeds limit", method: http.MethodPost, path: "/body", body: "0123456789",
 			status: http.StatusRequestEntityTooLarge, code: "request_body_too_large", instance: "/body",
 		},
+		{
+			// The body limit is a global middleware, so it must bound an
+			// unmatched path too: a limit that only applies where a route
+			// happens to exist bounds nothing a stranger has to respect.
+			name: "content length exceeds limit on an unmatched path", method: http.MethodPost,
+			path: "/missing", body: "0123456789",
+			status: http.StatusRequestEntityTooLarge, code: "request_body_too_large", instance: "/missing",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -361,6 +369,61 @@ func TestStartAppliesContributedMiddlewareToRoutesUnderBasePath(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.True(t, ran, "middleware must be installed before the base-path Router group is created")
+}
+
+// TestGlobalMiddlewareRunsOnUnmatchedRequests pins that the global chain covers
+// 404 and 405 responses, not just the routes the table happens to contain.
+//
+// CORS, request ids, access logs, metrics, panic recovery and the request-body
+// limit are all contributed as global middleware, and an unmatched request is
+// still a request a client made: a chain that skips it stops bounding the body
+// a stranger may POST to an arbitrary path, and makes exactly the traffic worth
+// investigating the traffic nothing records.
+//
+// The topology is the Server's own -- the chain is spliced into the NoRoute and
+// NoMethod chains by (*Server).Start. A test that assembled an engine by hand
+// would be asserting a shape no Server ever builds, which is what let this
+// regression through.
+func TestGlobalMiddlewareRunsOnUnmatchedRequests(t *testing.T) {
+	var observed []string
+	middleware := fakeMiddleware{
+		order: web.Order{Phase: web.PhaseObserve},
+		handler: func(_ context.Context, c *web.Ctx) error {
+			observed = append(observed, c.Request().Method+" "+c.Request().URL.Path)
+			c.Next()
+			return nil
+		},
+	}
+	cfg := web.DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	server, ctx, _ := newPingServer(t, cfg, serverInputs{
+		middlewares: []plugin.Entry[web.Middleware]{
+			{Identity: plugin.Identity{Plugin: "accesslog"}, Value: middleware},
+		},
+	})
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+
+	// A matched route is dispatched first so the assertion below distinguishes
+	// "the chain never runs at all" from "the chain runs only where a route
+	// matched", which is the actual regression.
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+		status int
+	}{
+		{name: "matched route", method: http.MethodGet, path: "/ping", status: http.StatusOK},
+		{name: "no route", method: http.MethodGet, path: "/missing", status: http.StatusNotFound},
+		{name: "method not allowed", method: http.MethodPost, path: "/ping", status: http.StatusMethodNotAllowed},
+	} {
+		response := httptest.NewRecorder()
+		testEngineOf(t, server).ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+		assert.Equal(t, test.status, response.Code, "%s 的状态码不符", test.name)
+	}
+
+	assert.Equal(t, []string{"GET /ping", "GET /missing", "POST /ping"}, observed,
+		"全局中间件必须覆盖 404 与 405，未匹配的请求同样是客户端发出的请求")
 }
 
 func TestOpenTrafficPropagatesRouteCatalogListenerErrorWithoutReleasingGate(t *testing.T) {
