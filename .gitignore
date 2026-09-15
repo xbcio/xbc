@@ -34,3 +34,4 @@ application-local.yml
 /.claude/specs/
 /.claude/plans/
 /.claude/migration/
+/.claude/sdd/
