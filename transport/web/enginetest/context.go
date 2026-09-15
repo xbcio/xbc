@@ -133,6 +133,14 @@ func (rc *requestContext) BindURI(any) error { return errBindingUnsupported }
 // JSON renders obj. A marshalling failure aborts the chain and is reported to
 // the caller with nothing written, so the error boundary can still render a
 // safe response.
+//
+// A status that forbids a body leaves after the recorded status, and nothing
+// here commits it: that is run's job, once the chain has fully unwound. This
+// method is not free to commit earlier, because a middleware may have installed
+// a buffering wrapper that has not replayed yet -- committing the bottom of the
+// writer chain underneath it would send the default status and leave the
+// wrapper's replay with nothing to do. Ctx.String makes the same choice for the
+// same reason, and the two must agree.
 func (rc *requestContext) JSON(code int, obj any) error {
 	payload, err := json.Marshal(obj)
 	if err != nil {
@@ -142,7 +150,6 @@ func (rc *requestContext) JSON(code int, obj any) error {
 	rc.w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	rc.w.WriteHeader(code)
 	if !bodyAllowedForStatus(code) {
-		rc.commit()
 		return nil
 	}
 	_, writeErr := rc.w.Write(payload)
