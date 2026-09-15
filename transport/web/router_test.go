@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +10,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xbcio/xbc/extensions/authentication"
+)
+
+// Registration methods must take the engine-neutral Handler. Go function
+// types are invariant in their parameters, so these assignments are the only
+// construct that actually pins the parameter type -- a runtime check on a
+// returned value cannot tell Handler from gin.HandlerFunc once the value is
+// already built. If a later change widens any of these back to
+// gin.HandlerFunc, this file stops compiling.
+var (
+	_ func(*Router, string, string, ...Handler) *Route   = (*Router).Handle
+	_ func(*Router, string, ...Handler) *Route           = (*Router).GET
+	_ func(*Router, string, ...Handler) *Route           = (*Router).POST
+	_ func(*Router, string, ...Handler) *Route           = (*Router).PUT
+	_ func(*Router, string, ...Handler) *Route           = (*Router).DELETE
+	_ func(*Router, string, ...Handler) *Route           = (*Router).PATCH
+	_ func(*Router, string, ...Handler) *Route           = (*Router).HEAD
+	_ func(*Router, string, ...Handler) *Route           = (*Router).OPTIONS
+	_ func(*Router, string, ...Handler) *Route           = (*Router).Any
+	_ func(*Router, []string, string, ...Handler) *Route = (*Router).Match
+	_ func(*Router, string, ...Handler) *Router          = (*Router).Group
 )
 
 func newTestEngineAndRouter(basePath string) (*gin.Engine, *Router, *bool, *map[string]RouteInfo) {
@@ -27,10 +48,11 @@ func TestRouteMetadataChainIsFrozenIntoCatalogAndCurrentRoute(t *testing.T) {
 	router := newRouter(engine, "/api", routes, frozen, index)
 
 	var current RouteInfo
-	router.Group("/users").POST("", func(gc *gin.Context) {
-		current, _ = CurrentRoute(gc)
+	router.Group("/users").POST("", func(_ context.Context, c *Ctx) error {
+		current, _ = CurrentRoute(c.Gin())
+		return nil
 	}).Name("create user").Perm("user:write").Idempotent()
-	router.POST("/login", func(*gin.Context) {}).Name("login").Auth(Public())
+	router.POST("/login", func(context.Context, *Ctx) error { return nil }).Name("login").Auth(Public())
 	catalog, err := router.freeze()
 	require.NoError(t, err)
 
@@ -64,7 +86,7 @@ func TestRouteMetadataChainIsFrozenIntoCatalogAndCurrentRoute(t *testing.T) {
 // policy blind spot the route table exists to prevent, since an unrecorded
 // route is invisible to authentication and authorization.
 func TestMethodHelpersRecordAndDispatchTheirOwnVerb(t *testing.T) {
-	helpers := map[string]func(*Router, string, ...gin.HandlerFunc) *Route{
+	helpers := map[string]func(*Router, string, ...Handler) *Route{
 		http.MethodGet:     (*Router).GET,
 		http.MethodPost:    (*Router).POST,
 		http.MethodPut:     (*Router).PUT,
@@ -81,7 +103,7 @@ func TestMethodHelpersRecordAndDispatchTheirOwnVerb(t *testing.T) {
 			// 404, so a helper wired to the wrong verb is distinguishable from
 			// one that registered no path at all.
 			engine.HandleMethodNotAllowed = true
-			register(router, "/thing", func(gc *gin.Context) { gc.Status(http.StatusTeapot) }).Perm("thing:use")
+			register(router, "/thing", func(_ context.Context, c *Ctx) error { c.Status(http.StatusTeapot); return nil }).Perm("thing:use")
 
 			catalog, err := router.freeze()
 			require.NoError(t, err)
@@ -103,7 +125,7 @@ func TestMethodHelpersRecordAndDispatchTheirOwnVerb(t *testing.T) {
 // site.
 func TestAnyRegistersEveryMethodUnderOneMetadataHandle(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
-	router.Any("/resource", func(*gin.Context) {}).Perm("resource:use").Auth(Public())
+	router.Any("/resource", func(context.Context, *Ctx) error { return nil }).Perm("resource:use").Auth(Public())
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -126,7 +148,7 @@ func TestAnyRegistersEveryMethodUnderOneMetadataHandle(t *testing.T) {
 
 func TestMatchRegistersOnlyTheListedMethods(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
-	router.Match([]string{http.MethodGet, http.MethodHead}, "/report", func(*gin.Context) {}).Name("read report")
+	router.Match([]string{http.MethodGet, http.MethodHead}, "/report", func(context.Context, *Ctx) error { return nil }).Name("read report")
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -147,13 +169,13 @@ func TestMatchRejectsAnEmptyMethodList(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	assert.PanicsWithValue(t,
 		"xbc: Match requires at least one HTTP method",
-		func() { router.Match(nil, "/resource", func(*gin.Context) {}) },
+		func() { router.Match(nil, "/resource", func(context.Context, *Ctx) error { return nil }) },
 	)
 }
 
 func TestRouteMetadataCannotChangeAfterFreeze(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/")
-	route := router.GET("/users", func(*gin.Context) {})
+	route := router.GET("/users", func(context.Context, *Ctx) error { return nil })
 	_, err := router.freeze()
 	require.NoError(t, err)
 
@@ -165,8 +187,8 @@ func TestRouteMetadataCannotChangeAfterFreeze(t *testing.T) {
 
 func TestRouteCatalogAllReturnsDefensiveCopy(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/")
-	router.GET("/a", func(*gin.Context) {})
-	router.GET("/b", func(*gin.Context) {})
+	router.GET("/a", func(context.Context, *Ctx) error { return nil })
+	router.GET("/b", func(context.Context, *Ctx) error { return nil })
 	catalog, err := router.freeze()
 	require.NoError(t, err)
 
@@ -180,7 +202,7 @@ func TestRouteCatalogAllReturnsDefensiveCopy(t *testing.T) {
 
 func TestRouteCatalogLookupHitAndMiss(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
-	router.GET("/users", func(*gin.Context) {})
+	router.GET("/users", func(context.Context, *Ctx) error { return nil })
 	catalog, err := router.freeze()
 	require.NoError(t, err)
 
@@ -206,8 +228,9 @@ func TestCurrentRouteReportsMatchedRouteDuringRequest(t *testing.T) {
 
 	var got RouteInfo
 	var ok bool
-	router.GET("/users/:id", func(gc *gin.Context) {
-		got, ok = CurrentRoute(gc)
+	router.GET("/users/:id", func(_ context.Context, c *Ctx) error {
+		got, ok = CurrentRoute(c.Gin())
+		return nil
 	})
 	_, err := router.freeze()
 	require.NoError(t, err)
@@ -227,7 +250,7 @@ func TestCurrentRouteReportsFalseForNonMatchingRequest(t *testing.T) {
 	routes, frozen, index := newRouteTable()
 	engine.Use(recordCurrentRoute(frozen, index))
 	router := newRouter(engine, "/api", routes, frozen, index)
-	router.GET("/users", func(*gin.Context) {})
+	router.GET("/users", func(context.Context, *Ctx) error { return nil })
 	_, err := router.freeze()
 	require.NoError(t, err)
 
@@ -263,7 +286,7 @@ func TestGroupMustBeCreatedAfterUseOrMiddlewareSilentlyNeverApplies(t *testing.T
 	engine.Use(mw)
 	routes, frozen, index := newRouteTable()
 	router := newRouter(engine, "/api", routes, frozen, index)
-	router.GET("/ping", func(gc *gin.Context) { gc.Status(http.StatusOK) })
+	router.GET("/ping", func(_ context.Context, c *Ctx) error { c.Status(http.StatusOK); return nil })
 	_, err := router.freeze()
 	require.NoError(t, err)
 
@@ -292,7 +315,7 @@ func TestGroupCreatedBeforeUseNeverSeesLaterMiddleware(t *testing.T) {
 	routes, frozen, index := newRouteTable()
 	router := newRouter(engine, "/api", routes, frozen, index)
 	engine.Use(mw)
-	router.GET("/ping", func(gc *gin.Context) { gc.Status(http.StatusOK) })
+	router.GET("/ping", func(_ context.Context, c *Ctx) error { c.Status(http.StatusOK); return nil })
 	_, err := router.freeze()
 	require.NoError(t, err)
 
@@ -315,10 +338,10 @@ func TestGroupMiddlewareIsScopedToItsSubtree(t *testing.T) {
 	engine, router, _, _ := newTestEngineAndRouter("/api")
 
 	var calls []string
-	mark := func(name string) gin.HandlerFunc {
-		return func(gc *gin.Context) { calls = append(calls, name) }
+	mark := func(name string) Handler {
+		return func(context.Context, *Ctx) error { calls = append(calls, name); return nil }
 	}
-	noop := func(gc *gin.Context) { gc.Status(http.StatusNoContent) }
+	noop := func(_ context.Context, c *Ctx) error { c.Status(http.StatusNoContent); return nil }
 
 	admin := router.Group("/admin", mark("admin"))
 	admin.GET("/users", noop)
@@ -352,8 +375,8 @@ func TestGroupMiddlewareIsScopedToItsSubtree(t *testing.T) {
 func TestGroupPermDefaultAppliesToEveryRouteInGroup(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role").Perm("FP_ROLE")
-	g.GET("/list", func(*gin.Context) {})
-	g.GET("/detail", func(*gin.Context) {})
+	g.GET("/list", func(context.Context, *Ctx) error { return nil })
+	g.GET("/detail", func(context.Context, *Ctx) error { return nil })
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -373,8 +396,8 @@ func TestGroupPermDefaultAppliesToEveryRouteInGroup(t *testing.T) {
 func TestRoutePermOverridesGroupDefaultForSingleRoute(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role").Perm("FP_ROLE")
-	g.GET("/list", func(*gin.Context) {})
-	g.POST("/fix", func(*gin.Context) {}).Perm("FP_ROLE_ADMIN")
+	g.GET("/list", func(context.Context, *Ctx) error { return nil })
+	g.POST("/fix", func(context.Context, *Ctx) error { return nil }).Perm("FP_ROLE_ADMIN")
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -395,7 +418,7 @@ func TestNestedGroupInheritsParentPermDefault(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role").Perm("FP_ROLE")
 	sub := g.Group("/audit")
-	sub.GET("/entries", func(*gin.Context) {})
+	sub.GET("/entries", func(context.Context, *Ctx) error { return nil })
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -415,10 +438,10 @@ func TestChildGroupPermOverrideDoesNotAffectParentOrSiblings(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role").Perm("FP_ROLE")
 	child := g.Group("/admin").Perm("FP_ROLE_ADMIN")
-	child.GET("/panel", func(*gin.Context) {})
+	child.GET("/panel", func(context.Context, *Ctx) error { return nil })
 	// Registered on g after child's override -- must still see only g's own
 	// default, never child's.
-	g.GET("/list", func(*gin.Context) {})
+	g.GET("/list", func(context.Context, *Ctx) error { return nil })
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -439,9 +462,9 @@ func TestChildGroupPermOverrideDoesNotAffectParentOrSiblings(t *testing.T) {
 func TestPermDefaultSnapshotExcludesRoutesRegisteredBeforeCall(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role")
-	g.GET("/list", func(*gin.Context) {})
+	g.GET("/list", func(context.Context, *Ctx) error { return nil })
 	g.Perm("FP_ROLE")
-	g.GET("/detail", func(*gin.Context) {})
+	g.GET("/detail", func(context.Context, *Ctx) error { return nil })
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -466,8 +489,8 @@ func TestGroupDerivedBeforePermDoesNotInheritLaterDefault(t *testing.T) {
 	g.Perm("FP_ROLE")
 	after := g.Group("/after")
 
-	before.GET("/x", func(*gin.Context) {})
-	after.GET("/y", func(*gin.Context) {})
+	before.GET("/x", func(context.Context, *Ctx) error { return nil })
+	after.GET("/y", func(context.Context, *Ctx) error { return nil })
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -494,8 +517,8 @@ func TestGroupAuthDefaultAppliesAndIsPerRouteDeepCopy(t *testing.T) {
 	router := newRouter(engine, "/api", routes, frozen, index)
 
 	g := router.Group("/sys_role").Auth(Accepts("jwt", "session"))
-	g.GET("/list", func(*gin.Context) {})
-	g.GET("/detail", func(*gin.Context) {})
+	g.GET("/list", func(context.Context, *Ctx) error { return nil })
+	g.GET("/detail", func(context.Context, *Ctx) error { return nil })
 
 	require.Len(t, *routes, 2)
 	list := (*routes)[0]
@@ -519,7 +542,7 @@ func TestGroupAuthDefaultAppliesAndIsPerRouteDeepCopy(t *testing.T) {
 func TestGroupAuthDefaultIsTierTwoOutrankedByApplicationRule(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role").Auth(Public())
-	g.GET("/list", func(*gin.Context) {})
+	g.GET("/list", func(context.Context, *Ctx) error { return nil })
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -548,12 +571,15 @@ func TestGroupMiddlewareRunsBeforeTheHandler(t *testing.T) {
 	engine, router, _, _ := newTestEngineAndRouter("/api")
 
 	var order []string
-	router.Group("/admin", func(gc *gin.Context) {
+	router.Group("/admin", func(_ context.Context, c *Ctx) error {
 		order = append(order, "middleware")
-		gc.AbortWithStatus(http.StatusForbidden)
-	}).GET("/users", func(gc *gin.Context) {
+		c.Status(http.StatusForbidden)
+		c.Abort()
+		return nil
+	}).GET("/users", func(_ context.Context, c *Ctx) error {
 		order = append(order, "handler")
-		gc.Status(http.StatusNoContent)
+		c.Status(http.StatusNoContent)
+		return nil
 	})
 	_, err := router.freeze()
 	require.NoError(t, err)
@@ -571,7 +597,7 @@ func TestGroupMiddlewareRunsBeforeTheHandler(t *testing.T) {
 func TestCascadedRegistrationRecordsBothRoutesUnderGroupPrefix(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role")
-	g.GET("/a", func(*gin.Context) {}).POST("/b", func(*gin.Context) {})
+	g.GET("/a", func(context.Context, *Ctx) error { return nil }).POST("/b", func(context.Context, *Ctx) error { return nil })
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -592,8 +618,8 @@ func TestCascadedRegistrationRecordsBothRoutesUnderGroupPrefix(t *testing.T) {
 func TestCascadedRegistrationStaysOnSameGroupNotRoot(t *testing.T) {
 	engine, router, _, _ := newTestEngineAndRouter("/api")
 	var ran bool
-	admin := router.Group("/admin", func(gc *gin.Context) { ran = true })
-	admin.GET("/a", func(*gin.Context) {}).POST("/b", func(gc *gin.Context) { gc.Status(http.StatusNoContent) })
+	admin := router.Group("/admin", func(context.Context, *Ctx) error { ran = true; return nil })
+	admin.GET("/a", func(context.Context, *Ctx) error { return nil }).POST("/b", func(_ context.Context, c *Ctx) error { c.Status(http.StatusNoContent); return nil })
 
 	_, err := router.freeze()
 	require.NoError(t, err)
@@ -613,7 +639,7 @@ func TestCascadedRegistrationStaysOnSameGroupNotRoot(t *testing.T) {
 func TestCascadedPermOnlyAffectsLastRegisteredRoute(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role")
-	g.GET("/a", func(*gin.Context) {}).POST("/b", func(*gin.Context) {}).Perm("Y")
+	g.GET("/a", func(context.Context, *Ctx) error { return nil }).POST("/b", func(context.Context, *Ctx) error { return nil }).Perm("Y")
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -634,7 +660,7 @@ func TestCascadedPermOnlyAffectsLastRegisteredRoute(t *testing.T) {
 func TestCascadedRegistrationInheritsGroupDefaults(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role").Perm("FP_ROLE").Auth(Public())
-	g.GET("/a", func(*gin.Context) {}).POST("/b", func(*gin.Context) {})
+	g.GET("/a", func(context.Context, *Ctx) error { return nil }).POST("/b", func(context.Context, *Ctx) error { return nil })
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -661,10 +687,10 @@ func TestCascadedRegistrationInheritsGroupDefaults(t *testing.T) {
 func TestRoutePermShadowsRouterPermForGroupVsRouteScope(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
 	g := router.Group("/sys_role")
-	g.GET("/first", func(*gin.Context) {})
+	g.GET("/first", func(context.Context, *Ctx) error { return nil })
 	g.Perm("GROUP_DEFAULT") // *Router.Perm: group-level, affects registrations from here on.
-	g.GET("/second", func(*gin.Context) {})
-	g.GET("/third", func(*gin.Context) {}).Perm("ROUTE_ONLY") // *Route.Perm: route-level, affects only /third.
+	g.GET("/second", func(context.Context, *Ctx) error { return nil })
+	g.GET("/third", func(context.Context, *Ctx) error { return nil }).Perm("ROUTE_ONLY") // *Route.Perm: route-level, affects only /third.
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -689,13 +715,13 @@ func TestRoutePermShadowsRouterPermForGroupVsRouteScope(t *testing.T) {
 // which handle the caller went through to reach it.
 func TestPromotedRegistrationMethodPanicsAfterFreeze(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
-	route := router.GET("/a", func(*gin.Context) {})
+	route := router.GET("/a", func(context.Context, *Ctx) error { return nil })
 	_, err := router.freeze()
 	require.NoError(t, err)
 
 	assert.PanicsWithValue(t,
 		"xbc: route table is frozen, RouteCatalogListener phase cannot add routes",
-		func() { route.POST("/b", func(*gin.Context) {}) },
+		func() { route.POST("/b", func(context.Context, *Ctx) error { return nil }) },
 		"通过级联句柄提升出来的注册方法在冻结之后调用同样必须 panic，不能因为换了调用路径就绕过 freeze 检查",
 	)
 }
@@ -707,8 +733,8 @@ func TestPromotedRegistrationMethodPanicsAfterFreeze(t *testing.T) {
 // the handle it was chained from.
 func TestCascadeAfterAnyOrMatchOwnsOnlyItsOwnIndexes(t *testing.T) {
 	_, router, _, _ := newTestEngineAndRouter("/api")
-	router.Match([]string{http.MethodGet, http.MethodHead}, "/report", func(*gin.Context) {}).
-		POST("/create", func(*gin.Context) {}).Perm("CREATE_ONLY")
+	router.Match([]string{http.MethodGet, http.MethodHead}, "/report", func(context.Context, *Ctx) error { return nil }).
+		POST("/create", func(context.Context, *Ctx) error { return nil }).Perm("CREATE_ONLY")
 
 	catalog, err := router.freeze()
 	require.NoError(t, err)
@@ -766,10 +792,10 @@ func TestSiblingGroupsDoNotShareMiddlewareChain(t *testing.T) {
 	engine, router, _, _ := newTestEngineAndRouter("/api")
 
 	var calls []string
-	mark := func(name string) gin.HandlerFunc {
-		return func(*gin.Context) { calls = append(calls, name) }
+	mark := func(name string) Handler {
+		return func(context.Context, *Ctx) error { calls = append(calls, name); return nil }
 	}
-	noop := func(gc *gin.Context) { gc.Status(http.StatusNoContent) }
+	noop := func(_ context.Context, c *Ctx) error { c.Status(http.StatusNoContent); return nil }
 
 	admin := router.Group("/admin",
 		mark("p1"), mark("p2"), mark("p3"), mark("p4"), mark("p5"))

@@ -48,11 +48,11 @@ type Greeting struct {
 
 // RegisterRoutes implements web.RouteContributor.
 func (p *Plugin) RegisterRoutes(router *web.Router) {
-	router.GET("/hello", web.Handle(p.getGreeting)).
+	router.GET("/hello", p.getGreeting).
 		Name("greeter.hello").
 		Auth(web.Public())
 
-	router.POST("/hello", web.Handle(p.createGreeting)).
+	router.POST("/hello", p.createGreeting).
 		Name("greeter.hello.create").
 		Auth(web.Public())
 }
