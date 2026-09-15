@@ -29,7 +29,7 @@ func serveJSONBindingRequest(body string, maximum int64, destination any) *httpt
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	if maximum > 0 {
-		engine.Use(limitRequestBody(maximum))
+		engine.Use(Handle(limitRequestBody(maximum)))
 	}
 	// These tests exercise ParamError's mapping of raw binding failures, so they
 	// call gin's binding directly rather than Ctx.Bind, which would wrap the
@@ -176,7 +176,7 @@ func TestParamErrorMapsBothKnownAndStreamedBodyOverflowTo413(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			engine := gin.New()
-			engine.Use(limitRequestBody(32))
+			engine.Use(Handle(limitRequestBody(32)))
 			engine.POST("/requests", Handle(func(_ context.Context, c *Ctx) error {
 				var destination bindingRequest
 				if err := c.Gin().ShouldBindJSON(&destination); err != nil {

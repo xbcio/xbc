@@ -11,7 +11,7 @@ import (
 
 func TestNewConstructsSideEffectFreeServer(t *testing.T) {
 	t.Parallel()
-	server := New()
+	server := New(nil)
 	assert.NotNil(t, server)
 	assert.Equal(t, DefaultConfig(), server.cfg)
 }

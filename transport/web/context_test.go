@@ -281,36 +281,6 @@ func TestCtxEscapeHatchesExposeUnderlyingGinContext(t *testing.T) {
 	assert.Contains(t, response.Body.String(), "POST")
 }
 
-func TestWrapGinHandlerRunsThirdPartyMiddlewareAndPropagatesGinControlFlow(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-
-	var thirdPartyRan bool
-	thirdParty := gin.HandlerFunc(func(c *gin.Context) {
-		thirdPartyRan = true
-		c.Header("X-Wrapped", "true")
-		c.Next()
-	})
-
-	engine.GET("/wrapped", Handle(WrapGinHandler(thirdParty)), Handle(func(_ context.Context, c *Ctx) error {
-		c.Status(http.StatusOK)
-		return nil
-	}))
-
-	response := httptest.NewRecorder()
-	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/wrapped", nil))
-
-	assert.True(t, thirdPartyRan)
-	assert.Equal(t, "true", response.Header().Get("X-Wrapped"))
-	assert.Equal(t, http.StatusOK, response.Code)
-}
-
-func TestWrapGinHandlerPanicsOnNilHandler(t *testing.T) {
-	assert.PanicsWithValue(t, "xbc: web.WrapGinHandler requires a non-nil handler", func() {
-		WrapGinHandler(nil)
-	})
-}
-
 // TestNewCtxWrapsTheGivenGinContextWithoutValidating pins the two properties
 // plugins outside this package rely on. NewCtx must be the exact inverse of
 // Ctx.Gin -- a plugin's test builds a request-carrying gin.Context and expects

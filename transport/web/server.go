@@ -17,12 +17,14 @@ import (
 	"github.com/xbcio/xbc/plugin"
 )
 
-// Server is the Gin-backed HTTP server Plugin. Its Definition injects the
-// complete middleware, route-contributor, and route-listener sets before the
-// value is constructed; no lifecycle hook scans initialized Plugins.
+// Server is the HTTP server Plugin. Its Definition injects the complete
+// middleware, route-contributor, route-listener sets, and exactly one Engine
+// adapter before the value is constructed; no lifecycle hook scans
+// initialized Plugins.
 type Server struct {
 	cfg Config
 
+	factory        EngineFactory
 	middlewares    []plugin.Entry[Middleware]
 	routes         []plugin.Entry[RouteContributor]
 	listeners      []plugin.Entry[RouteCatalogListener]
@@ -33,10 +35,9 @@ type Server struct {
 	listener net.Listener
 
 	mu             sync.Mutex
-	engine         *gin.Engine
+	engine         Engine
 	router         *Router
 	ln             net.Listener
-	srv            *http.Server
 	ordered        []plugin.Entry[Middleware]
 	misses         []MiddlewareOrderMiss
 	authentication *authenticationMiddleware
@@ -54,6 +55,7 @@ var (
 
 func newServer(
 	cfg Config,
+	factory EngineFactory,
 	middlewares []plugin.Entry[Middleware],
 	routes []plugin.Entry[RouteContributor],
 	listeners []plugin.Entry[RouteCatalogListener],
@@ -62,6 +64,7 @@ func newServer(
 ) *Server {
 	return &Server{
 		cfg:            cfg,
+		factory:        factory,
 		middlewares:    append([]plugin.Entry[Middleware](nil), middlewares...),
 		routes:         append([]plugin.Entry[RouteContributor](nil), routes...),
 		listeners:      append([]plugin.Entry[RouteCatalogListener](nil), listeners...),
@@ -125,29 +128,32 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	gin.DefaultWriter = ginLogWriter{logger: logger, level: log.InfoLevel}
 	gin.DefaultErrorWriter = ginLogWriter{logger: logger, level: log.ErrorLevel}
 
-	engine := gin.New()
-	if err := engine.SetTrustedProxies(cfg.TrustedProxies); err != nil {
-		return fmt.Errorf("xbc: web trusted_proxies: %w", err)
+	if s.factory == nil {
+		return errors.New("xbc: web Server has no EngineFactory configured; select an engine Bundle alongside web.Bundle()")
 	}
-	engine.HandleMethodNotAllowed = true
-	engine.MaxMultipartMemory = cfg.MaxMultipartMemory
-
-	// gin's Context carries two unrelated stores: its own Keys map and the
-	// inbound Request.Context(). Without this flag a lookup that misses Keys
-	// returns nothing, so code that treats the gin Context as a context.Context
-	// silently loses cancellation and deadline instead of failing. Enabling the
-	// fallback does not merge the two stores -- values set with c.Set remain
-	// invisible to the request context -- but it makes the miss direction fall
-	// through to the real request context rather than into a void.
-	engine.ContextWithFallback = true
+	engine, err := s.factory.NewEngine(Options{
+		TrustedProxies:         cfg.TrustedProxies,
+		ReadTimeout:            cfg.ReadTimeout,
+		ReadHeaderTimeout:      cfg.ReadHeaderTimeout,
+		WriteTimeout:           cfg.WriteTimeout,
+		IdleTimeout:            cfg.IdleTimeout,
+		MaxHeaderBytes:         cfg.MaxHeaderBytes,
+		MaxMultipartMemory:     cfg.MaxMultipartMemory,
+		HandleMethodNotAllowed: true,
+	})
+	if err != nil {
+		return fmt.Errorf("xbc: web engine: %w", err)
+	}
 
 	routes, frozen, index := newRouteTable()
-	engine.Use(recordCurrentRoute(frozen, index))
-	engine.Use(limitRequestBody(cfg.MaxRequestBodyBytes))
-	engine.Use(Handle(func(_ context.Context, c *Ctx) error {
-		newErrorResolver(logger).attach(c)
-		return nil
-	}))
+	handlers := []Handler{
+		recordCurrentRoute(frozen, index),
+		limitRequestBody(cfg.MaxRequestBodyBytes),
+		func(_ context.Context, c *Ctx) error {
+			newErrorResolver(logger).attach(c)
+			return nil
+		},
+	}
 
 	// The framework's authentication middleware is assembled here rather than
 	// selected as a plugin: it enforces this Server's own web.security section,
@@ -182,18 +188,20 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		return err
 	}
 	for _, entry := range ordered {
-		engine.Use(Handle(entry.Value.Handler()))
+		handlers = append(handlers, entry.Value.Handler())
 	}
-	engine.NoRoute(func(c *gin.Context) {
-		AbortProblem(newCtx(c), NewProblem(http.StatusNotFound, "not_found"))
-	})
-	engine.NoMethod(func(c *gin.Context) {
-		AbortProblem(newCtx(c), NewProblem(http.StatusMethodNotAllowed, "method_not_allowed"))
-	})
+	engine.NoRoute([]Handler{func(_ context.Context, c *Ctx) error {
+		AbortProblem(c, NewProblem(http.StatusNotFound, "not_found"))
+		return nil
+	}})
+	engine.NoMethod([]Handler{func(_ context.Context, c *Ctx) error {
+		AbortProblem(c, NewProblem(http.StatusMethodNotAllowed, "method_not_allowed"))
+		return nil
+	}})
 
-	// Group snapshots the engine middleware slice, so this must happen after
-	// every Use call above.
-	router := newRouter(engine, cfg.BasePath, routes, frozen, index)
+	// Router snapshots the handlers slice, so this must happen after every
+	// entry above is appended.
+	router := newRouter(engine, cfg.BasePath, handlers, routes, frozen, index)
 	for _, entry := range s.routes {
 		entry.Value.RegisterRoutes(router)
 	}
@@ -205,14 +213,6 @@ func (s *Server) Start(ctx *plugin.Context) error {
 			return fmt.Errorf("xbc: failed to listen on %s: %w", cfg.Addr, err)
 		}
 	}
-	srv := &http.Server{
-		Handler:           engine,
-		ReadTimeout:       cfg.ReadTimeout,
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-		WriteTimeout:      cfg.WriteTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
-		MaxHeaderBytes:    cfg.MaxHeaderBytes,
-	}
 
 	s.mu.Lock()
 	if s.started {
@@ -223,7 +223,6 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	s.engine = engine
 	s.router = router
 	s.ln = ln
-	s.srv = srv
 	s.ordered = ordered
 	s.misses = misses
 	s.authentication = authenticator
@@ -241,7 +240,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		s.mu.Lock()
 		s.served = true
 		s.mu.Unlock()
-		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
+		if serveErr := engine.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
 			logger.Error("xbc: HTTP service terminated abnormally", "error", serveErr)
 		}
 	})
@@ -328,7 +327,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	started := s.started
 	served := s.served
-	srv := s.srv
+	engine := s.engine
 	ln := s.ln
 	preDrainDelay := s.cfg.Shutdown.PreDrainDelay
 	s.mu.Unlock()
@@ -336,18 +335,15 @@ func (s *Server) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	if served && srv != nil {
+	if served && engine != nil {
 		// Runtime cancels every lifecycle context before it starts the reverse
 		// cleanup walk. When a health plugin is selected, its readiness route
 		// therefore reports Down here while this listener still serves probes.
 		// Shutdown itself closes listeners immediately, so the propagation window
 		// must precede it. It consumes only the runtime-owned remaining deadline.
 		waitForPreDrain(ctx, preDrainDelay)
-		if err := srv.Shutdown(ctx); err != nil {
-			if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-				return fmt.Errorf("xbc: graceful shutdown failed (%v) and forced close failed: %w", err, closeErr)
-			}
-			return err
+		if err := engine.Shutdown(ctx); err != nil {
+			return fmt.Errorf("xbc: graceful shutdown failed: %w", err)
 		}
 		return nil
 	}

@@ -20,7 +20,7 @@ func TestConfigDefaultsMatchDirectConstruction(t *testing.T) {
 	require.NoError(t, bound.Validate())
 	assert.Equal(t, DefaultConfig(), bound)
 
-	server := New()
+	server := New(nil)
 	assert.Equal(t, DefaultConfig(), server.cfg)
 }
 
