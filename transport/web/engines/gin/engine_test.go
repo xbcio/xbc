@@ -161,3 +161,125 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 		strings.Split(recorder.Result().Header.Get("Allow"), ", "),
 		"405 必须列出该路径其余全部已注册方法")
 }
+
+// replayingWriter is the wrapper a gzip-, timeout-, or envelope-style
+// middleware installs over the request's writer: it holds the status and the
+// body until the middleware unwinds, then replays both onto the writer it
+// replaced.
+//
+// The replay is what gives the test below its discriminating power. A wrapper
+// that only records what passes through it produces the same observable
+// response whether or not something committed the real writer behind its back,
+// which is exactly the asymmetry this test pins against the neutral engine.
+type replayingWriter struct {
+	wrapped web.ResponseWriter
+	status  int
+	body    []byte
+	written bool
+}
+
+func newReplayingWriter(wrapped web.ResponseWriter) *replayingWriter {
+	return &replayingWriter{wrapped: wrapped, status: http.StatusOK}
+}
+
+func (w *replayingWriter) Header() http.Header { return w.wrapped.Header() }
+
+func (w *replayingWriter) WriteHeader(code int) {
+	if code <= 0 || w.written {
+		return
+	}
+	w.status = code
+	w.written = true
+}
+
+func (w *replayingWriter) Write(data []byte) (int, error) {
+	w.WriteHeader(w.status)
+	w.body = append(w.body, data...)
+	return len(data), nil
+}
+
+func (w *replayingWriter) Flush() {}
+
+func (w *replayingWriter) Status() int { return w.status }
+
+// Size answers gin's documented -1 sentinel until the first write.
+func (w *replayingWriter) Size() int {
+	if !w.written {
+		return -1
+	}
+	return len(w.body)
+}
+
+func (w *replayingWriter) Written() bool { return w.written }
+
+// replay commits the buffered response onto the writer this wrapper replaced,
+// which is what every real buffering middleware does as it unwinds.
+func (w *replayingWriter) replay() {
+	w.wrapped.WriteHeader(w.status)
+	_, _ = w.wrapped.Write(w.body)
+}
+
+// bufferResponse is the middleware form of replayingWriter.
+func bufferResponse(_ context.Context, c *web.Ctx) error {
+	previous := c.Writer()
+	buffered := newReplayingWriter(previous)
+	c.SetWriter(buffered)
+	c.Next()
+	c.SetWriter(previous)
+	buffered.replay()
+	return nil
+}
+
+// TestBodylessStatusCommitsThroughTheInstalledWriter is the gin-side twin of
+// the neutral engine's test of the same name. A status that forbids a body
+// (204, 304, 1xx) is the only case where a renderer has nothing left to write
+// and is therefore tempted to commit the response itself; committing past a
+// wrapper a middleware installed sends that wrapper's buffered status nowhere.
+//
+// Both engines are pinned because this is precisely the kind of divergence the
+// Engine port exists to rule out: the same neutral middleware must produce the
+// same response whichever adapter is underneath it, and JSON must agree with
+// String on either one.
+func TestBodylessStatusCommitsThroughTheInstalledWriter(t *testing.T) {
+	ginlib.SetMode(ginlib.TestMode)
+
+	renderers := []struct {
+		name   string
+		render web.Handler
+	}{
+		{name: "JSON", render: func(_ context.Context, c *web.Ctx) error {
+			c.JSON(http.StatusNoContent, map[string]string{"dropped": "body"})
+			return nil
+		}},
+		{name: "String", render: func(_ context.Context, c *web.Ctx) error {
+			c.String(http.StatusNoContent, "dropped")
+			return nil
+		}},
+	}
+
+	committed := make(map[string]int, len(renderers))
+	for _, renderer := range renderers {
+		built, err := Factory{}.NewEngine(web.Options{})
+		require.NoError(t, err, "NewEngine() 不应返回错误")
+		adapter, ok := built.(*engine)
+		require.True(t, ok, "NewEngine 应返回本包的 *engine")
+		adapter.Handle(http.MethodGet, "/bodyless", []web.Handler{bufferResponse, renderer.render})
+
+		recorder := httptest.NewRecorder()
+		adapter.e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/bodyless", nil))
+
+		// Result() is the response as it was committed, not the recorder's live
+		// header map, so a status written after the wrapper replayed cannot be
+		// mistaken for one the client received.
+		result := recorder.Result()
+		require.NoError(t, result.Body.Close())
+		committed[renderer.name] = result.StatusCode
+
+		assert.Equal(t, http.StatusNoContent, result.StatusCode,
+			"%s 在无 body 状态码上必须经当前安装的 writer 提交，包装器回放的状态码才能到达客户端", renderer.name)
+		assert.Empty(t, recorder.Body.String(), "%s 不得为无 body 状态码写出响应体", renderer.name)
+	}
+
+	assert.Equal(t, committed["String"], committed["JSON"],
+		"JSON 与 String 的提交时机必须一致，任一侧回退都应在此暴露")
+}
