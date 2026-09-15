@@ -14,6 +14,12 @@ type Engine interface {
 	NoRoute(chain []Handler)
 	NoMethod(chain []Handler)
 	Serve(ln net.Listener) error
+	// Shutdown stops serving and must leave no established connection behind
+	// once ctx is done. Draining in-flight requests first is expected, but an
+	// implementation that cannot finish draining within the deadline is
+	// required to force the remaining connections closed before returning;
+	// reporting the drain failure while letting those connections outlive the
+	// deadline is not an acceptable implementation.
 	Shutdown(ctx context.Context) error
 }
 

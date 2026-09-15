@@ -2,6 +2,7 @@ package gin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -57,7 +58,22 @@ func (g *engine) NoRoute(chain []web.Handler)  { g.e.NoRoute(g.toGinChain(chain)
 func (g *engine) NoMethod(chain []web.Handler) { g.e.NoMethod(g.toGinChain(chain)...) }
 func (g *engine) Serve(ln net.Listener) error  { return g.srv.Serve(ln) }
 
-func (g *engine) Shutdown(ctx context.Context) error { return g.srv.Shutdown(ctx) }
+// Shutdown drains in-flight requests until ctx is done, then force-closes
+// whatever refused to drain. The forced close is what makes the web.Engine
+// contract hold: returning the drain error on its own would leave established
+// connections serving past the deadline the caller asked to stop within. The
+// drain error is still reported, so a caller can tell a clean drain from a
+// deadline it had to be rescued from.
+func (g *engine) Shutdown(ctx context.Context) error {
+	err := g.srv.Shutdown(ctx)
+	if err == nil {
+		return nil
+	}
+	if closeErr := g.srv.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+		return fmt.Errorf("xbc: graceful shutdown failed (%v) and forced close failed: %w", err, closeErr)
+	}
+	return err
+}
 
 // toGinChain converts a neutral chain into the gin chain actually registered.
 // It is the adapter-side twin of the conversion transport/web/router.go used
