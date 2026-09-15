@@ -8,24 +8,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
-func corsEngine(t *testing.T, cfg Config, downstream *int) *gin.Engine {
+func corsEngine(t *testing.T, cfg Config, downstream *int) *enginetest.Engine {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	p, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := gin.New()
-	engine.Use(web.Handle(p.Handler()))
-	engine.Any("/resource", func(c *gin.Context) {
+	engine := enginetest.New()
+	engine.Use(p.Handler())
+	// enginetest has no Any; these cases only drive the two methods CORS cares
+	// about, the simple request and the preflight.
+	resource := func(_ context.Context, c *web.Ctx) error {
 		(*downstream)++
 		c.Status(http.StatusOK)
-	})
+		return nil
+	}
+	engine.GET("/resource", resource)
+	engine.OPTIONS("/resource", resource)
 	return engine
 }
 
@@ -201,18 +204,20 @@ func TestPreflightAbortIsObservableAsWrittenByOuterMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gin.SetMode(gin.TestMode)
 	var seenWritten bool
 	var seenStatus int
-	engine := gin.New()
-	engine.Use(web.Handle(func(_ context.Context, c *web.Ctx) error {
+	engine := enginetest.New()
+	engine.Use(func(_ context.Context, c *web.Ctx) error {
 		c.Next()
 		seenWritten = c.Writer().Written()
 		seenStatus = c.Writer().Status()
 		return nil
-	}))
-	engine.Use(web.Handle(p.Handler()))
-	engine.OPTIONS("/resource", func(c *gin.Context) { c.Status(http.StatusOK) })
+	})
+	engine.Use(p.Handler())
+	engine.OPTIONS("/resource", func(_ context.Context, c *web.Ctx) error {
+		c.Status(http.StatusOK)
+		return nil
+	})
 
 	response := perform(engine, http.MethodOptions, "https://allowed.example", map[string]string{
 		"Access-Control-Request-Method": http.MethodGet,

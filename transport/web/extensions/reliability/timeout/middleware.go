@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -26,15 +24,12 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	defer cancel()
 	c.SetContext(ctx)
 
-	// Phase 4 debt: timeoutWriter embeds gin.ResponseWriter, so the writer
-	// swap stays on gc until Ctx gains a neutral SetWriter.
-	gc := c.Gin()
-	original := gc.Writer
+	original := c.Writer()
 	writer := newTimeoutWriter(original)
-	gc.Writer = writer
+	c.SetWriter(writer)
 	defer func() {
 		recovered := recover()
-		gc.Writer = original
+		c.SetWriter(original)
 		if recovered != nil {
 			// Nothing buffered by this middleware reached the connection.
 			panic(recovered)
@@ -46,7 +41,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			c.Abort()
-			writeTimeoutResponse(gc, original)
+			writeTimeoutResponse(c)
 			return
 		}
 		if err := writer.commit(); err != nil {
@@ -57,10 +52,11 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	return nil
 }
 
-func writeTimeoutResponse(c *gin.Context, writer gin.ResponseWriter) {
-	timeoutContext := c.Copy()
-	timeoutContext.Writer = writer
-	web.AbortProblem(web.NewCtx(timeoutContext), web.NewProblem(http.StatusGatewayTimeout, "gateway_timeout"))
+// writeTimeoutResponse renders the deadline response after the original writer
+// has been restored, so the Problem Detail goes straight to the connection
+// rather than into the buffer this middleware is abandoning.
+func writeTimeoutResponse(c *web.Ctx) {
+	web.AbortProblem(c, web.NewProblem(http.StatusGatewayTimeout, "gateway_timeout"))
 }
 
 func (cfg normalizedConfig) bypass(c *web.Ctx) bool {
@@ -124,7 +120,7 @@ func headerContainsToken(values []string, token string) bool {
 }
 
 type timeoutWriter struct {
-	gin.ResponseWriter
+	web.ResponseWriter
 	header      http.Header
 	body        bytes.Buffer
 	status      int
@@ -132,7 +128,7 @@ type timeoutWriter struct {
 	passthrough bool
 }
 
-func newTimeoutWriter(writer gin.ResponseWriter) *timeoutWriter {
+func newTimeoutWriter(writer web.ResponseWriter) *timeoutWriter {
 	return &timeoutWriter{
 		ResponseWriter: writer,
 		header:         cloneHeader(writer.Header()),
@@ -147,6 +143,13 @@ func (w *timeoutWriter) Header() http.Header {
 	return w.header
 }
 
+// WriteHeader records the status into the buffer. It deliberately does not
+// mark the buffered response written: recording a status is not committing a
+// response, and the "has this response been written yet" guards across the
+// framework must give the same answer whether or not this middleware happens
+// to be installed. Written flips on the first body write, which is exactly
+// when this wrapper starts holding bytes the connection has not seen -- the
+// case web.ResponseWriter documents Written for.
 func (w *timeoutWriter) WriteHeader(code int) {
 	if w.passthrough {
 		w.ResponseWriter.WriteHeader(code)
@@ -157,28 +160,12 @@ func (w *timeoutWriter) WriteHeader(code int) {
 	}
 }
 
-func (w *timeoutWriter) WriteHeaderNow() {
-	if w.passthrough {
-		w.ResponseWriter.WriteHeaderNow()
-		return
-	}
-	w.written = true
-}
-
 func (w *timeoutWriter) Write(data []byte) (int, error) {
 	if w.passthrough {
 		return w.ResponseWriter.Write(data)
 	}
 	w.written = true
 	return w.body.Write(data)
-}
-
-func (w *timeoutWriter) WriteString(value string) (int, error) {
-	if w.passthrough {
-		return w.ResponseWriter.WriteString(value)
-	}
-	w.written = true
-	return w.body.WriteString(value)
 }
 
 func (w *timeoutWriter) Status() int {
@@ -224,7 +211,7 @@ func (w *timeoutWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !w.passthrough && (w.written || w.body.Len() != 0) {
 		return nil, nil, errors.New("timeout: cannot hijack after a buffered response write")
 	}
-	conn, rw, err := w.ResponseWriter.Hijack()
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
 	if err == nil {
 		w.passthrough = true
 	}
@@ -262,4 +249,4 @@ func replaceHeader(destination, source http.Header) {
 	}
 }
 
-var _ gin.ResponseWriter = (*timeoutWriter)(nil)
+var _ web.ResponseWriter = (*timeoutWriter)(nil)

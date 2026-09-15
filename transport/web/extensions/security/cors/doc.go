@@ -43,7 +43,7 @@
 //	if err != nil {
 //		return err
 //	}
-//	engine.Use(web.Handle(middleware.Handler()))
+//	router.Group("/", middleware.Handler())
 //
 // Bundle and ordinary imports are side-effect free. Applications that prefer
 // xbc.Run may opt into process-global composition through this package's

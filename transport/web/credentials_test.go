@@ -1,15 +1,16 @@
-package web
+package web_test
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 type stubExtractor struct {
@@ -21,7 +22,7 @@ type stubExtractor struct {
 
 func (s *stubExtractor) Scheme() authentication.Scheme { return s.scheme }
 
-func (s *stubExtractor) ExtractCredential(*Ctx) (authentication.CredentialResult, error) {
+func (s *stubExtractor) ExtractCredential(*web.Ctx) (authentication.CredentialResult, error) {
 	s.calls++
 	return s.result, s.err
 }
@@ -29,12 +30,12 @@ func (s *stubExtractor) ExtractCredential(*Ctx) (authentication.CredentialResult
 func TestNewExtractorIndexRejectsDuplicateScheme(t *testing.T) {
 	t.Parallel()
 
-	entries := []plugin.Entry[CredentialExtractor]{
+	entries := []plugin.Entry[web.CredentialExtractor]{
 		{Identity: plugin.Identity{Plugin: "jwt"}, Value: &stubExtractor{scheme: "jwt"}},
 		{Identity: plugin.Identity{Plugin: "jwt-alt"}, Value: &stubExtractor{scheme: "jwt"}},
 	}
 
-	_, err := newExtractorIndex(entries)
+	_, err := web.NewExtractorIndex(entries)
 	if err == nil {
 		t.Fatal("newExtractorIndex() error = nil, want duplicate scheme error")
 	}
@@ -55,11 +56,11 @@ func TestNewExtractorIndexRejectsInvalidScheme(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			entries := []plugin.Entry[CredentialExtractor]{
+			entries := []plugin.Entry[web.CredentialExtractor]{
 				{Identity: plugin.Identity{Plugin: "jwt"}, Value: &stubExtractor{scheme: scheme}},
 			}
 
-			_, err := newExtractorIndex(entries)
+			_, err := web.NewExtractorIndex(entries)
 			if err == nil {
 				t.Fatal("newExtractorIndex() error = nil, want invalid scheme error")
 			}
@@ -71,10 +72,10 @@ func TestRequestCredentialSourceDelegatesToExtractor(t *testing.T) {
 	t.Parallel()
 
 	extractor := &stubExtractor{scheme: "jwt", result: authentication.Presented("token")}
-	source := requestCredentialSource{
-		ctx:        newCtx(newTestGinContext()),
-		extractors: map[authentication.Scheme]CredentialExtractor{"jwt": extractor},
-	}
+	source := web.NewRequestCredentialSource(
+		credentialCtx(),
+		map[authentication.Scheme]web.CredentialExtractor{"jwt": extractor},
+	)
 
 	result, err := source.Credential(context.Background(), "jwt")
 	if err != nil {
@@ -91,10 +92,10 @@ func TestRequestCredentialSourceDelegatesToExtractor(t *testing.T) {
 func TestRequestCredentialSourceReportsMissingExtractor(t *testing.T) {
 	t.Parallel()
 
-	source := requestCredentialSource{
-		ctx:        newCtx(newTestGinContext()),
-		extractors: map[authentication.Scheme]CredentialExtractor{},
-	}
+	source := web.NewRequestCredentialSource(
+		credentialCtx(),
+		map[authentication.Scheme]web.CredentialExtractor{},
+	)
 
 	_, err := source.Credential(context.Background(), "jwt")
 	if err == nil {
@@ -105,8 +106,6 @@ func TestRequestCredentialSourceReportsMissingExtractor(t *testing.T) {
 	}
 }
 
-func newTestGinContext() *gin.Context {
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest("GET", "/", nil)
-	return c
+func credentialCtx() *web.Ctx {
+	return enginetest.NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 }

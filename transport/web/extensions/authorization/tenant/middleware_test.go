@@ -10,22 +10,19 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 const currentRouteKeyForTest = "xbc/web.currentRoute"
 
-// authenticationExemptKeyForTest mirrors the private gin.Context key the
+// authenticationExemptKeyForTest mirrors the private request-scoped key the
 // authentication middleware sets when it resolves a request to permit (see
 // web.AuthenticationExempt). Tests that exercise tenant standalone, without
 // the real authentication middleware in front of it, set this key directly
 // to simulate an exempt request -- mirroring the existing currentRouteKeyForTest
 // convention above.
 const authenticationExemptKeyForTest = "xbc/transport/web.authenticationExempt"
-
-func init() { gin.SetMode(gin.TestMode) }
 
 func initializedTenantPlugin(t *testing.T, mutate func(*Config), options ...Option) *Plugin {
 	t.Helper()
@@ -40,36 +37,46 @@ func initializedTenantPlugin(t *testing.T, mutate func(*Config), options ...Opti
 	return p
 }
 
-func serveTenantRequest(p *Plugin, route web.RouteInfo, principal *web.Principal, headers http.Header, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+func serveTenantRequest(p *Plugin, route web.RouteInfo, principal *web.Principal, headers http.Header, handler web.Handler) *httptest.ResponseRecorder {
 	return serveTenantRequestWithExempt(p, route, principal, headers, false, handler)
 }
 
 // serveExemptTenantRequest drives a request the same way serveTenantRequest
 // does, but also marks it exempt the way the authentication middleware would
 // for a permit route -- see web.AuthenticationExempt.
-func serveExemptTenantRequest(p *Plugin, route web.RouteInfo, principal *web.Principal, headers http.Header, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+func serveExemptTenantRequest(p *Plugin, route web.RouteInfo, principal *web.Principal, headers http.Header, handler web.Handler) *httptest.ResponseRecorder {
 	return serveTenantRequestWithExempt(p, route, principal, headers, true, handler)
 }
 
-func serveTenantRequestWithExempt(p *Plugin, route web.RouteInfo, principal *web.Principal, headers http.Header, exempt bool, handler gin.HandlerFunc) *httptest.ResponseRecorder {
-	engine := gin.New()
-	engine.Use(func(c *gin.Context) {
-		c.Set(currentRouteKeyForTest, route)
-		if principal != nil {
-			web.SetPrincipal(web.NewCtx(c), *principal)
-		}
-		if exempt {
-			c.Set(authenticationExemptKeyForTest, true)
-		}
-		c.Next()
+func serveTenantRequestWithExempt(p *Plugin, route web.RouteInfo, principal *web.Principal, headers http.Header, exempt bool, handler web.Handler) *httptest.ResponseRecorder {
+	engine := enginetest.New()
+	engine.Handle(route.Method, route.Path, []web.Handler{
+		func(_ context.Context, c *web.Ctx) error {
+			c.Set(currentRouteKeyForTest, route)
+			if principal != nil {
+				web.SetPrincipal(c, *principal)
+			}
+			if exempt {
+				c.Set(authenticationExemptKeyForTest, true)
+			}
+			c.Next()
+			return nil
+		},
+		p.Handler(),
+		handler,
 	})
-	engine.Use(web.Handle(p.Handler()))
-	engine.Handle(route.Method, route.Path, handler)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(route.Method, route.Path, nil)
 	request.Header = headers.Clone()
 	engine.ServeHTTP(recorder, request)
 	return recorder
+}
+
+// noContent is the do-nothing route handler shared by the cases whose subject
+// is the middleware's decision rather than the response body.
+func noContent(_ context.Context, c *web.Ctx) error {
+	c.Status(http.StatusNoContent)
+	return nil
 }
 
 func TestMiddlewarePublishesVerifiedTenantAndDefensiveAttributes(t *testing.T) {
@@ -83,19 +90,20 @@ func TestMiddlewarePublishesVerifiedTenantAndDefensiveAttributes(t *testing.T) {
 	}}
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "beta")
-	response := serveTenantRequest(p, route, &principal, headers, func(c *gin.Context) {
-		resolved, ok := Current(web.NewCtx(c))
+	response := serveTenantRequest(p, route, &principal, headers, func(_ context.Context, c *web.Ctx) error {
+		resolved, ok := Current(c)
 		if !ok || resolved.ID != "beta" || resolved.Attributes["plan"] != "enterprise" {
 			c.Status(http.StatusInternalServerError)
-			return
+			return nil
 		}
 		resolved.Attributes["nested"].(map[string]any)["region"] = "mutated"
-		again, _ := Current(web.NewCtx(c))
+		again, _ := Current(c)
 		if again.Attributes["nested"].(map[string]any)["region"] != "cn" {
 			c.Status(http.StatusInternalServerError)
-			return
+			return nil
 		}
 		c.Status(http.StatusNoContent)
+		return nil
 	})
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
@@ -113,19 +121,20 @@ func TestMiddlewareNeverTrustsAnonymousOrNonMemberHeader(t *testing.T) {
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "admin")
-	anonymous := serveTenantRequest(p, route, nil, headers, func(c *gin.Context) {
-		if _, ok := Current(web.NewCtx(c)); ok {
+	anonymous := serveTenantRequest(p, route, nil, headers, func(_ context.Context, c *web.Ctx) error {
+		if _, ok := Current(c); ok {
 			c.Status(http.StatusInternalServerError)
-			return
+			return nil
 		}
 		c.Status(http.StatusNoContent)
+		return nil
 	})
 	if anonymous.Code != http.StatusNoContent {
 		t.Fatalf("anonymous status=%d body=%s", anonymous.Code, anonymous.Body.String())
 	}
 
 	principal := &web.Principal{Subject: "alice", Attributes: map[string]any{"tenant_ids": []string{"acme"}}}
-	nonMember := serveTenantRequest(p, route, principal, headers, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	nonMember := serveTenantRequest(p, route, principal, headers, noContent)
 	assertTenantError(t, nonMember, http.StatusForbidden, "forbidden")
 }
 
@@ -138,22 +147,22 @@ func TestMiddlewareNeverTrustsAnonymousOrNonMemberHeader(t *testing.T) {
 func TestMiddlewarePassesOnMissingPrincipalButEnforces403OnMembership(t *testing.T) {
 	uninitialized := New()
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
-	response := serveTenantRequest(uninitialized, route, nil, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	response := serveTenantRequest(uninitialized, route, nil, nil, noContent)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("uninitialized, no principal status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	p := initializedTenantPlugin(t, nil)
-	response = serveTenantRequest(p, route, nil, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	response = serveTenantRequest(p, route, nil, nil, noContent)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("no principal status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	noMembership := &web.Principal{Subject: "alice", AuthMethod: "jwt"}
-	assertTenantError(t, serveTenantRequest(p, route, noMembership, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) }), http.StatusForbidden, "forbidden")
+	assertTenantError(t, serveTenantRequest(p, route, noMembership, nil, noContent), http.StatusForbidden, "forbidden")
 
 	malformedPrincipal := &web.Principal{Subject: "alice", Attributes: map[string]any{"tenant_ids": []any{"acme", 9}}}
-	assertTenantError(t, serveTenantRequest(p, route, malformedPrincipal, nil, func(c *gin.Context) { c.Status(http.StatusNoContent) }), http.StatusForbidden, "forbidden")
+	assertTenantError(t, serveTenantRequest(p, route, malformedPrincipal, nil, noContent), http.StatusForbidden, "forbidden")
 }
 
 func TestMiddlewareRejectsAmbiguousAndMaliciousHeaders(t *testing.T) {
@@ -176,7 +185,7 @@ func TestMiddlewareRejectsAmbiguousAndMaliciousHeaders(t *testing.T) {
 			for _, value := range values {
 				headers.Add(defaultHeader, value)
 			}
-			response := serveTenantRequest(p, route, principal, headers, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+			response := serveTenantRequest(p, route, principal, headers, noContent)
 			assertTenantError(t, response, http.StatusForbidden, "forbidden")
 		})
 	}
@@ -194,12 +203,13 @@ func TestMiddlewareExemptRouteBypassesTenantResolution(t *testing.T) {
 	principal := &web.Principal{Subject: "alice", Attributes: map[string]any{"tenant_ids": []string{"acme"}}}
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "../../attacker")
-	response := serveExemptTenantRequest(uninitialized, route, principal, headers, func(c *gin.Context) {
-		if _, ok := Current(web.NewCtx(c)); ok {
+	response := serveExemptTenantRequest(uninitialized, route, principal, headers, func(_ context.Context, c *web.Ctx) error {
+		if _, ok := Current(c); ok {
 			c.Status(http.StatusInternalServerError)
-			return
+			return nil
 		}
 		c.Status(http.StatusNoContent)
+		return nil
 	})
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("exempt status=%d body=%s", response.Code, response.Body.String())
@@ -222,19 +232,20 @@ func TestRouteDeclaredPublicButNotExemptStillEnforcesMembership(t *testing.T) {
 	principal := &web.Principal{Subject: "alice", Attributes: map[string]any{"tenant_ids": []string{"acme"}}}
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "attacker")
-	response := serveTenantRequest(p, route, principal, headers, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	response := serveTenantRequest(p, route, principal, headers, noContent)
 	assertTenantError(t, response, http.StatusForbidden, "forbidden")
 }
 
 func TestMiddlewareOptionalTenantAllowsMissingMembership(t *testing.T) {
 	optional := initializedTenantPlugin(t, func(cfg *Config) { cfg.Required = false })
 	principal := &web.Principal{Subject: "alice"}
-	response := serveTenantRequest(optional, web.RouteInfo{Method: http.MethodGet, Path: "/optional"}, principal, nil, func(c *gin.Context) {
-		if _, ok := Current(web.NewCtx(c)); ok {
+	response := serveTenantRequest(optional, web.RouteInfo{Method: http.MethodGet, Path: "/optional"}, principal, nil, func(_ context.Context, c *web.Ctx) error {
+		if _, ok := Current(c); ok {
 			c.Status(http.StatusInternalServerError)
-			return
+			return nil
 		}
 		c.Status(http.StatusNoContent)
+		return nil
 	})
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("optional status=%d body=%s", response.Code, response.Body.String())
@@ -242,7 +253,7 @@ func TestMiddlewareOptionalTenantAllowsMissingMembership(t *testing.T) {
 
 	badHeader := make(http.Header)
 	badHeader.Set(defaultHeader, "attacker")
-	assertTenantError(t, serveTenantRequest(optional, web.RouteInfo{Method: http.MethodGet, Path: "/optional"}, principal, badHeader, func(c *gin.Context) { c.Status(http.StatusNoContent) }), http.StatusForbidden, "forbidden")
+	assertTenantError(t, serveTenantRequest(optional, web.RouteInfo{Method: http.MethodGet, Path: "/optional"}, principal, badHeader, noContent), http.StatusForbidden, "forbidden")
 }
 
 func TestCustomResolverIsTrustedButMustMatchRequestedSelection(t *testing.T) {
@@ -262,13 +273,14 @@ func TestCustomResolverIsTrustedButMustMatchRequestedSelection(t *testing.T) {
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
 	headers := make(http.Header)
 	headers.Set(defaultHeader, "external")
-	response := serveTenantRequest(p, route, principal, headers, func(c *gin.Context) {
-		resolved, ok := Current(web.NewCtx(c))
+	response := serveTenantRequest(p, route, principal, headers, func(_ context.Context, c *web.Ctx) error {
+		resolved, ok := Current(c)
 		if !ok || resolved.ID != "external" || resolved.Attributes["source"] != "database" {
 			c.Status(http.StatusInternalServerError)
-			return
+			return nil
 		}
 		c.Status(http.StatusNoContent)
+		return nil
 	})
 	if response.Code != http.StatusNoContent || calls.Load() != 1 {
 		t.Fatalf("status=%d calls=%d body=%s", response.Code, calls.Load(), response.Body.String())
@@ -277,7 +289,7 @@ func TestCustomResolverIsTrustedButMustMatchRequestedSelection(t *testing.T) {
 	mismatch := initializedTenantPlugin(t, nil, WithResolver(ResolverFunc(func(context.Context, web.Principal, string) (Tenant, bool, error) {
 		return Tenant{ID: "different"}, true, nil
 	})))
-	assertTenantError(t, serveTenantRequest(mismatch, route, principal, headers, func(c *gin.Context) { c.Status(http.StatusNoContent) }), http.StatusForbidden, "forbidden")
+	assertTenantError(t, serveTenantRequest(mismatch, route, principal, headers, noContent), http.StatusForbidden, "forbidden")
 }
 
 func TestConcurrentRequestsDoNotLeakTenantContextOrTrustMaliciousHeaders(t *testing.T) {
@@ -301,13 +313,14 @@ func TestConcurrentRequestsDoNotLeakTenantContextOrTrustMaliciousHeaders(t *test
 				status = http.StatusForbidden
 			}
 			headers.Set(defaultHeader, want)
-			response := serveTenantRequest(p, route, principal, headers, func(c *gin.Context) {
-				resolved, ok := Current(web.NewCtx(c))
+			response := serveTenantRequest(p, route, principal, headers, func(_ context.Context, c *web.Ctx) error {
+				resolved, ok := Current(c)
 				if !ok || resolved.ID != want {
 					c.Status(http.StatusInternalServerError)
-					return
+					return nil
 				}
 				c.Status(http.StatusNoContent)
+				return nil
 			})
 			if response.Code != status {
 				failures.Add(1)

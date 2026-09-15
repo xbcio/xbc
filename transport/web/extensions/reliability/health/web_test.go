@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/plugin"
 	transportweb "github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 func TestRenderReportHidesErrorsUnlessExplicitlyAllowed(t *testing.T) {
@@ -141,11 +141,9 @@ func TestWebProbeHandlerHonorsConfiguredDetailPolicy(t *testing.T) {
 
 func invokeProbe(t *testing.T, p *Plugin, kind Kind, target string) (int, webReport) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
-	gc, _ := gin.CreateTestContext(recorder)
-	gc.Request = httptest.NewRequest(http.MethodGet, target, nil)
-	transportweb.Handle(p.probeHandler(kind))(gc)
+	c := enginetest.NewCtx(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+	transportweb.Handle(p.probeHandler(kind))(c)
 
 	var body webReport
 	require.NoError(t, json.NewDecoder(recorder.Body).Decode(&body))

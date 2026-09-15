@@ -6,14 +6,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
-
-func init() { gin.SetMode(gin.TestMode) }
 
 func configuredHandler(t *testing.T, mutate func(*Config)) web.Handler {
 	t.Helper()
@@ -26,9 +24,8 @@ func configuredHandler(t *testing.T, mutate func(*Config)) web.Handler {
 
 func invoke(handler web.Handler, path string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, path, nil)
-	web.Handle(handler)(ctx)
+	c := enginetest.NewCtx(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+	web.Handle(handler)(c)
 	return recorder
 }
 

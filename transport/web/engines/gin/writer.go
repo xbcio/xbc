@@ -12,29 +12,44 @@ import (
 
 // shim adapts a neutral web.ResponseWriter back into gin.ResponseWriter.
 //
-// The neutral face uses net/http semantics: WriteHeader commits. gin's face
-// is two-phase: Status only records, WriteHeaderNow commits. That two-phase
-// protocol lives in gin's own responseWriter, not in its Context, so it is
-// replicated here rather than leaking into the neutral interface.
+// The neutral face uses net/http semantics: WriteHeader commits. gin's face is
+// two-phase: Status only records, WriteHeaderNow commits. That two-phase
+// protocol lives in gin's own responseWriter, not in its Context, and this shim
+// bridges the two without adding a status of its own.
+//
+// Holding a status here is what the previous shape got wrong. A request has
+// exactly one pending-status holder -- gin's own writer, at the bottom of the
+// chain -- and the buffering middleware (gzip, timeout, idempotency) all
+// install a wrapper, let the handler run, and then restore the writer they
+// replaced. A status recorded into a holder that lives only as long as the
+// wrapper is lost at that restore, and the response goes out with the default
+// 200 rather than the status the handler chose.
 type shim struct {
-	w      web.ResponseWriter
-	status int
+	w web.ResponseWriter
 }
 
 func newShim(w web.ResponseWriter) *shim {
-	return &shim{w: w, status: http.StatusOK}
+	return &shim{w: w}
 }
 
-func (s *shim) WriteHeader(code int) {
-	if code > 0 && !s.w.Written() {
-		s.status = code
-	}
-}
+// WriteHeader forwards, so the record lands wherever the holder actually is:
+// in a buffering wrapper that keeps its own status, or in gin's writer at the
+// bottom of the chain.
+func (s *shim) WriteHeader(code int) { s.w.WriteHeader(code) }
 
+// WriteHeaderNow is gin's commit signal. It asks the neutral writer currently
+// installed to send its status rather than reaching past it to gin's own
+// writer: a buffering wrapper must stay free to hold the response back, and
+// gin commits its own writer once the chain has unwound in any case.
 func (s *shim) WriteHeaderNow() {
-	if !s.w.Written() {
-		s.w.WriteHeader(s.status)
+	if s.w.Written() {
+		return
 	}
+	status := s.w.Status()
+	if status <= 0 {
+		status = http.StatusOK
+	}
+	s.w.WriteHeader(status)
 }
 
 func (s *shim) Write(b []byte) (int, error) {
@@ -47,7 +62,7 @@ func (s *shim) WriteString(value string) (int, error) {
 }
 
 func (s *shim) Header() http.Header { return s.w.Header() }
-func (s *shim) Status() int         { return s.status }
+func (s *shim) Status() int         { return s.w.Status() }
 func (s *shim) Size() int           { return s.w.Size() }
 func (s *shim) Written() bool       { return s.w.Written() }
 func (s *shim) Flush()              { s.w.Flush() }

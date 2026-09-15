@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -94,11 +92,10 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 }
 
 func (p *Plugin) executeOwned(c *web.Ctx, state *runtimeState, key, fingerprint, owner string) {
-	// Phase 4 debt: captureWriter embeds gin.ResponseWriter, so the writer
-	// swap stays on gc until Ctx gains a neutral SetWriter.
-	gc := c.Gin()
-	writer := &captureWriter{ResponseWriter: gc.Writer, limit: state.config.maxResponseBytes}
-	gc.Writer = writer
+	original := c.Writer()
+	writer := &captureWriter{ResponseWriter: original, limit: state.config.maxResponseBytes}
+	c.SetWriter(writer)
+	defer c.SetWriter(original)
 	committed := false
 	defer func() {
 		if committed {
@@ -251,7 +248,7 @@ func detachedTimeout(parent context.Context, timeout time.Duration) (context.Con
 }
 
 type captureWriter struct {
-	gin.ResponseWriter
+	web.ResponseWriter
 	body     bytes.Buffer
 	limit    int64
 	tooLarge bool
@@ -270,6 +267,10 @@ func (w *captureWriter) Write(data []byte) (int, error) {
 	return w.ResponseWriter.Write(data)
 }
 
-func (w *captureWriter) WriteString(value string) (int, error) {
-	return w.Write([]byte(value))
+// Unwrap exposes the writer beneath so http.ResponseController can still reach
+// capabilities web.ResponseWriter leaves out, Hijack among them.
+func (w *captureWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
+
+var _ web.ResponseWriter = (*captureWriter)(nil)

@@ -51,7 +51,7 @@
 //	//	@Success	201		{object}	CreateOrderResponse
 //	//	@Failure	400		{object}	web.ProblemDetail
 //	//	@Router		/orders [post]
-//	func createOrder(c *gin.Context) {}
+//	func createOrder(context.Context, *web.Ctx) error { return nil }
 //
 // Generate and commit the document with a pinned tool version, for example:
 //

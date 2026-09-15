@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
-
 	corelog "github.com/xbcio/xbc/log"
 )
 
@@ -15,8 +13,9 @@ const errorResolverContextKey = "xbc/web.errorResolver"
 
 // Handler is an application handler that reports failure through Go's normal
 // error return path. It receives the request's own cancellable context and
-// its Ctx. Handle adapts it to Gin and sends every returned error through the
-// request's OnError mapper chain.
+// its Ctx. Handle adapts it to an engine adapter's per-handler calling
+// convention and sends every returned error through the request's OnError
+// mapper chain.
 type Handler func(ctx context.Context, c *Ctx) error
 
 // ErrorMapper turns application or infrastructure errors into safe HTTP
@@ -44,15 +43,20 @@ func (f ErrorMapperFunc) MapError(c *Ctx, err error) (ProblemDetail, bool) {
 // ErrorOrder leaves function adapters unconstrained.
 func (ErrorMapperFunc) ErrorOrder() ErrorOrder { return ErrorOrder{} }
 
-// OnError returns a Gin error boundary. It makes mappers available to
-// AbortError while the inner chain is running, then converts errors reported
-// through gin.Context.Error when the chain unwinds. Nested OnError middleware
-// composes its mappers in outer-to-inner order, so application plugins can add
-// focused converters without replacing Web's safe built-in fallbacks.
+// OnError returns an error boundary. It makes mappers available to AbortError
+// while the inner chain is running. Nested OnError middleware composes its
+// mappers in outer-to-inner order, so application plugins can add focused
+// converters without replacing Web's safe built-in fallbacks.
 //
 // OnError handles ordinary errors only. Panics remain the responsibility of a
 // recovery middleware, which can safely account for partially written
 // responses and broken connections.
+//
+// Errors an engine-native middleware reports through the engine's own error
+// accumulator instead of Handler's return path are drained by the adapter that
+// wraps that middleware, which reports them as an ordinary Handler error. They
+// therefore reach this boundary inside its scope, mapped by the mappers
+// registered here, without OnError knowing that any such accumulator exists.
 func OnError(mappers ...ErrorMapper) Handler {
 	scopedMappers := append([]ErrorMapper(nil), mappers...)
 	return func(_ context.Context, c *Ctx) error {
@@ -63,32 +67,34 @@ func OnError(mappers ...ErrorMapper) Handler {
 		resolver := parent.withMappers(scopedMappers)
 		c.Set(errorResolverContextKey, resolver)
 		defer c.Set(errorResolverContextKey, parent)
-		// resolveErrors still takes the live *gin.Context: it is the one piece
-		// of this error boundary that continues to catch Gin handlers or
-		// middleware that report failure through gin.Context.Error rather than
-		// Handler's own return path, so it stays on the engine's own context
-		// until that seam is ported (see resolveErrors's doc comment).
-		resolver.resolveErrors(c.Gin())
+		c.Next()
 		return nil
 	}
 }
 
-// Handle adapts an error-returning Handler to gin.HandlerFunc. ctx is the
-// request's own context (gin.Context.Request.Context()), not
-// context.Background(), so cancellation and deadlines set by upstream
-// middleware (timeouts, client disconnects) propagate into the handler.
-// Errors abort the remaining handler chain and are rendered immediately.
-// Immediate rendering is important: buffering middleware such as timeout,
-// gzip, and idempotency must observe the final response while their own
-// deferred work unwinds.
-func Handle(handler Handler) gin.HandlerFunc {
+// Handle adapts an error-returning Handler to the plain per-handler function an
+// engine adapter drives its chain with. ctx is the request's own context
+// (Ctx.Request().Context()), not context.Background(), so cancellation and
+// deadlines set by upstream middleware (timeouts, client disconnects) propagate
+// into the handler. Errors abort the remaining handler chain and are rendered
+// immediately. Immediate rendering is important: buffering middleware such as
+// timeout, gzip, and idempotency must observe the final response while their
+// own deferred work unwinds.
+//
+// The adapter passes the request's single shared Ctx in; it must not build a
+// fresh one per handler. See NewCtx for what a second Ctx would lose.
+func Handle(handler Handler) func(*Ctx) {
 	if handler == nil {
 		panic("xbc: web.Handle requires a non-nil handler")
 	}
-	return func(c *gin.Context) {
-		ctx := newCtx(c)
-		if err := handler(c.Request.Context(), ctx); err != nil {
-			AbortError(ctx, err)
+	return func(c *Ctx) {
+		request := c.Request()
+		ctx := context.Background()
+		if request != nil {
+			ctx = request.Context()
+		}
+		if err := handler(ctx, c); err != nil {
+			AbortError(c, err)
 		}
 	}
 }
@@ -98,12 +104,6 @@ func Handle(handler Handler) gin.HandlerFunc {
 // returning an error from Handler. Immediate rendering ensures buffering
 // middleware observes the final error response while unwinding. When no
 // OnError middleware is installed, the safe built-in mappings still apply.
-//
-// AbortError deliberately does not record err on gin.Context.Errors: the only
-// reader of that accumulator is resolveErrors, and resolveErrors's own guard
-// (c.Writer.Written()) always short-circuits before it would read Errors on
-// any path reached through AbortError, because write (below) has already
-// committed a response by the time resolveErrors runs.
 func AbortError(c *Ctx, err error) {
 	if c == nil || err == nil {
 		return
@@ -138,31 +138,11 @@ func (r *errorResolver) withMappers(mappers []ErrorMapper) *errorResolver {
 
 // attach publishes the logger-bearing base resolver before any contributed
 // middleware runs. OnError derives request-scoped mapper chains from it.
+//
+// It stays engine-neutral on purpose: Server installs it as the second handler
+// of the startup chain, where no engine type is in scope.
 func (r *errorResolver) attach(c *Ctx) {
 	c.Set(errorResolverContextKey, r)
-}
-
-// resolveErrors catches Gin handlers or middleware that use c.Error(err).
-// Error-returning handlers are resolved immediately by Handle and therefore
-// reach this point with a response already written. It stays on the live
-// *gin.Context because gin.Context.Errors is gin's own accumulator; porting
-// this method is T4's job once that accumulator has an engine-neutral home.
-func (r *errorResolver) resolveErrors(c *gin.Context) {
-	c.Next()
-	if c.Writer == nil || c.Writer.Written() || len(c.Errors) == 0 {
-		return
-	}
-	reported := make([]error, 0, len(c.Errors))
-	for _, item := range c.Errors {
-		if item != nil && item.Err != nil {
-			reported = append(reported, item.Err)
-		}
-	}
-	err := errors.Join(reported...)
-	if err == nil {
-		return
-	}
-	r.write(newCtx(c), err)
 }
 
 func resolverFor(c *Ctx) *errorResolver {

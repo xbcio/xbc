@@ -7,13 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
-
-func init() { gin.SetMode(gin.TestMode) }
 
 // configuredPlugin returns a plugin configured with one static credential
 // whose key is "0123456789abcdef0123456789abcdef", app ID "checkout", and
@@ -38,20 +35,18 @@ func configuredPlugin(t *testing.T, requireAppID bool) *Plugin {
 	return p
 }
 
-// newTestContextWithHeaders builds a bare *gin.Context carrying the given
-// headers on its request. A nil slice for a header name means the header is
-// not set; multiple values mean the header line is duplicated.
+// newTestContextWithHeaders builds a bare *web.Ctx carrying the given headers
+// on its request. A nil slice for a header name means the header is not set;
+// multiple values mean the header line is duplicated.
 func newTestContextWithHeaders(t *testing.T, headers map[string][]string) *web.Ctx {
 	t.Helper()
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	for name, values := range headers {
 		for _, value := range values {
 			req.Header.Add(name, value)
 		}
 	}
-	c.Request = req
-	return web.NewCtx(c)
+	return enginetest.NewCtx(httptest.NewRecorder(), req)
 }
 
 func TestPluginExtractCredentialClassifiesHeaders(t *testing.T) {

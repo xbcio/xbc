@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -34,17 +32,12 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		return nil
 	}
 
-	// Phase 4 debt: the buffering writer embeds gin.ResponseWriter, so
-	// constructing and installing it needs the concrete gin type. It reads
-	// and writes gc.Writer directly until Ctx grows a neutral SetWriter in
-	// that later phase.
-	gc := c.Gin()
-	original := gc.Writer
+	original := c.Writer()
 	writer := newBufferingWriter(original)
-	gc.Writer = writer
+	c.SetWriter(writer)
 	defer func() {
 		recovered := recover()
-		gc.Writer = original
+		c.SetWriter(original)
 		if recovered != nil {
 			// Both body and handler-owned headers are isolated until finish, so
 			// the outer recovery boundary can still emit a clean response.
@@ -59,7 +52,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 }
 
 type bufferingWriter struct {
-	gin.ResponseWriter
+	web.ResponseWriter
 	header      http.Header
 	body        bytes.Buffer
 	status      int
@@ -67,7 +60,7 @@ type bufferingWriter struct {
 	passthrough bool
 }
 
-func newBufferingWriter(writer gin.ResponseWriter) *bufferingWriter {
+func newBufferingWriter(writer web.ResponseWriter) *bufferingWriter {
 	return &bufferingWriter{
 		ResponseWriter: writer,
 		header:         cloneHeader(writer.Header()),
@@ -82,24 +75,21 @@ func (w *bufferingWriter) Header() http.Header {
 	return w.header
 }
 
+// WriteHeader records the status into the buffer. It deliberately does not
+// mark the buffered response written: recording a status is not committing a
+// response, and the "has this response been written yet" guards across the
+// framework must give the same answer whether or not this middleware happens
+// to be installed. Written flips on the first body write, which is exactly
+// when this wrapper starts holding bytes the connection has not seen -- the
+// case web.ResponseWriter documents Written for.
 func (w *bufferingWriter) WriteHeader(code int) {
 	if w.passthrough {
 		w.ResponseWriter.WriteHeader(code)
 		return
 	}
-	// Match gin.ResponseWriter: Status calls may replace an uncommitted status;
-	// only WriteHeaderNow or a body write makes the response written.
 	if code > 0 && !w.written {
 		w.status = code
 	}
-}
-
-func (w *bufferingWriter) WriteHeaderNow() {
-	if w.passthrough {
-		w.ResponseWriter.WriteHeaderNow()
-		return
-	}
-	w.written = true
 }
 
 func (w *bufferingWriter) Write(data []byte) (int, error) {
@@ -108,14 +98,6 @@ func (w *bufferingWriter) Write(data []byte) (int, error) {
 	}
 	w.written = true
 	return w.body.Write(data)
-}
-
-func (w *bufferingWriter) WriteString(value string) (int, error) {
-	if w.passthrough {
-		return w.ResponseWriter.WriteString(value)
-	}
-	w.written = true
-	return w.body.WriteString(value)
 }
 
 func (w *bufferingWriter) Status() int {
@@ -161,7 +143,7 @@ func (w *bufferingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !w.passthrough && (w.written || w.body.Len() != 0) {
 		return nil, nil, errors.New("gzip: cannot hijack after a buffered response write")
 	}
-	conn, rw, err := w.ResponseWriter.Hijack()
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
 	if err == nil {
 		w.passthrough = true
 	}
@@ -332,4 +314,4 @@ func responseHasBody(method string, status int) bool {
 }
 
 var _ io.Writer = (*bufferingWriter)(nil)
-var _ gin.ResponseWriter = (*bufferingWriter)(nil)
+var _ web.ResponseWriter = (*bufferingWriter)(nil)

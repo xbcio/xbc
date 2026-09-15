@@ -12,6 +12,14 @@ import (
 type Engine interface {
 	Handle(method, path string, chain []Handler)
 	NoRoute(chain []Handler)
+	// NoMethod installs the chain answering a request whose path is registered
+	// under other methods only, and is reached solely when
+	// Options.HandleMethodNotAllowed is set. RFC 9110 §15.5.6 requires such a
+	// response to carry Allow, and the engine is the only party that knows
+	// which methods the path has: an adapter must set the Allow header to the
+	// other registered methods before running this chain. The chain itself
+	// writes the status and body, so an adapter that skips the header produces
+	// a well-formed Problem Detail that is still a protocol violation.
 	NoMethod(chain []Handler)
 	Serve(ln net.Listener) error
 	// Shutdown stops serving and must leave no established connection behind

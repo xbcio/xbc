@@ -3,11 +3,12 @@ package tenant
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 func defaultPrincipalResolver(t *testing.T) principalResolver {
@@ -109,8 +110,7 @@ func TestPrincipalResolverRejectsMalformedVerifiedFactsAndCancellation(t *testin
 }
 
 func TestSetAndCurrentValidateAndDefensivelyCopy(t *testing.T) {
-	gc, _ := gin.CreateTestContext(nil)
-	ctx := web.NewCtx(gc)
+	ctx := enginetest.NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	input := Tenant{ID: "acme", Attributes: map[string]any{
 		"nested": map[string]any{"region": "cn"},
 		"roles":  []string{"reader"},

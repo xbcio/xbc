@@ -8,18 +8,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 const currentRouteKeyForTest = "xbc/web.currentRoute"
-
-func init() { gin.SetMode(gin.TestMode) }
 
 func TestMiddlewareExtractsW3CContextAndUsesFrozenRouteTemplate(t *testing.T) {
 	const (
@@ -30,19 +28,21 @@ func TestMiddlewareExtractsW3CContextAndUsesFrozenRouteTemplate(t *testing.T) {
 	p := newTestPlugin(t, func(c *Config) { c.Batch.BatchTimeout = time.Hour }, exporter)
 
 	var baggageValue string
-	engine := gin.New()
-	engine.Use(func(c *gin.Context) {
+	engine := enginetest.New()
+	engine.Use(func(_ context.Context, c *web.Ctx) error {
 		c.Set(currentRouteKeyForTest, web.RouteInfo{
 			Method: http.MethodGet,
 			Path:   "/users/:id",
 			Name:   "users.get",
 		})
 		c.Next()
+		return nil
 	})
-	engine.Use(web.Handle(p.Handler()))
-	engine.GET("/users/:id", func(c *gin.Context) {
-		baggageValue = baggage.FromContext(c.Request.Context()).Member("tenant").Value()
+	engine.Use(p.Handler())
+	engine.GET("/users/{id}", func(ctx context.Context, c *web.Ctx) error {
+		baggageValue = baggage.FromContext(ctx).Member("tenant").Value()
 		c.Status(http.StatusCreated)
+		return nil
 	})
 
 	request := httptest.NewRequest(http.MethodGet, "/users/42?secret=raw-url", nil)
@@ -100,13 +100,14 @@ func TestMiddlewareRecordsAndRethrowsPanic(t *testing.T) {
 	exporter := new(recordingExporter)
 	p := newTestPlugin(t, func(c *Config) { c.Batch.BatchTimeout = time.Hour }, exporter)
 
-	engine := gin.New()
-	engine.Use(func(c *gin.Context) {
+	engine := enginetest.New()
+	engine.Use(func(_ context.Context, c *web.Ctx) error {
 		c.Set(currentRouteKeyForTest, web.RouteInfo{Method: http.MethodGet, Path: "/panic"})
 		c.Next()
+		return nil
 	})
-	engine.Use(web.Handle(p.Handler()))
-	engine.GET("/panic", func(*gin.Context) { panic("boom") })
+	engine.Use(p.Handler())
+	engine.GET("/panic", func(context.Context, *web.Ctx) error { panic("boom") })
 
 	func() {
 		defer func() {
@@ -136,9 +137,11 @@ func TestMiddlewareUsesBoundedUnmatchedName(t *testing.T) {
 	exporter := new(recordingExporter)
 	p := newTestPlugin(t, func(c *Config) { c.Batch.BatchTimeout = time.Hour }, exporter)
 
-	engine := gin.New()
-	engine.Use(web.Handle(p.Handler()))
-	engine.Handle("CUSTOM", "/raw/:id", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	engine := enginetest.New()
+	engine.Handle("CUSTOM", "/raw/{id}", []web.Handler{p.Handler(), func(_ context.Context, c *web.Ctx) error {
+		c.Status(http.StatusNoContent)
+		return nil
+	}})
 	engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("CUSTOM", "/raw/secret", nil))
 	if err := p.Handle().ForceFlush(context.Background()); err != nil {
 		t.Fatal(err)

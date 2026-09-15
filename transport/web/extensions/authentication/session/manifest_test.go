@@ -16,7 +16,6 @@ func TestModuleManifestIsPublishableAndPinsThirdPartyDependencies(t *testing.T) 
 	for _, expected := range []string{
 		"go 1.25.0",
 		"github.com/alicebob/miniredis/v2 v2.38.0",
-		"github.com/gin-gonic/gin v1.12.0",
 		"github.com/redis/go-redis/v9 v9.21.0",
 	} {
 		if !strings.Contains(manifest, expected) {

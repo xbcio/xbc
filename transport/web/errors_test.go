@@ -1,4 +1,4 @@
-package web
+package web_test
 
 import (
 	"context"
@@ -8,27 +8,30 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
-func errorEngine(mappers ...ErrorMapper) (*gin.Engine, *errorResolver) {
-	gin.SetMode(gin.TestMode)
-	resolver := newErrorResolver(log.Nop())
-	engine := gin.New()
-	engine.Use(Handle(func(_ context.Context, c *Ctx) error {
-		resolver.attach(c)
+// errorEngine builds the two-handler front of a request the error boundary
+// needs: a resolver published on the request, then OnError scoping the mappers
+// under test. Callers register their own route afterwards.
+func errorEngine(mappers ...web.ErrorMapper) *enginetest.Engine {
+	resolver := web.NewErrorResolver(log.Nop())
+	engine := enginetest.New()
+	engine.Use(func(_ context.Context, c *web.Ctx) error {
+		resolver.Attach(c)
 		return nil
-	}))
-	engine.Use(Handle(OnError(mappers...)))
-	return engine, resolver
+	})
+	engine.Use(web.OnError(mappers...))
+	return engine
 }
 
-func performRequest(engine *gin.Engine, method, path string) *httptest.ResponseRecorder {
+func performRequest(engine *enginetest.Engine, method, path string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
 	return recorder
@@ -37,27 +40,27 @@ func performRequest(engine *gin.Engine, method, path string) *httptest.ResponseR
 func TestHandleUsesFirstMapperThatRecognizesWrappedError(t *testing.T) {
 	domainErr := errors.New("order version conflict")
 	calls := make([]string, 0, 3)
-	first := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
+	first := web.ErrorMapperFunc(func(*web.Ctx, error) (web.ProblemDetail, bool) {
 		calls = append(calls, "first")
-		return ProblemDetail{}, false
+		return web.ProblemDetail{}, false
 	})
-	second := ErrorMapperFunc(func(_ *Ctx, err error) (ProblemDetail, bool) {
+	second := web.ErrorMapperFunc(func(_ *web.Ctx, err error) (web.ProblemDetail, bool) {
 		calls = append(calls, "second")
 		if !errors.Is(err, domainErr) {
-			return ProblemDetail{}, false
+			return web.ProblemDetail{}, false
 		}
-		problem := NewProblem(http.StatusConflict, "order_version_conflict")
+		problem := web.NewProblem(http.StatusConflict, "order_version_conflict")
 		problem.Detail = "The order was changed by another request."
 		return problem, true
 	})
-	third := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
+	third := web.ErrorMapperFunc(func(*web.Ctx, error) (web.ProblemDetail, bool) {
 		calls = append(calls, "third")
-		return NewProblem(http.StatusTeapot, "must_not_run"), true
+		return web.NewProblem(http.StatusTeapot, "must_not_run"), true
 	})
-	engine, _ := errorEngine(first, second, third)
-	engine.GET("/orders/:id", Handle(func(context.Context, *Ctx) error {
+	engine := errorEngine(first, second, third)
+	engine.GET("/orders/{id}", func(context.Context, *web.Ctx) error {
 		return fmt.Errorf("update order: %w", domainErr)
-	}))
+	})
 
 	response := performRequest(engine, http.MethodGet, "/orders/42?token=secret")
 
@@ -73,29 +76,28 @@ func TestHandleUsesFirstMapperThatRecognizesWrappedError(t *testing.T) {
 func TestNestedOnErrorComposesMappersOuterToInner(t *testing.T) {
 	domainErr := errors.New("inventory conflict")
 	calls := make([]string, 0, 3)
-	outer := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
+	outer := web.ErrorMapperFunc(func(*web.Ctx, error) (web.ProblemDetail, bool) {
 		calls = append(calls, "outer")
-		return ProblemDetail{}, false
+		return web.ProblemDetail{}, false
 	})
-	inner := ErrorMapperFunc(func(_ *Ctx, err error) (ProblemDetail, bool) {
+	inner := web.ErrorMapperFunc(func(_ *web.Ctx, err error) (web.ProblemDetail, bool) {
 		calls = append(calls, "inner")
 		if !errors.Is(err, domainErr) {
-			return ProblemDetail{}, false
+			return web.ProblemDetail{}, false
 		}
-		return NewProblem(http.StatusConflict, "inventory_conflict"), true
+		return web.NewProblem(http.StatusConflict, "inventory_conflict"), true
 	})
-	last := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
+	last := web.ErrorMapperFunc(func(*web.Ctx, error) (web.ProblemDetail, bool) {
 		calls = append(calls, "last")
-		return NewProblem(http.StatusTeapot, "must_not_run"), true
+		return web.NewProblem(http.StatusTeapot, "must_not_run"), true
 	})
 
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	engine.Use(Handle(OnError(outer)))
-	engine.Use(Handle(OnError(inner, last)))
-	engine.GET("/inventory", Handle(func(context.Context, *Ctx) error {
+	engine := enginetest.New()
+	engine.Use(web.OnError(outer))
+	engine.Use(web.OnError(inner, last))
+	engine.GET("/inventory", func(context.Context, *web.Ctx) error {
 		return fmt.Errorf("reserve inventory: %w", domainErr)
-	}))
+	})
 
 	response := performRequest(engine, http.MethodGet, "/inventory")
 
@@ -117,8 +119,8 @@ func TestUnknownAndDeadlineErrorsUseSafeDefaults(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			engine, _ := errorEngine()
-			engine.GET("/failure", Handle(func(context.Context, *Ctx) error { return test.err }))
+			engine := errorEngine()
+			engine.GET("/failure", func(context.Context, *web.Ctx) error { return test.err })
 
 			response := performRequest(engine, http.MethodGet, "/failure")
 
@@ -133,13 +135,14 @@ func TestUnknownAndDeadlineErrorsUseSafeDefaults(t *testing.T) {
 
 func TestHandleAbortsRemainingHandlersAndPreservesCommittedResponse(t *testing.T) {
 	t.Run("returned error aborts chain", func(t *testing.T) {
-		engine, _ := errorEngine()
+		engine := errorEngine()
 		nextRan := false
 		engine.GET("/failure",
-			Handle(func(context.Context, *Ctx) error { return errors.New("failed") }),
-			func(c *gin.Context) {
+			func(context.Context, *web.Ctx) error { return errors.New("failed") },
+			func(_ context.Context, c *web.Ctx) error {
 				nextRan = true
 				c.Status(http.StatusNoContent)
+				return nil
 			},
 		)
 
@@ -150,11 +153,11 @@ func TestHandleAbortsRemainingHandlersAndPreservesCommittedResponse(t *testing.T
 	})
 
 	t.Run("committed response is not overwritten", func(t *testing.T) {
-		engine, _ := errorEngine()
-		engine.GET("/committed", Handle(func(_ context.Context, c *Ctx) error {
+		engine := errorEngine()
+		engine.GET("/committed", func(_ context.Context, c *web.Ctx) error {
 			c.String(http.StatusAccepted, "already committed")
 			return errors.New("late secret failure")
-		}))
+		})
 
 		response := performRequest(engine, http.MethodGet, "/committed")
 
@@ -164,40 +167,19 @@ func TestHandleAbortsRemainingHandlersAndPreservesCommittedResponse(t *testing.T
 	})
 }
 
-func TestGinReportedErrorsAreJoinedBeforeMapping(t *testing.T) {
-	domainErr := errors.New("domain failure")
-	mapper := ErrorMapperFunc(func(_ *Ctx, err error) (ProblemDetail, bool) {
-		if errors.Is(err, domainErr) {
-			return NewProblem(http.StatusUnprocessableEntity, "domain_failure"), true
-		}
-		return ProblemDetail{}, false
-	})
-	engine, _ := errorEngine(mapper)
-	engine.GET("/reported", func(c *gin.Context) {
-		_ = c.Error(fmt.Errorf("first: %w", domainErr))
-		_ = c.Error(errors.New("unrelated later failure"))
-		c.Abort()
-	})
-
-	response := performRequest(engine, http.MethodGet, "/reported")
-
-	assert.Equal(t, http.StatusUnprocessableEntity, response.Code)
-	assert.Equal(t, "domain_failure", decodeProblem(t, response).Properties["code"])
-}
-
 func TestMapperCannotTurnAnErrorIntoNonErrorHTTPStatus(t *testing.T) {
 	for _, status := range []int{0, http.StatusContinue, http.StatusOK, http.StatusFound, 399, 600} {
 		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
-			mapper := ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
-				problem := ProblemDetail{
+			mapper := web.ErrorMapperFunc(func(*web.Ctx, error) (web.ProblemDetail, bool) {
+				problem := web.ProblemDetail{
 					Status:     status,
 					Detail:     "mapper secret",
 					Properties: map[string]any{"code": "false_success", "secret": "private"},
 				}
 				return problem, true
 			})
-			engine, _ := errorEngine(mapper)
-			engine.GET("/failure", Handle(func(context.Context, *Ctx) error { return errors.New("failed") }))
+			engine := errorEngine(mapper)
+			engine.GET("/failure", func(context.Context, *web.Ctx) error { return errors.New("failed") })
 
 			response := performRequest(engine, http.MethodGet, "/failure")
 
@@ -215,47 +197,47 @@ type mappedRoutePlugin struct {
 	domainErr error
 }
 
-func (p *mappedRoutePlugin) RegisterRoutes(r *Router) {
-	r.GET("/mapped-error", func(context.Context, *Ctx) error {
+func (p *mappedRoutePlugin) RegisterRoutes(r *web.Router) {
+	r.GET("/mapped-error", func(context.Context, *web.Ctx) error {
 		return fmt.Errorf("service failed: %w", p.domainErr)
 	}).Name("mapped.error")
 }
 
-func (p *mappedRoutePlugin) MapError(_ *Ctx, err error) (ProblemDetail, bool) {
+func (p *mappedRoutePlugin) MapError(_ *web.Ctx, err error) (web.ProblemDetail, bool) {
 	if !errors.Is(err, p.domainErr) {
-		return ProblemDetail{}, false
+		return web.ProblemDetail{}, false
 	}
-	return NewProblem(http.StatusServiceUnavailable, "dependency_unavailable"), true
+	return web.NewProblem(http.StatusServiceUnavailable, "dependency_unavailable"), true
 }
 
-func (*mappedRoutePlugin) ErrorOrder() ErrorOrder { return ErrorOrder{} }
+func (*mappedRoutePlugin) ErrorOrder() web.ErrorOrder { return web.ErrorOrder{} }
 
 func TestServerUsesInjectedErrorMapperAndObservationSeesMappedStatus(t *testing.T) {
 	domainErr := errors.New("database unavailable")
 	application := &mappedRoutePlugin{domainErr: domainErr}
 	observedStatus := 0
 	observer := fakeMiddleware{
-		order: Order{Phase: PhaseObserve},
-		handler: func(_ context.Context, c *Ctx) error {
+		order: web.Order{Phase: web.PhaseObserve},
+		handler: func(_ context.Context, c *web.Ctx) error {
 			c.Next()
 			observedStatus = c.Writer().Status()
 			return nil
 		},
 	}
-	cfg := DefaultConfig()
+	cfg := web.DefaultConfig()
 	cfg.Addr = "127.0.0.1:0"
 	server, ctx, _ := newPingServer(t, cfg, serverInputs{
-		middlewares: []plugin.Entry[Middleware]{
+		middlewares: []plugin.Entry[web.Middleware]{
 			{Identity: plugin.Identity{Plugin: "observer"}, Value: observer},
 		},
-		routes: []plugin.Entry[RouteContributor]{
+		routes: []plugin.Entry[web.RouteContributor]{
 			{Identity: plugin.Identity{Plugin: "orders"}, Value: application},
 		},
-		mappers: []ErrorMapper{application},
+		mappers: []web.ErrorMapper{application},
 	})
 	require.NoError(t, server.Start(ctx))
 
-	response := performRequest(testEngineOf(t, server).gin, http.MethodGet, "/mapped-error")
+	response := performRequest(testEngineOf(t, server), http.MethodGet, "/mapped-error")
 
 	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 	assert.Equal(t, "dependency_unavailable", decodeProblem(t, response).Properties["code"])
@@ -263,9 +245,9 @@ func TestServerUsesInjectedErrorMapperAndObservationSeesMappedStatus(t *testing.
 }
 
 func TestErrorMapperPublicAdaptersHaveExpectedShape(t *testing.T) {
-	var mapper ErrorMapper = ErrorMapperFunc(func(*Ctx, error) (ProblemDetail, bool) {
-		return ProblemDetail{}, false
+	var mapper web.ErrorMapper = web.ErrorMapperFunc(func(*web.Ctx, error) (web.ProblemDetail, bool) {
+		return web.ProblemDetail{}, false
 	})
 	assert.NotNil(t, mapper)
-	assert.PanicsWithValue(t, "xbc: web.Handle requires a non-nil handler", func() { Handle(nil) })
+	assert.PanicsWithValue(t, "xbc: web.Handle requires a non-nil handler", func() { web.Handle(nil) })
 }

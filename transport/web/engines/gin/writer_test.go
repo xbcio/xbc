@@ -3,8 +3,10 @@ package gin
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
+	ginlib "github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/transport/web"
@@ -53,18 +55,41 @@ func (w *recordingWriter) Flush()        { w.recorder.Flush() }
 
 var _ web.ResponseWriter = (*recordingWriter)(nil)
 
-func TestShimDefersCommitUntilWriteHeaderNow(t *testing.T) {
+// TestShimForwardsTheStatusToTheWriterBeneath pins that the shim keeps no
+// status of its own. The buffering middleware (gzip, timeout, idempotency)
+// hold the writer they installed and read its Status when they finish, so a
+// status parked in the shim would be invisible to them and the response would
+// be sent with the default 200 instead. Where the writer beneath is two-phase
+// -- gin's own, at the bottom of every real chain -- forwarding still records
+// rather than commits; see
+// TestStatusRecordedThroughAReplacedWriterSurvivesTheRestore.
+func TestShimForwardsTheStatusToTheWriterBeneath(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	base := newRecordingWriter(recorder) // implements web.ResponseWriter
 	s := newShim(base)
 
 	s.WriteHeader(http.StatusTeapot)
-	require.False(t, base.Written(), "Status 只记录，不得提交")
-	require.Equal(t, http.StatusTeapot, s.Status(), "记录下来的状态码必须可读")
+
+	require.Equal(t, http.StatusTeapot, base.Status(), "记录的状态码必须落到下层写入器上")
+	require.Equal(t, http.StatusTeapot, s.Status(), "shim 报告的状态码应来自下层写入器")
 
 	s.WriteHeaderNow()
-	require.True(t, base.Written(), "WriteHeaderNow 必须真正提交")
+	require.True(t, base.Written(), "WriteHeaderNow 之后响应必须已提交")
 	require.Equal(t, http.StatusTeapot, recorder.Code)
+}
+
+// TestShimWriteHeaderNowCommitsWithoutAStatusOfItsOwn pins gin's commit signal
+// for the case where nothing recorded a status: the response still goes out,
+// with whatever the writer beneath reports.
+func TestShimWriteHeaderNowCommitsWithoutAStatusOfItsOwn(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	base := newRecordingWriter(recorder)
+	s := newShim(base)
+
+	s.WriteHeaderNow()
+
+	require.True(t, base.Written(), "WriteHeaderNow 必须真正提交")
+	require.Equal(t, http.StatusOK, recorder.Code)
 }
 
 func TestShimWriteCommitsBeforeBody(t *testing.T) {
@@ -92,4 +117,17 @@ func TestShimSecondWriteHeaderAfterCommitIsIgnored(t *testing.T) {
 	s.WriteHeaderNow()
 
 	require.Equal(t, http.StatusOK, recorder.Code, "提交后的状态码不得被覆盖")
+}
+
+// TestGinResponseWriterSatisfiesContract is why the adapter can hand gin's own
+// writer straight to a handler: gin's writer already implements every method
+// the neutral contract asks for, so nothing has to be synthesized for the
+// common case. A future gin upgrade that drops one of these methods must fail
+// here rather than at an unrelated call site.
+func TestGinResponseWriterSatisfiesContract(t *testing.T) {
+	ginWriterType := reflect.TypeOf((*ginlib.ResponseWriter)(nil)).Elem()
+	neutralType := reflect.TypeOf((*web.ResponseWriter)(nil)).Elem()
+
+	require.True(t, ginWriterType.Implements(neutralType),
+		"gin.ResponseWriter 必须满足 web.ResponseWriter")
 }

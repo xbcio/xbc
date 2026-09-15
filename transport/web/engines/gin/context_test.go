@@ -11,6 +11,8 @@ import (
 	ginlib "github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/xbcio/xbc/transport/web"
 )
 
 // newTestRequestContext builds a requestContext over a detached gin.Context
@@ -59,6 +61,38 @@ func TestSetWriterRoundTripsThroughTheShim(t *testing.T) {
 	assert.Equal(t, http.StatusOK, recorder.Code, "原写入器不应再收到任何内容")
 
 	assert.Same(t, rc.Writer(), rc.c.Writer, "Writer 必须返回 gin 当前持有的写入器")
+}
+
+// TestStatusRecordedThroughAReplacedWriterSurvivesTheRestore pins that the
+// request has exactly one pending-status holder, gin's own writer at the
+// bottom of the chain. gzip, timeout, and idempotency all install a wrapper,
+// let the handler run, and then restore the writer they replaced; a status
+// recorded into a holder that lives only as long as the wrapper is lost at
+// that restore, and the response goes out with the default 200 instead.
+func TestStatusRecordedThroughAReplacedWriterSurvivesTheRestore(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	rc := newTestRequestContext(t, recorder)
+	original := rc.Writer()
+	wrapper := &passthroughWriter{ResponseWriter: original}
+
+	rc.SetWriter(wrapper)
+	rc.Status(http.StatusAccepted)
+
+	assert.False(t, wrapper.Written(), "Status 仍只应记录，不得提交响应")
+	assert.Equal(t, http.StatusAccepted, wrapper.Status(),
+		"包装器读到的状态码应是处理器记录的那个，而不是默认值")
+
+	rc.SetWriter(original)
+	rc.c.Writer.WriteHeaderNow()
+
+	assert.Equal(t, http.StatusAccepted, recorder.Code, "恢复原写入器后，记录的状态码仍应被提交")
+}
+
+// passthroughWriter is the minimal shape the buffering middleware share: it
+// embeds the writer it replaced and forwards everything, so Status and Written
+// are answered by the holder beneath it.
+type passthroughWriter struct {
+	web.ResponseWriter
 }
 
 // TestJSONReportsRenderFailure pins the return value the neutral signature

@@ -1,16 +1,16 @@
 package requestid
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog"
 )
 
@@ -31,17 +31,17 @@ func TestDefinitionAndOrderingContract(t *testing.T) {
 }
 
 func TestPropagatesValidatedIncomingID(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	p := New()
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/", func(c *gin.Context) {
-		fromGin, okGin := From(web.NewCtx(c))
-		fromRequest, okRequest := FromRequest(c.Request)
-		if !okGin || !okRequest || fromGin != "client-123" || fromRequest != fromGin {
-			t.Fatalf("propagation = %q/%v %q/%v", fromGin, okGin, fromRequest, okRequest)
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/", func(_ context.Context, c *web.Ctx) error {
+		fromCtx, okCtx := From(c)
+		fromRequest, okRequest := FromRequest(c.Request())
+		if !okCtx || !okRequest || fromCtx != "client-123" || fromRequest != fromCtx {
+			t.Fatalf("propagation = %q/%v %q/%v", fromCtx, okCtx, fromRequest, okRequest)
 		}
-		c.String(http.StatusOK, fromGin)
+		c.String(http.StatusOK, "%s", fromCtx)
+		return nil
 	})
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Header.Set(defaultHeader, "client-123")
@@ -53,16 +53,12 @@ func TestPropagatesValidatedIncomingID(t *testing.T) {
 }
 
 func TestRejectsMalformedDuplicateAndOversizedIDsByReplacingThem(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	for _, values := range [][]string{{"bad id"}, {strings.Repeat("a", defaultMaxLength+1)}, {"one", "two"}} {
 		t.Run(strings.Join(values, "_"), func(t *testing.T) {
 			p := New()
-			router := gin.New()
-			router.Use(web.Handle(p.handle))
-			router.GET("/", func(c *gin.Context) {
-				id, _ := From(web.NewCtx(c))
-				c.String(http.StatusOK, id)
-			})
+			router := enginetest.New()
+			router.Use(p.handle)
+			router.GET("/", echoID)
 			request := httptest.NewRequest(http.MethodGet, "/", nil)
 			for _, value := range values {
 				request.Header.Add(defaultHeader, value)
@@ -83,14 +79,10 @@ func TestRejectsMalformedDuplicateAndOversizedIDsByReplacingThem(t *testing.T) {
 }
 
 func TestGeneratedIDsAreConcurrentAndUnique(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	p := New()
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/", func(c *gin.Context) {
-		id, _ := From(web.NewCtx(c))
-		c.String(http.StatusOK, id)
-	})
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/", echoID)
 
 	const requests = 200
 	ids := make(chan string, requests)
@@ -116,6 +108,14 @@ func TestGeneratedIDsAreConcurrentAndUnique(t *testing.T) {
 		}
 		seen[id] = struct{}{}
 	}
+}
+
+// echoID writes the request ID the middleware published as the response body,
+// so a test can compare it against the header the middleware set.
+func echoID(_ context.Context, c *web.Ctx) error {
+	id, _ := From(c)
+	c.String(http.StatusOK, "%s", id)
+	return nil
 }
 
 func TestConfigValidation(t *testing.T) {

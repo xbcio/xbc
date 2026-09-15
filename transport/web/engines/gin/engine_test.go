@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,4 +92,40 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Serve 未能返回，监听器没有被关闭")
 	}
+}
+
+// TestMethodNotAllowedSetsAllowHeader pins this adapter's half of the
+// web.Engine NoMethod contract. The framework's 405 Problem Detail is produced
+// by the NoMethod chain, which knows only that the method was wrong -- the list
+// of methods the path does support exists solely inside the engine's matcher,
+// so an adapter that forwards the chain without the header would emit a 405
+// that reads correctly and still violates RFC 9110 §15.5.6.
+//
+// Gin sets Allow itself before dispatching to NoMethod. That is precisely why
+// this test is here: behaviour inherited from a dependency is the kind that
+// disappears silently on an upgrade.
+func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
+	ginlib.SetMode(ginlib.TestMode)
+
+	built, err := Factory{}.NewEngine(web.Options{HandleMethodNotAllowed: true})
+	require.NoError(t, err, "NewEngine() 不应返回错误")
+	adapter, ok := built.(*engine)
+	require.True(t, ok, "NewEngine 应返回本包的 *engine")
+
+	ok200 := func(_ context.Context, c *web.Ctx) error { c.Status(http.StatusOK); return nil }
+	adapter.Handle(http.MethodGet, "/only-get", []web.Handler{ok200})
+	adapter.Handle(http.MethodDelete, "/only-get", []web.Handler{ok200})
+	adapter.NoMethod([]web.Handler{func(_ context.Context, c *web.Ctx) error {
+		c.Status(http.StatusMethodNotAllowed)
+		return nil
+	}})
+
+	recorder := httptest.NewRecorder()
+	adapter.e.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/only-get", nil))
+
+	require.Equal(t, http.StatusMethodNotAllowed, recorder.Code, "方法不匹配应交给 NoMethod 链")
+	// 逐字比较会把「列全了」和「顺序恰好如此」绑在一起，而端口只要求列全。
+	assert.ElementsMatch(t, []string{"GET", "DELETE"},
+		strings.Split(recorder.Header().Get("Allow"), ", "),
+		"405 必须列出该路径其余全部已注册方法")
 }

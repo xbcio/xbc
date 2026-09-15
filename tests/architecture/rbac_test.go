@@ -40,6 +40,17 @@ func TestArchRBACOwnershipBoundaries(t *testing.T) {
 		assert.Contains(t, productionImports, archBusinessRBACImportPath,
 			"the Web RBAC adapter must consume the protocol-neutral business contract")
 
+		// The adapter speaks the Web transport contract, never a concrete
+		// engine. Since the transport stopped exposing engine types, an engine
+		// can only enter here through an adapter module under
+		// transport/web/engines, so that namespace -- not Gin's import path --
+		// is what this closure must stay clear of.
+		for _, dep := range archDeps(t, "./transport/web/extensions/authorization/rbac") {
+			if archPathAtOrBelow(dep, "github.com/xbcio/xbc/transport/web/engines") {
+				t.Errorf("transport/web/extensions/authorization/rbac production closure contains engine adapter %q: middleware must depend on the neutral Web contract only", dep)
+			}
+		}
+
 		for _, dep := range productionImports {
 			if !archPathAtOrBelow(dep, archRootPackage) {
 				continue

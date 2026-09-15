@@ -17,7 +17,7 @@ const (
 )
 
 func TestRouteAuthenticationPolicyDistinguishesAbsentPublicAndExplicit(t *testing.T) {
-	_, router, _, _ := newTestEngineAndRouter("/api")
+	router, _ := newTestRouter("/api")
 	router.GET("/default", func(context.Context, *Ctx) error { return nil })
 	router.GET("/public", func(context.Context, *Ctx) error { return nil }).Auth(Public())
 	router.GET("/explicit", func(context.Context, *Ctx) error { return nil }).Auth(Accepts(testSchemeJWT, testSchemeAPIKey))
@@ -74,7 +74,7 @@ func TestRouteFreezeRejectsInvalidExplicitAuthenticationSchemes(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, router, frozen, _ := newTestEngineAndRouter("/api")
+			router, frozen := newTestRouter("/api")
 			route := router.GET("/private", func(context.Context, *Ctx) error { return nil }).Auth(test.policy)
 
 			catalog, err := router.freeze()
@@ -93,7 +93,7 @@ func TestRouteAuthenticationPolicyIsDefensivelyCopied(t *testing.T) {
 	policy := Accepts(source...)
 	source[0] = "mutated-source"
 
-	_, router, _, _ := newTestEngineAndRouter("/api")
+	router, _ := newTestRouter("/api")
 	router.GET("/private", func(context.Context, *Ctx) error { return nil }).Auth(policy)
 	policy.schemes[0] = "mutated-policy"
 

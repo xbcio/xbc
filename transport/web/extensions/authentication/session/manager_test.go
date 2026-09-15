@@ -11,9 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
-	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 type failingReader struct{}
@@ -132,8 +130,8 @@ func TestManagerCookieAttributesAndClearCookie(t *testing.T) {
 	value := sessionValue(testID(4, 32), "sensitive-subject", now, 90*time.Second)
 
 	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	if err := m.SetCookie(web.NewCtx(ctx), value); err != nil {
+	ctx := enginetest.NewCtx(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if err := m.SetCookie(ctx, value); err != nil {
 		t.Fatal(err)
 	}
 	cookies := recorder.Result().Cookies()
@@ -149,8 +147,8 @@ func TestManagerCookieAttributesAndClearCookie(t *testing.T) {
 	}
 
 	cleared := httptest.NewRecorder()
-	clearContext, _ := gin.CreateTestContext(cleared)
-	m.ClearCookie(web.NewCtx(clearContext))
+	clearContext := enginetest.NewCtx(cleared, httptest.NewRequest(http.MethodGet, "/", nil))
+	m.ClearCookie(clearContext)
 	clearCookies := cleared.Result().Cookies()
 	if len(clearCookies) != 1 || clearCookies[0].Value != "" || clearCookies[0].MaxAge != -1 || !clearCookies[0].HttpOnly || !clearCookies[0].Secure {
 		t.Fatalf("clear cookie = %#v", clearCookies)

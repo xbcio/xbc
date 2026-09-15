@@ -44,8 +44,8 @@ func (p *Plugin) write(state *runtimeState, c *web.Ctx, started time.Time, panic
 		bytes = 0
 	}
 	// "" is the fallback initial value for an unmatched request: web.CurrentRoute
-	// overwrites it below whenever the request matched a frozen route, and gin
-	// itself reports "" from FullPath for a request that matched no route.
+	// overwrites it below whenever the request matched a frozen route, and a
+	// request that matched no frozen route has no route template to report.
 	route := ""
 	routeName := ""
 	if info, ok := web.CurrentRoute(c); ok {

@@ -1,6 +1,7 @@
 package recovery
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,11 +10,10 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 type captureLogger struct {
@@ -54,17 +54,16 @@ func TestDefinitionAndMiddlewareContract(t *testing.T) {
 }
 
 func TestRecoversWithSafe500AndSafeLog(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	logger := &captureLogger{}
 	p := New()
 	p.state.Store(&runtimeState{stack: false, logger: logger})
 
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/panic", func(c *gin.Context) {
-		c.Header("Content-Encoding", "br")
-		c.Header("Content-Length", "999")
-		c.Header("Content-Type", "text/plain")
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/panic", func(_ context.Context, c *web.Ctx) error {
+		c.SetHeader("Content-Encoding", "br")
+		c.SetHeader("Content-Length", "999")
+		c.SetHeader("Content-Type", "text/plain")
 		panic("secret-token-value")
 	})
 
@@ -103,12 +102,11 @@ func TestRecoversWithSafe500AndSafeLog(t *testing.T) {
 }
 
 func TestDoesNotOverwriteCommittedResponse(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	p := New()
 	p.state.Store(&runtimeState{logger: corelog.Nop()})
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/partial", func(c *gin.Context) {
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/partial", func(_ context.Context, c *web.Ctx) error {
 		c.String(http.StatusAccepted, "already written")
 		panic("boom")
 	})
@@ -123,19 +121,17 @@ func TestDoesNotOverwriteCommittedResponse(t *testing.T) {
 // TestBrokenConnectionRecoveryDoesNotReachTheErrorBoundary pins the D2 fix:
 // once recovery has itself logged and aborted a broken-connection panic, the
 // error boundary must see no error at all -- not merely render harmlessly.
-// Before this fix, recovery also recorded the recovered error on the
-// underlying *gin.Context, so the outer web.OnError boundary would find a
-// non-empty c.Errors after the aborted chain unwound, map it, log a second,
-// redundant 500-level entry, and attempt to write a Problem Detail response
-// onto a connection recovery had already given up on. Written()==false at
-// that point (Abort does not write), so this double-handling was silent in
+// Before this fix, recovery also reported the recovered error onward, so the
+// outer web.OnError boundary would map it after the aborted chain unwound, log
+// a second, redundant 500-level entry, and attempt to write a Problem Detail
+// response onto a connection recovery had already given up on. Written()==false
+// at that point (Abort does not write), so this double-handling was silent in
 // production and only visible by inspecting the log and response together --
-// exactly what this test asserts. Any regression that brings back the
-// c.Gin().Error(err) call makes the injected mapper observe the error and
-// makes the recorder pick up a written response, so either assertion below
-// would fail without needing to reach into the error boundary's own logger.
+// exactly what this test asserts. Any regression that reports the recovered
+// error again makes the injected mapper observe it and makes the recorder pick
+// up a written response, so either assertion below would fail without needing
+// to reach into the error boundary's own logger.
 func TestBrokenConnectionRecoveryDoesNotReachTheErrorBoundary(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	logger := &captureLogger{}
 	p := New()
 	p.state.Store(&runtimeState{logger: logger})
@@ -146,10 +142,10 @@ func TestBrokenConnectionRecoveryDoesNotReachTheErrorBoundary(t *testing.T) {
 		return web.ProblemDetail{}, false
 	})
 
-	router := gin.New()
-	router.Use(web.Handle(web.OnError(mapper)))
-	router.Use(web.Handle(p.handle))
-	router.GET("/broken", func(c *gin.Context) {
+	router := enginetest.New()
+	router.Use(web.OnError(mapper))
+	router.Use(p.handle)
+	router.GET("/broken", func(context.Context, *web.Ctx) error {
 		panic(syscall.EPIPE)
 	})
 

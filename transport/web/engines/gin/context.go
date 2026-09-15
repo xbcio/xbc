@@ -44,7 +44,18 @@ func (rc *requestContext) Writer() web.ResponseWriter { return rc.c.Writer }
 // SetWriter installs a neutral writer as gin's. The shim is what makes the
 // two faces meet: gin writes through its own two-phase ResponseWriter, and w
 // speaks net/http semantics where WriteHeader commits.
-func (rc *requestContext) SetWriter(w web.ResponseWriter) { rc.c.Writer = newShim(w) }
+//
+// A writer that is already a gin.ResponseWriter is installed as-is. That is
+// how a buffering middleware restores the writer it replaced: wrapping the
+// original in a fresh shim would install a second status holder whose own
+// default masks the status gin's writer already recorded.
+func (rc *requestContext) SetWriter(w web.ResponseWriter) {
+	if writer, ok := w.(ginlib.ResponseWriter); ok {
+		rc.c.Writer = writer
+		return
+	}
+	rc.c.Writer = newShim(w)
+}
 
 func (rc *requestContext) Param(name string) string { return rc.c.Param(name) }
 

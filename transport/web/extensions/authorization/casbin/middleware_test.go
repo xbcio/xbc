@@ -1,30 +1,27 @@
 package casbin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 const currentRouteKeyForTest = "xbc/web.currentRoute"
 
-// authenticationExemptKeyForTest mirrors the private gin.Context key the
+// authenticationExemptKeyForTest mirrors the private request-scoped key the
 // authentication middleware sets when it resolves a request to permit (see
 // web.AuthenticationExempt). Tests that exercise casbin standalone, without
 // the real authentication middleware in front of it, set this key directly
 // to simulate an exempt request -- mirroring the existing currentRouteKeyForTest
 // convention above.
 const authenticationExemptKeyForTest = "xbc/transport/web.authenticationExempt"
-
-func init() {
-	gin.SetMode(gin.TestMode)
-}
 
 func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
 	p, _ := initializedPlugin(t, func(cfg *Config) {
@@ -33,8 +30,8 @@ func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
 
 	allowed := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"},
-		func(c *gin.Context) {
-			web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice", AuthMethod: "jwt"})
+		func(c *web.Ctx) {
+			web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "jwt"})
 		},
 	)
 	if allowed.Code != http.StatusNoContent {
@@ -43,8 +40,8 @@ func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
 
 	denied := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"},
-		func(c *gin.Context) {
-			web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "bob", AuthMethod: "jwt"})
+		func(c *web.Ctx) {
+			web.SetPrincipal(c, web.Principal{Subject: "bob", AuthMethod: "jwt"})
 		},
 	)
 	assertForbidden(t, denied)
@@ -54,7 +51,7 @@ func TestExemptRouteBypassesSubjectAndPolicy(t *testing.T) {
 	p, _ := initializedPlugin(t, nil)
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/login"},
-		func(c *gin.Context) { c.Set(authenticationExemptKeyForTest, true) },
+		func(c *web.Ctx) { c.Set(authenticationExemptKeyForTest, true) },
 	)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("exempt status = %d, body = %s", response.Code, response.Body.String())
@@ -76,7 +73,7 @@ func TestRouteDeclaredPublicButNotExemptStillEnforces(t *testing.T) {
 	publicPolicy := web.Public()
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/login", Auth: &publicPolicy, Perm: "reports:read"},
-		func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "bob"}) },
+		func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "bob"}) },
 	)
 	assertForbidden(t, response)
 }
@@ -96,9 +93,9 @@ func TestProtectedRoutesFailClosed(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			var before gin.HandlerFunc
+			var before func(*web.Ctx)
 			if test.principal {
-				before = func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"}) }
+				before = func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) }
 			}
 			response := requestThroughOptionalRoute(p, test.route, before)
 			assertForbidden(t, response)
@@ -122,8 +119,8 @@ func TestMissingCurrentRouteFailsClosedEvenWhenMissingPermissionIsAllowed(t *tes
 	p, _ := initializedPlugin(t, func(cfg *Config) {
 		cfg.MissingPermission = MissingPermissionAllow
 	})
-	response := requestThroughOptionalRoute(p, nil, func(c *gin.Context) {
-		web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"})
+	response := requestThroughOptionalRoute(p, nil, func(c *web.Ctx) {
+		web.SetPrincipal(c, web.Principal{Subject: "alice"})
 	})
 	assertForbidden(t, response)
 }
@@ -133,8 +130,8 @@ func TestMissingPermissionCanBeExplicitlyAllowedAfterAuthentication(t *testing.T
 		cfg.MissingPermission = MissingPermissionAllow
 	})
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/profile"}
-	withPrincipal := requestThroughCasbin(p, route, func(c *gin.Context) {
-		web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"})
+	withPrincipal := requestThroughCasbin(p, route, func(c *web.Ctx) {
+		web.SetPrincipal(c, web.Principal{Subject: "alice"})
 	})
 	if withPrincipal.Code != http.StatusNoContent {
 		t.Fatalf("explicit allow status = %d, body = %s", withPrincipal.Code, withPrincipal.Body.String())
@@ -149,14 +146,14 @@ func TestPathMethodConventionUsesRouteTemplateAndMethod(t *testing.T) {
 	})
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports/:id"},
-		func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"}) },
+		func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) },
 	)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("path_method status = %d, body = %s", response.Code, response.Body.String())
 	}
 	assertForbidden(t, requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodDelete, Path: "/reports/:id"},
-		func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"}) },
+		func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) },
 	))
 }
 
@@ -193,7 +190,7 @@ func TestMiddlewareReadsRouteMetadataPerRequest(t *testing.T) {
 	p, _ := initializedPlugin(t, func(cfg *Config) {
 		cfg.Policy = "p, alice, reports:read"
 	})
-	principal := func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"}) }
+	principal := func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) }
 
 	missingPerm := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports"}, principal,
@@ -207,31 +204,37 @@ func TestMiddlewareReadsRouteMetadataPerRequest(t *testing.T) {
 	}
 }
 
-func requestThroughCasbin(p *Plugin, route web.RouteInfo, before gin.HandlerFunc) *httptest.ResponseRecorder {
+func requestThroughCasbin(p *Plugin, route web.RouteInfo, before func(*web.Ctx)) *httptest.ResponseRecorder {
 	return requestThroughOptionalRoute(p, &route, before)
 }
 
-func requestThroughOptionalRoute(p *Plugin, route *web.RouteInfo, before gin.HandlerFunc) *httptest.ResponseRecorder {
+func requestThroughOptionalRoute(p *Plugin, route *web.RouteInfo, before func(*web.Ctx)) *httptest.ResponseRecorder {
 	return requestThroughOptionalRouteWithHeader(p, route, before, "")
 }
 
-func requestThroughOptionalRouteWithHeader(p *Plugin, route *web.RouteInfo, before gin.HandlerFunc, authorization string) *httptest.ResponseRecorder {
-	engine := gin.New()
-	engine.Use(func(c *gin.Context) {
-		if route != nil {
-			c.Set(currentRouteKeyForTest, *route)
-		}
-		if before != nil {
-			before(c)
-		}
-		c.Next()
-	})
-	engine.Use(web.Handle(p.Handler()))
+func requestThroughOptionalRouteWithHeader(p *Plugin, route *web.RouteInfo, before func(*web.Ctx), authorization string) *httptest.ResponseRecorder {
 	method, path := http.MethodGet, "/test"
 	if route != nil {
 		method, path = route.Method, route.Path
 	}
-	engine.Handle(method, path, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	engine := enginetest.New()
+	engine.Handle(method, muxPattern(path), []web.Handler{
+		func(_ context.Context, c *web.Ctx) error {
+			if route != nil {
+				c.Set(currentRouteKeyForTest, *route)
+			}
+			if before != nil {
+				before(c)
+			}
+			c.Next()
+			return nil
+		},
+		p.Handler(),
+		func(_ context.Context, c *web.Ctx) error {
+			c.Status(http.StatusNoContent)
+			return nil
+		},
+	})
 
 	recorder := httptest.NewRecorder()
 	requestPath := path
@@ -244,6 +247,21 @@ func requestThroughOptionalRouteWithHeader(p *Plugin, route *web.RouteInfo, befo
 	}
 	engine.ServeHTTP(recorder, request)
 	return recorder
+}
+
+// muxPattern rewrites the gin-style ":id" wildcard these RouteInfo values
+// carry into the ServeMux "{id}" form the test engine registers with. Only the
+// registered pattern is translated: the RouteInfo the middleware reads keeps
+// its original path, because that string is the permission subject under the
+// path_method convention.
+func muxPattern(path string) string {
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		if strings.HasPrefix(segment, ":") {
+			segments[i] = "{" + segment[1:] + "}"
+		}
+	}
+	return strings.Join(segments, "/")
 }
 
 func assertForbidden(t *testing.T, recorder *httptest.ResponseRecorder) {

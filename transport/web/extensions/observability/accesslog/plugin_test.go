@@ -1,6 +1,7 @@
 package accesslog
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,12 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
+
+// currentRouteKeyForTest is the key web.CurrentRoute reads. Setting it directly
+// is how a test publishes a matched route without standing up a web.Router.
+const currentRouteKeyForTest = "xbc/web.currentRoute"
 
 type captured struct {
 	level  string
@@ -53,17 +57,17 @@ func TestDefinitionAndOrderingContract(t *testing.T) {
 }
 
 func TestStructuredFieldsAndSecretMinimization(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	logger := &captureLogger{}
 	p := New()
 	cfg, _ := normalizeConfig(DefaultConfig())
 	p.state.Store(&runtimeState{config: cfg, logger: logger})
 
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/users/:id", func(c *gin.Context) {
-		c.Header(defaultRequestIDHeader, "request-1")
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/users/{id}", func(_ context.Context, c *web.Ctx) error {
+		c.SetHeader(defaultRequestIDHeader, "request-1")
 		c.String(http.StatusCreated, "hello")
+		return nil
 	})
 	request := httptest.NewRequest(http.MethodGet, "/users/42?password=super-secret", nil)
 	request.RemoteAddr = "192.0.2.9:1234"
@@ -74,16 +78,10 @@ func TestStructuredFieldsAndSecretMinimization(t *testing.T) {
 	entry := oneEntry(t, logger)
 	fields := fieldsMap(entry.fields)
 	// "route" is sourced from web.CurrentRoute, which only web.Router's
-	// per-route registration populates; this test drives a bare *gin.Engine
-	// directly (bypassing web.Router), so no frozen route ever matches and the
-	// field keeps its unmatched-request fallback of "".
-	//
-	// This leaves write's own CurrentRoute branch -- the one that fills route
-	// and route_name for a matched request -- unpinned here: deleting it
-	// outright keeps this package green. Closing that gap needs a Ctx carrying
-	// a frozen route, which in turn needs an Engine, and the only one today
-	// lives in the separate engines/gin module that this package is being
-	// moved off. The neutral test engine reopens it.
+	// per-route registration populates. This test registers its route directly
+	// on the engine, so no frozen route ever matches and the field keeps its
+	// unmatched-request fallback of "". The matched case is
+	// TestMatchedRouteIsLogged.
 	for key, want := range map[string]any{
 		"method": http.MethodGet, "path": "/users/42", "route": "",
 		"status": http.StatusCreated, "bytes": 5, "request_id": "request-1", "client_ip": "192.0.2.9",
@@ -108,14 +106,13 @@ func TestStructuredFieldsAndSecretMinimization(t *testing.T) {
 }
 
 func TestPanicIsLoggedAndRethrown(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	logger := &captureLogger{}
 	p := New()
 	cfg, _ := normalizeConfig(DefaultConfig())
 	p.state.Store(&runtimeState{config: cfg, logger: logger})
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/panic", func(*gin.Context) { panic("boom") })
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/panic", func(context.Context, *web.Ctx) error { panic("boom") })
 
 	func() {
 		defer func() {
@@ -132,14 +129,13 @@ func TestPanicIsLoggedAndRethrown(t *testing.T) {
 }
 
 func TestUnvalidatedInboundRequestIDIsNotLogged(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	logger := &captureLogger{}
 	p := New()
 	cfg, _ := normalizeConfig(DefaultConfig())
 	p.state.Store(&runtimeState{config: cfg, logger: logger})
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/", noContent)
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Header.Set(defaultRequestIDHeader, "attacker-controlled-secret")
@@ -152,7 +148,6 @@ func TestUnvalidatedInboundRequestIDIsNotLogged(t *testing.T) {
 }
 
 func TestSkipPathsAndUntrustedForwardedFor(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	logger := &captureLogger{}
 	cfg := DefaultConfig()
 	cfg.SkipPaths = []string{"/health", "/assets/*"}
@@ -162,9 +157,9 @@ func TestSkipPathsAndUntrustedForwardedFor(t *testing.T) {
 	}
 	p := New()
 	p.state.Store(&runtimeState{config: normalized, logger: logger})
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/*path", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/", noContent)
 	for _, path := range []string{"/health", "/assets/app.js"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("X-Forwarded-For", "203.0.113.88")
@@ -176,6 +171,50 @@ func TestSkipPathsAndUntrustedForwardedFor(t *testing.T) {
 	if len(logger.entries) != 0 {
 		t.Fatalf("skipped paths produced entries: %#v", logger.entries)
 	}
+}
+
+// TestMatchedRouteIsLogged pins the CurrentRoute branch that fills route and
+// route_name. Every other case here drives a route registered straight on the
+// engine, where no frozen route matches, so without this test the branch could
+// be deleted outright and the package would stay green -- and an access log
+// that reports the raw path but never the route template loses exactly the
+// field an operator aggregates on.
+func TestMatchedRouteIsLogged(t *testing.T) {
+	logger := &captureLogger{}
+	p := New()
+	cfg, _ := normalizeConfig(DefaultConfig())
+	p.state.Store(&runtimeState{config: cfg, logger: logger})
+
+	router := enginetest.New()
+	router.Use(func(_ context.Context, c *web.Ctx) error {
+		c.Set(currentRouteKeyForTest, web.RouteInfo{
+			Method: http.MethodGet,
+			Path:   "/users/:id",
+			Name:   "users.get",
+		})
+		c.Next()
+		return nil
+	})
+	router.Use(p.handle)
+	router.GET("/users/{id}", noContent)
+
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/users/42", nil))
+
+	fields := fieldsMap(oneEntry(t, logger).fields)
+	for key, want := range map[string]any{
+		"path": "/users/42", "route": "/users/:id", "route_name": "users.get",
+	} {
+		if got := fields[key]; got != want {
+			t.Fatalf("field %s = %#v, want %#v (all %#v)", key, got, want, fields)
+		}
+	}
+}
+
+// noContent is the do-nothing route handler shared by the cases whose subject
+// is the log entry rather than the response.
+func noContent(_ context.Context, c *web.Ctx) error {
+	c.Status(http.StatusNoContent)
+	return nil
 }
 
 func oneEntry(t *testing.T, logger *captureLogger) captured {

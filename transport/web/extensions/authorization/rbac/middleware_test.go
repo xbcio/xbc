@@ -10,10 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	businessrbac "github.com/xbcio/xbc/extensions/authorization/rbac"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 type middlewareManager struct {
@@ -150,22 +149,23 @@ func TestRequireAllTreatsNilAndTypedNilManagersAsInternalErrors(t *testing.T) {
 
 func serveRBAC(t *testing.T, middleware web.Handler, principal *web.Principal, requestContext context.Context, authorization string) (*httptest.ResponseRecorder, bool) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	engine.Use(web.Handle(web.OnError()))
+	engine := enginetest.New()
+	engine.Use(web.OnError())
 	if principal != nil {
-		engine.Use(func(ctx *gin.Context) {
-			if !web.SetPrincipal(web.NewCtx(ctx), *principal) {
+		engine.Use(func(_ context.Context, c *web.Ctx) error {
+			if !web.SetPrincipal(c, *principal) {
 				t.Fatal("failed to install test principal")
 			}
-			ctx.Next()
+			c.Next()
+			return nil
 		})
 	}
-	engine.Use(web.Handle(middleware))
+	engine.Use(middleware)
 	reached := false
-	engine.GET("/reports", func(ctx *gin.Context) {
+	engine.GET("/reports", func(_ context.Context, c *web.Ctx) error {
 		reached = true
-		ctx.Status(http.StatusNoContent)
+		c.Status(http.StatusNoContent)
+		return nil
 	})
 
 	request := httptest.NewRequest(http.MethodGet, "/reports", nil).WithContext(requestContext)

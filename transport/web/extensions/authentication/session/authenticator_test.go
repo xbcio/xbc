@@ -10,13 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
-
-func init() { gin.SetMode(gin.TestMode) }
 
 // configuredSessionPlugin returns a plugin backed by store, with cfg mutated
 // by mutate before construction.
@@ -39,13 +36,11 @@ func configuredSessionPlugin(t *testing.T, store Store, mutate func(*Config)) *P
 // at all -- the minimum ExtractCredential needs to classify a request.
 func newTestContextWithCookies(t *testing.T, cookies []*http.Cookie) *web.Ctx {
 	t.Helper()
-	gc, _ := gin.CreateTestContext(httptest.NewRecorder())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	for _, cookie := range cookies {
 		req.AddCookie(cookie)
 	}
-	gc.Request = req
-	return web.NewCtx(gc)
+	return enginetest.NewCtx(httptest.NewRecorder(), req)
 }
 
 // TestPluginExtractCredentialClassifiesCookie exercises the three-state
@@ -170,18 +165,18 @@ func TestPluginExtractCredentialClassifiesCookie(t *testing.T) {
 }
 
 // TestPluginExtractCredentialWithoutRequestIsAbsent exercises both halves of
-// ExtractCredential's defensive guard: a nil *web.Ctx, and a *web.Ctx wrapping
-// a gin.Context that carries no request. web.NewCtx performs no validation, so
-// the second case is reachable from outside the web package; a Ctx the
-// framework itself hands a handler always wraps a live request.
+// ExtractCredential's defensive guard: a nil *web.Ctx, and a *web.Ctx whose
+// request context carries no request. Neither web.NewCtx nor the test engine
+// validates that, so the second case is reachable from outside the web
+// package; a Ctx the framework itself hands a handler always wraps a live
+// request.
 func TestPluginExtractCredentialWithoutRequestIsAbsent(t *testing.T) {
 	t.Parallel()
 	p := configuredSessionPlugin(t, &recordingStore{}, nil)
 
-	noRequest, _ := gin.CreateTestContext(httptest.NewRecorder())
 	for name, c := range map[string]*web.Ctx{
 		"nil ctx":     nil,
-		"nil request": web.NewCtx(noRequest),
+		"nil request": enginetest.NewCtx(httptest.NewRecorder(), nil),
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := p.ExtractCredential(c)
