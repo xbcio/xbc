@@ -48,7 +48,7 @@ func (p *Plugin) write(state *runtimeState, c *web.Ctx, started time.Time, panic
 	gc := c.Gin()
 	route := gc.FullPath()
 	routeName := ""
-	if info, ok := web.CurrentRoute(gc); ok {
+	if info, ok := web.CurrentRoute(c); ok {
 		route = info.Path
 		routeName = info.Name
 	}

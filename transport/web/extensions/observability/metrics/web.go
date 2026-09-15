@@ -24,7 +24,7 @@ func (p *Plugin) RegisterRoutes(router *web.Router) {
 func (p *Plugin) handleMetrics(_ context.Context, c *web.Ctx) error {
 	state := p.state.Load()
 	if state == nil || !state.config.endpoint.enabled {
-		web.AbortProblem(c.Gin(), web.NewProblem(http.StatusNotFound, "not_found"))
+		web.AbortProblem(c, web.NewProblem(http.StatusNotFound, "not_found"))
 		return nil
 	}
 	c.SetHeader("Cache-Control", "no-store")

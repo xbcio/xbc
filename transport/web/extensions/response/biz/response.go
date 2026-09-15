@@ -77,14 +77,11 @@ func Write[T any](c *web.Ctx, status int, data T) error {
 		return fmt.Errorf("biz: response is already committed")
 	}
 
-	// FromGin already falls back to the standard request context, so reading it
+	// From already falls back to the standard request context, so reading it
 	// once covers both halves of Gin's split context. Do not add a second read
 	// against c.Request().Context(): that set is a strict subset of this one.
-	// Reaching through Gin here is deliberate and stays inside the framework:
-	// requestid.FromGin is a transport-plumbing contract, and no application
-	// handler ever sees this call.
 	response := NewResponse(data)
-	if requestID, ok := requestid.FromGin(c.Gin()); ok {
+	if requestID, ok := requestid.From(c); ok {
 		response.RequestID = requestID
 	}
 	// json.API is Gin's selected codec, so an application that builds with the

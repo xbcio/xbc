@@ -59,12 +59,16 @@ func OnError(mappers ...ErrorMapper) Handler {
 		if c == nil {
 			return nil
 		}
-		gc := c.Gin()
-		parent := resolverFor(gc)
+		parent := resolverFor(c)
 		resolver := parent.withMappers(scopedMappers)
-		gc.Set(errorResolverContextKey, resolver)
-		defer gc.Set(errorResolverContextKey, parent)
-		resolver.resolveErrors(gc)
+		c.Set(errorResolverContextKey, resolver)
+		defer c.Set(errorResolverContextKey, parent)
+		// resolveErrors still takes the live *gin.Context: it is the one piece
+		// of this error boundary that continues to catch Gin handlers or
+		// middleware that report failure through gin.Context.Error rather than
+		// Handler's own return path, so it stays on the engine's own context
+		// until that seam is ported (see resolveErrors's doc comment).
+		resolver.resolveErrors(c.Gin())
 		return nil
 	}
 }
@@ -73,32 +77,38 @@ func OnError(mappers ...ErrorMapper) Handler {
 // request's own context (gin.Context.Request.Context()), not
 // context.Background(), so cancellation and deadlines set by upstream
 // middleware (timeouts, client disconnects) propagate into the handler.
-// Errors are recorded on gin.Context for diagnostics, abort the remaining
-// handler chain, and are rendered immediately. Immediate rendering is
-// important: buffering middleware such as timeout, gzip, and idempotency
-// must observe the final response while their own deferred work unwinds.
+// Errors abort the remaining handler chain and are rendered immediately.
+// Immediate rendering is important: buffering middleware such as timeout,
+// gzip, and idempotency must observe the final response while their own
+// deferred work unwinds.
 func Handle(handler Handler) gin.HandlerFunc {
 	if handler == nil {
 		panic("xbc: web.Handle requires a non-nil handler")
 	}
 	return func(c *gin.Context) {
-		if err := handler(c.Request.Context(), newCtx(c)); err != nil {
-			AbortError(c, err)
+		ctx := newCtx(c)
+		if err := handler(c.Request.Context(), ctx); err != nil {
+			AbortError(ctx, err)
 		}
 	}
 }
 
-// AbortError records err, stops the remaining Gin chain, and renders it with
-// the active OnError mapper chain. It is the middleware-oriented counterpart
-// of returning an error from Handler. Immediate rendering ensures buffering
+// AbortError stops the remaining handler chain and renders err with the
+// active OnError mapper chain. It is the middleware-oriented counterpart of
+// returning an error from Handler. Immediate rendering ensures buffering
 // middleware observes the final error response while unwinding. When no
 // OnError middleware is installed, the safe built-in mappings still apply.
-func AbortError(c *gin.Context, err error) {
+//
+// AbortError deliberately does not record err on gin.Context.Errors: the only
+// reader of that accumulator is resolveErrors, and resolveErrors's own guard
+// (c.Writer.Written()) always short-circuits before it would read Errors on
+// any path reached through AbortError, because write (below) has already
+// committed a response by the time resolveErrors runs.
+func AbortError(c *Ctx, err error) {
 	if c == nil || err == nil {
 		return
 	}
 	c.Abort()
-	_ = c.Error(err)
 	resolverFor(c).write(c, err)
 }
 
@@ -128,13 +138,15 @@ func (r *errorResolver) withMappers(mappers []ErrorMapper) *errorResolver {
 
 // attach publishes the logger-bearing base resolver before any contributed
 // middleware runs. OnError derives request-scoped mapper chains from it.
-func (r *errorResolver) attach(c *gin.Context) {
+func (r *errorResolver) attach(c *Ctx) {
 	c.Set(errorResolverContextKey, r)
 }
 
 // resolveErrors catches Gin handlers or middleware that use c.Error(err).
 // Error-returning handlers are resolved immediately by Handle and therefore
-// reach this point with a response already written.
+// reach this point with a response already written. It stays on the live
+// *gin.Context because gin.Context.Errors is gin's own accumulator; porting
+// this method is T4's job once that accumulator has an engine-neutral home.
 func (r *errorResolver) resolveErrors(c *gin.Context) {
 	c.Next()
 	if c.Writer == nil || c.Writer.Written() || len(c.Errors) == 0 {
@@ -150,10 +162,10 @@ func (r *errorResolver) resolveErrors(c *gin.Context) {
 	if err == nil {
 		return
 	}
-	r.write(c, err)
+	r.write(newCtx(c), err)
 }
 
-func resolverFor(c *gin.Context) *errorResolver {
+func resolverFor(c *Ctx) *errorResolver {
 	if c != nil {
 		if value, ok := c.Get(errorResolverContextKey); ok {
 			if resolver, valid := value.(*errorResolver); valid && resolver != nil {
@@ -164,11 +176,11 @@ func resolverFor(c *gin.Context) *errorResolver {
 	return fallbackErrorResolver
 }
 
-func (r *errorResolver) write(c *gin.Context, err error) {
+func (r *errorResolver) write(c *Ctx, err error) {
 	if c == nil || err == nil {
 		return
 	}
-	if c.Writer == nil || c.Writer.Written() {
+	if c.Writer() == nil || c.Writer().Written() {
 		r.log(err, 0, c, true)
 		return
 	}
@@ -180,18 +192,17 @@ func (r *errorResolver) write(c *gin.Context, err error) {
 	AbortProblem(c, problem)
 }
 
-// mapError still takes the live *gin.Context: it is called only from write,
-// which is reached exclusively from framework-internal transport plumbing
-// (AbortError and resolveErrors), never from application code. It wraps c
-// into a Ctx once so every configured ErrorMapper -- the application-facing
-// contract -- sees the same fixed surface a Handle-registered handler does.
-func (r *errorResolver) mapError(c *gin.Context, err error) ProblemDetail {
-	ctx := newCtx(c)
+// mapError is called only from write, which is reached exclusively from
+// framework-internal transport plumbing (AbortError and resolveErrors), never
+// from application code. It hands c straight to every configured ErrorMapper
+// -- the application-facing contract -- so each one sees the same fixed
+// surface a Handle-registered handler does.
+func (r *errorResolver) mapError(c *Ctx, err error) ProblemDetail {
 	for _, mapper := range r.mappers {
 		if mapper == nil {
 			continue
 		}
-		if problem, ok := mapper.MapError(ctx, err); ok {
+		if problem, ok := mapper.MapError(c, err); ok {
 			// A mapper claiming an error must produce an error status. In
 			// particular, never reproduce the common but operationally harmful
 			// convention of returning a business failure with HTTP 200.
@@ -212,7 +223,7 @@ func (r *errorResolver) mapError(c *gin.Context, err error) ProblemDetail {
 	return NewProblem(http.StatusInternalServerError, "internal_server_error")
 }
 
-func (r *errorResolver) log(err error, status int, c *gin.Context, responseWritten bool) {
+func (r *errorResolver) log(err error, status int, c *Ctx, responseWritten bool) {
 	logger := r.logger
 	if logger == nil {
 		logger = corelog.Nop()
@@ -223,10 +234,10 @@ func (r *errorResolver) log(err error, status int, c *gin.Context, responseWritt
 		"error_type", fmt.Sprintf("%T", err),
 		"response_written", responseWritten,
 	}
-	if c != nil && c.Request != nil {
-		fields = append(fields, "method", c.Request.Method)
-		if c.Request.URL != nil {
-			fields = append(fields, "path", c.Request.URL.Path)
+	if c != nil && c.Request() != nil {
+		fields = append(fields, "method", c.Request().Method)
+		if c.Request().URL != nil {
+			fields = append(fields, "path", c.Request().URL.Path)
 		}
 	}
 	if c != nil {

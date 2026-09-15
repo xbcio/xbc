@@ -10,10 +10,9 @@ import (
 )
 
 func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
-	gc := c.Gin()
 	state := p.state.Load()
 	if state == nil {
-		web.AbortProblem(gc, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
+		web.AbortProblem(c, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
 		return nil
 	}
 
@@ -25,7 +24,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		var err error
 		id, err = generateID()
 		if err != nil {
-			web.AbortProblem(gc, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
+			web.AbortProblem(c, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
 			return nil
 		}
 	}

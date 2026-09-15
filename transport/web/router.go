@@ -550,15 +550,15 @@ func recordCurrentRoute(frozen *bool, index *map[string]RouteInfo) gin.HandlerFu
 	}
 }
 
-// CurrentRoute reports which frozen route table entry gc is currently
+// CurrentRoute reports which frozen route table entry c is currently
 // handling. It depends only on the internal middleware having already run
 // on this request (see recordCurrentRoute) -- not on *plugin.Context or any
 // mutable route table -- so a plugin that only wires up gRPC is never forced
 // to import Gin just to have a Context capable of answering this question.
 // It returns false for a request that matches no frozen route, or one made
 // before the internal middleware has had a chance to run at all.
-func CurrentRoute(gc *gin.Context) (RouteInfo, bool) {
-	v, ok := gc.Get(currentRouteContextKey)
+func CurrentRoute(c *Ctx) (RouteInfo, bool) {
+	v, ok := c.Get(currentRouteContextKey)
 	if !ok {
 		return RouteInfo{}, false
 	}

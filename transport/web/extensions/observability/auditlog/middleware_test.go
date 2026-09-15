@@ -36,7 +36,7 @@ func auditEngine(p *Plugin, route web.RouteInfo, handler gin.HandlerFunc) *gin.E
 	engine.Use(func(c *gin.Context) { c.Set(currentRouteKeyForTest, route); c.Next() })
 	engine.Use(web.Handle(p.Handler()))
 	engine.Use(func(c *gin.Context) {
-		web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "apikey"})
+		web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice", AuthMethod: "apikey"})
 		c.Next()
 	})
 	engine.Handle(route.Method, route.Path, handler)
@@ -92,7 +92,7 @@ func TestSkipPathsAndCustomRequestIDExtractor(t *testing.T) {
 	sink := &memorySink{}
 	cfg := DefaultConfig()
 	cfg.SkipPaths = []string{"/health*"}
-	p, err := New(cfg, WithSink(sink), WithRequestIDExtractor(func(*gin.Context) string { return "custom" }))
+	p, err := New(cfg, WithSink(sink), WithRequestIDExtractor(func(*web.Ctx) string { return "custom" }))
 	if err != nil {
 		t.Fatal(err)
 	}

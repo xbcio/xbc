@@ -21,7 +21,7 @@ func TestAbortProblemAppliesSafeRFC9457Defaults(t *testing.T) {
 	context.Header("Content-Length", "999")
 	context.Header("ETag", "secret")
 
-	AbortProblem(context, NewProblem(http.StatusForbidden, "forbidden"))
+	AbortProblem(newCtx(context), NewProblem(http.StatusForbidden, "forbidden"))
 
 	assert.Equal(t, http.StatusForbidden, recorder.Code)
 	assert.Equal(t, problemContentType, recorder.Header().Get("Content-Type"))
@@ -68,8 +68,8 @@ func TestWriteProblemNormalizesInvalidStatusAndDoesNotOverwriteResponse(t *testi
 	context, _ := gin.CreateTestContext(recorder)
 	context.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-	WriteProblem(context, ProblemDetail{Status: 0})
-	WriteProblem(context, NewProblem(http.StatusBadRequest, "late"))
+	WriteProblem(newCtx(context), ProblemDetail{Status: 0})
+	WriteProblem(newCtx(context), NewProblem(http.StatusBadRequest, "late"))
 
 	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
 	assert.NotContains(t, recorder.Body.String(), "late")
@@ -83,7 +83,7 @@ func TestWriteProblemFallsBackWhenAnExtensionCannotBeEncoded(t *testing.T) {
 	problem := NewProblem(http.StatusBadRequest, "bad_extension")
 	problem.Properties["not_json"] = math.Inf(1)
 
-	WriteProblem(context, problem)
+	WriteProblem(newCtx(context), problem)
 
 	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
 	var response ProblemDetail

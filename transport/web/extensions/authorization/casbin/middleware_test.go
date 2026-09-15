@@ -33,7 +33,9 @@ func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
 
 	allowed := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"},
-		func(c *gin.Context) { web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "jwt"}) },
+		func(c *gin.Context) {
+			web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice", AuthMethod: "jwt"})
+		},
 	)
 	if allowed.Code != http.StatusNoContent {
 		t.Fatalf("allowed status = %d, body = %s", allowed.Code, allowed.Body.String())
@@ -41,7 +43,9 @@ func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
 
 	denied := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"},
-		func(c *gin.Context) { web.SetPrincipal(c, web.Principal{Subject: "bob", AuthMethod: "jwt"}) },
+		func(c *gin.Context) {
+			web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "bob", AuthMethod: "jwt"})
+		},
 	)
 	assertForbidden(t, denied)
 }
@@ -72,7 +76,7 @@ func TestRouteDeclaredPublicButNotExemptStillEnforces(t *testing.T) {
 	publicPolicy := web.Public()
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/login", Auth: &publicPolicy, Perm: "reports:read"},
-		func(c *gin.Context) { web.SetPrincipal(c, web.Principal{Subject: "bob"}) },
+		func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "bob"}) },
 	)
 	assertForbidden(t, response)
 }
@@ -94,7 +98,7 @@ func TestProtectedRoutesFailClosed(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var before gin.HandlerFunc
 			if test.principal {
-				before = func(c *gin.Context) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) }
+				before = func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"}) }
 			}
 			response := requestThroughOptionalRoute(p, test.route, before)
 			assertForbidden(t, response)
@@ -119,7 +123,7 @@ func TestMissingCurrentRouteFailsClosedEvenWhenMissingPermissionIsAllowed(t *tes
 		cfg.MissingPermission = MissingPermissionAllow
 	})
 	response := requestThroughOptionalRoute(p, nil, func(c *gin.Context) {
-		web.SetPrincipal(c, web.Principal{Subject: "alice"})
+		web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"})
 	})
 	assertForbidden(t, response)
 }
@@ -130,7 +134,7 @@ func TestMissingPermissionCanBeExplicitlyAllowedAfterAuthentication(t *testing.T
 	})
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/profile"}
 	withPrincipal := requestThroughCasbin(p, route, func(c *gin.Context) {
-		web.SetPrincipal(c, web.Principal{Subject: "alice"})
+		web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"})
 	})
 	if withPrincipal.Code != http.StatusNoContent {
 		t.Fatalf("explicit allow status = %d, body = %s", withPrincipal.Code, withPrincipal.Body.String())
@@ -145,20 +149,20 @@ func TestPathMethodConventionUsesRouteTemplateAndMethod(t *testing.T) {
 	})
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports/:id"},
-		func(c *gin.Context) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) },
+		func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"}) },
 	)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("path_method status = %d, body = %s", response.Code, response.Body.String())
 	}
 	assertForbidden(t, requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodDelete, Path: "/reports/:id"},
-		func(c *gin.Context) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) },
+		func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"}) },
 	))
 }
 
 func TestInjectedResolverDoesNotRequireJWTOrPrincipal(t *testing.T) {
 	var calls atomic.Int32
-	resolver := SubjectResolverFunc(func(*gin.Context) (string, bool) {
+	resolver := SubjectResolverFunc(func(*web.Ctx) (string, bool) {
 		calls.Add(1)
 		return "service-account", true
 	})
@@ -189,7 +193,7 @@ func TestMiddlewareReadsRouteMetadataPerRequest(t *testing.T) {
 	p, _ := initializedPlugin(t, func(cfg *Config) {
 		cfg.Policy = "p, alice, reports:read"
 	})
-	principal := func(c *gin.Context) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) }
+	principal := func(c *gin.Context) { web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice"}) }
 
 	missingPerm := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports"}, principal,

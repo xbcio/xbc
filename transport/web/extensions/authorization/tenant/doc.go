@@ -36,12 +36,15 @@
 //
 // Downstream handlers consume only the tenant published by the middleware:
 //
-//	resolved, ok := tenant.Current(c)
-//	if !ok {
-//		c.AbortWithStatus(http.StatusForbidden)
-//		return
+//	func handler(_ context.Context, c *web.Ctx) error {
+//		resolved, ok := tenant.Current(c)
+//		if !ok {
+//			web.AbortProblem(c, web.NewProblem(http.StatusForbidden, "forbidden"))
+//			return nil
+//		}
+//		c.JSON(http.StatusOK, map[string]any{"tenant_id": resolved.ID})
+//		return nil
 //	}
-//	c.JSON(http.StatusOK, gin.H{"tenant_id": resolved.ID})
 //
 // Never pass an unchecked X-Tenant-ID value to Set or return it from a custom
 // Resolver without proving membership. Bundle and ordinary imports are

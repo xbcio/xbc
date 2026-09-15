@@ -10,8 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
@@ -21,11 +19,11 @@ import (
 const Key plugin.Key = "auditlog"
 
 // RequestIDExtractor decouples audit logging from any request-ID plugin.
-type RequestIDExtractor func(*gin.Context) string
+type RequestIDExtractor func(*web.Ctx) string
 
 // ClientIPExtractor allows applications with a trusted-proxy policy to inject
 // their own logic. The default reads RemoteAddr and ignores spoofable headers.
-type ClientIPExtractor func(*gin.Context) string
+type ClientIPExtractor func(*web.Ctx) string
 
 type runtimeState struct {
 	config    normalizedConfig
@@ -275,7 +273,7 @@ func (state *runtimeState) skipped(route, rawPath string) bool {
 }
 
 func headerRequestID(header string) RequestIDExtractor {
-	return func(c *gin.Context) string {
+	return func(c *web.Ctx) string {
 		value := strings.TrimSpace(c.GetHeader(header))
 		if len(value) > 256 || containsControl(value) {
 			return ""
@@ -284,15 +282,15 @@ func headerRequestID(header string) RequestIDExtractor {
 	}
 }
 
-func remoteClientIP(c *gin.Context) string {
-	if c == nil || c.Request == nil {
+func remoteClientIP(c *web.Ctx) string {
+	if c == nil || c.Request() == nil {
 		return ""
 	}
-	host, _, err := net.SplitHostPort(strings.TrimSpace(c.Request.RemoteAddr))
+	host, _, err := net.SplitHostPort(strings.TrimSpace(c.Request().RemoteAddr))
 	if err == nil {
 		return host
 	}
-	return strings.TrimSpace(c.Request.RemoteAddr)
+	return strings.TrimSpace(c.Request().RemoteAddr)
 }
 
 func containsControl(value string) bool {

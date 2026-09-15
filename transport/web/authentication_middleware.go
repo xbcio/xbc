@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -58,7 +56,7 @@ const authenticationExemptContextKey = "xbc/transport/web.authenticationExempt"
 // markAuthenticationExempt records that this request's authentication policy
 // resolved to permit. It is called only from the same branch that skips
 // calling the authentication manager, so the two facts never disagree.
-func markAuthenticationExempt(c *gin.Context) {
+func markAuthenticationExempt(c *Ctx) {
 	c.Set(authenticationExemptContextKey, true)
 }
 
@@ -70,7 +68,7 @@ func markAuthenticationExempt(c *gin.Context) {
 // arbiter. A request that never reached the authentication middleware (for
 // example a test that wires up authorization middleware standalone) reports
 // false: fail closed, not open.
-func AuthenticationExempt(c *gin.Context) bool {
+func AuthenticationExempt(c *Ctx) bool {
 	if c == nil {
 		return false
 	}
@@ -194,8 +192,7 @@ func (m *authenticationMiddleware) RoutesReady(catalog RouteCatalog) error {
 // already paid once during RoutesReady.
 func (m *authenticationMiddleware) Handler() Handler {
 	return func(_ context.Context, c *Ctx) error {
-		gc := c.Gin()
-		route, matched := CurrentRoute(gc)
+		route, matched := CurrentRoute(c)
 		if !matched {
 			// 404 and 405 requests reach here because gin's allNoRoute chain
 			// includes every global middleware. Turning them into 401 would
@@ -212,14 +209,14 @@ func (m *authenticationMiddleware) Handler() Handler {
 			// never built at all. Releasing the request would be precisely the
 			// silently permissive service RoutesReady exists to prevent, so an
 			// internal inconsistency fails closed.
-			abortAuthenticationFailure(gc, fmt.Errorf(
+			abortAuthenticationFailure(c, fmt.Errorf(
 				"xbc: web route %s %s has no compiled authentication policy",
 				route.Method, route.Path,
 			))
 			return nil
 		}
 		if policy.permit {
-			markAuthenticationExempt(gc)
+			markAuthenticationExempt(c)
 			c.Next()
 			return nil
 		}
@@ -232,19 +229,19 @@ func (m *authenticationMiddleware) Handler() Handler {
 		if err != nil {
 			// An operational failure may carry an unsafe cause, so it is logged
 			// server-side and never reflected in the response.
-			abortAuthenticationFailure(gc, err)
+			abortAuthenticationFailure(c, err)
 			return nil
 		}
 
 		if result.Authenticated() {
 			principal, ok := result.Principal()
 			if !ok {
-				abortAuthenticationFailure(gc, errors.New("xbc: authenticated result carried no principal"))
+				abortAuthenticationFailure(c, errors.New("xbc: authenticated result carried no principal"))
 				return nil
 			}
 			typed, ok := principal.(Principal)
-			if !ok || !SetPrincipal(gc, typed) {
-				abortAuthenticationFailure(gc, fmt.Errorf(
+			if !ok || !SetPrincipal(c, typed) {
+				abortAuthenticationFailure(c, fmt.Errorf(
 					"xbc: authenticator returned %T, want web.Principal", principal,
 				))
 				return nil
@@ -253,7 +250,7 @@ func (m *authenticationMiddleware) Handler() Handler {
 			return nil
 		}
 
-		writeAuthenticationRejection(gc, result)
+		writeAuthenticationRejection(c, result)
 		return nil
 	}
 }
@@ -270,8 +267,9 @@ func (m *authenticationMiddleware) Handler() Handler {
 //
 // Logging must happen here too, not at the error boundary: AbortProblem writes
 // the response, and errorResolver.resolveErrors skips any request whose
-// response is already written. err is still recorded on gin.Context for
-// middleware that inspects c.Errors, but nothing in Web reads it afterwards.
+// response is already written. err is still recorded on the underlying
+// *gin.Context for third-party middleware that inspects c.Errors, but nothing
+// in Web reads it afterwards.
 //
 // Only err.Error() reaches the log, and that is deliberate. An
 // authentication.OperationalError renders the failed operation and scheme while
@@ -279,10 +277,10 @@ func (m *authenticationMiddleware) Handler() Handler {
 // the credential it rejected. Do not unwrap here to "improve" the diagnostic:
 // that would copy credential material into the log, the leak the eliding
 // Error() exists to prevent.
-func abortAuthenticationFailure(c *gin.Context, err error) {
+func abortAuthenticationFailure(c *Ctx, err error) {
 	problem := NewProblem(http.StatusInternalServerError, "authentication_failed")
 	if err != nil {
-		_ = c.Error(err)
+		_ = c.Gin().Error(err)
 		resolverFor(c).log(err, problem.Status, c, false)
 	}
 	AbortProblem(c, problem)
@@ -293,9 +291,9 @@ func abortAuthenticationFailure(c *gin.Context, err error) {
 // parameters may contain commas, so comma-joining would require escaping for no
 // benefit. The headers are added before AbortProblem because WriteProblem only
 // deletes payload-describing headers, never authentication ones.
-func writeAuthenticationRejection(c *gin.Context, result authentication.Result) {
+func writeAuthenticationRejection(c *Ctx, result authentication.Result) {
 	for _, challenge := range result.Challenges() {
-		c.Writer.Header().Add("WWW-Authenticate", string(challenge))
+		c.Writer().Header().Add("WWW-Authenticate", string(challenge))
 	}
 	problem := NewProblem(http.StatusUnauthorized, "unauthenticated")
 	if reason, ok := result.Reason(); ok {

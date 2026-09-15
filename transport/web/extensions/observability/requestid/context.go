@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
+	"github.com/xbcio/xbc/transport/web"
 )
 
 type contextKey struct{}
@@ -29,9 +29,10 @@ func FromRequest(r *http.Request) (string, bool) {
 	return FromContext(r.Context())
 }
 
-// FromGin returns the request ID stored on both Gin and the standard request
-// context. The latter fallback also works with copied Gin contexts.
-func FromGin(c *gin.Context) (string, bool) {
+// From returns the request ID stored on both Ctx's request-scoped values and
+// the standard request context. The latter fallback also works with copied
+// requests.
+func From(c *web.Ctx) (string, bool) {
 	if c == nil {
 		return "", false
 	}
@@ -41,7 +42,7 @@ func FromGin(c *gin.Context) (string, bool) {
 			return id, true
 		}
 	}
-	return FromRequest(c.Request)
+	return FromRequest(c.Request())
 }
 
 func withRequestID(ctx context.Context, id string) context.Context {

@@ -84,7 +84,7 @@ func (p *Plugin) mapError(c *web.Ctx, err error) (web.ProblemDetail, bool) {
 	problem := web.NewProblem(businessError.Status(), businessError.Code())
 	problem.Detail = businessError.Detail()
 	if c != nil {
-		if requestID, ok := requestid.FromGin(c.Gin()); ok {
+		if requestID, ok := requestid.From(c); ok {
 			problem.Properties["requestId"] = requestID
 		}
 	}

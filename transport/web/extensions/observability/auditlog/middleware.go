@@ -15,8 +15,7 @@ func (p *Plugin) observe(_ context.Context, c *web.Ctx) error {
 		c.Next()
 		return nil
 	}
-	gc := c.Gin()
-	route, routeFound := web.CurrentRoute(gc)
+	route, routeFound := web.CurrentRoute(c)
 	routePath := route.Path
 	rawPath := ""
 	method := ""
@@ -45,15 +44,15 @@ func (p *Plugin) observe(_ context.Context, c *web.Ctx) error {
 		if bytesWritten < 0 {
 			bytesWritten = 0
 		}
-		principal, _ := web.CurrentPrincipal(gc)
+		principal, _ := web.CurrentPrincipal(c)
 		event := Event{
 			Timestamp:             start.UTC(),
 			Method:                method,
 			Status:                status,
 			Bytes:                 bytesWritten,
 			Latency:               time.Since(start),
-			ClientIP:              state.clientIP(gc),
-			RequestID:             state.requestID(gc),
+			ClientIP:              state.clientIP(c),
+			RequestID:             state.requestID(c),
 			Subject:               principal.Subject,
 			AuthMethod:            principal.AuthMethod,
 			IdempotencyKeyPresent: strings.TrimSpace(c.GetHeader(state.config.idempotencyHeader)) != "",

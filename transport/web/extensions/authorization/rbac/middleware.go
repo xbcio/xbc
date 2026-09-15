@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/gin-gonic/gin"
-
 	businessrbac "github.com/xbcio/xbc/extensions/authorization/rbac"
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -40,14 +38,13 @@ func require(manager businessrbac.Manager, permissions []businessrbac.Permission
 		if c == nil {
 			return nil
 		}
-		gc := c.Gin()
 		if constructionErr != nil {
-			web.AbortError(gc, constructionErr)
+			web.AbortError(c, constructionErr)
 			return nil
 		}
-		principal, ok := web.CurrentPrincipal(gc)
+		principal, ok := web.CurrentPrincipal(c)
 		if !ok {
-			forbidden(gc)
+			forbidden(c)
 			return nil
 		}
 		// Unreachable through web.Handle: Handle dereferences c.Request
@@ -55,17 +52,17 @@ func require(manager businessrbac.Manager, permissions []businessrbac.Permission
 		// surfaced there. This guard remains for a direct caller that builds
 		// *web.Ctx itself (see web.NewCtx).
 		if c.Request() == nil {
-			web.AbortError(gc, errors.New("rbac: middleware request is unavailable"))
+			web.AbortError(c, errors.New("rbac: middleware request is unavailable"))
 			return nil
 		}
 
 		allowed, err := check(ctx, principal.Subject, permissions)
 		if err != nil {
-			web.AbortError(gc, fmt.Errorf("rbac: authorize HTTP principal %q: %w", principal.Subject, err))
+			web.AbortError(c, fmt.Errorf("rbac: authorize HTTP principal %q: %w", principal.Subject, err))
 			return nil
 		}
 		if !allowed {
-			forbidden(gc)
+			forbidden(c)
 			return nil
 		}
 		c.Next()
@@ -73,8 +70,8 @@ func require(manager businessrbac.Manager, permissions []businessrbac.Permission
 	}
 }
 
-func forbidden(ctx *gin.Context) {
-	web.AbortProblem(ctx, web.NewProblem(http.StatusForbidden, "forbidden"))
+func forbidden(c *web.Ctx) {
+	web.AbortProblem(c, web.NewProblem(http.StatusForbidden, "forbidden"))
 }
 
 func isNilManager(manager businessrbac.Manager) bool {

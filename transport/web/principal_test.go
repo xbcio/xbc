@@ -8,7 +8,8 @@ import (
 )
 
 func TestPrincipalRoundTripUsesDefensiveAttributeCopies(t *testing.T) {
-	c, _ := gin.CreateTestContext(nil)
+	gc, _ := gin.CreateTestContext(nil)
+	c := newCtx(gc)
 	attributes := map[string]any{"role": "admin"}
 	assert.True(t, SetPrincipal(c, Principal{
 		Subject:    " alice ",
@@ -31,15 +32,16 @@ func TestPrincipalRoundTripUsesDefensiveAttributeCopies(t *testing.T) {
 
 func TestSetPrincipalRejectsMissingIdentity(t *testing.T) {
 	assert.False(t, SetPrincipal(nil, Principal{Subject: "alice"}))
-	c, _ := gin.CreateTestContext(nil)
+	gc, _ := gin.CreateTestContext(nil)
+	c := newCtx(gc)
 	assert.False(t, SetPrincipal(c, Principal{Subject: "  "}))
 	_, ok := CurrentPrincipal(c)
 	assert.False(t, ok)
 }
 
 func TestCurrentPrincipalRejectsUnexpectedContextValue(t *testing.T) {
-	c, _ := gin.CreateTestContext(nil)
-	c.Set(principalContextKey, "alice")
-	_, ok := CurrentPrincipal(c)
+	gc, _ := gin.CreateTestContext(nil)
+	gc.Set(principalContextKey, "alice")
+	_, ok := CurrentPrincipal(newCtx(gc))
 	assert.False(t, ok)
 }

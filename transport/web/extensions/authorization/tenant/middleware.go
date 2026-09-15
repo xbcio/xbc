@@ -48,16 +48,15 @@ func (p *Plugin) resolve(_ context.Context, c *web.Ctx) error {
 		forbidden(c)
 		return nil
 	}
-	gc := c.Gin()
 	// Ask the framework what exemption actually applied to this request,
 	// never the route's own .Auth() declaration: an application rule in
 	// web.security is the final arbiter and may have tightened a route that
 	// declared itself public.
-	if web.AuthenticationExempt(gc) {
+	if web.AuthenticationExempt(c) {
 		c.Next()
 		return nil
 	}
-	principal, ok := web.CurrentPrincipal(gc)
+	principal, ok := web.CurrentPrincipal(c)
 	if !ok {
 		// Reachable in production: an unmatched route (404/405). The
 		// authentication middleware passes those straight through without
@@ -99,7 +98,7 @@ func (p *Plugin) resolve(_ context.Context, c *web.Ctx) error {
 		forbidden(c)
 		return nil
 	}
-	if !setValidated(gc, resolved, state.cfg.minIDLength, state.cfg.maxIDLength) {
+	if !setValidated(c, resolved, state.cfg.minIDLength, state.cfg.maxIDLength) {
 		forbidden(c)
 		return nil
 	}
@@ -121,16 +120,14 @@ func singleHeader(c *web.Ctx, name string) (value string, present, valid bool) {
 	return values[0], true, true
 }
 
-// forbidden takes *web.Ctx rather than the *gin.Context every other
-// converted package's forbidden helper keeps, because resolve holds a
-// *web.Ctx: a *gin.Context parameter would mean calling c.Gin() at all seven
-// call sites. The nil check mirrors resolve's own top guard, which predates
-// the engine-neutral rewrite. Both are unreachable through web.Handle today,
-// since it dereferences the request before the handler runs; they stay as
-// the guard rail for a direct caller.
+// forbidden takes *web.Ctx, matching web.AbortProblem's own neutral signature:
+// no call site needs to reach for c.Gin() any more. The nil check mirrors
+// resolve's own top guard, which predates the engine-neutral rewrite. Both are
+// unreachable through web.Handle today, since it dereferences the request
+// before the handler runs; they stay as the guard rail for a direct caller.
 func forbidden(c *web.Ctx) {
 	if c == nil {
 		return
 	}
-	web.AbortProblem(c.Gin(), web.NewProblem(http.StatusForbidden, "forbidden"))
+	web.AbortProblem(c, web.NewProblem(http.StatusForbidden, "forbidden"))
 }

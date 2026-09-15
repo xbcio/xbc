@@ -22,9 +22,10 @@ import "net/http"
 // for a finished request, so narrowing either one breaks a byte count or a
 // status label that ships today.
 //
-// The framework's own duplicate-write guards in problem.go and errors.go
-// still read Written off *gin.Context rather than through this interface;
-// they move onto it with the rest of the engine seam.
+// problem.go's duplicate-write guard reads Written through this interface via
+// Ctx.Writer. errors.go's resolveErrors still reads Written directly off
+// *gin.Context, because resolveErrors itself has not yet moved onto Ctx; it
+// moves onto this interface with the rest of the engine seam.
 //
 // Flush is part of the contract for a compile-time reason, not a stylistic
 // one: a buffering wrapper's own Flush must commit its buffer and then

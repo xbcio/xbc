@@ -109,7 +109,8 @@ func TestPrincipalResolverRejectsMalformedVerifiedFactsAndCancellation(t *testin
 }
 
 func TestSetAndCurrentValidateAndDefensivelyCopy(t *testing.T) {
-	ctx, _ := gin.CreateTestContext(nil)
+	gc, _ := gin.CreateTestContext(nil)
+	ctx := web.NewCtx(gc)
 	input := Tenant{ID: "acme", Attributes: map[string]any{
 		"nested": map[string]any{"region": "cn"},
 		"roles":  []string{"reader"},

@@ -3,8 +3,6 @@ package web
 import (
 	"encoding/json"
 	"net/http"
-
-	"github.com/gin-gonic/gin"
 )
 
 const problemContentType = "application/problem+json; charset=utf-8"
@@ -109,10 +107,10 @@ func (p *ProblemDetail) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// WriteProblem writes p without aborting the remaining Gin handler chain.
+// WriteProblem writes p without aborting the remaining handler chain.
 // Most middleware should call AbortProblem instead.
-func WriteProblem(c *gin.Context, p ProblemDetail) {
-	if c == nil || c.Writer == nil || c.Writer.Written() {
+func WriteProblem(c *Ctx, p ProblemDetail) {
+	if c == nil || c.Writer() == nil || c.Writer().Written() {
 		return
 	}
 	p = normalizeProblem(p, c)
@@ -122,7 +120,7 @@ func WriteProblem(c *gin.Context, p ProblemDetail) {
 		payload, _ = json.Marshal(p)
 	}
 
-	header := c.Writer.Header()
+	header := c.Writer().Header()
 	for _, name := range []string{
 		"Content-Encoding", "Content-Length", "Content-Range", "Trailer",
 		"Transfer-Encoding", "ETag", "Last-Modified",
@@ -132,12 +130,12 @@ func WriteProblem(c *gin.Context, p ProblemDetail) {
 	header.Set("Content-Type", problemContentType)
 	header.Set("Cache-Control", "no-store")
 	header.Set("X-Content-Type-Options", "nosniff")
-	c.Writer.WriteHeader(p.Status)
-	_, _ = c.Writer.Write(payload)
+	c.Writer().WriteHeader(p.Status)
+	_, _ = c.Writer().Write(payload)
 }
 
-// AbortProblem stops the Gin chain and writes an RFC 9457 response.
-func AbortProblem(c *gin.Context, p ProblemDetail) {
+// AbortProblem stops the handler chain and writes an RFC 9457 response.
+func AbortProblem(c *Ctx, p ProblemDetail) {
 	if c == nil {
 		return
 	}
@@ -145,7 +143,7 @@ func AbortProblem(c *gin.Context, p ProblemDetail) {
 	WriteProblem(c, p)
 }
 
-func normalizeProblem(p ProblemDetail, c *gin.Context) ProblemDetail {
+func normalizeProblem(p ProblemDetail, c *Ctx) ProblemDetail {
 	if p.Status < 100 || p.Status > 599 {
 		p.Status = http.StatusInternalServerError
 	}
@@ -158,10 +156,10 @@ func normalizeProblem(p ProblemDetail, c *gin.Context) ProblemDetail {
 			p.Title = "HTTP Error"
 		}
 	}
-	if p.Instance == "" && c != nil && c.Request != nil && c.Request.URL != nil {
-		p.Instance = c.Request.URL.EscapedPath()
+	if p.Instance == "" && c != nil && c.Request() != nil && c.Request().URL != nil {
+		p.Instance = c.Request().URL.EscapedPath()
 		if p.Instance == "" {
-			p.Instance = c.Request.URL.Path
+			p.Instance = c.Request().URL.Path
 		}
 	}
 	return p

@@ -17,8 +17,7 @@ import (
 
 func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	state := p.state.Load()
-	gc := c.Gin()
-	if state == nil || c.Writer().Written() || state.config.bypass(gc) {
+	if state == nil || c.Writer().Written() || state.config.bypass(c) {
 		c.Next()
 		return nil
 	}
@@ -29,6 +28,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 
 	// Phase 4 debt: timeoutWriter embeds gin.ResponseWriter, so the writer
 	// swap stays on gc until Ctx gains a neutral SetWriter.
+	gc := c.Gin()
 	original := gc.Writer
 	writer := newTimeoutWriter(original)
 	gc.Writer = writer
@@ -60,11 +60,11 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 func writeTimeoutResponse(c *gin.Context, writer gin.ResponseWriter) {
 	timeoutContext := c.Copy()
 	timeoutContext.Writer = writer
-	web.AbortProblem(timeoutContext, web.NewProblem(http.StatusGatewayTimeout, "gateway_timeout"))
+	web.AbortProblem(web.NewCtx(timeoutContext), web.NewProblem(http.StatusGatewayTimeout, "gateway_timeout"))
 }
 
-func (cfg normalizedConfig) bypass(c *gin.Context) bool {
-	if cfg.excludedPath(c.Request.URL.Path) || requestStreams(c.Request) {
+func (cfg normalizedConfig) bypass(c *web.Ctx) bool {
+	if cfg.excludedPath(c.Request().URL.Path) || requestStreams(c.Request()) {
 		return true
 	}
 	if route, ok := web.CurrentRoute(c); ok {

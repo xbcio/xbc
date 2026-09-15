@@ -49,7 +49,7 @@ func TestRouteMetadataChainIsFrozenIntoCatalogAndCurrentRoute(t *testing.T) {
 
 	var current RouteInfo
 	router.Group("/users").POST("", func(_ context.Context, c *Ctx) error {
-		current, _ = CurrentRoute(c.Gin())
+		current, _ = CurrentRoute(c)
 		return nil
 	}).Name("create user").Perm("user:write").Idempotent()
 	router.POST("/login", func(context.Context, *Ctx) error { return nil }).Name("login").Auth(Public())
@@ -229,7 +229,7 @@ func TestCurrentRouteReportsMatchedRouteDuringRequest(t *testing.T) {
 	var got RouteInfo
 	var ok bool
 	router.GET("/users/:id", func(_ context.Context, c *Ctx) error {
-		got, ok = CurrentRoute(c.Gin())
+		got, ok = CurrentRoute(c)
 		return nil
 	})
 	_, err := router.freeze()
@@ -256,7 +256,7 @@ func TestCurrentRouteReportsFalseForNonMatchingRequest(t *testing.T) {
 
 	var ok bool
 	engine.NoRoute(func(gc *gin.Context) {
-		_, ok = CurrentRoute(gc)
+		_, ok = CurrentRoute(newCtx(gc))
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/does-not-exist", nil)

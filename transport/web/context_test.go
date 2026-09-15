@@ -216,7 +216,7 @@ func TestCtxPrincipalReusesCurrentPrincipal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	engine.Use(func(c *gin.Context) {
-		if !SetPrincipal(c, Principal{Subject: "alice", AuthMethod: "jwt"}) {
+		if !SetPrincipal(newCtx(c), Principal{Subject: "alice", AuthMethod: "jwt"}) {
 			t.Fatalf("expected SetPrincipal to accept a valid principal")
 		}
 		c.Next()

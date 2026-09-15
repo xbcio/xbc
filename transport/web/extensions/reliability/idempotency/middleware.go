@@ -29,8 +29,7 @@ func (p *Plugin) Order() web.Order {
 }
 
 func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
-	gc := c.Gin()
-	route, found := web.CurrentRoute(gc)
+	route, found := web.CurrentRoute(c)
 	if !found || !route.Idempotent {
 		c.Next()
 		return nil
@@ -38,19 +37,19 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	state := p.state
 	key, ok := idempotencyHeader(c, state.config.header)
 	if !ok || !validIdempotencyKey(key, state.config.minKeyLength, state.config.maxKeyLength) {
-		abortJSON(gc, http.StatusBadRequest, "invalid_idempotency_key")
+		abortJSON(c, http.StatusBadRequest, "invalid_idempotency_key")
 		return nil
 	}
 	body, err := readBody(c.Request(), state.config.maxRequestBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
-			abortJSON(gc, http.StatusRequestEntityTooLarge, "request_too_large")
+			abortJSON(c, http.StatusRequestEntityTooLarge, "request_too_large")
 		} else {
-			abortJSON(gc, http.StatusBadRequest, "invalid_request_body")
+			abortJSON(c, http.StatusBadRequest, "invalid_request_body")
 		}
 		return nil
 	}
-	principal, _ := web.CurrentPrincipal(gc)
+	principal, _ := web.CurrentPrincipal(c)
 	rawQuery := ""
 	contentType := ""
 	if c.Request().URL != nil {
@@ -61,27 +60,27 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	storageKey := digestParts(c.Request().Method, route.Path, principal.Subject, key)
 	owner, err := newOwner()
 	if err != nil {
-		abortJSON(gc, http.StatusInternalServerError, "idempotency_unavailable")
+		abortJSON(c, http.StatusInternalServerError, "idempotency_unavailable")
 		return nil
 	}
 
 	result, err := state.store.Acquire(c.Request().Context(), storageKey, fingerprint, owner, state.config.pendingTTL)
 	if err != nil {
 		state.logger.Error("idempotency acquire failed", "error", err)
-		abortJSON(gc, http.StatusServiceUnavailable, "idempotency_unavailable")
+		abortJSON(c, http.StatusServiceUnavailable, "idempotency_unavailable")
 		return nil
 	}
 	switch result.State {
 	case Pending:
-		abortJSON(gc, state.config.pendingStatus, "request_in_progress")
+		abortJSON(c, state.config.pendingStatus, "request_in_progress")
 		return nil
 	case Conflict:
-		abortJSON(gc, http.StatusConflict, "idempotency_conflict")
+		abortJSON(c, http.StatusConflict, "idempotency_conflict")
 		return nil
 	case Completed:
 		if !validReplay(result.Response, state.config.maxResponseBytes) {
 			state.logger.Error("idempotency store returned an invalid replay response")
-			abortJSON(gc, http.StatusServiceUnavailable, "idempotency_unavailable")
+			abortJSON(c, http.StatusServiceUnavailable, "idempotency_unavailable")
 			return nil
 		}
 		replay(c, result.Response)
@@ -89,7 +88,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	case Acquired:
 		p.executeOwned(c, state, storageKey, fingerprint, owner)
 	default:
-		abortJSON(gc, http.StatusServiceUnavailable, "idempotency_unavailable")
+		abortJSON(c, http.StatusServiceUnavailable, "idempotency_unavailable")
 	}
 	return nil
 }
@@ -243,7 +242,7 @@ func safeContentType(value string) string {
 	return strings.TrimSpace(value)
 }
 
-func abortJSON(c *gin.Context, status int, code string) {
+func abortJSON(c *web.Ctx, status int, code string) {
 	web.AbortProblem(c, web.NewProblem(status, code))
 }
 

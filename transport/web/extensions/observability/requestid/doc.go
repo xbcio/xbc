@@ -1,5 +1,6 @@
 // Package requestid validates or generates request IDs, publishes them on the
-// response, and propagates them through both Gin and standard request contexts.
+// response, and propagates them through both Ctx and standard request
+// contexts.
 //
 // # Usage
 //
@@ -28,19 +29,19 @@
 //	    trust_incoming: false
 //	    max_length: 128
 //
-// Handlers can read the validated ID from Gin and pass the request context to
+// Handlers can read the validated ID off Ctx and pass the request context to
 // downstream work. FromRequest and FromContext provide the same value to code
-// that does not depend on Gin:
+// that does not depend on Ctx:
 //
-//	func submit(c *gin.Context) {
-//		id, ok := requestid.FromGin(c)
+//	func submit(ctx context.Context, c *web.Ctx) error {
+//		id, ok := requestid.From(c)
 //		if !ok {
-//			c.AbortWithStatus(http.StatusInternalServerError)
-//			return
+//			return errors.New("request id unavailable")
 //		}
 //		log.Printf("request %s", id)
-//		doWork(c.Request.Context())
+//		doWork(c.Request().Context())
 //		c.Status(http.StatusAccepted)
+//		return nil
 //	}
 //
 // Missing, duplicate, malformed, or oversized inbound IDs are replaced. The

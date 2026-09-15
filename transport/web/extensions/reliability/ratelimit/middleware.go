@@ -49,12 +49,11 @@ func newLimiterState(cfg Config) (*limiterState, error) {
 }
 
 func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
-	gc := c.Gin()
 	p.mu.RLock()
 	state := p.state
 	p.mu.RUnlock()
 	if state == nil {
-		web.AbortProblem(gc, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
+		web.AbortProblem(c, web.NewProblem(http.StatusInternalServerError, "internal_server_error"))
 		return nil
 	}
 
@@ -66,7 +65,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	}
 
 	c.SetHeader("Retry-After", strconv.Itoa(retryAfterSeconds(limiter, now)))
-	web.AbortProblem(gc, web.NewProblem(http.StatusTooManyRequests, "rate_limit_exceeded"))
+	web.AbortProblem(c, web.NewProblem(http.StatusTooManyRequests, "rate_limit_exceeded"))
 	return nil
 }
 

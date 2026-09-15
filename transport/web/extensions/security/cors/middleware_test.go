@@ -1,6 +1,7 @@
 package cors
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -182,5 +183,48 @@ func TestPreflightMethodMatchingIsCaseSensitive(t *testing.T) {
 	})
 	if response.Code != http.StatusForbidden || downstream != 0 {
 		t.Fatalf("status/downstream = %d/%d, want 403/0", response.Code, downstream)
+	}
+}
+
+// TestPreflightAbortIsObservableAsWrittenByOuterMiddleware pins the two-step
+// commit this middleware relies on: Ctx.Status only records a pending status,
+// so a preflight abort must still call Write to flip the underlying writer's
+// Written() to true before c.Abort() returns control to outer middleware. If
+// that write were ever dropped, an outer error boundary or logging middleware
+// resuming after c.Next() would see an unwritten response and could double-
+// write it.
+func TestPreflightAbortIsObservableAsWrittenByOuterMiddleware(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.AllowOrigins = []string{"https://allowed.example"}
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	var seenWritten bool
+	var seenStatus int
+	engine := gin.New()
+	engine.Use(web.Handle(func(_ context.Context, c *web.Ctx) error {
+		c.Next()
+		seenWritten = c.Writer().Written()
+		seenStatus = c.Writer().Status()
+		return nil
+	}))
+	engine.Use(web.Handle(p.Handler()))
+	engine.OPTIONS("/resource", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	response := perform(engine, http.MethodOptions, "https://allowed.example", map[string]string{
+		"Access-Control-Request-Method": http.MethodGet,
+	})
+
+	if !seenWritten {
+		t.Fatal("outer middleware did not observe the preflight response as written")
+	}
+	if seenStatus != http.StatusNoContent {
+		t.Fatalf("seenStatus = %d, want 204", seenStatus)
+	}
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", response.Code)
 	}
 }

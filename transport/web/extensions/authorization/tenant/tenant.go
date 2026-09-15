@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -39,7 +37,7 @@ func (f ResolverFunc) ResolveTenant(ctx context.Context, principal web.Principal
 }
 
 // Current returns the trusted request tenant as a defensive deep copy.
-func Current(c *gin.Context) (Tenant, bool) {
+func Current(c *web.Ctx) (Tenant, bool) {
 	if c == nil {
 		return Tenant{}, false
 	}
@@ -58,7 +56,7 @@ func Current(c *gin.Context) (Tenant, bool) {
 // validates the conservative default ID grammar and makes a defensive copy.
 // HTTP header values must never be passed here without membership validation;
 // normal applications should let this plugin's middleware publish instead.
-func Set(c *gin.Context, resolved Tenant) bool {
+func Set(c *web.Ctx, resolved Tenant) bool {
 	if c == nil {
 		return false
 	}
@@ -72,7 +70,7 @@ func Set(c *gin.Context, resolved Tenant) bool {
 	return true
 }
 
-func setValidated(c *gin.Context, resolved Tenant, minimum, maximum int) bool {
+func setValidated(c *web.Ctx, resolved Tenant, minimum, maximum int) bool {
 	if c == nil {
 		return false
 	}
