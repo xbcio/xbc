@@ -150,6 +150,32 @@ func TestParamReadsServeMuxWildcards(t *testing.T) {
 	assert.Equal(t, "42", recorder.Body.String(), "Param 应返回 ServeMux 解析出的通配段")
 }
 
+// TestNewEngineMapsOptionsOntoTheHTTPServer pins the Options this factory does
+// honour: the ones that become http.Server fields. They have no observable
+// effect inside a test request -- dropping any one of them changes no response
+// -- so nothing else in the suite would notice their loss, while a server
+// built from this factory would quietly serve without the slow-request bound
+// it was configured with. Each field gets a distinct value so a swapped pair
+// fails rather than passes.
+func TestNewEngineMapsOptionsOntoTheHTTPServer(t *testing.T) {
+	built, err := Factory{}.NewEngine(web.Options{
+		ReadTimeout:       11 * time.Second,
+		ReadHeaderTimeout: 12 * time.Second,
+		WriteTimeout:      13 * time.Second,
+		IdleTimeout:       14 * time.Second,
+		MaxHeaderBytes:    15000,
+	})
+	require.NoError(t, err, "NewEngine() 不应返回错误")
+	engine, ok := built.(*Engine)
+	require.True(t, ok, "NewEngine 应返回本包的 *Engine")
+
+	assert.Equal(t, 11*time.Second, engine.srv.ReadTimeout, "ReadTimeout 必须落到 http.Server 上")
+	assert.Equal(t, 12*time.Second, engine.srv.ReadHeaderTimeout, "ReadHeaderTimeout 必须落到 http.Server 上")
+	assert.Equal(t, 13*time.Second, engine.srv.WriteTimeout, "WriteTimeout 必须落到 http.Server 上")
+	assert.Equal(t, 14*time.Second, engine.srv.IdleTimeout, "IdleTimeout 必须落到 http.Server 上")
+	assert.Equal(t, 15000, engine.srv.MaxHeaderBytes, "MaxHeaderBytes 必须落到 http.Server 上")
+}
+
 // TestUnmatchedRequestsReachNoRouteAndNoMethod pins the classification behind
 // the catch-all pattern this engine registers. ServeMux would answer a
 // method-mismatched request with its own 405 before any handler ran, which
@@ -178,7 +204,7 @@ func TestUnmatchedRequestsReachNoRouteAndNoMethod(t *testing.T) {
 	engine.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/absent", nil))
 	assert.Equal(t, http.StatusNotFound, missing.Code, "未注册的路径应交给 NoRoute 链")
 	assert.Equal(t, "no-route", missing.Body.String(), "NoRoute 链应实际运行")
-	assert.Empty(t, missing.Header().Get("Allow"), "404 不是方法不匹配，不得带 Allow")
+	assert.Empty(t, missing.Result().Header.Get("Allow"), "404 不是方法不匹配，不得带 Allow")
 
 	mismatched := httptest.NewRecorder()
 	engine.ServeHTTP(mismatched, httptest.NewRequest(http.MethodPost, "/only-get", nil))
@@ -188,7 +214,11 @@ func TestUnmatchedRequestsReachNoRouteAndNoMethod(t *testing.T) {
 	// 两个方法而非一个：单方法时「全部已注册方法」与「随便挑一个」无法区分。
 	// HEAD 也在其中，因为 ServeMux 会用 GET 的处理器应答 HEAD——Allow 反映的是
 	// 匹配器真正会接受的方法，而不是注册调用的清单。
-	assert.Equal(t, "GET, HEAD, DELETE", mismatched.Header().Get("Allow"),
+	//
+	// 判据是 Result().Header 而非 recorder.Header()：后者是活 map，事后写入也读得到，
+	// 因此分不清「Allow 在状态行之前设置」与「之后设置」，而后者在真 socket 上
+	// 永远到不了客户端。
+	assert.Equal(t, "GET, HEAD, DELETE", mismatched.Result().Header.Get("Allow"),
 		"405 必须按 web.Engine 端口的要求列出该路径其余全部已注册方法")
 }
 

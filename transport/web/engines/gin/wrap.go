@@ -68,6 +68,19 @@ func (m ginMiddleware) Handler() web.Handler {
 // accumulator during this call. Entries that predate the call belong to
 // someone else, and a response that is already committed cannot be replaced,
 // so neither is touched.
+//
+// The scope is deliberately narrower than a per-request sweep of gc.Errors
+// would be, and the narrowing is a design choice rather than an oversight.
+// The web.Engine port accepts nothing but []web.Handler, so Wrap is the only
+// door a gin-native middleware can enter an xbc chain through; aggregating per
+// Wrap therefore covers every real entry point, and it attributes a failure to
+// the middleware that produced it instead of to whichever handler happened to
+// be outermost. The price is that an error pushed onto gc.Errors from outside
+// a Wrap call -- by gin itself, or through the FromCtx escape hatch -- is no
+// longer collected. That remainder is empty in practice: gin's own pushes
+// either come with a response it has already written (Written() is true, which
+// the guard above skips in any case) or come from a binding path that reports
+// its failure by return value rather than by accumulator.
 func reportedErrors(gc *ginlib.Context, before int) error {
 	if gc.Writer == nil || gc.Writer.Written() || len(gc.Errors) <= before {
 		return nil

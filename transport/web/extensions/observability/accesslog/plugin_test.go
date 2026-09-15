@@ -17,6 +17,25 @@ import (
 
 // currentRouteKeyForTest is the key web.CurrentRoute reads. Setting it directly
 // is how a test publishes a matched route without standing up a web.Router.
+//
+// Injection is the only option available here, not the preferred one. Driving
+// a real Router would be the stronger evidence -- it would also pin that the
+// Router still records the route early enough for this middleware to see it --
+// but nothing in web's public surface lets a package outside it build one:
+// newRouter, newRouteTable and (*Server).Engine are unexported, and the
+// export_test.go aliases for them compile only into package web's own test
+// binary. The one public door, web.New, yields a Server with no route
+// contributors and no way to reach the engine it assembles; routes arrive only
+// through the plugin graph, whose composition root is the application facade
+// sitting above this module.
+//
+// So the two halves are pinned separately, and this is the seam between them:
+// the Router side -- that recordCurrentRoute leads the flattened chain, hence
+// that a middleware like this one really does observe CurrentRoute -- is held
+// by TestRecordCurrentRouteLeadsTheFullyFlattenedChain in
+// transport/web/router_test.go. What remains here is only this middleware's own
+// handling of a route that is present. If that key or its value type ever
+// changes, this constant must follow it.
 const currentRouteKeyForTest = "xbc/web.currentRoute"
 
 type captured struct {

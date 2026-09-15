@@ -193,7 +193,10 @@ func TestServerReturnsProblemDetailsForRoutingAndKnownBodyOverflow(t *testing.T)
 			assert.Equal(t, test.status, problem.Status)
 			assert.Equal(t, test.code, problem.Properties["code"])
 			assert.Equal(t, test.instance, problem.Instance)
-			assert.Equal(t, test.allow, response.Header().Get("Allow"))
+			// Result().Header is the snapshot taken at commit time. The
+			// recorder's live Header() would also read back an Allow set after
+			// the status line, which never reaches a real client at all.
+			assert.Equal(t, test.allow, response.Result().Header.Get("Allow"))
 		})
 	}
 }

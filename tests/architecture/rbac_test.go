@@ -41,13 +41,29 @@ func TestArchRBACOwnershipBoundaries(t *testing.T) {
 			"the Web RBAC adapter must consume the protocol-neutral business contract")
 
 		// The adapter speaks the Web transport contract, never a concrete
-		// engine. Since the transport stopped exposing engine types, an engine
-		// can only enter here through an adapter module under
-		// transport/web/engines, so that namespace -- not Gin's import path --
-		// is what this closure must stay clear of.
+		// engine. Two ways in have to be closed, and they need different
+		// evidence.
+		//
+		// Reaching an engine adapter module under transport/web/engines is the
+		// indirect way, and only the closure can see it, since it can arrive
+		// through a package the adapter legitimately imports.
 		for _, dep := range archDeps(t, "./transport/web/extensions/authorization/rbac") {
 			if archPathAtOrBelow(dep, "github.com/xbcio/xbc/transport/web/engines") {
 				t.Errorf("transport/web/extensions/authorization/rbac production closure contains engine adapter %q: middleware must depend on the neutral Web contract only", dep)
+			}
+		}
+
+		// Writing `import "github.com/gin-gonic/gin"` straight into the adapter
+		// is the direct way, and the closure above cannot answer it: transport/web
+		// itself still compiles Gin in, so Gin is in this adapter's closure no
+		// matter what the adapter's own files say, and a closure judgment would
+		// be permanently red for a reason that is not this rule. The answerable
+		// question -- the one this boundary exists for -- is whether the adapter
+		// reaches for the engine itself. Test files count: a Gin import there
+		// binds the adapter's own tests to one engine just as firmly.
+		for _, dep := range archDirectImports(packages[0]) {
+			if archPathAtOrBelow(dep, "github.com/gin-gonic/gin") {
+				t.Errorf("transport/web/extensions/authorization/rbac directly imports %q: middleware must depend on the neutral Web contract only, never on a concrete engine", dep)
 			}
 		}
 

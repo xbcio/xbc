@@ -94,6 +94,35 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	}
 }
 
+// TestNewEngineMapsOptionsOntoTheHTTPServer pins the half of NewEngine that
+// has no observable effect inside a test request: the neutral Options that
+// become http.Server fields. Those timeouts and the header-size bound are a
+// server's only defence against a slow-request attack -- Slowloris and its
+// relatives -- and dropping any one of them changes no response at all, so
+// every other test in this repository would stay green while a deployed server
+// lost its bound. Each field therefore gets a distinct value, which is also
+// what makes a swapped pair fail rather than pass.
+func TestNewEngineMapsOptionsOntoTheHTTPServer(t *testing.T) {
+	ginlib.SetMode(ginlib.TestMode)
+
+	built, err := Factory{}.NewEngine(web.Options{
+		ReadTimeout:       11 * time.Second,
+		ReadHeaderTimeout: 12 * time.Second,
+		WriteTimeout:      13 * time.Second,
+		IdleTimeout:       14 * time.Second,
+		MaxHeaderBytes:    15000,
+	})
+	require.NoError(t, err, "NewEngine() 不应返回错误")
+	adapter, ok := built.(*engine)
+	require.True(t, ok, "NewEngine 应返回本包的 *engine")
+
+	assert.Equal(t, 11*time.Second, adapter.srv.ReadTimeout, "ReadTimeout 必须落到 http.Server 上")
+	assert.Equal(t, 12*time.Second, adapter.srv.ReadHeaderTimeout, "ReadHeaderTimeout 必须落到 http.Server 上")
+	assert.Equal(t, 13*time.Second, adapter.srv.WriteTimeout, "WriteTimeout 必须落到 http.Server 上")
+	assert.Equal(t, 14*time.Second, adapter.srv.IdleTimeout, "IdleTimeout 必须落到 http.Server 上")
+	assert.Equal(t, 15000, adapter.srv.MaxHeaderBytes, "MaxHeaderBytes 必须落到 http.Server 上")
+}
+
 // TestMethodNotAllowedSetsAllowHeader pins this adapter's half of the
 // web.Engine NoMethod contract. The framework's 405 Problem Detail is produced
 // by the NoMethod chain, which knows only that the method was wrong -- the list
@@ -125,7 +154,10 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 
 	require.Equal(t, http.StatusMethodNotAllowed, recorder.Code, "方法不匹配应交给 NoMethod 链")
 	// 逐字比较会把「列全了」和「顺序恰好如此」绑在一起，而端口只要求列全。
+	// 判据取 Result().Header 而非 recorder.Header()：后者是活 map，事后写入也读得到，
+	// 于是「Allow 设在状态行之后」——在真 socket 上等于没有 Allow——照样能骗过断言，
+	// 这条门禁本来要防的「依赖升级后静默失效」恰好就是这种形态。
 	assert.ElementsMatch(t, []string{"GET", "DELETE"},
-		strings.Split(recorder.Header().Get("Allow"), ", "),
+		strings.Split(recorder.Result().Header.Get("Allow"), ", "),
 		"405 必须列出该路径其余全部已注册方法")
 }
