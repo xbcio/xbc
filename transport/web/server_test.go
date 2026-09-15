@@ -67,6 +67,19 @@ func TestSetGinModeUsesLoggerCapabilityNotGlobalConfig(t *testing.T) {
 	assert.Equal(t, gin.ReleaseMode, gin.Mode())
 }
 
+// testEngineOf type-asserts a started Server's Engine back to the test
+// double so a test can inspect the underlying *gin.Engine/*http.Server
+// fields that Engine deliberately does not expose (Engine is a neutral port,
+// see transport/web/engine.go; this package's own tests cannot import
+// engines/gin to reach its equivalent assertion without an illegal import
+// cycle, see enginetest_test.go).
+func testEngineOf(t *testing.T, s *Server) *testEngine {
+	t.Helper()
+	te, ok := s.engine.(*testEngine)
+	require.True(t, ok, "test server was not built with testEngineFactory")
+	return te
+}
+
 func TestStartAppliesProductionHTTPServerSettings(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Addr = "127.0.0.1:0"
@@ -81,13 +94,14 @@ func TestStartAppliesProductionHTTPServerSettings(t *testing.T) {
 	server, ctx, _ := newPingServer(t, cfg, serverInputs{})
 	require.NoError(t, server.Start(ctx))
 
-	require.NotNil(t, server.srv)
-	assert.Equal(t, cfg.ReadTimeout, server.srv.ReadTimeout)
-	assert.Equal(t, cfg.ReadHeaderTimeout, server.srv.ReadHeaderTimeout)
-	assert.Equal(t, cfg.WriteTimeout, server.srv.WriteTimeout)
-	assert.Equal(t, cfg.IdleTimeout, server.srv.IdleTimeout)
-	assert.Equal(t, cfg.MaxHeaderBytes, server.srv.MaxHeaderBytes)
-	assert.Equal(t, cfg.MaxMultipartMemory, server.engine.MaxMultipartMemory)
+	te := testEngineOf(t, server)
+	require.NotNil(t, te.srv)
+	assert.Equal(t, cfg.ReadTimeout, te.srv.ReadTimeout)
+	assert.Equal(t, cfg.ReadHeaderTimeout, te.srv.ReadHeaderTimeout)
+	assert.Equal(t, cfg.WriteTimeout, te.srv.WriteTimeout)
+	assert.Equal(t, cfg.IdleTimeout, te.srv.IdleTimeout)
+	assert.Equal(t, cfg.MaxHeaderBytes, te.srv.MaxHeaderBytes)
+	assert.Equal(t, cfg.MaxMultipartMemory, te.gin.MaxMultipartMemory)
 }
 
 func TestTrustedProxiesAreOptIn(t *testing.T) {
@@ -121,7 +135,7 @@ func TestTrustedProxiesAreOptIn(t *testing.T) {
 			request.RemoteAddr = "127.0.0.1:4321"
 			request.Header.Set("X-Forwarded-For", "203.0.113.9")
 			response := httptest.NewRecorder()
-			server.engine.ServeHTTP(response, request)
+			testEngineOf(t, server).ServeHTTP(response, request)
 
 			assert.Equal(t, http.StatusOK, response.Code)
 			assert.Equal(t, test.want, response.Body.String())
@@ -170,7 +184,7 @@ func TestServerReturnsProblemDetailsForRoutingAndKnownBodyOverflow(t *testing.T)
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
 			response := httptest.NewRecorder()
-			server.engine.ServeHTTP(response, request)
+			testEngineOf(t, server).ServeHTTP(response, request)
 
 			assert.Equal(t, test.status, response.Code)
 			problem := decodeProblem(t, response)
@@ -215,7 +229,7 @@ func newPingServer(t *testing.T, cfg Config, inputs serverInputs) (*Server, *plu
 
 	host := newFakeHost()
 	ctx := contextFromHost(host)
-	server := newServer(cfg, middlewares, routes, inputs.listeners, inputs.authenticators, inputs.extractors)
+	server := newServer(cfg, testEngineFactory{}, middlewares, routes, inputs.listeners, inputs.authenticators, inputs.extractors)
 	t.Cleanup(func() {
 		if err := server.Stop(context.Background()); err != nil {
 			t.Errorf("stopping test server: %v", err)
@@ -334,7 +348,7 @@ func TestStartAppliesContributedMiddlewareToRoutesUnderBasePath(t *testing.T) {
 	require.NoError(t, server.Start(ctx))
 	require.NoError(t, server.OpenTraffic(ctx))
 	response := httptest.NewRecorder()
-	server.engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/ping", nil))
+	testEngineOf(t, server).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/ping", nil))
 
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.True(t, ran, "middleware must be installed before the base-path Router group is created")
@@ -411,6 +425,7 @@ func TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator(t *testing.T)
 	ctx := contextFromHost(host)
 	server := newServer(
 		cfg,
+		testEngineFactory{},
 		[]plugin.Entry[Middleware]{{
 			Identity: plugin.Identity{Plugin: ErrorBoundaryKey},
 			Value:    &errorBoundary{},
@@ -646,90 +661,5 @@ func TestShutdownIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline(t
 	case <-finished:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the forcibly closed request never finished")
-	}
-}
-
-// fallbackKey is a non-string context key, which matters: gin's Context.Value
-// consults its own Keys map only for string keys, so a struct key can only be
-// answered by the request context. It therefore isolates the fallback.
-type fallbackKey struct{}
-
-type fallbackObservation struct {
-	hasDoneChannel  bool
-	sawCancellation bool
-	requestValue    string
-}
-
-// TestServerEnablesGinContextFallback pins the one line in Start that decides
-// whether a *gin.Context behaves like a real context.Context.
-//
-// Both assertions are discriminating against ContextWithFallback left off:
-// Done() would be nil, so the handler's select would hit its failure deadline
-// with sawCancellation false, and Value would skip the request context and
-// return an empty string. Asserting only that the request completes would pass
-// either way, because a handler that never observes cancellation still returns.
-func TestServerEnablesGinContextFallback(t *testing.T) {
-	entered := make(chan struct{})
-	observed := make(chan fallbackObservation, 1)
-	_, addr := servingPingServer(t, serverInputs{
-		routes: []plugin.Entry[RouteContributor]{{
-			Identity: plugin.Identity{Plugin: "fallbacktest"},
-			Value: fakeRouteContributor{register: func(router *Router) {
-				// The body deliberately stays on *gin.Context: this test pins
-				// gin's own ContextWithFallback behaviour, so Done/Value must
-				// be observed through the gin context itself. Reading them off
-				// Handler's ctx parameter would assert the request context
-				// directly and stop discriminating against the flag being off.
-				router.GET("/fallback", func(_ context.Context, ginCtx *Ctx) error {
-					c := ginCtx.Gin()
-					c.Request = c.Request.WithContext(
-						context.WithValue(c.Request.Context(), fallbackKey{}, "from request context"),
-					)
-					result := fallbackObservation{hasDoneChannel: c.Done() != nil}
-					result.requestValue, _ = c.Value(fallbackKey{}).(string)
-
-					close(entered)
-					// A nil Done channel blocks forever, so the deadline is the
-					// failure bound rather than the success signal.
-					select {
-					case <-c.Done():
-						result.sawCancellation = true
-					case <-time.After(2 * time.Second):
-					}
-					observed <- result
-					c.String(http.StatusOK, "done")
-					return nil
-				})
-			}},
-		}},
-	})
-
-	requestCtx, cancelRequest := context.WithCancel(context.Background())
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, "http://"+addr+"/fallback", nil)
-	require.NoError(t, err)
-	go func() {
-		response, err := http.DefaultClient.Do(request)
-		if err == nil {
-			_ = response.Body.Close()
-		}
-	}()
-
-	select {
-	case <-entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the handler was never entered")
-	}
-	cancelRequest()
-
-	select {
-	case result := <-observed:
-		assert.True(t, result.hasDoneChannel,
-			"c.Done() is nil, so every WithContext(c) call silently loses cancellation")
-		assert.True(t, result.sawCancellation,
-			"the client disconnected but the handler's context was never cancelled")
-		assert.Equal(t, "from request context", result.requestValue,
-			"c.Value did not fall back to the request context for a non-string key")
-	case <-time.After(4 * time.Second):
-		t.Fatal("the handler never reported its observation")
 	}
 }

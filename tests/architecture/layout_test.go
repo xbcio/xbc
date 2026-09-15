@@ -91,7 +91,10 @@ var archWebExtensionGroups = []string{
 // Process orchestration and its private command parsing stay under the root
 // runtime owner, while Plugin model, assembly, and optional autoload infrastructure
 // stay together under plugin. Web package extensions and independently
-// versioned extensions retain their capability-grouped owners.
+// versioned extensions retain their capability-grouped owners. Engine adapters
+// are a distinct, non-plugin category: each implements the neutral web.Engine
+// port rather than a Web capability, so they sit beside extensions under their
+// own transport/web/engines namespace instead of inside it.
 func TestArchRetiredPathsStayRetired(t *testing.T) {
 	root := archRepositoryRoot(t)
 	for _, canonical := range []string{
@@ -106,6 +109,8 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		"transport/web",
 		"transport/web/prelude",
 		"transport/web/extensions",
+		"transport/web/engines",
+		"transport/web/engines/gin",
 	} {
 		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(canonical)))
 		require.NoError(t, err, "canonical path %s must exist", canonical)
@@ -188,12 +193,22 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		"autoload":   true,
 		"extensions": true,
 		"prelude":    true,
+		"engines":    true,
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		assert.Truef(t, allowedDirectories[entry.Name()], "unexpected direct package directory transport/web/%s; Web plugins belong beneath transport/web/extensions", entry.Name())
+		assert.Truef(t, allowedDirectories[entry.Name()], "unexpected direct package directory transport/web/%s; Web plugins belong beneath transport/web/extensions, engine adapters beneath transport/web/engines", entry.Name())
+	}
+
+	enginesRoot := filepath.Join(webRoot, "engines")
+	engineEntries, err := os.ReadDir(enginesRoot)
+	require.NoError(t, err, "reading Web engines root failed")
+	for _, entry := range engineEntries {
+		assert.Truef(t, entry.IsDir(), "unexpected non-directory transport/web/engines/%s; every engine adapter is its own directory", entry.Name())
+		_, err := os.Stat(filepath.Join(enginesRoot, entry.Name(), "go.mod"))
+		assert.NoErrorf(t, err, "engine adapter transport/web/engines/%s must be its own publishable module", entry.Name())
 	}
 }
 

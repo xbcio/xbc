@@ -1,11 +1,11 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"path"
 
-	"github.com/gin-gonic/gin"
 	"github.com/xbcio/xbc/extensions/authentication"
 )
 
@@ -172,19 +172,17 @@ func (r *Route) update(fn func(*RouteInfo)) {
 	}
 }
 
-// Router wraps a *gin.RouterGroup with route-table recording and a freeze
+// Router wraps a neutral Engine with route-table recording and a freeze
 // switch. routes, frozen and index are pointers so every Router returned by
 // Group shares the same underlying slice/flag/map as the root -- freezing
 // the root freezes every group derived from it too.
 //
 // handlers is this group's own middleware chain, snapshotted when Group
-// created it. The chain is accumulated here rather than handed to gin's
-// RouterGroup because the engine port this seam is heading for (design §4.2)
-// deliberately has no Group or Use: xbc flattens global + group + route
-// handlers before registration, so the engine only ever sees one chain per
-// route. The gin sub-group is still created, but handler-free -- it exists
-// purely to keep BasePath()'s path arithmetic, which RouteInfo.Path and
-// FullPath() must agree on byte for byte.
+// created it. The chain is accumulated here rather than handed to the engine
+// because Engine (design §4.2) deliberately has no Group or Use: xbc
+// flattens global + group + route handlers into one []Handler before
+// registration, so the engine only ever sees one already-ordered chain per
+// route.
 //
 // defaultPerm and defaultAuth are the opposite: plain values, copied by Group
 // the same way basePath already is. They name a group-level policy default,
@@ -193,7 +191,7 @@ func (r *Route) update(fn func(*RouteInfo)) {
 // into the parent and every sibling derived from the same root, which is
 // exactly the cross-subtree bleed a per-group default exists to prevent.
 type Router struct {
-	group       *gin.RouterGroup
+	engine      Engine
 	handlers    []Handler
 	basePath    string
 	routes      *[]RouteInfo
@@ -206,9 +204,9 @@ type Router struct {
 // newRouteTable allocates the three pieces of shared, pointer-identity
 // state a Router and recordCurrentRoute's middleware both need to close
 // over. It exists as a step separate from newRouter because
-// recordCurrentRoute must be installed via engine.Use() *before* newRouter
-// runs engine.Group (see newRouter's doc comment) -- so (*Server).Start
-// needs frozen/index available before a *Router object exists at all.
+// recordCurrentRoute must be part of the initial handlers chain newRouter
+// receives -- so (*Server).Start needs frozen/index available before a
+// *Router object exists at all.
 func newRouteTable() (routes *[]RouteInfo, frozen *bool, index *map[string]RouteInfo) {
 	r := make([]RouteInfo, 0, 16)
 	f := false
@@ -218,23 +216,18 @@ func newRouteTable() (routes *[]RouteInfo, frozen *bool, index *map[string]Route
 
 // newRouter is called exactly once, by (*Server).Start, the first time the
 // route table needs somewhere to register routes. routes/frozen/index come
-// from a prior newRouteTable call -- see that function's doc comment for
-// why the two are split.
-//
-// engine.Group(basePath) here must run after every engine.Use() call the
-// caller has already made, not before: gin's RouterGroup.Group snapshots the
-// parent group's Handlers slice by value at call time (routergroup.go's
-// combineHandlers copies, it never re-reads the parent later), so a group
-// created before Use() would keep routing through an empty middleware chain
-// forever, no matter how many handlers Use() adds to the engine afterward --
-// silently serving requests with none of the ordered middleware ever
-// running. (*Server).Start is written to respect this ordering; newRouter
-// itself cannot enforce it because it only ever sees the engine at the
-// moment it is called.
-func newRouter(engine *gin.Engine, basePath string, routes *[]RouteInfo, frozen *bool, index *map[string]RouteInfo) *Router {
+// from a prior newRouteTable call -- see that function's doc comment for why
+// the two are split. handlers is the root chain every route inherits --
+// (*Server).Start builds it in the exact order internal middleware must run
+// (recordCurrentRoute, body-size limiting, the error boundary, then
+// plugin-ordered middleware) before calling newRouter, so there is no
+// ordering hazard left for this function to depend on: appendChain always
+// copies, so the root Router owns its own chain from construction onward.
+func newRouter(engine Engine, basePath string, handlers []Handler, routes *[]RouteInfo, frozen *bool, index *map[string]RouteInfo) *Router {
 	return &Router{
-		group:    engine.Group(basePath),
-		basePath: basePath,
+		engine:   engine,
+		handlers: appendChain(nil, handlers...),
+		basePath: joinPaths("/", basePath),
 		routes:   routes,
 		frozen:   frozen,
 		index:    index,
@@ -331,9 +324,9 @@ func appendChain(parent []Handler, extra ...Handler) []Handler {
 // failure mode unrepresentable.
 func (r *Router) Group(relativePath string, h ...Handler) *Router {
 	return &Router{
-		group:       r.group.Group(relativePath),
+		engine:      r.engine,
 		handlers:    appendChain(r.handlers, h...),
-		basePath:    r.basePath,
+		basePath:    joinPaths(r.basePath, relativePath),
 		routes:      r.routes,
 		frozen:      r.frozen,
 		index:       r.index,
@@ -372,18 +365,6 @@ func (r *Router) Auth(policy AuthPolicy) *Router {
 	return r
 }
 
-// toGinChain converts a neutral chain into the gin chain the engine registers
-// today. It is the only place the router crosses the engine boundary; the
-// Engine port (design §4.2) takes a []Handler directly, so this function is
-// what the gin adapter absorbs when the port lands.
-func toGinChain(chain []Handler) []gin.HandlerFunc {
-	converted := make([]gin.HandlerFunc, len(chain))
-	for i, handler := range chain {
-		converted[i] = Handle(handler)
-	}
-	return converted
-}
-
 // Handle registers a route and records it in the route table. The recorded
 // RouteInfo starts from this Router's current defaultPerm/defaultAuth (see
 // Router.Perm and Router.Auth), so group-level policy is written in at
@@ -398,10 +379,11 @@ func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 	if *r.frozen {
 		panic("xbc: route table is frozen, RouteCatalogListener phase cannot add routes")
 	}
-	r.group.Handle(method, relativePath, toGinChain(appendChain(r.handlers, h...))...)
+	fullPath := joinPaths(r.basePath, relativePath)
+	r.engine.Handle(method, fullPath, appendChain(r.handlers, h...))
 	*r.routes = append(*r.routes, RouteInfo{
 		Method: method,
-		Path:   joinPaths(r.group.BasePath(), relativePath),
+		Path:   fullPath,
 		Auth:   cloneAuthPolicy(r.defaultAuth),
 		Perm:   r.defaultPerm,
 	})
@@ -527,26 +509,29 @@ func (c *routeCatalog) Lookup(method, path string) (RouteInfo, bool) {
 const currentRouteContextKey = "xbc/web.currentRoute"
 
 // recordCurrentRoute is the internal middleware CurrentRoute depends on. It
-// must be installed via engine.Use() before any user-contributed middleware
-// (design §5.6): gin resolves the route -- and therefore gc.FullPath() --
-// before invoking the handler chain at all, so even running first in that
-// chain still sees the correct FullPath; running it first is what
-// guarantees every later middleware, including ones that fail or abort the
-// chain early, can still call CurrentRoute.
+// must be the first handler in the root chain (*Server).Start builds, ahead
+// of any user-contributed middleware (design §5.6): the engine resolves the
+// route -- and therefore the matched full path -- before invoking the
+// handler chain at all, so even running first in that chain still sees the
+// correct match; running it first is what guarantees every later
+// middleware, including ones that fail or abort the chain early, can still
+// call CurrentRoute.
 //
 // frozen/index are captured by pointer (from newRouteTable) so this handler
 // can be installed before the route table is complete -- freeze() only
 // fills in *index once every RegisterRoutes call has run -- and still see
 // the final table by the time the first real request arrives, because
 // Serve is only ever reached after Start (which calls freeze) has returned.
-func recordCurrentRoute(frozen *bool, index *map[string]RouteInfo) gin.HandlerFunc {
-	return func(gc *gin.Context) {
+func recordCurrentRoute(frozen *bool, index *map[string]RouteInfo) Handler {
+	return func(_ context.Context, c *Ctx) error {
 		if frozen == nil || !*frozen {
-			return
+			return nil
 		}
+		gc := c.Gin()
 		if info, ok := (*index)[routeKey(gc.Request.Method, gc.FullPath())]; ok {
-			gc.Set(currentRouteContextKey, cloneRouteInfo(info))
+			c.Set(currentRouteContextKey, cloneRouteInfo(info))
 		}
+		return nil
 	}
 }
 

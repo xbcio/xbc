@@ -255,7 +255,7 @@ func TestServerUsesInjectedErrorMapperAndObservationSeesMappedStatus(t *testing.
 	})
 	require.NoError(t, server.Start(ctx))
 
-	response := performRequest(server.engine, http.MethodGet, "/mapped-error")
+	response := performRequest(testEngineOf(t, server).gin, http.MethodGet, "/mapped-error")
 
 	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 	assert.Equal(t, "dependency_unavailable", decodeProblem(t, response).Properties["code"])

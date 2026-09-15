@@ -190,29 +190,3 @@ func (c *Ctx) Writer() ResponseWriter {
 func (c *Ctx) Gin() *gin.Context {
 	return c.c
 }
-
-// WrapGinHandler adapts a third-party gin.HandlerFunc -- for example otelgin
-// or a gin-contrib/* middleware -- into the Handler shape Handle expects, so
-// existing Gin-native middleware keeps working unchanged once a route
-// registers Ctx-based handlers. The wrapped handler still receives the
-// request's live *gin.Context (via Ctx.Gin), so it can call c.Next(), set
-// headers, or record errors exactly as it would when registered directly
-// with Gin.
-//
-// This function was named FromGin during design. That name was rejected:
-// transport/web/extensions/observability/requestid exports a similarly named
-// extractor (From, née FromGin), which pulls a value out of a Ctx.
-// WrapGinHandler instead adapts one handler function into another handler
-// function -- a materially different operation -- and reusing "FromGin" for
-// it would be actively misleading at call sites that import both packages
-// together (a real scenario: transport/web/extensions/response already
-// imports requestid.From).
-func WrapGinHandler(handler gin.HandlerFunc) Handler {
-	if handler == nil {
-		panic("xbc: web.WrapGinHandler requires a non-nil handler")
-	}
-	return func(_ context.Context, c *Ctx) error {
-		handler(c.c)
-		return nil
-	}
-}

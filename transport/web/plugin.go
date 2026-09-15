@@ -31,6 +31,13 @@ var (
 	// exactly one owning plugin.
 	authenticatorInput = plugin.Collect[authentication.Authenticator]()
 	extractorInput     = plugin.Collect[CredentialExtractor]()
+	// engineInput selects the HTTP engine adapter. web.Server never
+	// constructs a concrete engine itself -- doing so would import the
+	// adapter package, which must import web to implement Engine, and Go
+	// forbids that cycle. A composition root selects exactly one engine
+	// Bundle (transport/web/engines/gin, or another Engine adapter)
+	// alongside web.Bundle() to satisfy this input.
+	engineInput = plugin.RequireOne[EngineFactory]()
 
 	definition = plugin.DefineConfigured(
 		Key,
@@ -41,6 +48,7 @@ var (
 		func(ctx plugin.BuildContext, cfg Config) (*Server, error) {
 			return newServer(
 				cfg,
+				engineInput.Get(ctx).Value,
 				middlewareInput.Get(ctx),
 				routeInput.Get(ctx),
 				listenerInput.Get(ctx),
@@ -51,6 +59,7 @@ var (
 		plugin.Options[*Server]{
 			ConfigPath: ConfigPath,
 			Inputs: plugin.Inputs(
+				engineInput,
 				middlewareInput,
 				routeInput,
 				listenerInput,
@@ -64,9 +73,12 @@ var (
 )
 
 // New constructs a side-effect-free server with production-safe defaults.
-// Contributions are normally injected by Definition; tests and embedding hosts
-// can use the unexported constructor in this package.
-func New() *Server { return newServer(DefaultConfig(), nil, nil, nil, nil, nil) }
+// Contributions are normally injected by Definition; tests and embedding
+// hosts supply their own EngineFactory (an engine adapter's Factory, or a
+// test double) since Start fails without one.
+func New(factory EngineFactory) *Server {
+	return newServer(DefaultConfig(), factory, nil, nil, nil, nil, nil)
+}
 
 // Definition returns the canonical HTTP server declaration handle.
 func Definition() plugin.Definition { return definition }

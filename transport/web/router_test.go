@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xbcio/xbc/extensions/authentication"
@@ -32,20 +31,21 @@ var (
 	_ func(*Router, string, ...Handler) *Router          = (*Router).Group
 )
 
-func newTestEngineAndRouter(basePath string) (*gin.Engine, *Router, *bool, *map[string]RouteInfo) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
+// newTestEngineAndRouter builds a testEngine (this package's stand-in for
+// engines/gin's real adapter, see enginetest_test.go) and a root Router over
+// it, with recordCurrentRoute already installed as the first handler in the
+// chain -- exactly the order (*Server).Start uses in production, so any test
+// built on this helper can call CurrentRoute after freeze without repeating
+// that wiring itself.
+func newTestEngineAndRouter(basePath string) (*testEngine, *Router, *bool, *map[string]RouteInfo) {
+	engine := newTestEngine()
 	routes, frozen, index := newRouteTable()
-	router := newRouter(engine, basePath, routes, frozen, index)
+	router := newRouter(engine, basePath, []Handler{recordCurrentRoute(frozen, index)}, routes, frozen, index)
 	return engine, router, frozen, index
 }
 
 func TestRouteMetadataChainIsFrozenIntoCatalogAndCurrentRoute(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	routes, frozen, index := newRouteTable()
-	engine.Use(recordCurrentRoute(frozen, index))
-	router := newRouter(engine, "/api", routes, frozen, index)
+	engine, router, _, _ := newTestEngineAndRouter("/api")
 
 	var current RouteInfo
 	router.Group("/users").POST("", func(_ context.Context, c *Ctx) error {
@@ -102,7 +102,7 @@ func TestMethodHelpersRecordAndDispatchTheirOwnVerb(t *testing.T) {
 			// HandleMethodNotAllowed makes a verb mismatch a 405 rather than a
 			// 404, so a helper wired to the wrong verb is distinguishable from
 			// one that registered no path at all.
-			engine.HandleMethodNotAllowed = true
+			engine.gin.HandleMethodNotAllowed = true
 			register(router, "/thing", func(_ context.Context, c *Ctx) error { c.Status(http.StatusTeapot); return nil }).Perm("thing:use")
 
 			catalog, err := router.freeze()
@@ -218,13 +218,7 @@ func TestRouteCatalogLookupHitAndMiss(t *testing.T) {
 }
 
 func TestCurrentRouteReportsMatchedRouteDuringRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	routes, frozen, index := newRouteTable()
-	// recordCurrentRoute must be installed via engine.Use() before newRouter
-	// creates the base-path group -- see newRouter's own doc comment.
-	engine.Use(recordCurrentRoute(frozen, index))
-	router := newRouter(engine, "/api", routes, frozen, index)
+	engine, router, _, _ := newTestEngineAndRouter("/api")
 
 	var got RouteInfo
 	var ok bool
@@ -245,19 +239,16 @@ func TestCurrentRouteReportsMatchedRouteDuringRequest(t *testing.T) {
 }
 
 func TestCurrentRouteReportsFalseForNonMatchingRequest(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	routes, frozen, index := newRouteTable()
-	engine.Use(recordCurrentRoute(frozen, index))
-	router := newRouter(engine, "/api", routes, frozen, index)
+	engine, router, _, _ := newTestEngineAndRouter("/api")
 	router.GET("/users", func(context.Context, *Ctx) error { return nil })
 	_, err := router.freeze()
 	require.NoError(t, err)
 
 	var ok bool
-	engine.NoRoute(func(gc *gin.Context) {
-		_, ok = CurrentRoute(newCtx(gc))
-	})
+	engine.NoRoute([]Handler{func(_ context.Context, c *Ctx) error {
+		_, ok = CurrentRoute(c)
+		return nil
+	}})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/does-not-exist", nil)
 	rec := httptest.NewRecorder()
@@ -266,65 +257,43 @@ func TestCurrentRouteReportsFalseForNonMatchingRequest(t *testing.T) {
 	assert.False(t, ok, "No request matched any frozen route, CurrentRoute must return false")
 }
 
-// TestGroupMustBeCreatedAfterUseOrMiddlewareSilentlyNeverApplies pins the
-// hard ordering constraint documented on newRouter: gin's
-// RouterGroup.Group snapshots the parent's Handlers slice by value at call
-// time, so any engine.Use() call made *after* the base-path group already
-// exists never reaches requests through that group. This is exactly the
-// silent-regression risk design §5.6/§8.1 calls out, so it needs a fixture
-// that actually dispatches an HTTP request through the group, not just an
-// inspection of some internal slice.
-func TestGroupMustBeCreatedAfterUseOrMiddlewareSilentlyNeverApplies(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
+// TestGroupSnapshotsParentChainAtCreationTime replaces
+// TestGroupMustBeCreatedAfterUseOrMiddlewareSilentlyNeverApplies and
+// TestGroupCreatedBeforeUseNeverSeesLaterMiddleware now that Engine (design
+// §4.2) has no Group or Use of its own: Router.Group always takes an
+// immediate, freshly allocated snapshot of the parent's chain (see
+// appendChain), so there is no "Group must come after Use" ordering hazard
+// left to pin here -- xbc flattens the whole chain before it ever reaches the
+// engine. What still matters, and is worth pinning directly, is the snapshot
+// property itself: a handler appended to the parent's chain after a child
+// Group already exists must never reach that child, while every handler
+// already on the parent at the moment Group was called must.
+func TestGroupSnapshotsParentChainAtCreationTime(t *testing.T) {
+	engine, router, _, _ := newTestEngineAndRouter("/api")
 
-	var ran bool
-	mw := func(gc *gin.Context) { ran = true }
+	var calls []string
+	router.handlers = appendChain(router.handlers, func(context.Context, *Ctx) error {
+		calls = append(calls, "before")
+		return nil
+	})
 
-	// Correct order: every engine.Use() call happens before newRouter grabs
-	// engine.Group(basePath) -- mirrors (*Server).Start's own sequencing.
-	engine.Use(mw)
-	routes, frozen, index := newRouteTable()
-	router := newRouter(engine, "/api", routes, frozen, index)
-	router.GET("/ping", func(_ context.Context, c *Ctx) error { c.Status(http.StatusOK); return nil })
+	child := router.Group("/child")
+
+	router.handlers = appendChain(router.handlers, func(context.Context, *Ctx) error {
+		calls = append(calls, "after")
+		return nil
+	})
+	child.GET("/x", func(_ context.Context, c *Ctx) error { c.Status(http.StatusNoContent); return nil })
+
 	_, err := router.freeze()
 	require.NoError(t, err)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
-	rec := httptest.NewRecorder()
-	engine.ServeHTTP(rec, req)
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/child/x", nil))
 
-	assert.True(t, ran, "engine.Use() was called before newRouter group creation, middleware must actually apply to routes under basePath")
-	assert.Equal(t, http.StatusOK, rec.Code)
-}
-
-// TestGroupCreatedBeforeUseNeverSeesLaterMiddleware is the mutation-proving
-// counterpart of the test above: it deliberately reproduces the *wrong*
-// order (Group before Use) to demonstrate the failure mode newRouter's doc
-// comment warns about, pinning that gin really does behave this way rather
-// than trusting the doc comment's claim on faith.
-func TestGroupCreatedBeforeUseNeverSeesLaterMiddleware(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-
-	var ran bool
-	mw := func(gc *gin.Context) { ran = true }
-
-	// Wrong order: the group is created first, and Use() is only called on
-	// the engine afterward.
-	routes, frozen, index := newRouteTable()
-	router := newRouter(engine, "/api", routes, frozen, index)
-	engine.Use(mw)
-	router.GET("/ping", func(_ context.Context, c *Ctx) error { c.Status(http.StatusOK); return nil })
-	_, err := router.freeze()
-	require.NoError(t, err)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/ping", nil)
-	rec := httptest.NewRecorder()
-	engine.ServeHTTP(rec, req)
-
-	assert.False(t, ran, "When group is created before Use, subsequent middleware won't apply to existing groups - this is exactly the pitfall warned about in newRouter documentation")
-	assert.Equal(t, http.StatusOK, rec.Code, "The route itself should still match normally, but the middleware won't run")
+	require.Equal(t, http.StatusNoContent, recorder.Code, "the route itself must still be reachable")
+	assert.Equal(t, []string{"before"}, calls,
+		"a Group must inherit exactly the parent chain as of its own creation: everything already on the parent, nothing appended to the parent afterward")
 }
 
 // TestGroupMiddlewareIsScopedToItsSubtree covers the three properties that
@@ -511,18 +480,15 @@ func TestGroupDerivedBeforePermDoesNotInheritLaterDefault(t *testing.T) {
 // defensive-copies on every read -- that would mask a Handle that stored the
 // same *AuthPolicy pointer on every route instead of cloning it.
 func TestGroupAuthDefaultAppliesAndIsPerRouteDeepCopy(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	routes, frozen, index := newRouteTable()
-	router := newRouter(engine, "/api", routes, frozen, index)
+	_, router, _, _ := newTestEngineAndRouter("/api")
 
 	g := router.Group("/sys_role").Auth(Accepts("jwt", "session"))
 	g.GET("/list", func(context.Context, *Ctx) error { return nil })
 	g.GET("/detail", func(context.Context, *Ctx) error { return nil })
 
-	require.Len(t, *routes, 2)
-	list := (*routes)[0]
-	detail := (*routes)[1]
+	require.Len(t, *router.routes, 2)
+	list := (*router.routes)[0]
+	detail := (*router.routes)[1]
 
 	require.NotNil(t, list.Auth)
 	require.NotNil(t, detail.Auth)

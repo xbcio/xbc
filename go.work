@@ -5,7 +5,10 @@ go 1.25.0
 // transport-owned extensions, and example modules. Lightweight Web extensions
 // remain packages inside the transport/web module, while dependency-heavy
 // extension leaves are independently publishable modules. Every Web plugin
-// lives beneath a capability group under transport/web/extensions.
+// lives beneath a capability group under transport/web/extensions. Engine
+// adapters are not Web plugins -- each implements the neutral web.Engine port
+// rather than a Web capability -- so they live beneath their own
+// transport/web/engines namespace, one publishable module per adapter.
 // Local development resolves unpublished XBC imports through this workspace;
 // publishable child manifests must not use filesystem replaces, v0.0.0
 // requirements, or synthetic pseudo-versions. Once upstream modules have real
@@ -27,6 +30,7 @@ use (
 	./extensions/messaging/webhook
 	./scripts/plugin-snapshots
 	./transport/web
+	./transport/web/engines/gin
 	./transport/web/extensions/authentication/jwt
 	./transport/web/extensions/authentication/session
 	./transport/web/extensions/authorization/casbin

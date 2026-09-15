@@ -1,22 +1,21 @@
 package web
 
 import (
+	"context"
 	"net/http"
-
-	"github.com/gin-gonic/gin"
 )
 
-func limitRequestBody(maximum int64) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if c.Request == nil || c.Request.Body == nil {
-			c.Next()
-			return
+func limitRequestBody(maximum int64) Handler {
+	return func(_ context.Context, c *Ctx) error {
+		request := c.Request()
+		if request == nil || request.Body == nil {
+			return nil
 		}
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maximum)
-		if c.Request.ContentLength > maximum {
-			AbortProblem(newCtx(c), NewProblem(http.StatusRequestEntityTooLarge, "request_body_too_large"))
-			return
+		request.Body = http.MaxBytesReader(c.Writer(), request.Body, maximum)
+		if request.ContentLength > maximum {
+			AbortProblem(c, NewProblem(http.StatusRequestEntityTooLarge, "request_body_too_large"))
+			return nil
 		}
-		c.Next()
+		return nil
 	}
 }
