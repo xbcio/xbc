@@ -305,7 +305,7 @@ func validateRouteAuth(route RouteInfo) error {
 // Allocating unconditionally is the entire point: append(parent, extra...)
 // may write into parent's spare capacity, and two sibling groups derived from
 // the same parent would then share -- and overwrite -- each other's
-// middleware. See TestSiblingGroupsDoNotShareMiddlewareChain.
+// middleware. See TestAppendChainNeverWritesIntoParentSpareCapacity.
 func appendChain(parent []Handler, extra ...Handler) []Handler {
 	chain := make([]Handler, 0, len(parent)+len(extra))
 	chain = append(chain, parent...)

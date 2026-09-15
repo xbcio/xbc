@@ -734,25 +734,25 @@ func TestRouteUpdatePanicsWithDiagnosticMessageForMalformedHandle(t *testing.T) 
 	)
 }
 
-// TestSiblingGroupsDoNotShareMiddlewareChain guards the aliasing hazard the
-// self-held handler stack introduces: append may write into the parent
-// chain's spare capacity, so two sibling groups derived from the same parent
-// would silently overwrite each other's middleware -- one authorization
-// boundary replaced by another's, with no compile error and no panic.
+// TestSiblingGroupsDoNotShareMiddlewareChain pins what sibling groups must
+// observe end to end: each one inherits the whole parent chain, in the order
+// it was declared, followed by its own handler -- and neither sibling ever
+// sees the other's. It covers inheritance and execution order through a real
+// request, which is the property a route tree is actually read for.
 //
-// Two details make the bug observable, and removing either one hides it.
+// It does not, and cannot, guard the aliasing hazard behind appendChain. Every
+// chain on this path is normalised by appendChain itself (newRouter does it
+// for the root, Group for each child), so under a correct implementation cap
+// always equals len here and the input that makes a naive append reuse its
+// parent's backing array is unreachable -- whether the corruption shows up at
+// all would depend on how Go's allocator happens to round a slice's size.
+// TestAppendChainNeverWritesIntoParentSpareCapacity builds that input directly
+// and guards the hazard there.
 //
-// The parent carries five handlers because a five-element slice of function
-// values is 40 bytes, which append rounds up to the 48-byte size class: a
-// naive append(parent, extra...) then returns cap 6 > len 5, so both siblings
-// write the same backing array slot. A parent whose cap equals its len would
-// force an allocation and the naive version would look correct.
-//
-// Both groups are also created before either registers a route. gin's
-// combineHandlers copies the chain synchronously at registration, so the
-// interleaved order -- create /a, register /a, create /b -- would let /a
-// snapshot its chain before /b overwrote the shared slot, and the corruption
-// would never reach a request. Declaring both groups first is what a real
+// Both groups are deliberately created before either registers a route. The
+// engine copies the chain synchronously at registration, so the interleaved
+// order -- create /a, register /a, create /b -- would let /a snapshot its
+// chain before /b could disturb it. Declaring both groups first is what a real
 // route tree does anyway.
 func TestSiblingGroupsDoNotShareMiddlewareChain(t *testing.T) {
 	engine, router, _, _ := newTestEngineAndRouter("/api")
@@ -788,4 +788,49 @@ func TestSiblingGroupsDoNotShareMiddlewareChain(t *testing.T) {
 			assert.Equal(t, tt.want, calls, "兄弟分组不得共享或覆盖彼此的中间件链")
 		})
 	}
+}
+
+// TestAppendChainNeverWritesIntoParentSpareCapacity pins appendChain's own
+// contract: a derived chain must never alias its parent's spare capacity,
+// because two chains derived from the same parent would then write the same
+// backing array slot and silently overwrite each other's middleware -- one
+// authorization boundary replaced by another's, with no compile error and no
+// panic.
+//
+// This has to be asserted directly rather than through a route tree. Every
+// parent chain on the end-to-end path has already been normalised by
+// appendChain (newRouter for the root, Group for each child), so under a
+// correct implementation cap always equals len there and the hazardous input
+// cannot be constructed at all. Building the spare slot explicitly here keeps
+// the assertion independent of how Go's allocator happens to round a slice's
+// size up to a size class.
+func TestAppendChainNeverWritesIntoParentSpareCapacity(t *testing.T) {
+	var calls []string
+	mark := func(name string) Handler {
+		return func(context.Context, *Ctx) error { calls = append(calls, name); return nil }
+	}
+
+	// Spare capacity is the whole point of this input: it is the one shape
+	// under which a naive append(parent, extra...) reuses parent's backing
+	// array instead of allocating a fresh one.
+	parent := make([]Handler, 1, 4)
+	parent[0] = mark("parent")
+
+	first := appendChain(parent, mark("first"))
+	second := appendChain(parent, mark("second"))
+
+	require.Len(t, parent, 1, "appendChain 不得改变父链的长度")
+	require.Len(t, first, 2, "派生链必须是父链加上追加的处理器")
+	require.Len(t, second, 2, "派生链必须是父链加上追加的处理器")
+
+	// Invoking the handlers is what tells a copy apart from an alias: the
+	// slice values themselves are functions and compare as neither equal nor
+	// unequal. If appendChain wrote into parent's spare capacity, deriving
+	// second overwrote the slot first still points at, so first's tail
+	// reports "second" here.
+	for _, handler := range []Handler{first[0], first[1], second[1]} {
+		require.NoError(t, handler(context.Background(), nil))
+	}
+	assert.Equal(t, []string{"parent", "first", "second"}, calls,
+		"派生链不得复用父链的富余容量：第一条链的尾部被第二条链覆盖了")
 }
