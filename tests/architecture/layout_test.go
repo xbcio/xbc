@@ -194,6 +194,7 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		"extensions": true,
 		"prelude":    true,
 		"engines":    true,
+		"enginetest": true,
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -201,6 +202,19 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		}
 		assert.Truef(t, allowedDirectories[entry.Name()], "unexpected direct package directory transport/web/%s; Web plugins belong beneath transport/web/extensions, engine adapters beneath transport/web/engines", entry.Name())
 	}
+
+	// enginetest implements the same web.Engine port the adapters under
+	// engines/ implement, but it is deliberately not one of them: it is the
+	// in-process engine the Web module's own tests and every extension's tests
+	// run on, so it must stay inside this module. An engines/ adapter is a
+	// separate publishable module that depends on transport/web, and a test
+	// engine shaped that way could not be imported by transport/web's own
+	// tests. Pinning the absence of a manifest is what keeps that distinction
+	// from eroding into "just publish it too".
+	engineTestRoot := filepath.Join(webRoot, "enginetest")
+	require.NotEmpty(t, archProductionGoFilesInDir(t, engineTestRoot), "the neutral test engine must be a production package, not a _test.go helper")
+	_, err = os.Stat(filepath.Join(engineTestRoot, "go.mod"))
+	require.ErrorIs(t, err, os.ErrNotExist, "transport/web/enginetest must belong to the transport/web module; it is a test double for the Engine port, not a publishable adapter")
 
 	enginesRoot := filepath.Join(webRoot, "engines")
 	engineEntries, err := os.ReadDir(enginesRoot)

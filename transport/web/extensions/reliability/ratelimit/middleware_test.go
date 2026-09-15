@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -8,23 +9,22 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
-func rateLimitEngine(t *testing.T, cfg Config, downstream *atomic.Int64) *gin.Engine {
+func rateLimitEngine(t *testing.T, cfg Config, downstream *atomic.Int64) *enginetest.Engine {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	p, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := gin.New()
-	engine.Use(web.Handle(p.Handler()))
-	engine.GET("/resource", func(c *gin.Context) {
+	engine := enginetest.New()
+	engine.Use(p.Handler())
+	engine.GET("/resource", func(_ context.Context, c *web.Ctx) error {
 		downstream.Add(1)
 		c.Status(http.StatusOK)
+		return nil
 	})
 	return engine
 }

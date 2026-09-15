@@ -7,7 +7,6 @@ go 1.25.0
 // resolves them during development without publishing local replace directives
 // or placeholder versions.
 require (
-	github.com/gin-gonic/gin v1.12.0
 	github.com/swaggest/swgui v1.8.9
 	github.com/swaggo/swag v1.16.6
 )
@@ -19,6 +18,7 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
+	github.com/gin-gonic/gin v1.12.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.30.3 // indirect

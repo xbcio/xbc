@@ -1,4 +1,4 @@
-package web
+package web_test
 
 import (
 	"context"
@@ -13,75 +13,77 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/extensions/authentication"
-	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 type fakeMiddleware struct {
-	handler Handler
-	order   Order
+	handler web.Handler
+	order   web.Order
 }
 
-func (m fakeMiddleware) Handler() Handler { return m.handler }
-func (m fakeMiddleware) Order() Order     { return m.order }
+func (m fakeMiddleware) Handler() web.Handler { return m.handler }
+func (m fakeMiddleware) Order() web.Order     { return m.order }
 
-type fakeRouteContributor struct{ register func(*Router) }
+type fakeRouteContributor struct{ register func(*web.Router) }
 
-func (f fakeRouteContributor) RegisterRoutes(router *Router) { f.register(router) }
+func (f fakeRouteContributor) RegisterRoutes(router *web.Router) { f.register(router) }
 
-type fakeRouteCatalogListener struct{ ready func(RouteCatalog) error }
+type fakeRouteCatalogListener struct{ ready func(web.RouteCatalog) error }
 
-func (f fakeRouteCatalogListener) RoutesReady(catalog RouteCatalog) error { return f.ready(catalog) }
-
-type modeLogger struct {
-	log.Logger
-	debug bool
-}
-
-func (l modeLogger) Enabled(level log.Level) bool {
-	return l.debug && level == log.DebugLevel
+func (f fakeRouteCatalogListener) RoutesReady(catalog web.RouteCatalog) error {
+	return f.ready(catalog)
 }
 
 type serverInputs struct {
-	middlewares    []plugin.Entry[Middleware]
-	routes         []plugin.Entry[RouteContributor]
-	listeners      []plugin.Entry[RouteCatalogListener]
+	factory        web.EngineFactory
+	middlewares    []plugin.Entry[web.Middleware]
+	routes         []plugin.Entry[web.RouteContributor]
+	listeners      []plugin.Entry[web.RouteCatalogListener]
 	authenticators []plugin.Entry[authentication.Authenticator]
-	extractors     []plugin.Entry[CredentialExtractor]
-	mappers        []ErrorMapper
+	extractors     []plugin.Entry[web.CredentialExtractor]
+	mappers        []web.ErrorMapper
 }
 
-func TestSetGinModeUsesLoggerCapabilityNotGlobalConfig(t *testing.T) {
-	previous := gin.Mode()
-	t.Cleanup(func() { gin.SetMode(previous) })
-
-	setGinMode(modeLogger{Logger: log.Nop(), debug: true})
-	assert.Equal(t, gin.DebugMode, gin.Mode())
-
-	setGinMode(modeLogger{Logger: log.Nop()})
-	assert.Equal(t, gin.ReleaseMode, gin.Mode())
-}
-
-// testEngineOf type-asserts a started Server's Engine back to the test
-// double so a test can inspect the underlying *gin.Engine/*http.Server
-// fields that Engine deliberately does not expose (Engine is a neutral port,
-// see transport/web/engine.go; this package's own tests cannot import
-// engines/gin to reach its equivalent assertion without an illegal import
-// cycle, see enginetest_test.go).
-func testEngineOf(t *testing.T, s *Server) *testEngine {
+// testEngineOf type-asserts a started Server's Engine back to the neutral test
+// engine so a test can dispatch requests into the assembled route tree with
+// httptest. Engine is a neutral port (see transport/web/engine.go) and
+// deliberately exposes no way to serve a request without a listener.
+func testEngineOf(t *testing.T, s *web.Server) *enginetest.Engine {
 	t.Helper()
-	te, ok := s.engine.(*testEngine)
-	require.True(t, ok, "test server was not built with testEngineFactory")
-	return te
+	engine, ok := s.Engine().(*enginetest.Engine)
+	require.True(t, ok, "test server was not built with enginetest.Factory")
+	return engine
 }
 
-func TestStartAppliesProductionHTTPServerSettings(t *testing.T) {
-	cfg := DefaultConfig()
+// recordingFactory captures the Options a Server derived from its Config and
+// then delegates to the neutral engine.
+//
+// Recording is the only way left to assert on that mapping. Options is the
+// entire contract between transport/web and an engine adapter, and Engine
+// deliberately exposes none of it back: TrustedProxies and MaxMultipartMemory
+// have no counterpart in enginetest at all, and the timeouts it does honour
+// land on an unexported *http.Server. Reaching into a concrete engine to read
+// them back would only re-test that engine's own constructor, which
+// engines/gin covers for the engine applications actually run.
+type recordingFactory struct{ options *web.Options }
+
+func (f recordingFactory) NewEngine(options web.Options) (web.Engine, error) {
+	*f.options = options
+	return enginetest.Factory{}.NewEngine(options)
+}
+
+// TestStartMapsEveryConfiguredEngineSettingOntoOptions pins the whole
+// Config-to-Options translation transport/web owns. Each field is given a
+// distinct value so a mapping that crossed two of them over -- read timeout
+// into write timeout, say -- fails instead of passing on coincidence.
+func TestStartMapsEveryConfiguredEngineSettingOntoOptions(t *testing.T) {
+	cfg := web.DefaultConfig()
 	cfg.Addr = "127.0.0.1:0"
 	cfg.ReadTimeout = 11 * time.Second
 	cfg.ReadHeaderTimeout = 7 * time.Second
@@ -91,67 +93,60 @@ func TestStartAppliesProductionHTTPServerSettings(t *testing.T) {
 	cfg.MaxRequestBodyBytes = 2 << 20
 	cfg.MaxMultipartMemory = 3 << 20
 
-	server, ctx, _ := newPingServer(t, cfg, serverInputs{})
+	var options web.Options
+	server, ctx, _ := newPingServer(t, cfg, serverInputs{factory: recordingFactory{options: &options}})
 	require.NoError(t, server.Start(ctx))
 
-	te := testEngineOf(t, server)
-	require.NotNil(t, te.srv)
-	assert.Equal(t, cfg.ReadTimeout, te.srv.ReadTimeout)
-	assert.Equal(t, cfg.ReadHeaderTimeout, te.srv.ReadHeaderTimeout)
-	assert.Equal(t, cfg.WriteTimeout, te.srv.WriteTimeout)
-	assert.Equal(t, cfg.IdleTimeout, te.srv.IdleTimeout)
-	assert.Equal(t, cfg.MaxHeaderBytes, te.srv.MaxHeaderBytes)
-	assert.Equal(t, cfg.MaxMultipartMemory, te.gin.MaxMultipartMemory)
+	assert.Equal(t, cfg.ReadTimeout, options.ReadTimeout)
+	assert.Equal(t, cfg.ReadHeaderTimeout, options.ReadHeaderTimeout)
+	assert.Equal(t, cfg.WriteTimeout, options.WriteTimeout)
+	assert.Equal(t, cfg.IdleTimeout, options.IdleTimeout)
+	assert.Equal(t, cfg.MaxHeaderBytes, options.MaxHeaderBytes)
+	assert.Equal(t, cfg.MaxMultipartMemory, options.MaxMultipartMemory)
+	assert.True(t, options.HandleMethodNotAllowed,
+		"405 必须由引擎区分出来，否则方法不匹配会退化成 404，Problem Detail 也无从产生")
 }
 
+// TestTrustedProxiesAreOptIn pins the half of the trusted-proxy contract that
+// belongs to transport/web: nothing is trusted unless the application asked
+// for it, and what it asked for reaches the engine verbatim. What an engine
+// then does with that list -- consult X-Forwarded-For or ignore it -- is the
+// engine's own behaviour, pinned by TestClientIPHonoursTrustedProxies in
+// engines/gin against the engine applications actually run. enginetest cannot
+// stand in for that: it reports the host part of RemoteAddr unconditionally,
+// so both cases below would look identical through it.
 func TestTrustedProxiesAreOptIn(t *testing.T) {
-	clientIPRoute := fakeRouteContributor{register: func(router *Router) {
-		router.GET("/client-ip", func(_ context.Context, c *Ctx) error { c.String(http.StatusOK, c.Gin().ClientIP()); return nil })
-	}}
-	clientIPEntry := plugin.Entry[RouteContributor]{
-		Identity: plugin.Identity{Plugin: "clientiptest"},
-		Value:    clientIPRoute,
-	}
-
-	tests := []struct {
+	for _, test := range []struct {
 		name    string
 		proxies []string
-		want    string
 	}{
-		{name: "forwarded header ignored by default", want: "127.0.0.1"},
-		{name: "explicit proxy accepted", proxies: []string{"127.0.0.1"}, want: "203.0.113.9"},
-	}
-	for _, test := range tests {
+		{name: "nothing trusted by default"},
+		{name: "explicit proxy forwarded to the engine", proxies: []string{"127.0.0.1"}},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := DefaultConfig()
+			cfg := web.DefaultConfig()
 			cfg.Addr = "127.0.0.1:0"
 			cfg.TrustedProxies = test.proxies
-			server, ctx, _ := newPingServer(t, cfg, serverInputs{
-				routes: []plugin.Entry[RouteContributor]{clientIPEntry},
-			})
+
+			var options web.Options
+			server, ctx, _ := newPingServer(t, cfg, serverInputs{factory: recordingFactory{options: &options}})
 			require.NoError(t, server.Start(ctx))
 
-			request := httptest.NewRequest(http.MethodGet, "/client-ip", nil)
-			request.RemoteAddr = "127.0.0.1:4321"
-			request.Header.Set("X-Forwarded-For", "203.0.113.9")
-			response := httptest.NewRecorder()
-			testEngineOf(t, server).ServeHTTP(response, request)
-
-			assert.Equal(t, http.StatusOK, response.Code)
-			assert.Equal(t, test.want, response.Body.String())
+			assert.Equal(t, test.proxies, options.TrustedProxies,
+				"未显式配置时不得替应用信任任何代理；显式配置时必须原样交给引擎")
 		})
 	}
 }
 
 func TestServerReturnsProblemDetailsForRoutingAndKnownBodyOverflow(t *testing.T) {
-	bodyRoute := fakeRouteContributor{register: func(router *Router) {
-		router.POST("/body", func(_ context.Context, c *Ctx) error { c.Status(http.StatusNoContent); return nil })
+	bodyRoute := fakeRouteContributor{register: func(router *web.Router) {
+		router.POST("/body", func(_ context.Context, c *web.Ctx) error { c.Status(http.StatusNoContent); return nil })
 	}}
-	cfg := DefaultConfig()
+	cfg := web.DefaultConfig()
 	cfg.Addr = "127.0.0.1:0"
 	cfg.MaxRequestBodyBytes = 8
 	server, ctx, _ := newPingServer(t, cfg, serverInputs{
-		routes: []plugin.Entry[RouteContributor]{
+		routes: []plugin.Entry[web.RouteContributor]{
 			{Identity: plugin.Identity{Plugin: "bodytest"}, Value: bodyRoute},
 		},
 	})
@@ -172,8 +167,15 @@ func TestServerReturnsProblemDetailsForRoutingAndKnownBodyOverflow(t *testing.T)
 			status: http.StatusNotFound, code: "not_found", instance: "/missing",
 		},
 		{
+			// Allow names every method the engine's matcher would accept for
+			// this path, which is the engine's answer rather than the server's:
+			// the test engine is ServeMux-backed and ServeMux answers HEAD with
+			// the GET handler, so HEAD is genuinely allowed here. An engine
+			// whose matcher keeps HEAD separate would report only GET; what the
+			// server must not do is emit a 405 with no Allow at all.
 			name: "method not allowed", method: http.MethodPost, path: "/ping",
-			status: http.StatusMethodNotAllowed, code: "method_not_allowed", instance: "/ping", allow: http.MethodGet,
+			status: http.StatusMethodNotAllowed, code: "method_not_allowed", instance: "/ping",
+			allow: "GET, HEAD",
 		},
 		{
 			name: "content length exceeds limit", method: http.MethodPost, path: "/body", body: "0123456789",
@@ -196,9 +198,8 @@ func TestServerReturnsProblemDetailsForRoutingAndKnownBodyOverflow(t *testing.T)
 	}
 }
 
-func newPingServer(t *testing.T, cfg Config, inputs serverInputs) (*Server, *plugin.Context, *fakeHost) {
+func newPingServer(t *testing.T, cfg web.Config, inputs serverInputs) (*web.Server, *plugin.Context, *fakeHost) {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 
 	// These tests exercise server lifecycle (routing, ordering, shutdown
 	// draining), not authentication policy, and none of them register an
@@ -209,27 +210,32 @@ func newPingServer(t *testing.T, cfg Config, inputs serverInputs) (*Server, *plu
 	// caller building cfg from DefaultConfig() (server_test.go and
 	// errors_test.go both do) already carries an explicit SecurityDeny, so a
 	// zero-value check silently skips exactly those callers.
-	cfg.Security.Default = SecurityPermit
+	cfg.Security.Default = web.SecurityPermit
 
-	middlewares := make([]plugin.Entry[Middleware], 0, len(inputs.middlewares)+1)
-	middlewares = append(middlewares, plugin.Entry[Middleware]{
-		Identity: plugin.Identity{Plugin: ErrorBoundaryKey},
-		Value:    &errorBoundary{mappers: append([]ErrorMapper(nil), inputs.mappers...)},
+	middlewares := make([]plugin.Entry[web.Middleware], 0, len(inputs.middlewares)+1)
+	middlewares = append(middlewares, plugin.Entry[web.Middleware]{
+		Identity: plugin.Identity{Plugin: web.ErrorBoundaryKey},
+		Value:    web.NewErrorBoundary(inputs.mappers...),
 	})
 	middlewares = append(middlewares, inputs.middlewares...)
 
-	routes := make([]plugin.Entry[RouteContributor], 0, len(inputs.routes)+1)
-	routes = append(routes, plugin.Entry[RouteContributor]{
+	routes := make([]plugin.Entry[web.RouteContributor], 0, len(inputs.routes)+1)
+	routes = append(routes, plugin.Entry[web.RouteContributor]{
 		Identity: plugin.Identity{Plugin: "pingtest"},
-		Value: fakeRouteContributor{register: func(router *Router) {
-			router.GET("/ping", func(_ context.Context, c *Ctx) error { c.Status(http.StatusOK); return nil })
+		Value: fakeRouteContributor{register: func(router *web.Router) {
+			router.GET("/ping", func(_ context.Context, c *web.Ctx) error { c.Status(http.StatusOK); return nil })
 		}},
 	})
 	routes = append(routes, inputs.routes...)
 
+	factory := inputs.factory
+	if factory == nil {
+		factory = enginetest.Factory{}
+	}
+
 	host := newFakeHost()
 	ctx := contextFromHost(host)
-	server := newServer(cfg, testEngineFactory{}, middlewares, routes, inputs.listeners, inputs.authenticators, inputs.extractors)
+	server := web.NewServer(cfg, factory, middlewares, routes, inputs.listeners, inputs.authenticators, inputs.extractors)
 	t.Cleanup(func() {
 		if err := server.Stop(context.Background()); err != nil {
 			t.Errorf("stopping test server: %v", err)
@@ -271,7 +277,7 @@ func probe(addr, path string, timeout time.Duration) error {
 }
 
 func TestServerWaitsForRuntimeTrafficGateAfterOpenTraffic(t *testing.T) {
-	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
+	server, ctx, host := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
 
 	require.NoError(t, server.Start(ctx))
 	addr := server.Addr()
@@ -289,12 +295,12 @@ func TestServerWaitsForRuntimeTrafficGateAfterOpenTraffic(t *testing.T) {
 
 	tasks := host.submittedTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance}, tasks[0].identity)
+	assert.Equal(t, plugin.Identity{Plugin: web.Key, Instance: plugin.DefaultInstance}, tasks[0].identity)
 	assert.True(t, tasks[0].critical)
 }
 
 func TestAddrReturnsRealBoundEphemeralPort(t *testing.T) {
-	server, ctx, _ := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
+	server, ctx, _ := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
 
 	require.NoError(t, server.Start(ctx))
 	addr := server.Addr()
@@ -307,7 +313,7 @@ func TestAddrReturnsRealBoundEphemeralPort(t *testing.T) {
 }
 
 func TestStopBeforeTrafficGateReleaseDoesNotLeakListener(t *testing.T) {
-	server, ctx, _ := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
+	server, ctx, _ := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
 
 	require.NoError(t, server.Start(ctx))
 	addr := server.Addr()
@@ -319,7 +325,7 @@ func TestStopBeforeTrafficGateReleaseDoesNotLeakListener(t *testing.T) {
 }
 
 func TestStartFailsWhenCriticalServingTaskIsRejected(t *testing.T) {
-	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
+	server, ctx, host := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{})
 	host.rejectTasks()
 
 	err := server.Start(ctx)
@@ -332,15 +338,15 @@ func TestStartFailsWhenCriticalServingTaskIsRejected(t *testing.T) {
 func TestStartAppliesContributedMiddlewareToRoutesUnderBasePath(t *testing.T) {
 	var ran bool
 	middleware := fakeMiddleware{
-		order: Order{Phase: PhaseBusiness},
-		handler: func(_ context.Context, c *Ctx) error {
+		order: web.Order{Phase: web.PhaseBusiness},
+		handler: func(_ context.Context, c *web.Ctx) error {
 			ran = true
 			c.Next()
 			return nil
 		},
 	}
-	server, ctx, _ := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/api"}, serverInputs{
-		middlewares: []plugin.Entry[Middleware]{
+	server, ctx, _ := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/api"}, serverInputs{
+		middlewares: []plugin.Entry[web.Middleware]{
 			{Identity: plugin.Identity{Plugin: "audit"}, Value: middleware},
 		},
 	})
@@ -356,9 +362,9 @@ func TestStartAppliesContributedMiddlewareToRoutesUnderBasePath(t *testing.T) {
 
 func TestOpenTrafficPropagatesRouteCatalogListenerErrorWithoutReleasingGate(t *testing.T) {
 	wantErr := errors.New("swagger generation failed")
-	listener := fakeRouteCatalogListener{ready: func(RouteCatalog) error { return wantErr }}
-	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
-		listeners: []plugin.Entry[RouteCatalogListener]{
+	listener := fakeRouteCatalogListener{ready: func(web.RouteCatalog) error { return wantErr }}
+	server, ctx, host := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
+		listeners: []plugin.Entry[web.RouteCatalogListener]{
 			{Identity: plugin.Identity{Plugin: "swagger"}, Value: listener},
 		},
 	})
@@ -375,18 +381,18 @@ func TestOpenTrafficPropagatesRouteCatalogListenerErrorWithoutReleasingGate(t *t
 
 func TestOpenTrafficReturnsRouteFreezeErrorWithoutNotifyingListeners(t *testing.T) {
 	listenerCalled := false
-	invalidRoute := fakeRouteContributor{register: func(router *Router) {
-		router.GET("/private", func(context.Context, *Ctx) error { return nil }).Auth(Accepts())
+	invalidRoute := fakeRouteContributor{register: func(router *web.Router) {
+		router.GET("/private", func(context.Context, *web.Ctx) error { return nil }).Auth(web.Accepts())
 	}}
-	listener := fakeRouteCatalogListener{ready: func(RouteCatalog) error {
+	listener := fakeRouteCatalogListener{ready: func(web.RouteCatalog) error {
 		listenerCalled = true
 		return nil
 	}}
-	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
-		routes: []plugin.Entry[RouteContributor]{
+	server, ctx, host := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
+		routes: []plugin.Entry[web.RouteContributor]{
 			{Identity: plugin.Identity{Plugin: "invalid-route"}, Value: invalidRoute},
 		},
-		listeners: []plugin.Entry[RouteCatalogListener]{
+		listeners: []plugin.Entry[web.RouteCatalogListener]{
 			{Identity: plugin.Identity{Plugin: "route-listener"}, Value: listener},
 		},
 	})
@@ -411,26 +417,24 @@ func TestOpenTrafficReturnsRouteFreezeErrorWithoutNotifyingListeners(t *testing.
 // OpenTraffic, so Start alone must still succeed -- asserting that separately is
 // what keeps this test honest about which phase produces the failure.
 func TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	cfg := DefaultConfig()
+	cfg := web.DefaultConfig()
 	cfg.Addr = "127.0.0.1:0"
-	require.Equal(t, SecurityDeny, cfg.Security.Default,
+	require.Equal(t, web.SecurityDeny, cfg.Security.Default,
 		"the factory default must stay fail-closed, otherwise this test proves nothing")
 
-	management := fakeRouteContributor{register: func(router *Router) {
-		router.GET("/-/metrics", func(context.Context, *Ctx) error { return nil }).Name("management.metrics")
+	management := fakeRouteContributor{register: func(router *web.Router) {
+		router.GET("/-/metrics", func(context.Context, *web.Ctx) error { return nil }).Name("management.metrics")
 	}}
 	host := newFakeHost()
 	ctx := contextFromHost(host)
-	server := newServer(
+	server := web.NewServer(
 		cfg,
-		testEngineFactory{},
-		[]plugin.Entry[Middleware]{{
-			Identity: plugin.Identity{Plugin: ErrorBoundaryKey},
-			Value:    &errorBoundary{},
+		enginetest.Factory{},
+		[]plugin.Entry[web.Middleware]{{
+			Identity: plugin.Identity{Plugin: web.ErrorBoundaryKey},
+			Value:    web.NewErrorBoundary(),
 		}},
-		[]plugin.Entry[RouteContributor]{{
+		[]plugin.Entry[web.RouteContributor]{{
 			Identity: plugin.Identity{Plugin: "managementtest"},
 			Value:    management,
 		}},
@@ -454,9 +458,9 @@ func TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator(t *testing.T)
 // and returns the bound address once the managed serving task is answering.
 // Every drain assertion needs a server that is genuinely serving traffic, not
 // merely bound.
-func servingPingServer(t *testing.T, inputs serverInputs) (*Server, string) {
+func servingPingServer(t *testing.T, inputs serverInputs) (*web.Server, string) {
 	t.Helper()
-	server, ctx, host := newPingServer(t, Config{Addr: "127.0.0.1:0", BasePath: "/"}, inputs)
+	server, ctx, host := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, inputs)
 	require.NoError(t, server.Start(ctx))
 	require.NoError(t, server.OpenTraffic(ctx))
 	host.releaseTraffic()
@@ -469,12 +473,12 @@ func servingPingServer(t *testing.T, inputs serverInputs) (*Server, string) {
 
 // slowRoute registers /slow, which signals when it is entered, blocks until
 // release is closed, and marks completion just before it returns.
-func slowRoute(entered chan<- struct{}, release <-chan struct{}, completed *atomic.Bool) plugin.Entry[RouteContributor] {
+func slowRoute(entered chan<- struct{}, release <-chan struct{}, completed *atomic.Bool) plugin.Entry[web.RouteContributor] {
 	var enteredOnce sync.Once
-	return plugin.Entry[RouteContributor]{
+	return plugin.Entry[web.RouteContributor]{
 		Identity: plugin.Identity{Plugin: "slowtest"},
-		Value: fakeRouteContributor{register: func(router *Router) {
-			router.GET("/slow", func(_ context.Context, c *Ctx) error {
+		Value: fakeRouteContributor{register: func(router *web.Router) {
+			router.GET("/slow", func(_ context.Context, c *web.Ctx) error {
 				enteredOnce.Do(func() { close(entered) })
 				<-release
 				completed.Store(true)
@@ -500,7 +504,7 @@ func TestShutdownDrainsAnInFlightRequestBeforeReturning(t *testing.T) {
 	release := make(chan struct{})
 	var completed atomic.Bool
 	server, addr := servingPingServer(t, serverInputs{
-		routes: []plugin.Entry[RouteContributor]{slowRoute(entered, release, &completed)},
+		routes: []plugin.Entry[web.RouteContributor]{slowRoute(entered, release, &completed)},
 	})
 
 	type response struct {
@@ -560,7 +564,7 @@ func TestShutdownDrainsAnInFlightRequestBeforeReturning(t *testing.T) {
 // propagation interval inside runtime's one shutdown budget. A Web-local timer
 // that ignored ctx would delay every later Stop and violate the core contract.
 func TestShutdownPreDrainUsesTheSharedDeadline(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := web.DefaultConfig()
 	cfg.Addr = "127.0.0.1:0"
 	cfg.Shutdown.PreDrainDelay = time.Second
 	server, ctx, host := newPingServer(t, cfg, serverInputs{})
@@ -611,7 +615,7 @@ func TestShutdownIsBoundedAndReleasesTheListenerWhenDrainingExceedsItsDeadline(t
 	defer releaseHandler()
 	var completed atomic.Bool
 	server, addr := servingPingServer(t, serverInputs{
-		routes: []plugin.Entry[RouteContributor]{slowRoute(entered, release, &completed)},
+		routes: []plugin.Entry[web.RouteContributor]{slowRoute(entered, release, &completed)},
 	})
 
 	finished := make(chan struct{})

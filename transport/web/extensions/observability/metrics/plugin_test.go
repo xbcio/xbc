@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,16 +10,14 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 const currentRouteKeyForTest = "xbc/web.currentRoute"
-
-func init() { gin.SetMode(gin.TestMode) }
 
 func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
 	var zero plugin.Definition
@@ -66,13 +65,17 @@ func TestPrivateRegistryNeverPollutesDefaultRegistry(t *testing.T) {
 
 func TestRecordsRouteTemplateAndBoundedLabels(t *testing.T) {
 	p := New()
-	engine := gin.New()
-	engine.Use(func(c *gin.Context) {
+	engine := enginetest.New()
+	engine.Use(func(_ context.Context, c *web.Ctx) error {
 		c.Set(currentRouteKeyForTest, web.RouteInfo{Method: http.MethodGet, Path: "/users/:id", Name: "users.get"})
 		c.Next()
+		return nil
 	})
-	engine.Use(web.Handle(p.Handler()))
-	engine.GET("/users/:id", func(c *gin.Context) { c.Status(http.StatusCreated) })
+	engine.Use(p.Handler())
+	engine.GET("/users/{id}", func(_ context.Context, c *web.Ctx) error {
+		c.Status(http.StatusCreated)
+		return nil
+	})
 
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/users/42", nil))
@@ -121,13 +124,17 @@ func TestRegistryRejectsDuplicatesWithoutPanic(t *testing.T) {
 
 func TestConcurrentRequestsAndGather(t *testing.T) {
 	p := New()
-	engine := gin.New()
-	engine.Use(func(c *gin.Context) {
+	engine := enginetest.New()
+	engine.Use(func(_ context.Context, c *web.Ctx) error {
 		c.Set(currentRouteKeyForTest, web.RouteInfo{Method: http.MethodGet, Path: "/items/:id"})
 		c.Next()
+		return nil
 	})
-	engine.Use(web.Handle(p.Handler()))
-	engine.GET("/items/:id", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	engine.Use(p.Handler())
+	engine.GET("/items/{id}", func(_ context.Context, c *web.Ctx) error {
+		c.Status(http.StatusNoContent)
+		return nil
+	})
 
 	const count = 100
 	var wg sync.WaitGroup

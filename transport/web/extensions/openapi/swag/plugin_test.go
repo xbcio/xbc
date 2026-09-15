@@ -8,10 +8,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 const testDocument = `{
@@ -128,7 +127,6 @@ func TestConfiguredReaderErrorNamesInstance(t *testing.T) {
 }
 
 func TestRoutesReadyPreparesSwaggerUIWithFinalTransportPaths(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	p, err := New(generatedDocument(testDocument))
 	if err != nil {
 		t.Fatal(err)
@@ -142,9 +140,9 @@ func TestRoutesReadyPreparesSwaggerUIWithFinalTransportPaths(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/docs", nil)
 	response := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(response)
-	ctx.Request = request
-	web.Handle(p.serveUI)(ctx)
+	if err := p.serveUI(request.Context(), enginetest.NewCtx(response, request)); err != nil {
+		t.Fatal(err)
+	}
 	if response.Code != http.StatusOK {
 		t.Fatalf("UI status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -154,16 +152,15 @@ func TestRoutesReadyPreparesSwaggerUIWithFinalTransportPaths(t *testing.T) {
 }
 
 func TestDocumentHandlerServesGeneratedJSON(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	p, err := New(generatedDocument(testDocument))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/swagger.json", nil)
 	response := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(response)
-	ctx.Request = request
-	web.Handle(p.serveDocument)(ctx)
+	if err := p.serveDocument(request.Context(), enginetest.NewCtx(response, request)); err != nil {
+		t.Fatal(err)
+	}
 	if response.Code != http.StatusOK || response.Body.String() != testDocument {
 		t.Fatalf("document response = %d %q", response.Code, response.Body.String())
 	}

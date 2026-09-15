@@ -4,21 +4,23 @@
 //
 // jwt is a credential extractor and authenticator, not a middleware: it plugs
 // into the Web transport's built-in authentication middleware, which is the
-// only place a gin.Context is available. Configure plugins.jwt.secret with at
+// only place the live request is available. Configure plugins.jwt.secret with at
 // least 32 bytes, enable the autoload package, and read the identity that
 // middleware publishes. Verified claims travel as web.Principal.Attributes:
 //
-//	func profile(c *gin.Context) {
+//	func profile(_ context.Context, c *web.Ctx) error {
 //		principal, ok := web.CurrentPrincipal(c)
 //		if !ok {
-//			c.AbortWithStatus(http.StatusUnauthorized)
-//			return
+//			c.Status(http.StatusUnauthorized)
+//			c.Abort()
+//			return nil
 //		}
 //		role, _ := principal.Attributes["role"].(string)
-//		c.JSON(http.StatusOK, gin.H{
+//		c.JSON(http.StatusOK, map[string]any{
 //			"subject": principal.Subject,
 //			"role":    role,
 //		})
+//		return nil
 //	}
 //
 // A directly assembled plugin can also issue bounded tokens. SignWithTTL owns

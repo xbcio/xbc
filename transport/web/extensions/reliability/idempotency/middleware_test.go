@@ -10,14 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 const currentRouteKeyForTest = "xbc/web.currentRoute"
-
-func init() { gin.SetMode(gin.TestMode) }
 
 func initializedPlugin(t *testing.T, configure func(*Config), opts ...Option) *Plugin {
 	t.Helper()
@@ -32,16 +29,26 @@ func initializedPlugin(t *testing.T, configure func(*Config), opts ...Option) *P
 	return p
 }
 
-func engineFor(p *Plugin, route web.RouteInfo, handler gin.HandlerFunc) *gin.Engine {
-	engine := gin.New()
-	engine.Use(func(c *gin.Context) {
-		c.Set(currentRouteKeyForTest, route)
-		web.SetPrincipal(web.NewCtx(c), web.Principal{Subject: "alice", AuthMethod: "test"})
-		c.Next()
+func engineFor(p *Plugin, route web.RouteInfo, handler web.Handler) *enginetest.Engine {
+	engine := enginetest.New()
+	engine.Handle(route.Method, route.Path, []web.Handler{
+		func(_ context.Context, c *web.Ctx) error {
+			c.Set(currentRouteKeyForTest, route)
+			web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "test"})
+			c.Next()
+			return nil
+		},
+		p.Handler(),
+		handler,
 	})
-	engine.Use(web.Handle(p.Handler()))
-	engine.Handle(route.Method, route.Path, handler)
 	return engine
+}
+
+// noContent is the do-nothing route handler shared by the cases whose subject
+// is the middleware rather than the response body.
+func noContent(_ context.Context, c *web.Ctx) error {
+	c.Status(http.StatusNoContent)
+	return nil
 }
 
 func perform(engine http.Handler, key, body string) *httptest.ResponseRecorder {
@@ -62,10 +69,11 @@ func TestCompletedResponseIsSafelyReplayed(t *testing.T) {
 	p := initializedPlugin(t, nil)
 	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
 	var calls atomic.Int32
-	engine := engineFor(p, route, func(c *gin.Context) {
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
 		calls.Add(1)
-		data, _ := io.ReadAll(c.Request.Body)
+		data, _ := io.ReadAll(c.Request().Body)
 		c.Data(http.StatusCreated, "application/json", append([]byte(`{"body":`), append(data, '}')...))
+		return nil
 	})
 	first := perform(engine, "order-123456", `"one"`)
 	second := perform(engine, "order-123456", `"one"`)
@@ -84,7 +92,13 @@ func TestConcurrentDuplicateRunsHandlerOnce(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
-	engine := engineFor(p, route, func(c *gin.Context) { calls.Add(1); close(entered); <-release; c.String(http.StatusOK, "done") })
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
+		calls.Add(1)
+		close(entered)
+		<-release
+		c.String(http.StatusOK, "done")
+		return nil
+	})
 	firstDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() { firstDone <- perform(engine, "concurrent-key", `{}`) }()
 	<-entered
@@ -102,19 +116,19 @@ func TestConcurrentDuplicateRunsHandlerOnce(t *testing.T) {
 func TestOnlyMarkedRoutesApplyAndFailuresRelease(t *testing.T) {
 	p := initializedPlugin(t, func(c *Config) { c.MaxResponseBytes = 4 })
 	unmarked := web.RouteInfo{Method: http.MethodPost, Path: "/orders"}
-	if got := perform(engineFor(p, unmarked, func(c *gin.Context) { c.Status(http.StatusNoContent) }), "", "").Code; got != http.StatusNoContent {
+	if got := perform(engineFor(p, unmarked, noContent), "", "").Code; got != http.StatusNoContent {
 		t.Fatalf("unmarked = %d", got)
 	}
 	marked := unmarked
 	marked.Idempotent = true
 	var calls atomic.Int32
-	engine := engineFor(p, marked, func(c *gin.Context) {
-		n := calls.Add(1)
-		if n == 1 {
+	engine := engineFor(p, marked, func(_ context.Context, c *web.Ctx) error {
+		if calls.Add(1) == 1 {
 			c.String(http.StatusInternalServerError, "failed")
 		} else {
 			c.String(http.StatusOK, "response-too-large")
 		}
+		return nil
 	})
 	if got := perform(engine, "retry-key", "").Code; got != http.StatusInternalServerError {
 		t.Fatalf("failed = %d", got)
@@ -130,7 +144,7 @@ func TestOnlyMarkedRoutesApplyAndFailuresRelease(t *testing.T) {
 func TestKeyAndRequestBodyLimits(t *testing.T) {
 	p := initializedPlugin(t, func(c *Config) { c.MaxRequestBytes = 2 })
 	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
-	engine := engineFor(p, route, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	engine := engineFor(p, route, noContent)
 	if got := perform(engine, "", "").Code; got != http.StatusBadRequest {
 		t.Fatalf("missing key = %d", got)
 	}
@@ -143,7 +157,11 @@ func TestQueryAndPrincipalScopeArePartOfSemantics(t *testing.T) {
 	p := initializedPlugin(t, nil)
 	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
 	var calls atomic.Int32
-	engine := engineFor(p, route, func(c *gin.Context) { calls.Add(1); c.Status(http.StatusNoContent) })
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
+		calls.Add(1)
+		c.Status(http.StatusNoContent)
+		return nil
+	})
 	if got := performPath(engine, "/orders?mode=fast", "semantic-key", `{}`).Code; got != http.StatusNoContent {
 		t.Fatalf("first = %d", got)
 	}
@@ -158,7 +176,7 @@ func TestQueryAndPrincipalScopeArePartOfSemantics(t *testing.T) {
 func TestDuplicateKeyHeaderAndInvalidInjectedReplayAreRejected(t *testing.T) {
 	p := initializedPlugin(t, nil)
 	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
-	engine := engineFor(p, route, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	engine := engineFor(p, route, noContent)
 	req := httptest.NewRequest(http.MethodPost, "/orders", nil)
 	req.Header.Add("Idempotency-Key", "duplicate-one")
 	req.Header.Add("Idempotency-Key", "duplicate-two")
@@ -170,7 +188,7 @@ func TestDuplicateKeyHeaderAndInvalidInjectedReplayAreRejected(t *testing.T) {
 
 	bad := initializedPlugin(t, func(c *Config) { c.MaxResponseBytes = 4 },
 		WithStore(completedStore{response: Response{Status: 200, Body: make([]byte, 32)}}))
-	response := perform(engineFor(bad, route, func(c *gin.Context) { c.Status(204) }), "invalid-store", "")
+	response := perform(engineFor(bad, route, noContent), "invalid-store", "")
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("invalid replay status = %d", response.Code)
 	}

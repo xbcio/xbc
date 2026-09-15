@@ -31,15 +31,16 @@
 //	    exclude_routes: ["reports.stream"]
 //
 // Deadline handling is cooperative: handlers and the work they call must
-// observe c.Request.Context(). For example:
+// observe the request context handed to them. For example:
 //
-//	func wait(c *gin.Context) {
+//	func wait(ctx context.Context, c *web.Ctx) error {
 //		select {
 //		case <-time.After(time.Second):
 //			c.Status(http.StatusNoContent)
-//		case <-c.Request.Context().Done():
-//			return // timeout writes the final 504 response
+//		case <-ctx.Done():
+//			return nil // timeout writes the final 504 response
 //		}
+//		return nil
 //	}
 //
 // SSE and upgrade requests are bypassed automatically. A handler that starts

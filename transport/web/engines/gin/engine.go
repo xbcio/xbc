@@ -83,9 +83,31 @@ func (g *engine) Shutdown(ctx context.Context) error {
 func (g *engine) toGinChain(chain []web.Handler) []ginlib.HandlerFunc {
 	converted := make([]ginlib.HandlerFunc, len(chain))
 	for i, handler := range chain {
-		converted[i] = web.Handle(handler)
+		run := web.Handle(handler)
+		converted[i] = func(c *ginlib.Context) { run(ctxFor(c)) }
 	}
 	return converted
+}
+
+// ctxKey is where the request's single *web.Ctx is parked. gin's own key/value
+// store is the natural home: it already has exactly the lifetime wanted, one
+// request.
+const ctxKey = "xbc/web.ctx"
+
+// ctxFor returns the one *web.Ctx this request runs through, creating it on
+// first use. Every handler in the chain must receive the same instance: Ctx
+// owns the request-scoped value store, so a second Ctx would start empty and
+// lose the matched route, the active error resolver, and the principal that
+// earlier handlers published.
+func ctxFor(c *ginlib.Context) *web.Ctx {
+	if value, ok := c.Get(ctxKey); ok {
+		if ctx, valid := value.(*web.Ctx); valid && ctx != nil {
+			return ctx
+		}
+	}
+	ctx := web.NewCtx(newRequestContext(c))
+	c.Set(ctxKey, ctx)
+	return ctx
 }
 
 var (

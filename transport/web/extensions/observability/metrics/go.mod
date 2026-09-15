@@ -6,7 +6,6 @@ go 1.25.0
 // until they have real published versions. Do not add a local replace or a
 // placeholder version here.
 require (
-	github.com/gin-gonic/gin v1.12.0
 	github.com/prometheus/client_golang v1.23.2
 )
 
@@ -19,6 +18,7 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
+	github.com/gin-gonic/gin v1.12.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.30.3 // indirect

@@ -6,7 +6,7 @@
 //
 // apikey is a credential extractor and authenticator, not a middleware: it
 // plugs into the Web transport's built-in authentication middleware, which is
-// the only place a gin.Context is available. Compose Bundle explicitly to use
+// the only place the live request is available. Compose Bundle explicitly to use
 // configuration-backed static credentials. Bundle and ordinary package
 // imports are side-effect free. Executables that intentionally use XBC's
 // optional process-wide composition can import the leaf apikey/autoload
@@ -40,10 +40,11 @@
 //
 //	principal, ok := web.CurrentPrincipal(c)
 //	if !ok || principal.AuthMethod != "apikey" {
-//		c.AbortWithStatus(http.StatusUnauthorized)
-//		return
+//		c.Status(http.StatusUnauthorized)
+//		c.Abort()
+//		return nil
 //	}
-//	c.JSON(http.StatusOK, gin.H{"subject": principal.Subject})
+//	c.JSON(http.StatusOK, map[string]any{"subject": principal.Subject})
 //
 // Production repositories implement Repository and receive only KeyDigest.
 // Implementations must honor context cancellation and compare secret material

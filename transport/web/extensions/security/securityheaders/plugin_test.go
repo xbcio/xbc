@@ -1,15 +1,15 @@
 package securityheaders
 
 import (
+	"context"
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit"
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
 )
@@ -34,11 +34,13 @@ func TestDefinitionAndPhaseContract(t *testing.T) {
 }
 
 func TestSafeDefaultsAndHTTPSOnlyHSTS(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	p := New()
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/", func(_ context.Context, c *web.Ctx) error {
+		c.Status(http.StatusNoContent)
+		return nil
+	})
 
 	httpResponse := httptest.NewRecorder()
 	router.ServeHTTP(httpResponse, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -79,9 +81,12 @@ func TestConfigurationDisablesPoliciesAndRejectsInjection(t *testing.T) {
 	}
 	p := New()
 	p.state.Store(&state)
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/", func(_ context.Context, c *web.Ctx) error {
+		c.Status(http.StatusNoContent)
+		return nil
+	})
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 	for _, header := range []string{"Content-Security-Policy", "X-Frame-Options", "Strict-Transport-Security"} {

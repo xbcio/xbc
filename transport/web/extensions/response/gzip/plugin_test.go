@@ -3,6 +3,7 @@ package gzip
 import (
 	"bytes"
 	compressgzip "compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,10 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/timeout"
 )
 
@@ -35,9 +35,10 @@ func TestDefinitionAndOrderingContract(t *testing.T) {
 
 func TestCompressesNegotiatedCompressibleResponse(t *testing.T) {
 	body := strings.Repeat("compress me ", 300)
-	response := perform(t, DefaultConfig(), http.MethodGet, "/data", map[string]string{"Accept-Encoding": "br, gzip;q=0.8"}, func(c *gin.Context) {
-		c.Header("ETag", `"strong"`)
+	response := perform(t, DefaultConfig(), http.MethodGet, "/data", map[string]string{"Accept-Encoding": "br, gzip;q=0.8"}, func(_ context.Context, c *web.Ctx) error {
+		c.SetHeader("ETag", `"strong"`)
 		c.Data(http.StatusOK, "application/json", []byte(body))
+		return nil
 	})
 	if response.Header().Get("Content-Encoding") != "gzip" || !headerContainsToken(response.Header().Values("Vary"), "Accept-Encoding") {
 		t.Fatalf("compression headers = %#v", response.Header())
@@ -55,21 +56,33 @@ func TestSkipsSmallSSEUpgradeEncodedRangeAndNoTransformResponses(t *testing.T) {
 		name    string
 		path    string
 		headers map[string]string
-		handler gin.HandlerFunc
+		handler web.Handler
 	}{
-		{"small", "/small", nil, func(c *gin.Context) { c.String(http.StatusOK, "tiny") }},
-		{"sse", "/sse", map[string]string{"Accept": "text/event-stream"}, func(c *gin.Context) {
+		{"small", "/small", nil, func(_ context.Context, c *web.Ctx) error {
+			c.String(http.StatusOK, "tiny")
+			return nil
+		}},
+		{"sse", "/sse", map[string]string{"Accept": "text/event-stream"}, func(_ context.Context, c *web.Ctx) error {
 			c.Data(http.StatusOK, "text/event-stream", []byte(strings.Repeat("data: x\n\n", 200)))
+			return nil
 		}},
-		{"upgrade", "/upgrade", map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}, func(c *gin.Context) { c.String(http.StatusOK, strings.Repeat("x", 2000)) }},
-		{"encoded", "/encoded", nil, func(c *gin.Context) {
-			c.Header("Content-Encoding", "br")
-			c.String(http.StatusOK, strings.Repeat("x", 2000))
+		{"upgrade", "/upgrade", map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}, func(_ context.Context, c *web.Ctx) error {
+			c.String(http.StatusOK, "%s", strings.Repeat("x", 2000))
+			return nil
 		}},
-		{"range", "/range", map[string]string{"Range": "bytes=0-100"}, func(c *gin.Context) { c.String(http.StatusPartialContent, strings.Repeat("x", 2000)) }},
-		{"no-transform", "/no-transform", nil, func(c *gin.Context) {
-			c.Header("Cache-Control", "public, no-transform")
-			c.String(http.StatusOK, strings.Repeat("x", 2000))
+		{"encoded", "/encoded", nil, func(_ context.Context, c *web.Ctx) error {
+			c.SetHeader("Content-Encoding", "br")
+			c.String(http.StatusOK, "%s", strings.Repeat("x", 2000))
+			return nil
+		}},
+		{"range", "/range", map[string]string{"Range": "bytes=0-100"}, func(_ context.Context, c *web.Ctx) error {
+			c.String(http.StatusPartialContent, "%s", strings.Repeat("x", 2000))
+			return nil
+		}},
+		{"no-transform", "/no-transform", nil, func(_ context.Context, c *web.Ctx) error {
+			c.SetHeader("Cache-Control", "public, no-transform")
+			c.String(http.StatusOK, "%s", strings.Repeat("x", 2000))
+			return nil
 		}},
 	}
 	for _, tt := range tests {
@@ -97,8 +110,9 @@ func TestAcceptEncodingQualityAndExcludedPath(t *testing.T) {
 		{"/data", "br"},
 		{"/stream/jobs", "gzip"},
 	} {
-		response := perform(t, cfg, http.MethodGet, tc.path, map[string]string{"Accept-Encoding": tc.accept}, func(c *gin.Context) {
-			c.String(http.StatusOK, strings.Repeat("x", 100))
+		response := perform(t, cfg, http.MethodGet, tc.path, map[string]string{"Accept-Encoding": tc.accept}, func(_ context.Context, c *web.Ctx) error {
+			c.String(http.StatusOK, "%s", strings.Repeat("x", 100))
+			return nil
 		})
 		if got := response.Header().Get("Content-Encoding"); got != "" {
 			t.Fatalf("%s %q encoded as %q", tc.path, tc.accept, got)
@@ -117,8 +131,9 @@ func TestIdentityAndHEADResponsesStillVaryOnAcceptEncoding(t *testing.T) {
 		{name: "head", method: http.MethodHead, accept: "gzip"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			response := perform(t, cfg, tc.method, "/data", map[string]string{"Accept-Encoding": tc.accept}, func(c *gin.Context) {
-				c.String(http.StatusOK, strings.Repeat("x", 100))
+			response := perform(t, cfg, tc.method, "/data", map[string]string{"Accept-Encoding": tc.accept}, func(_ context.Context, c *web.Ctx) error {
+				c.String(http.StatusOK, "%s", strings.Repeat("x", 100))
+				return nil
 			})
 			if response.Header().Get("Content-Encoding") != "" || !headerContainsToken(response.Header().Values("Vary"), "Accept-Encoding") {
 				t.Fatalf("headers = %#v", response.Header())
@@ -128,16 +143,15 @@ func TestIdentityAndHEADResponsesStillVaryOnAcceptEncoding(t *testing.T) {
 }
 
 func TestPanicDoesNotCommitBufferedBody(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	cfg := DefaultConfig()
 	cfg.MinLength = 0
 	p := New()
 	state, _ := normalizeConfig(cfg)
 	p.state.Store(&state)
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/panic", func(c *gin.Context) {
-		c.Header("X-Partial", "must-not-leak")
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/panic", func(_ context.Context, c *web.Ctx) error {
+		c.SetHeader("X-Partial", "must-not-leak")
 		c.String(http.StatusOK, "secret partial body")
 		panic("boom")
 	})
@@ -157,18 +171,18 @@ func TestPanicDoesNotCommitBufferedBody(t *testing.T) {
 	}
 }
 
-func perform(t *testing.T, cfg Config, method, path string, headers map[string]string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+func perform(t *testing.T, cfg Config, method, path string, headers map[string]string, handler web.Handler) *httptest.ResponseRecorder {
 	t.Helper()
-	gin.SetMode(gin.ReleaseMode)
 	p := New()
 	state, err := normalizeConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p.state.Store(&state)
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.Handle(method, path, handler)
+	router := enginetest.New()
+	// Engine.Handle is the port method: it splices nothing, so the middleware
+	// has to be part of the chain passed in.
+	router.Handle(method, path, []web.Handler{p.handle, handler})
 	request := httptest.NewRequest(method, path, nil)
 	for key, value := range headers {
 		request.Header.Set(key, value)
@@ -199,19 +213,17 @@ func ungzip(t *testing.T, encoded []byte) string {
 // Unwrap could be deleted while every other test stayed green.
 //
 // The interface assertion below is deliberate and must not be "simplified"
-// into a direct writer.Unwrap() call. gin.ResponseWriter has no Unwrap
+// into a direct writer.Unwrap() call. web.ResponseWriter has no Unwrap
 // method, so a direct call would stop compiling the moment Unwrap is
 // deleted -- the package would fail to build, no test would run at all, and
 // that build failure is easily misread as this test catching the deletion.
 // Asserting through an interface compiles either way and turns the deletion
 // into an honest failed assertion.
 func TestBufferingWriterUnwrapReachesUnderlyingWriter(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
-	gc, _ := gin.CreateTestContext(recorder)
-	gc.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	c := enginetest.NewCtx(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	original := gc.Writer
+	original := c.Writer()
 	writer := newBufferingWriter(original)
 
 	unwrapper, ok := any(writer).(interface{ Unwrap() http.ResponseWriter })
@@ -223,85 +235,72 @@ func TestBufferingWriterUnwrapReachesUnderlyingWriter(t *testing.T) {
 	}
 }
 
-// TestAbortWithStatusCommitsBufferedStatus pins WriteHeaderNow as
-// load-bearing. gin's own Context.AbortWithStatus calls WriteHeaderNow
-// directly, and bufferingWriter.WriteHeader only ever records the status
-// into its own buffered field -- the embedded writer's status field is never
-// touched until commit. If WriteHeaderNow is deleted, the promoted method
-// operates on the embedded writer's own (still-default 200) status instead
-// of the buffered one, so the real response is sent prematurely with the
-// wrong status and the later deferred commit is a no-op superfluous call.
+// TestAbortedRequestStillCommitsTheBufferedStatus pins the deferred commit for
+// the chain that ends early. A handler that aborts after recording a status
+// writes no body at all, so the only thing that can carry 418 to the
+// connection is finish's own commit on the writer beneath -- delete that call
+// and the response goes out with the default 200.
 //
-// Asserting only the final response.Code is not enough: bufferingWriter.finish
-// always commits w.status onto the real writer regardless of whether
-// WriteHeaderNow ran, so response.Code stays 418 even if WriteHeaderNow's body
-// is emptied out and never marks the writer written. The observedWritten and
-// observedSize checks below read c.Writer.Written()/Size() while the wrapper
-// is still installed (before the deferred restore swaps c.Writer back to the
-// original writer) -- those two proxy methods return w.written/w.body.Len()
-// only once WriteHeaderNow has set w.written, which is the exact commit-state
-// guard that transport/web/problem.go, errors.go, extensions/response/biz and
-// extensions/reliability/recovery rely on to avoid writing a response twice.
-func TestAbortWithStatusCommitsBufferedStatus(t *testing.T) {
-	var observedWritten bool
-	var observedSize int
-	response := perform(t, DefaultConfig(), http.MethodGet, "/abort", map[string]string{"Accept-Encoding": "gzip"}, func(c *gin.Context) {
-		c.AbortWithStatus(http.StatusTeapot)
-		observedWritten = c.Writer.Written()
-		observedSize = c.Writer.Size()
+// This replaces a test that pinned gin's WriteHeaderNow. That method was part
+// of gin.ResponseWriter's two-phase face; the wrapper now implements the
+// neutral web.ResponseWriter, which has no such method, so what is left to pin
+// is the commit itself.
+func TestAbortedRequestStillCommitsTheBufferedStatus(t *testing.T) {
+	response := perform(t, DefaultConfig(), http.MethodGet, "/abort", map[string]string{"Accept-Encoding": "gzip"}, func(_ context.Context, c *web.Ctx) error {
+		c.Status(http.StatusTeapot)
+		c.Abort()
+		return nil
 	})
 	if response.Code != http.StatusTeapot {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusTeapot)
 	}
-	if !observedWritten || observedSize == -1 {
-		t.Fatalf("bufferingWriter did not record commit state after WriteHeaderNow: written=%v size=%d", observedWritten, observedSize)
+	if response.Body.Len() != 0 {
+		t.Fatalf("aborted handler wrote a body: %q", response.Body.String())
 	}
 }
 
-// TestWriteStringBuffersBodyAndDeferredHeaders pins WriteString as
-// load-bearing. gin.ResponseWriter exposes WriteString as a direct part of
-// its public contract (gin's own render path in this version happens to use
-// plain Write instead, but the interface method remains a documented,
-// directly callable capability). If WriteString is deleted, the promoted
-// method forwards straight to the embedded writer's own WriteString, which
-// sends real headers and body immediately using the embedded writer's own
-// header map -- skipping bufferingWriter's header buffer entirely, so a
-// header set via c.Header after wrapping never reaches the response actually
-// sent. response.Result().Header is used rather than response.Header()
-// because httptest.ResponseRecorder.Header() always returns the live,
-// still-mutable map; only Result().Header is the frozen snapshot taken at
-// the moment headers were actually sent, matching real connection behavior.
+// TestWriteBuffersBodyAndDeferredHeaders pins Write and Header as
+// load-bearing overrides. If either is deleted, the promoted method forwards
+// straight to the embedded writer, which sends real headers and body
+// immediately using its own header map -- skipping bufferingWriter's buffer
+// entirely, so a header set after wrapping never reaches the response actually
+// sent and nothing would be left to compress. response.Result().Header is used
+// rather than response.Header() because httptest.ResponseRecorder.Header()
+// always returns the live, still-mutable map; only Result().Header is the
+// frozen snapshot taken at the moment headers were actually sent, matching
+// real connection behavior.
 //
-// The write itself always lands in the body buffer regardless of whether
-// WriteString marks the writer written -- bufferingWriter.commit copies
-// w.body unconditionally, so the header/body assertions above pass even if
-// the w.written assignment inside WriteString is deleted. The
-// observedWritten and observedSize checks below read c.Writer.Written()/
-// Size() while the wrapper is still installed, which only report the write
-// once WriteString has set w.written -- the same commit-state guard other
-// packages rely on to avoid writing a response twice.
-func TestWriteStringBuffersBodyAndDeferredHeaders(t *testing.T) {
+// The write itself always lands in the body buffer regardless of whether Write
+// marks the writer written -- bufferingWriter.commit copies w.body
+// unconditionally, so the header/body assertions above pass even if the
+// w.written assignment inside Write is deleted. The observedWritten and
+// observedSize checks below read c.Writer().Written()/Size() while the wrapper
+// is still installed, which only report the write once Write has set
+// w.written -- the same commit-state guard other packages rely on to avoid
+// writing a response twice.
+func TestWriteBuffersBodyAndDeferredHeaders(t *testing.T) {
 	var observedWritten bool
 	var observedSize int
-	response := perform(t, DefaultConfig(), http.MethodGet, "/tiny", map[string]string{"Accept-Encoding": "gzip"}, func(c *gin.Context) {
-		c.Header("X-Custom", "yes")
-		if _, err := c.Writer.WriteString("tiny"); err != nil {
+	response := perform(t, DefaultConfig(), http.MethodGet, "/tiny", map[string]string{"Accept-Encoding": "gzip"}, func(_ context.Context, c *web.Ctx) error {
+		c.SetHeader("X-Custom", "yes")
+		if _, err := c.Writer().Write([]byte("tiny")); err != nil {
 			t.Fatal(err)
 		}
-		observedWritten = c.Writer.Written()
-		observedSize = c.Writer.Size()
+		observedWritten = c.Writer().Written()
+		observedSize = c.Writer().Size()
+		return nil
 	})
 	if response.Result().Header.Get("X-Custom") != "yes" || response.Body.String() != "tiny" {
 		t.Fatalf("headers=%v body=%q", response.Result().Header, response.Body.String())
 	}
 	if !observedWritten || observedSize != len("tiny") {
-		t.Fatalf("bufferingWriter did not record commit state after WriteString: written=%v size=%d", observedWritten, observedSize)
+		t.Fatalf("bufferingWriter did not record commit state after Write: written=%v size=%d", observedWritten, observedSize)
 	}
 }
 
 // TestStatusAndSizeReportBufferedStateBeforeCommit pins Status and Size as
 // load-bearing. Both are embedded-method overrides, so deleting either one
-// still compiles and still satisfies the gin.ResponseWriter assertion at the
+// still compiles and still satisfies the web.ResponseWriter assertion at the
 // bottom of middleware.go -- the call is simply promoted to the embedded
 // writer, which answers about its own untouched state rather than about the
 // buffer.
@@ -324,7 +323,7 @@ func TestWriteStringBuffersBodyAndDeferredHeaders(t *testing.T) {
 // and uncommitted, since a committed status would have reached the embedded
 // writer too and let the mutation survive.
 //
-// Size: gin documents -1 as "no write has happened yet", which accesslog and
+// Size: web.ResponseWriter documents -1 as "no write has happened yet", which accesslog and
 // auditlog both normalize to 0. The first observation is taken before any
 // write, so it pins the sentinel branch itself rather than just the byte
 // count -- rewriting that branch to return 0 fails this assertion while every
@@ -332,11 +331,12 @@ func TestWriteStringBuffersBodyAndDeferredHeaders(t *testing.T) {
 func TestStatusAndSizeReportBufferedStateBeforeCommit(t *testing.T) {
 	var observedInitialSize, observedStatus int
 	var observedWritten bool
-	perform(t, DefaultConfig(), http.MethodGet, "/status", map[string]string{"Accept-Encoding": "gzip"}, func(c *gin.Context) {
-		observedInitialSize = c.Writer.Size()
+	perform(t, DefaultConfig(), http.MethodGet, "/status", map[string]string{"Accept-Encoding": "gzip"}, func(_ context.Context, c *web.Ctx) error {
+		observedInitialSize = c.Writer().Size()
 		c.Status(http.StatusTeapot)
-		observedStatus = c.Writer.Status()
-		observedWritten = c.Writer.Written()
+		observedStatus = c.Writer().Status()
+		observedWritten = c.Writer().Written()
+		return nil
 	})
 	if observedInitialSize != -1 {
 		t.Fatalf("bufferingWriter reported size %d before any write, want the -1 sentinel", observedInitialSize)
@@ -357,7 +357,6 @@ func TestStatusAndSizeReportBufferedStateBeforeCommit(t *testing.T) {
 // commits the buffer -- so a subsequent panic (which skips the deferred
 // finish call) leaves nothing written at all.
 func TestFlushCommitsBufferedBodyBeforeStreaming(t *testing.T) {
-	gin.SetMode(gin.ReleaseMode)
 	cfg := DefaultConfig()
 	p := New()
 	state, err := normalizeConfig(cfg)
@@ -365,11 +364,11 @@ func TestFlushCommitsBufferedBodyBeforeStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.state.Store(&state)
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
-	router.GET("/flush", func(c *gin.Context) {
+	router := enginetest.New()
+	router.Use(p.handle)
+	router.GET("/flush", func(_ context.Context, c *web.Ctx) error {
 		c.String(http.StatusOK, "buffered-before-flush")
-		c.Writer.Flush()
+		c.Writer().Flush()
 		panic("boom")
 	})
 	response := httptest.NewRecorder()
@@ -414,7 +413,6 @@ func TestFlushCommitsBufferedBodyBeforeStreaming(t *testing.T) {
 // by a timeout rather than a conventional test failure.
 func TestHijackRejectsAfterBufferedWrite(t *testing.T) {
 	const wantRejection = "gzip: cannot hijack after a buffered response write"
-	gin.SetMode(gin.ReleaseMode)
 	cfg := DefaultConfig()
 	p := New()
 	state, err := normalizeConfig(cfg)
@@ -422,18 +420,19 @@ func TestHijackRejectsAfterBufferedWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.state.Store(&state)
-	router := gin.New()
-	router.Use(web.Handle(p.handle))
+	router := enginetest.New()
+	router.Use(p.handle)
 	done := make(chan error, 1)
-	router.GET("/hijack", func(c *gin.Context) {
+	router.GET("/hijack", func(_ context.Context, c *web.Ctx) error {
 		c.String(http.StatusOK, "buffered")
-		hijacker, ok := c.Writer.(http.Hijacker)
+		hijacker, ok := c.Writer().(http.Hijacker)
 		if !ok {
-			done <- fmt.Errorf("writer %T does not implement http.Hijacker", c.Writer)
-			return
+			done <- fmt.Errorf("writer %T does not implement http.Hijacker", c.Writer())
+			return nil
 		}
 		_, _, err := hijacker.Hijack()
 		done <- err
+		return nil
 	})
 	server := httptest.NewServer(router)
 	defer server.Close()

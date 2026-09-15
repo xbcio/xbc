@@ -10,12 +10,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/requestid"
 )
 
@@ -35,19 +35,18 @@ func TestBizErrorDefaultsAndWrapsCause(t *testing.T) {
 }
 
 func TestPluginMapsWrappedBizErrorAndPropagatesRequestID(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	requestIDs := requestid.New()
 	business := New()
-	engine := gin.New()
-	engine.Use(web.Handle(requestIDs.Handler()))
-	engine.Use(web.Handle(web.OnError()))
-	engine.Use(web.Handle(business.Handler()))
-	engine.GET("/orders/:id", web.Handle(func(context.Context, *web.Ctx) error {
+	engine := enginetest.New()
+	engine.Use(requestIDs.Handler())
+	engine.Use(web.OnError())
+	engine.Use(business.Handler())
+	engine.GET("/orders/{id}", func(context.Context, *web.Ctx) error {
 		return fmt.Errorf("application boundary: %w", NewError(
 			"ORDER.ALREADY_PAID",
 			"The order has already been paid.",
 		).WithStatus(http.StatusConflict).WithCause(errors.New("private database detail")))
-	}))
+	})
 
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/orders/42", nil))
@@ -65,13 +64,12 @@ func TestPluginMapsWrappedBizErrorAndPropagatesRequestID(t *testing.T) {
 }
 
 func TestPluginOnErrorKeepsWebSafeFallbackForUnknownErrors(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	engine.Use(web.Handle(web.OnError()))
-	engine.Use(web.Handle(New().Handler()))
-	engine.GET("/orders", web.Handle(func(context.Context, *web.Ctx) error {
+	engine := enginetest.New()
+	engine.Use(web.OnError())
+	engine.Use(New().Handler())
+	engine.GET("/orders", func(context.Context, *web.Ctx) error {
 		return errors.New("postgres://admin:private-password@database/orders")
-	}))
+	})
 
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/orders", nil))
@@ -85,11 +83,10 @@ func TestPluginOnErrorKeepsWebSafeFallbackForUnknownErrors(t *testing.T) {
 
 // mapErrorCtx builds the *web.Ctx the error resolver would hand an ErrorMapper.
 // The framework always passes a live Ctx, so these direct-call tests must too;
-// a bare gin.Context with no request is enough, and exercises the
-// no-request-ID branch of mapError.
+// a Ctx with no request is enough, and exercises the no-request-ID branch of
+// mapError.
 func mapErrorCtx() *web.Ctx {
-	gc, _ := gin.CreateTestContext(httptest.NewRecorder())
-	return web.NewCtx(gc)
+	return enginetest.NewCtx(httptest.NewRecorder(), nil)
 }
 
 func TestPluginDeclinesUnrecognizedErrors(t *testing.T) {
@@ -171,17 +168,16 @@ func TestWithDetailFillsTemplateWithoutMutatingIt(t *testing.T) {
 }
 
 func TestPluginLogsCauseOfNon5xxBusinessFailure(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	logger := &captureLogger{}
 	business := &Plugin{logger: logger}
-	engine := gin.New()
-	engine.Use(web.Handle(web.OnError()))
-	engine.Use(web.Handle(business.Handler()))
-	engine.GET("/orders", web.Handle(func(context.Context, *web.Ctx) error {
+	engine := enginetest.New()
+	engine.Use(web.OnError())
+	engine.Use(business.Handler())
+	engine.GET("/orders", func(context.Context, *web.Ctx) error {
 		return NewError("ORDER.ALREADY_PAID", "The order has already been paid.").
 			WithStatus(http.StatusConflict).
 			WithCause(errors.New("row 42 locked by txn 7"))
-	}))
+	})
 
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/orders", nil))

@@ -6,4 +6,3 @@ go 1.25.0
 // deliberately absent from require until they have published tags. Repository
 // development resolves them through go.work; local replaces or placeholder
 // versions would make this independently published adapter unusable downstream.
-require github.com/gin-gonic/gin v1.12.0

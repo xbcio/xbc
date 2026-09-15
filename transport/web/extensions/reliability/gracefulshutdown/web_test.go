@@ -7,18 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
-
-func init() { gin.SetMode(gin.TestMode) }
 
 func invokeShutdown(p *Plugin) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/-/shutdown", nil)
-	web.Handle(p.handleShutdown)(ctx)
+	c := enginetest.NewCtx(recorder, httptest.NewRequest(http.MethodPost, "/-/shutdown", nil))
+	web.Handle(p.handleShutdown)(c)
 	return recorder
 }
 

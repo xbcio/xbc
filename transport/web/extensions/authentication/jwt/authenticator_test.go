@@ -10,16 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	jwtlib "github.com/golang-jwt/jwt/v5"
 
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
-
-func init() {
-	gin.SetMode(gin.TestMode)
-}
 
 // newTestPlugin returns a plugin configured with a valid test secret and
 // otherwise-default configuration.
@@ -33,13 +29,11 @@ func newTestPlugin(t *testing.T) *Plugin {
 // header. An empty value means the header is not set at all.
 func newTestContextWithHeader(t *testing.T, header, value string) *web.Ctx {
 	t.Helper()
-	gc, _ := gin.CreateTestContext(httptest.NewRecorder())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	if value != "" {
 		req.Header.Set(header, value)
 	}
-	gc.Request = req
-	return web.NewCtx(gc)
+	return enginetest.NewCtx(httptest.NewRecorder(), req)
 }
 
 func TestPluginExtractCredentialClassifiesAuthorizationHeader(t *testing.T) {

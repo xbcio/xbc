@@ -1,4 +1,4 @@
-package web
+package web_test
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/transport/web"
 )
 
 type submittedTask struct {
@@ -114,5 +115,5 @@ func (h *fakeHost) shutdown() {
 }
 
 func contextFromHost(host *fakeHost) *plugin.Context {
-	return plugin.NewRuntimeContext(host, plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance})
+	return plugin.NewRuntimeContext(host, plugin.Identity{Plugin: web.Key, Instance: plugin.DefaultInstance})
 }

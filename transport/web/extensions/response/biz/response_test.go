@@ -7,11 +7,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/requestid"
 )
 
@@ -20,7 +20,6 @@ type responseItem struct {
 }
 
 func TestSuccessWritersUseEnvelopeAndValidatedRequestID(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	tests := []struct {
 		name       string
 		write      func(context.Context, *web.Ctx) error
@@ -34,9 +33,9 @@ func TestSuccessWritersUseEnvelopeAndValidatedRequestID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			requestIDs := requestid.New()
-			engine := gin.New()
-			engine.Use(web.Handle(requestIDs.Handler()))
-			engine.GET("/response", web.Handle(tt.write))
+			engine := enginetest.New()
+			engine.Use(requestIDs.Handler())
+			engine.GET("/response", tt.write)
 
 			response := httptest.NewRecorder()
 			engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/response", nil))
@@ -56,11 +55,10 @@ func TestSuccessWritersUseEnvelopeAndValidatedRequestID(t *testing.T) {
 }
 
 func TestPaginatedNormalizesNilItemsToEmptyArray(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	engine.GET("/items", web.Handle(func(_ context.Context, c *web.Ctx) error {
+	engine := enginetest.New()
+	engine.GET("/items", func(_ context.Context, c *web.Ctx) error {
 		return OK(c, Paginated[responseItem](nil, 0))
-	}))
+	})
 
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/items", nil))
@@ -75,11 +73,10 @@ func TestPaginatedNormalizesNilItemsToEmptyArray(t *testing.T) {
 }
 
 func TestEncodingFailureIsMappedBeforeSuccessIsCommitted(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := gin.New()
-	engine.GET("/failure", web.Handle(func(_ context.Context, c *web.Ctx) error {
+	engine := enginetest.New()
+	engine.GET("/failure", func(_ context.Context, c *web.Ctx) error {
 		return OK(c, make(chan int))
-	}))
+	})
 
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/failure", nil))
@@ -93,19 +90,21 @@ func TestEncodingFailureIsMappedBeforeSuccessIsCommitted(t *testing.T) {
 func TestWriteRejectsStatusesThatCannotCarrySuccessEnvelope(t *testing.T) {
 	for _, status := range []int{0, http.StatusContinue, http.StatusNoContent, http.StatusResetContent, http.StatusMultipleChoices, http.StatusBadRequest} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			gc, _ := gin.CreateTestContext(httptest.NewRecorder())
-			err := Write(web.NewCtx(gc), status, responseItem{})
+			c := enginetest.NewCtx(httptest.NewRecorder(), nil)
+			err := Write(c, status, responseItem{})
 			require.Error(t, err)
-			assert.False(t, gc.Writer.Written())
+			assert.False(t, c.Writer().Written())
 		})
 	}
 }
 
 func TestWriteRejectsCommittedResponse(t *testing.T) {
-	gc, _ := gin.CreateTestContext(httptest.NewRecorder())
-	gc.Status(http.StatusOK)
-	gc.Writer.WriteHeaderNow()
-	require.Error(t, OK(web.NewCtx(gc), responseItem{}))
+	c := enginetest.NewCtx(httptest.NewRecorder(), nil)
+	// 写出一个字节才算提交；仅记录状态码不算，Write 之后 Written 必须为真。
+	_, err := c.Writer().Write([]byte("committed"))
+	require.NoError(t, err)
+	require.True(t, c.Writer().Written())
+	require.Error(t, OK(c, responseItem{}))
 }
 
 func TestPaginatedClampsNegativeTotal(t *testing.T) {
