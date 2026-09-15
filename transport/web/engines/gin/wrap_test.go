@@ -135,6 +135,57 @@ func TestWrapReportedErrorsAreRenderedThroughTheErrorBoundary(t *testing.T) {
 		"join 必须保住 errors.Is 可达性，否则只认得最后一个错误的实现也能全绿")
 }
 
+// TestWrapReportsErrorsEvenAfterTheResponseIsCommitted covers the half of the
+// seam the two tests above leave open. A gin-native middleware that has already
+// sent a response and only then records a failure -- a streaming or
+// partial-write path, typically -- must not have that failure discarded here:
+// dropping it would make an error vanish on precisely the requests where
+// something already went out the door, and asymmetrically at that, since the
+// same failure reported by return value is logged.
+//
+// What the client receives is the other half of the judgement. transport/web's
+// boundary logs a failure it can no longer render and leaves the committed
+// response untouched, so the internal detail stays in the log instead of
+// following the error out to the caller.
+func TestWrapReportsErrorsEvenAfterTheResponseIsCommitted(t *testing.T) {
+	port, ginEngine := newTestEngine(t)
+
+	recorded := errors.New("internal detail the caller must never see")
+	thirdParty := ginlib.HandlerFunc(func(c *ginlib.Context) {
+		c.String(http.StatusOK, "already sent")
+		//nolint:errcheck // Error returns the entry it recorded; only the side effect matters here.
+		c.Error(recorded)
+	})
+	// A mapper that claims every error makes the "response left alone" half
+	// real: without one, an implementation that rewrote the committed response
+	// would still answer 200 and look correct here.
+	mapper := web.ErrorMapperFunc(func(*web.Ctx, error) (web.ProblemDetail, bool) {
+		return web.NewProblem(http.StatusInternalServerError, "mapped_after_commit"), true
+	})
+
+	var reported error
+	var committed bool
+	port.Handle(http.MethodGet, "/committed", []web.Handler{
+		web.OnError(mapper),
+		func(ctx context.Context, c *web.Ctx) error {
+			reported = Wrap(thirdParty, web.Order{}).Handler()(ctx, c)
+			committed = c.Writer().Written()
+			// Returning it is what a Wrap-registered middleware does on its
+			// own; capturing it as well keeps the drain itself observable.
+			return reported
+		},
+	})
+
+	response := httptest.NewRecorder()
+	ginEngine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/committed", nil))
+
+	require.True(t, committed, "前置条件不成立：响应必须确已提交，否则这个测试根本没走到那条分支")
+	assert.ErrorIs(t, reported, recorded, "响应已提交不是丢弃错误的理由，它仍须报告给错误边界")
+	assert.Equal(t, http.StatusOK, response.Code, "已提交的响应不得被改写")
+	assert.Equal(t, "already sent", response.Body.String())
+	assert.NotContains(t, response.Body.String(), recorded.Error(), "内部错误细节只进日志，不得返回给调用方")
+}
+
 // TestWrapIgnoresErrorsRecordedBeforeItRan pins the before/after delta.
 // Context.Errors is a shared per-request slice, so reporting everything in it
 // would attribute an earlier middleware's failure to this one and render it a

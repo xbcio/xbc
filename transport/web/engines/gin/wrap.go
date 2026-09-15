@@ -65,9 +65,17 @@ func (m ginMiddleware) Handler() web.Handler {
 }
 
 // reportedErrors joins whatever the wrapped middleware pushed onto gin's
-// accumulator during this call. Entries that predate the call belong to
-// someone else, and a response that is already committed cannot be replaced,
-// so neither is touched.
+// accumulator during this call. Entries that predate the call belong to someone
+// else and are left alone.
+//
+// An already-committed response is not a reason to drop them. It only changes
+// what the error boundary can do with them: transport/web's resolver logs, with
+// full detail, a failure it can no longer render, and leaves the response the
+// client is already receiving exactly as it is (errors.go, errorResolver.write).
+// Returning nil here instead would make a gin-native middleware's failure vanish
+// without a trace on precisely the requests where something had already gone out
+// the door, and it would do so asymmetrically: the same failure reported by
+// return value is logged.
 //
 // The scope is deliberately narrower than a per-request sweep of gc.Errors
 // would be, and the narrowing is a design choice rather than an oversight.
@@ -78,11 +86,11 @@ func (m ginMiddleware) Handler() web.Handler {
 // be outermost. The price is that an error pushed onto gc.Errors from outside
 // a Wrap call -- by gin itself, or through the FromCtx escape hatch -- is no
 // longer collected. That remainder is empty in practice: gin's own pushes
-// either come with a response it has already written (Written() is true, which
-// the guard above skips in any case) or come from a binding path that reports
-// its failure by return value rather than by accumulator.
+// either accompany a response gin has already written itself, or come from a
+// binding path that reports its failure by return value rather than by
+// accumulator.
 func reportedErrors(gc *ginlib.Context, before int) error {
-	if gc.Writer == nil || gc.Writer.Written() || len(gc.Errors) <= before {
+	if len(gc.Errors) <= before {
 		return nil
 	}
 	reported := make([]error, 0, len(gc.Errors)-before)
