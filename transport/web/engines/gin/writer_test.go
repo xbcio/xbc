@@ -55,7 +55,7 @@ var _ web.ResponseWriter = (*recordingWriter)(nil)
 
 func TestShimDefersCommitUntilWriteHeaderNow(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	base := newRecordingWriter(recorder) // 实现 web.ResponseWriter
+	base := newRecordingWriter(recorder) // implements web.ResponseWriter
 	s := newShim(base)
 
 	s.WriteHeader(http.StatusTeapot)

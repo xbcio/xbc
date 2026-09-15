@@ -25,5 +25,8 @@ var bundle = plugin.CombineBundles(
 
 // Bundle returns the side-effect-free lightweight Web baseline. It combines
 // the members' canonical Bundles without copying Definitions or changing their
-// activation policies.
+// activation policies. It is not, by itself, startable: web.Bundle()'s server
+// Definition requires exactly one web.EngineFactory input, which no prelude
+// member contributes. A composition root must also select exactly one engine
+// Bundle (transport/web/engines/gin, or another) alongside this one.
 func Bundle() plugin.Bundle { return bundle }

@@ -4,6 +4,7 @@
 //
 //	app, err := xbc.New(xbc.WithBundles(
 //		webprelude.Bundle(),
+//		ginengine.Bundle(),
 //		orders.Bundle(),
 //	))
 //	if err != nil { /* handle */ }

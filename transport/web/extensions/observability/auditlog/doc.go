@@ -31,6 +31,7 @@
 //
 //	app, err := xbc.New(xbc.WithBundles(
 //		webprelude.Bundle(),
+//		ginengine.Bundle(),
 //		auditlog.Bundle(),
 //	))
 //

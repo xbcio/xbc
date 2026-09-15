@@ -32,11 +32,13 @@ var (
 	authenticatorInput = plugin.Collect[authentication.Authenticator]()
 	extractorInput     = plugin.Collect[CredentialExtractor]()
 	// engineInput selects the HTTP engine adapter. web.Server never
-	// constructs a concrete engine itself -- doing so would import the
-	// adapter package, which must import web to implement Engine, and Go
-	// forbids that cycle. A composition root selects exactly one engine
-	// Bundle (transport/web/engines/gin, or another Engine adapter)
-	// alongside web.Bundle() to satisfy this input.
+	// constructs a concrete engine itself: every adapter package imports web
+	// to implement Engine, so if web imported an adapter back, that engine's
+	// dependencies (gin, or whatever the adapter wraps) would be pulled back
+	// into web's own dependency closure -- exactly what keeping engines as
+	// separate modules is meant to prevent. A composition root selects
+	// exactly one engine Bundle (transport/web/engines/gin, or another
+	// Engine adapter) alongside web.Bundle() to satisfy this input.
 	engineInput = plugin.RequireOne[EngineFactory]()
 
 	definition = plugin.DefineConfigured(

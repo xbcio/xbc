@@ -8,14 +8,22 @@ import (
 // Key is the stable identity of the gin engine Plugin.
 const Key plugin.Key = "web-engine-gin"
 
-// definition exports Factory as the web.EngineFactory the web Plugin
-// requires exactly one of. It carries no configuration of its own: engine
-// selection is a composition-root decision (which Bundle a service
+// definition's primary type is the concrete Factory, not the web.EngineFactory
+// interface it implements: catalog validation requires every Definition's
+// primary result type to be concrete. Exports declares the web.EngineFactory
+// contract explicitly so web's plugin.RequireOne[web.EngineFactory]() input
+// still resolves this Definition. It carries no configuration of its own:
+// engine selection is a composition-root decision (which Bundle a service
 // includes), not a runtime-configurable knob.
 var definition = plugin.Define(
 	Key,
-	func(plugin.BuildContext) (web.EngineFactory, error) {
+	func(plugin.BuildContext) (Factory, error) {
 		return Factory{}, nil
+	},
+	plugin.Options[Factory]{
+		Exports: plugin.Contracts(
+			plugin.ExportAs[web.EngineFactory](func(value Factory) web.EngineFactory { return value }),
+		),
 	},
 )
 
