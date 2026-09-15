@@ -147,7 +147,6 @@ func (s *Server) Start(ctx *plugin.Context) error {
 
 	routes, frozen, index := newRouteTable()
 	handlers := []Handler{
-		recordCurrentRoute(frozen, index),
 		limitRequestBody(cfg.MaxRequestBodyBytes),
 		func(_ context.Context, c *Ctx) error {
 			newErrorResolver(logger).attach(c)

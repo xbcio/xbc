@@ -202,11 +202,13 @@ type Router struct {
 }
 
 // newRouteTable allocates the three pieces of shared, pointer-identity
-// state a Router and recordCurrentRoute's middleware both need to close
-// over. It exists as a step separate from newRouter because
-// recordCurrentRoute must be part of the initial handlers chain newRouter
-// receives -- so (*Server).Start needs frozen/index available before a
-// *Router object exists at all.
+// state a Router and every route's own recordCurrentRoute closure both need
+// to close over: the mutable route slice, the freeze flag, and the frozen
+// method+path index. It stays a step separate from newRouter because
+// (*Server).Start builds the routes/frozen/index trio once and hands the
+// same three pointers into newRouter, which stores them on every Router
+// derived from the root -- Router.Handle reads frozen/index back out of its
+// own fields each time it builds a route's recordCurrentRoute closure.
 func newRouteTable() (routes *[]RouteInfo, frozen *bool, index *map[string]RouteInfo) {
 	r := make([]RouteInfo, 0, 16)
 	f := false
@@ -219,10 +221,13 @@ func newRouteTable() (routes *[]RouteInfo, frozen *bool, index *map[string]Route
 // from a prior newRouteTable call -- see that function's doc comment for why
 // the two are split. handlers is the root chain every route inherits --
 // (*Server).Start builds it in the exact order internal middleware must run
-// (recordCurrentRoute, body-size limiting, the error boundary, then
-// plugin-ordered middleware) before calling newRouter, so there is no
-// ordering hazard left for this function to depend on: appendChain always
-// copies, so the root Router owns its own chain from construction onward.
+// (body-size limiting, the error boundary, then plugin-ordered middleware)
+// before calling newRouter, so there is no ordering hazard left for this
+// function to depend on: appendChain always copies, so the root Router owns
+// its own chain from construction onward. recordCurrentRoute is deliberately
+// not part of this chain: Router.Handle bakes one in per route instead, once
+// that route's own method and path are known -- see Handle and
+// recordCurrentRoute's doc comments.
 func newRouter(engine Engine, basePath string, handlers []Handler, routes *[]RouteInfo, frozen *bool, index *map[string]RouteInfo) *Router {
 	return &Router{
 		engine:   engine,
@@ -375,12 +380,22 @@ func (r *Router) Auth(policy AuthPolicy) *Router {
 // freeze panics -- RouteCatalogListener runs after the route table is
 // supposed to be complete, so a plugin adding a route there is a
 // programming mistake, not a runtime condition worth recovering from.
+//
+// The chain handed to the engine is recordCurrentRoute for this exact
+// method+path, followed by this Router's own accumulated middleware, followed
+// by h. recordCurrentRoute must lead the flattened chain (design §5.6): the
+// engine has already resolved the route match before invoking any handler in
+// it, so even running first still sees a request that matched this route, and
+// running first is what lets every later handler -- including global
+// middleware that aborts or fails before reaching h -- call CurrentRoute.
 func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 	if *r.frozen {
 		panic("xbc: route table is frozen, RouteCatalogListener phase cannot add routes")
 	}
 	fullPath := joinPaths(r.basePath, relativePath)
-	r.engine.Handle(method, fullPath, appendChain(r.handlers, h...))
+	chain := appendChain([]Handler{recordCurrentRoute(method, fullPath, r.frozen, r.index)}, r.handlers...)
+	chain = appendChain(chain, h...)
+	r.engine.Handle(method, fullPath, chain)
 	*r.routes = append(*r.routes, RouteInfo{
 		Method: method,
 		Path:   fullPath,
@@ -501,34 +516,40 @@ func (c *routeCatalog) Lookup(method, path string) (RouteInfo, bool) {
 	return cloneRouteInfo(info), ok
 }
 
-// currentRouteContextKey is the gin.Context key the internal, outermost
-// middleware installed by (*Server).Start writes the matched RouteInfo
-// under. It is unexported and namespaced defensively (nothing else should
-// ever legitimately write this key), because CurrentRoute's whole contract
-// depends on nobody else colliding with it.
+// currentRouteContextKey is the context key the internal, first-in-chain
+// handler Router.Handle installs for every route (see recordCurrentRoute)
+// writes the matched RouteInfo under. It is unexported and namespaced
+// defensively (nothing else should ever legitimately write this key),
+// because CurrentRoute's whole contract depends on nobody else colliding
+// with it.
 const currentRouteContextKey = "xbc/web.currentRoute"
 
-// recordCurrentRoute is the internal middleware CurrentRoute depends on. It
-// must be the first handler in the root chain (*Server).Start builds, ahead
-// of any user-contributed middleware (design §5.6): the engine resolves the
-// route -- and therefore the matched full path -- before invoking the
-// handler chain at all, so even running first in that chain still sees the
-// correct match; running it first is what guarantees every later
-// middleware, including ones that fail or abort the chain early, can still
-// call CurrentRoute.
+// recordCurrentRoute returns the Handler CurrentRoute depends on for one
+// specific route. Router.Handle builds one per registration, baking in that
+// route's own method and path at registration time instead of asking the
+// engine to report a matched path at request time -- method and path are
+// already known wherever Handle is called, so there is nothing left for the
+// engine to tell this handler that it does not already have.
+//
+// Router.Handle splices the result at the very front of that route's
+// flattened handler chain (design §5.6): the engine resolves the route match
+// before invoking the chain at all, so even running first still sees the
+// correct match; running first is what guarantees every later handler,
+// including global middleware that fails or aborts the chain early, can
+// still call CurrentRoute.
 //
 // frozen/index are captured by pointer (from newRouteTable) so this handler
-// can be installed before the route table is complete -- freeze() only
+// can be constructed before the route table is complete -- freeze() only
 // fills in *index once every RegisterRoutes call has run -- and still see
-// the final table by the time the first real request arrives, because
-// Serve is only ever reached after Start (which calls freeze) has returned.
-func recordCurrentRoute(frozen *bool, index *map[string]RouteInfo) Handler {
+// the final table by the time the first real request arrives, because Serve
+// is only ever reached after Start (which calls freeze) has returned.
+func recordCurrentRoute(method, path string, frozen *bool, index *map[string]RouteInfo) Handler {
+	key := routeKey(method, path)
 	return func(_ context.Context, c *Ctx) error {
 		if frozen == nil || !*frozen {
 			return nil
 		}
-		gc := c.Gin()
-		if info, ok := (*index)[routeKey(gc.Request.Method, gc.FullPath())]; ok {
+		if info, ok := (*index)[key]; ok {
 			c.Set(currentRouteContextKey, cloneRouteInfo(info))
 		}
 		return nil

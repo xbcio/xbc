@@ -33,14 +33,15 @@ var (
 
 // newTestEngineAndRouter builds a testEngine (this package's stand-in for
 // engines/gin's real adapter, see enginetest_test.go) and a root Router over
-// it, with recordCurrentRoute already installed as the first handler in the
-// chain -- exactly the order (*Server).Start uses in production, so any test
-// built on this helper can call CurrentRoute after freeze without repeating
-// that wiring itself.
+// it. Router.Handle bakes a recordCurrentRoute closure into the front of
+// every route's own flattened chain (see Router.Handle and
+// recordCurrentRoute's doc comments) -- exactly the wiring (*Server).Start
+// relies on in production -- so any test built on this helper can call
+// CurrentRoute after freeze without repeating that wiring itself.
 func newTestEngineAndRouter(basePath string) (*testEngine, *Router, *bool, *map[string]RouteInfo) {
 	engine := newTestEngine()
 	routes, frozen, index := newRouteTable()
-	router := newRouter(engine, basePath, []Handler{recordCurrentRoute(frozen, index)}, routes, frozen, index)
+	router := newRouter(engine, basePath, nil, routes, frozen, index)
 	return engine, router, frozen, index
 }
 
@@ -255,6 +256,47 @@ func TestCurrentRouteReportsFalseForNonMatchingRequest(t *testing.T) {
 	engine.ServeHTTP(rec, req)
 
 	assert.False(t, ok, "No request matched any frozen route, CurrentRoute must return false")
+}
+
+// TestRecordCurrentRouteLeadsTheFullyFlattenedChain pins Step E's position
+// requirement: recordCurrentRoute must lead the entire flattened chain the
+// engine dispatches, ahead of global middleware registered on the Router --
+// not merely ahead of the route's own handlers passed to Handle. A wrong
+// implementation that spliced recordCurrentRoute between the Router's
+// accumulated middleware and the route-specific handlers would still make a
+// weaker assertion pass -- "the route handler itself can see CurrentRoute" --
+// because by the time a route handler runs, every earlier handler including a
+// misplaced recordCurrentRoute has already executed. The only point in time
+// that actually distinguishes the two placements is whether global middleware
+// can already see CurrentRoute before it calls Next: with recordCurrentRoute
+// correctly leading, that global middleware's own frame runs strictly after
+// recordCurrentRoute's, whether or not it has invoked Next yet; with
+// recordCurrentRoute misplaced, that middleware's frame runs first, so
+// checking before Next observes a miss.
+func TestRecordCurrentRouteLeadsTheFullyFlattenedChain(t *testing.T) {
+	engine, router, _, _ := newTestEngineAndRouter("/api")
+
+	var sawRouteBeforeNext, sawRouteAfterNext bool
+	router.handlers = appendChain(router.handlers, func(_ context.Context, c *Ctx) error {
+		_, sawRouteBeforeNext = CurrentRoute(c)
+		c.Next()
+		_, sawRouteAfterNext = CurrentRoute(c)
+		return nil
+	})
+	router.GET("/widgets", func(_ context.Context, c *Ctx) error {
+		c.Status(http.StatusNoContent)
+		return nil
+	})
+
+	_, err := router.freeze()
+	require.NoError(t, err)
+
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/widgets", nil))
+
+	assert.True(t, sawRouteBeforeNext,
+		"global middleware registered on the Router before the route must see CurrentRoute even before it calls Next -- the discriminating check for recordCurrentRoute's position")
+	assert.True(t, sawRouteAfterNext, "global middleware must also see CurrentRoute after Next returns")
 }
 
 // TestGroupSnapshotsParentChainAtCreationTime replaces
