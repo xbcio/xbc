@@ -76,8 +76,14 @@ func TestStructuredFieldsAndSecretMinimization(t *testing.T) {
 	// "route" is sourced from web.CurrentRoute, which only web.Router's
 	// per-route registration populates; this test drives a bare *gin.Engine
 	// directly (bypassing web.Router), so no frozen route ever matches and the
-	// field keeps its unmatched-request fallback of "". Route population
-	// itself is covered by the web package's own router tests.
+	// field keeps its unmatched-request fallback of "".
+	//
+	// This leaves write's own CurrentRoute branch -- the one that fills route
+	// and route_name for a matched request -- unpinned here: deleting it
+	// outright keeps this package green. Closing that gap needs a Ctx carrying
+	// a frozen route, which in turn needs an Engine, and the only one today
+	// lives in the separate engines/gin module that this package is being
+	// moved off. The neutral test engine reopens it.
 	for key, want := range map[string]any{
 		"method": http.MethodGet, "path": "/users/42", "route": "",
 		"status": http.StatusCreated, "bytes": 5, "request_id": "request-1", "client_ip": "192.0.2.9",
