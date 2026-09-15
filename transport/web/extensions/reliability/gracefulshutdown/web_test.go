@@ -18,7 +18,7 @@ func invokeShutdown(p *Plugin) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/-/shutdown", nil)
-	p.handleShutdown(ctx)
+	web.Handle(p.handleShutdown)(ctx)
 	return recorder
 }
 

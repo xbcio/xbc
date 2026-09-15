@@ -144,7 +144,7 @@ func TestRoutesReadyPreparesSwaggerUIWithFinalTransportPaths(t *testing.T) {
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
 	ctx.Request = request
-	p.serveUI(ctx)
+	web.Handle(p.serveUI)(ctx)
 	if response.Code != http.StatusOK {
 		t.Fatalf("UI status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -163,7 +163,7 @@ func TestDocumentHandlerServesGeneratedJSON(t *testing.T) {
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
 	ctx.Request = request
-	p.serveDocument(ctx)
+	web.Handle(p.serveDocument)(ctx)
 	if response.Code != http.StatusOK || response.Body.String() != testDocument {
 		t.Fatalf("document response = %d %q", response.Code, response.Body.String())
 	}

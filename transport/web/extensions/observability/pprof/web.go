@@ -1,11 +1,10 @@
 package pprof
 
 import (
+	"context"
 	"net/http"
 	stdpprof "net/http/pprof"
 	"strings"
-
-	"github.com/gin-gonic/gin"
 
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -17,22 +16,23 @@ func (p *Plugin) RegisterRoutes(router *web.Router) {
 	if !cfg.enabled {
 		return
 	}
-	handler := p.handler()
+	handler := web.Handle(p.handler())
 	router.GET(cfg.path, handler).Name("management.pprof.index")
 	router.GET(cfg.path+"/*profile", handler).Name("management.pprof.profile")
 	router.POST(cfg.path+"/*profile", handler).Name("management.pprof.command")
 }
 
-func (p *Plugin) handler() gin.HandlerFunc {
-	return func(c *gin.Context) {
+func (p *Plugin) handler() web.Handler {
+	return func(_ context.Context, c *web.Ctx) error {
 		cfg := p.currentSettings()
-		c.Header("Cache-Control", "no-store")
-		c.Header("X-Content-Type-Options", "nosniff")
+		c.SetHeader("Cache-Control", "no-store")
+		c.SetHeader("X-Content-Type-Options", "nosniff")
 		if !cfg.enabled {
-			web.AbortProblem(c, web.NewProblem(http.StatusNotFound, "not_found"))
-			return
+			web.AbortProblem(c.Gin(), web.NewProblem(http.StatusNotFound, "not_found"))
+			return nil
 		}
-		serveProfile(c.Writer, c.Request, cfg.path)
+		serveProfile(c.Writer(), c.Request(), cfg.path)
+		return nil
 	}
 }
 
