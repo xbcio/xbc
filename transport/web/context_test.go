@@ -334,11 +334,16 @@ func TestCtxNextRunsDownstreamHandlerBeforeReturning(t *testing.T) {
 
 // TestCtxClientIPForwardsToTheEngineRatherThanDerivingItsOwn pins that
 // ClientIP reports the engine's own answer instead of independently parsing
-// RemoteAddr. An implementation that derived the answer from RemoteAddr and
-// blindly preferred a forwarded header would agree with the engine only by
-// accident; the discriminating case is an untrusted proxy, where the engine
-// itself ignores X-Forwarded-For and falls back to RemoteAddr. Only a real
-// forward to c.Gin().ClientIP() reproduces that trusted-proxy-aware decision.
+// RemoteAddr.
+//
+// The untrusted case alone does not discriminate: there the engine ignores
+// X-Forwarded-For and falls back to RemoteAddr, which is exactly what a
+// hand-rolled net.SplitHostPort(RemoteAddr) also returns. Only the trusted
+// case separates them -- the engine consults the header it was configured to
+// trust, while any self-derived answer keeps reporting the proxy's own
+// address. That divergence is not cosmetic: ClientIP keys rate limiting, so
+// an implementation that silently ignored trusted-proxy configuration would
+// collapse every client behind the proxy into a single bucket.
 func TestCtxClientIPForwardsToTheEngineRatherThanDerivingItsOwn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -351,15 +356,18 @@ func TestCtxClientIPForwardsToTheEngineRatherThanDerivingItsOwn(t *testing.T) {
 		return nil
 	}))
 
-	request := httptest.NewRequest(http.MethodGet, "/whoami", nil)
-	request.RemoteAddr = "203.0.113.7:51234"
-	request.Header.Set("X-Forwarded-For", "9.9.9.9")
+	call := func(remoteAddr string) string {
+		request := httptest.NewRequest(http.MethodGet, "/whoami", nil)
+		request.RemoteAddr = remoteAddr
+		request.Header.Set("X-Forwarded-For", "9.9.9.9")
+		engine.ServeHTTP(httptest.NewRecorder(), request)
+		return observed
+	}
 
-	response := httptest.NewRecorder()
-	engine.ServeHTTP(response, request)
-
-	assert.Equal(t, "203.0.113.7", observed,
-		"an untrusted proxy's X-Forwarded-For must be ignored, exactly as the engine itself ignores it")
+	assert.Equal(t, "9.9.9.9", call("127.0.0.1:51234"),
+		"请求来自受信代理时必须采信 X-Forwarded-For，这是只有真正转发给引擎才能得到的答案")
+	assert.Equal(t, "203.0.113.7", call("203.0.113.7:51234"),
+		"请求来自非受信代理时必须忽略 X-Forwarded-For，与引擎自身的判断一致")
 }
 
 // TestCtxSetContextPublishesThroughTheRequest pins that SetContext rewrites the
