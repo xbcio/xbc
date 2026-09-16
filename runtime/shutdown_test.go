@@ -85,10 +85,18 @@ func TestShutdownWarningNamesEveryPluginTheBudgetSkipped(t *testing.T) {
 		"the plugin that ignored its deadline must be named as abandoned")
 	assert.Equal(t, []string{"a-skipped"}, fields["not_attempted"],
 		"every plugin the spent budget skipped must be named, not merely counted")
+	require.Len(t, fields["waited"], 1,
+		"the plugin that spent the budget is the one to fix, and only it was waited for")
+	assert.Contains(t, fields["waited"].([]string)[0], "z-stuck ",
+		"the wait is attributed to an identity, so a reader is not left comparing timestamps")
 }
 
 // TestShutdownReportsNothingWhenTheReverseUnwindCompletes is the other half of
-// the same contract: a clean unwind must stay silent.
+// the same contract: a clean unwind must raise no warning. It may still record
+// the per-instance waits at debug -- a rolling restart that is slow but never
+// over budget has to be attributable to a plugin as well -- so the assertion
+// discriminates on level rather than on the recorder being empty, which is
+// what keeps operators from learning to ignore the warning.
 func TestShutdownReportsNothingWhenTheReverseUnwindCompletes(t *testing.T) {
 	clean := func(key plugin.Key) plugin.Definition {
 		return plugin.Define(key, func(plugin.BuildContext) (*runtimeTestValue, error) {
@@ -103,7 +111,15 @@ func TestShutdownReportsNothingWhenTheReverseUnwindCompletes(t *testing.T) {
 	started := time.Now()
 	require.NoError(t, app.unwind(stopReasonSignal))
 
-	assert.Empty(t, capture.entries, "a clean reverse unwind must not warn")
+	for _, entry := range capture.entries {
+		assert.Equal(t, "debug", entry.level, "a clean reverse unwind must not warn")
+	}
+	require.Len(t, capture.entries, 1,
+		"a slow-but-within-budget shutdown still has to be attributable to a plugin")
+	waited := capture.entries[0].fields()["waited"]
+	require.Len(t, waited, 2)
+	assert.Contains(t, waited.([]string)[0], "second ",
+		"the waits are listed in the reverse order they were incurred")
 	assert.Less(t, time.Since(started), app.settings.ShutdownTimeout,
 		"a clean unwind must not wait out the budget")
 }

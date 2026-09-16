@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -146,3 +147,140 @@ func TestReportDisabledPrintsNoConfiguredValue(t *testing.T) {
 	assert.NotContains(t, logged, secret, "the report names paths and reasons, never a configured value")
 	assert.NotContains(t, logged, "hunter2")
 }
+
+// startupProbe is the shortest stage duration that survives a coarse clock.
+// Every assertion below compares against it with >=, never with equality.
+const startupProbe = 20 * time.Millisecond
+
+// TestStartupTimingsAttributeASlowBootToItsPhaseAndPlugin is the whole point of
+// the measurement: an application that takes seconds to become servable can
+// today only be diagnosed by guessing, because the released-gate line reports
+// what started and in what order but never what any of it cost.
+//
+// A real run is used rather than a hand-built report because the discriminating
+// failure is a mis-anchored measurement -- a total taken after the slow phase,
+// or a phase timed around the wrong call -- and only the live wiring can catch
+// that. The slow work sits in Start, so the assertion also fails if every
+// phase were assigned the same elapsed span.
+func TestStartupTimingsAttributeASlowBootToItsPhaseAndPlugin(t *testing.T) {
+	definition := plugin.Define("slow-start", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Start: func(*runtimeTestValue, *plugin.Context) error {
+			time.Sleep(startupProbe)
+			return nil
+		},
+		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
+	}})
+
+	app := newRuntimeTestApp(definition)
+	result := executeRuntimeTest(app, runtimeTestConfig(t, time.Second)...)
+	awaitRuntimeTestReady(t, app)
+
+	assert.GreaterOrEqual(t, app.startup.phases.start, startupProbe,
+		"the slow phase is the one that was slow")
+	assert.GreaterOrEqual(t, app.startup.total, app.startup.phases.start,
+		"the total covers the phases it decomposes into")
+	assert.NotZero(t, app.startup.phases.bootstrap,
+		"configuration bootstrap is measured too, or a slow config source would look like a slow plugin")
+	assert.NotZero(t, app.startup.phases.construct)
+	assert.Zero(t, app.startup.phases.migrate, "this run was not asked to migrate")
+
+	instance, ok := app.owned.Instance(plugin.Identity{Plugin: "slow-start", Instance: plugin.DefaultInstance})
+	require.True(t, ok)
+	stages := make(map[assembly.Stage]time.Duration)
+	for _, timing := range instance.Timings() {
+		stages[timing.Stage] = timing.Duration
+	}
+	assert.GreaterOrEqual(t, stages[assembly.StageStart], startupProbe,
+		"the plugin and the stage inside the slow phase are both named")
+	assert.Contains(t, stages, assembly.StageOpenTraffic)
+	assert.NotContains(t, stages, assembly.StageMigrate,
+		"a stage the Definition never declared did not run")
+
+	app.requestStop(stopReasonSignal)
+	require.NoError(t, awaitRuntimeTestResult(t, result).err)
+}
+
+// TestReportStartedStatesHowLongTheBootTook pins the always-on half. The
+// breakdown is debug-only, so this one field is all an operator has on a
+// default-configured production boot, and it must be there even when nothing
+// was slow.
+func TestReportStartedStatesHowLongTheBootTook(t *testing.T) {
+	definition := plugin.Define("timed", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+
+	app := newRuntimeTestApp(definition)
+	_, capture := planUnderCapture(t, app, "")
+	app.startup = startupTiming{total: 812 * time.Millisecond}
+
+	app.reportStarted(nil, false)
+
+	require.Len(t, capture.entries, 1)
+	entry := capture.entries[0]
+	assert.Equal(t, "info", entry.level)
+	assert.Equal(t, "812ms", entry.fields()["startup"],
+		"a boot duration is reported as a duration, not as a nanosecond count")
+}
+
+// TestStartupTimingsBreakdownNamesEveryStageThatRan proves the debug entry
+// carries what the aggregate cannot: one line per instance, in start order,
+// listing the stages that actually ran. It also pins the phase line, which is
+// what tells a reader whether to look at plugins at all.
+func TestStartupTimingsBreakdownNamesEveryStageThatRan(t *testing.T) {
+	definition := plugin.Define("broken-down", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Init: func(*runtimeTestValue, *plugin.Context) error { return nil },
+	}})
+
+	app := newRuntimeTestApp(definition)
+	capture := ownUnderCapture(t, app)
+	app.startup = startupTiming{
+		total:  time.Second,
+		phases: startupPhases{bootstrap: 21 * time.Millisecond, construct: 128 * time.Millisecond},
+	}
+
+	app.reportStartupTimings(app.owned.Instances())
+
+	require.Len(t, capture.entries, 1, "the whole breakdown is one record, so it cannot interleave")
+	entry := capture.entries[0]
+	assert.Equal(t, "debug", entry.level, "a normal boot must not spend a warning on its own timings")
+	assert.Contains(t, entry.msg, "total 1s")
+	assert.Contains(t, entry.msg, "bootstrap 21ms")
+	assert.Contains(t, entry.msg, "construct 128ms")
+	assert.Contains(t, entry.msg, "migrate 0s", "a phase that did not run is stated, not omitted")
+	assert.Contains(t, entry.msg, "broken-down")
+	assert.Contains(t, entry.msg, "factory ")
+	assert.Contains(t, entry.msg, "Init ")
+	assert.NotContains(t, entry.msg, "Start ",
+		"an undeclared hook must not appear as a stage that ran instantly")
+}
+
+// TestStartupTimingsAreNotBuiltWhenDebugIsOff keeps the breakdown's cost
+// proportional to its usefulness: it is the one report whose size follows the
+// plugin count, and a production logger set to info must not pay for a string
+// it will discard.
+func TestStartupTimingsAreNotBuiltWhenDebugIsOff(t *testing.T) {
+	definition := plugin.Define("quiet", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+
+	app := newRuntimeTestApp(definition)
+	capture := ownUnderCapture(t, app)
+	app.logger = &levelledCapture{captureLogger: capture, enabled: log.InfoLevel}
+
+	app.reportStartupTimings(app.owned.Instances())
+
+	assert.Empty(t, capture.entries)
+}
+
+// levelledCapture is a captureLogger that answers Enabled honestly, which the
+// plain recorder deliberately does not.
+type levelledCapture struct {
+	*captureLogger
+	enabled log.Level
+}
+
+func (l *levelledCapture) Enabled(level log.Level) bool { return level >= l.enabled }

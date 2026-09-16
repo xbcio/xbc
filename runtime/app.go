@@ -49,6 +49,10 @@ type App struct {
 	// returned from unwind observes it.
 	shutdownReport assembly.ShutdownReport
 
+	// startup is written on the execute goroutine, before the released-gate
+	// report that reads it, and is never written again.
+	startup startupTiming
+
 	// Tests may set ready to observe the post-gate run-loop boundary.
 	ready chan struct{}
 }
