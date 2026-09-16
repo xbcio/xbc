@@ -412,8 +412,9 @@ func TestStopBoundedAbandonsAStopThatOutlivesTheShutdownBudget(t *testing.T) {
 
 	expired, cancel := context.WithCancel(context.Background())
 	cancel()
-	outcome, err := instance.stopBounded(expired, 50*time.Millisecond)
+	outcome, elapsed, err := instance.stopBounded(expired, 50*time.Millisecond)
 	assert.Equal(t, StopAbandoned, outcome)
+	assert.NotZero(t, elapsed, "an abandoned Stop still reports how long the walk waited on it")
 	require.Error(t, err)
 	assert.EqualError(t, err, "xbc: plugin stuck Stop did not return within shutdown budget 50ms; abandoning it")
 }
@@ -702,7 +703,7 @@ func TestStopBoundedPrefersADeliveredResultOverAnExpiredShutdownBudget(t *testin
 		expired:      expired,
 	}
 
-	outcome, err := instance.stopBounded(deadline, 50*time.Millisecond)
+	outcome, _, err := instance.stopBounded(deadline, 50*time.Millisecond)
 	require.NoError(t, err, "a Stop that already returned cleanly must not be reported as a failure")
 	assert.Equal(t, StopCompleted, outcome,
 		"the delivered Stop result must win over an expired budget, not a coin flip")
