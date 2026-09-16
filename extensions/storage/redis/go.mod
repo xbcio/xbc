@@ -2,9 +2,10 @@ module github.com/xbcio/xbc/extensions/storage/redis
 
 go 1.25.0
 
-// The core module is deliberately absent from require until it has a real
-// release tag. Local development resolves it through a Go workspace; no
-// unpublished placeholder dependency or filesystem substitution is used.
+// The core module and the protocol-neutral health capability are deliberately
+// absent from require until they have real release tags. Local development
+// resolves them through a Go workspace; no unpublished placeholder dependency
+// or filesystem substitution is used.
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0 // test only
 	github.com/redis/go-redis/v9 v9.21.0

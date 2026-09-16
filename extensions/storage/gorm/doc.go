@@ -50,4 +50,15 @@
 // prepared statements and the underlying sql.DB safely after any owned
 // lifecycle state. Keep DSNs in secret-backed configuration rather than source
 // or logs, and use a least-privilege account for each instance.
+//
+// # Readiness
+//
+// Bundle also selects HealthKey, a second Definition that exports
+// health.Contributor and reports one readiness check per configured instance. It
+// is a separate Definition because this plugin's primary value is the
+// third-party *gorm.DB, which cannot be given a HealthChecks method. The probe
+// is inert unless the application also selects the health capability Bundle;
+// when it is selected, a configured instance appears in the aggregate readiness
+// report as "gorm-health" or "gorm-health/<instance>" with no change at the
+// composition root.
 package gorm

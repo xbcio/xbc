@@ -33,4 +33,15 @@
 // lifecycle adapter. Keep credentials in secret-backed configuration and use
 // this standalone connection only across a trusted network boundary or a
 // separately secured tunnel.
+//
+// # Readiness
+//
+// Bundle also selects HealthKey, a second Definition that exports
+// health.Contributor and reports one readiness check per configured instance. It
+// is a separate Definition because this plugin's primary value is the
+// third-party *redis.Client, which cannot be given a HealthChecks method. The
+// probe is inert unless the application also selects the health capability
+// Bundle; when it is selected, a configured instance appears in the aggregate
+// readiness report as "redis-health" or "redis-health/<instance>" with no change
+// at the composition root.
 package redis

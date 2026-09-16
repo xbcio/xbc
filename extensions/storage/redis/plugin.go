@@ -28,11 +28,14 @@ var definition = plugin.DefineConfigured(
 	},
 )
 
+var bundle = plugin.BundleOf(definition, healthDefinition)
+
 // Definition returns this integration's canonical Definition handle.
 func Definition() plugin.Definition { return definition }
 
-// Bundle returns this integration's side-effect-free composition bundle.
-func Bundle() plugin.Bundle { return plugin.BundleOf(definition) }
+// Bundle returns this integration's side-effect-free composition bundle: the
+// client Definition and the readiness probe that reports on its instances.
+func Bundle() plugin.Bundle { return bundle }
 
 // newClient constructs the one primary value owned by a configured Redis
 // instance. A failed factory retains ownership and closes the client locally;
