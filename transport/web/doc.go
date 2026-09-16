@@ -142,6 +142,13 @@
 // application code as a top-level extension. It is an HTTP output model, not a
 // base type for domain errors.
 //
+// The responses the framework generates itself -- 404, 405 and 413 -- travel
+// through the complete global middleware chain rather than answering ahead of
+// it, so they are access-logged, carry a request id, and receive CORS and
+// security headers like any other response. For 413 that also means a protected
+// route answers an unauthenticated oversized request with 401: the body limit is
+// the innermost framework stage, behind authentication.
+//
 // Handle and AbortError resolve failures through the active mapper chain, which
 // also receives errors the engine adapter collected from native middleware
 // reporting through the engine's own error accumulator. The first resolved

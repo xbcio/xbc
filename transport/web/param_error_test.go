@@ -29,8 +29,9 @@ func decodeProblem(t *testing.T, recorder *httptest.ResponseRecorder) web.Proble
 
 // TestParamErrorMapsBothKnownAndStreamedBodyOverflowTo413 covers the two
 // distinct ways an oversized body is detected, which reach 413 through
-// different code. A declared Content-Length is rejected by the limiter before
-// the handler runs; a streamed body is only discovered while reading, and that
+// different code. A declared Content-Length is rejected by
+// RejectOversizedRequestBody before the handler runs; a streamed body is only
+// discovered while reading the reader CapRequestBody installed, and that
 // failure reaches the client solely because ParamError recognizes
 // *http.MaxBytesError. Nothing about either path is engine-specific, so both
 // are driven through the neutral test engine.
@@ -44,7 +45,7 @@ func TestParamErrorMapsBothKnownAndStreamedBodyOverflowTo413(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			engine := enginetest.New()
-			engine.Use(web.LimitRequestBody(32))
+			engine.Use(web.CapRequestBody(32), web.RejectOversizedRequestBody(32))
 			engine.POST("/requests", func(_ context.Context, c *web.Ctx) error {
 				var destination map[string]any
 				body, err := io.ReadAll(c.Request().Body)

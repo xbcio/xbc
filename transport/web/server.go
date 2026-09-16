@@ -120,7 +120,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 
 	routes, frozen, index := newRouteTable()
 	handlers := []Handler{
-		limitRequestBody(cfg.MaxRequestBodyBytes),
+		capRequestBody(cfg.MaxRequestBodyBytes),
 		func(_ context.Context, c *Ctx) error {
 			newErrorResolver(logger).attach(c)
 			return nil
@@ -181,6 +181,13 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	for _, entry := range ordered {
 		handlers = append(handlers, entry.Value.Handler())
 	}
+	// The oversized-body rejection closes the framework chain, after every
+	// ordered middleware, so a 413 is access-logged, carries a request id, and
+	// gets CORS and security headers like any other response. The cap itself is
+	// already installed outermost by capRequestBody, so moving the rejection
+	// inward costs no safety: nothing downstream can read more than the limit,
+	// whether or not this stage has answered yet.
+	handlers = append(handlers, rejectOversizedRequestBody(cfg.MaxRequestBodyBytes))
 	// An unmatched request is still a request a client made, so the global
 	// chain must reach it: CORS, request ids, access logs, metrics, panic
 	// recovery and the request-body limit all lose their meaning the moment

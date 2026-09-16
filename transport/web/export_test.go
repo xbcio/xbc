@@ -64,7 +64,12 @@ var NewAuthenticationMiddleware = newAuthenticationMiddleware
 // interface it satisfies.
 var (
 	NewExtractorIndex = newExtractorIndex
-	LimitRequestBody  = limitRequestBody
+	// The body limit is two handlers at opposite ends of the framework chain:
+	// CapRequestBody bounds the body outermost, RejectOversizedRequestBody
+	// answers a declared overflow innermost. A test that wants the complete
+	// behaviour installs both, in that order.
+	CapRequestBody             = capRequestBody
+	RejectOversizedRequestBody = rejectOversizedRequestBody
 )
 
 // NewRequestCredentialSource builds the per-request CredentialSource the
