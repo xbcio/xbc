@@ -2,7 +2,9 @@ package web
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,13 +28,13 @@ import (
 // web itself had written the import, when web's own source never did.
 // Conversely, a hypothetical "web must never depend on Gin, even
 // transitively" guard would need the opposite judgment (Deps, not
-// Imports) -- the two kinds of guard are not interchangeable, and this
-// package only ever needs the direct-import kind.
+// Imports).
 type packageJSON struct {
 	ImportPath   string
 	Imports      []string
 	TestImports  []string
 	XTestImports []string
+	Deps         []string
 }
 
 var packageExtensionPrefixes = []string{
@@ -123,4 +125,148 @@ func TestWebDoesNotDirectlyImportFacadeOrFrameworkInfrastructure(t *testing.T) {
 		}
 	}
 	require.NotZero(t, checked, "go list -json ./... returned no web package, dependency direction check actually did not take effect")
+}
+
+// engineModulePaths lists the module root of every HTTP engine this repository
+// has an adapter for. A new adapter adds its engine here; what the three guards
+// below assert is that transport/web itself never grows a line of coupling to
+// any of them.
+var engineModulePaths = []string{
+	"github.com/gin-gonic/gin",
+}
+
+// hasEnginePrefix reports whether dep is, or is rooted under, one of
+// engineModulePaths -- e.g. "github.com/gin-gonic/gin/binding" and
+// "github.com/gin-gonic/gin/codec/json" both count, not just the bare
+// module path.
+func hasEnginePrefix(dep string) string {
+	for _, engine := range engineModulePaths {
+		if dep == engine || strings.HasPrefix(dep, engine+"/") {
+			return engine
+		}
+	}
+	return ""
+}
+
+// TestWebNeverNamesAnHTTPEngine is the source-level guard: no file in this
+// module, production or test, may write an engine's import path. Test files
+// count -- an engine import there binds this module's own tests to one engine
+// just as firmly as production code would.
+func TestWebNeverNamesAnHTTPEngine(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go command is unavailable, skipping HTTP engine source guard")
+	}
+
+	out, err := exec.Command("go", "list", "-json", "./...").Output()
+	require.NoError(t, err, "go list -json ./... failed")
+
+	dec := json.NewDecoder(strings.NewReader(string(out)))
+	checked := 0
+	for dec.More() {
+		var pkg packageJSON
+		require.NoError(t, dec.Decode(&pkg), "Parsing go list -json output failed")
+		checked++
+
+		checks := []struct {
+			label   string
+			imports []string
+		}{
+			{"production code import", pkg.Imports},
+			{"package internal _test.go import", pkg.TestImports},
+			{"external test package import", pkg.XTestImports},
+		}
+		for _, c := range checks {
+			for _, dep := range c.imports {
+				if engine := hasEnginePrefix(dep); engine != "" {
+					assert.Fail(t, "forbidden HTTP engine import",
+						"%s's %s contains %q, naming engine %q", pkg.ImportPath, c.label, dep, engine)
+				}
+			}
+		}
+	}
+	require.NotZero(t, checked, "go list -json ./... returned no web package, HTTP engine source guard actually did not take effect")
+}
+
+// goModRequire is the subset of `go mod edit -json`'s output this guard reads.
+type goModRequire struct {
+	Require []struct {
+		Path     string
+		Version  string
+		Indirect bool
+	}
+}
+
+// TestWebGoModsDoNotRequireAnHTTPEngine is the manifest-level companion. A
+// leftover require has no import edge for a source or closure check to find,
+// yet it still pollutes downloads, upgrades and security scans.
+//
+// It walks every go.mod at or below transport/web, because the extension
+// modules are separately published and each inherits its own requirements.
+// engines/ is exempt by construction: an engine adapter module requiring its
+// engine is the entire reason it exists.
+func TestWebGoModsDoNotRequireAnHTTPEngine(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go command is unavailable, skipping HTTP engine manifest guard")
+	}
+
+	var manifests []string
+	err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if d.Name() != "go.mod" {
+			return nil
+		}
+		for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(path)), "/") {
+			if part == "engines" {
+				return nil
+			}
+		}
+		manifests = append(manifests, path)
+		return nil
+	})
+	require.NoError(t, err, "walking transport/web for go.mod files failed")
+	require.NotEmpty(t, manifests, "found no go.mod under transport/web, HTTP engine manifest guard actually did not take effect")
+
+	for _, manifest := range manifests {
+		out, err := exec.Command("go", "mod", "edit", "-json", manifest).Output()
+		require.NoError(t, err, "go mod edit -json %s failed", manifest)
+
+		var mod goModRequire
+		require.NoError(t, json.Unmarshal(out, &mod), "parsing go mod edit -json output for %s failed", manifest)
+
+		for _, req := range mod.Require {
+			if engine := hasEnginePrefix(req.Path); engine != "" {
+				assert.Fail(t, "forbidden HTTP engine require",
+					"%s requires %q, naming engine %q", manifest, req.Path, engine)
+			}
+		}
+	}
+}
+
+// TestWebDependencyClosureExcludesAnyHTTPEngine is the load-bearing one. The
+// other two can be satisfied by a module that reaches an engine through a
+// package it legitimately imports; only the closure can say that no engine code
+// is compiled into this module at all. Engine neutrality is this property --
+// not the existence of a second adapter.
+func TestWebDependencyClosureExcludesAnyHTTPEngine(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go command is unavailable, skipping HTTP engine dependency closure guard")
+	}
+
+	out, err := exec.Command("go", "list", "-deps", "./...").Output()
+	require.NoError(t, err, "go list -deps ./... failed")
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	require.NotEmpty(t, lines, "go list -deps ./... returned no dependencies, HTTP engine dependency closure guard actually did not take effect")
+
+	for _, dep := range lines {
+		if engine := hasEnginePrefix(dep); engine != "" {
+			assert.Fail(t, "forbidden HTTP engine in dependency closure",
+				"production dependency closure contains %q, naming engine %q", dep, engine)
+		}
+	}
 }
