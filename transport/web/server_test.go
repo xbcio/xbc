@@ -103,8 +103,6 @@ func TestStartMapsEveryConfiguredEngineSettingOntoOptions(t *testing.T) {
 	assert.Equal(t, cfg.IdleTimeout, options.IdleTimeout)
 	assert.Equal(t, cfg.MaxHeaderBytes, options.MaxHeaderBytes)
 	assert.Equal(t, cfg.MaxMultipartMemory, options.MaxMultipartMemory)
-	assert.True(t, options.HandleMethodNotAllowed,
-		"405 必须由引擎区分出来，否则方法不匹配会退化成 404，Problem Detail 也无从产生")
 }
 
 // TestTrustedProxiesAreOptIn pins the half of the trusted-proxy contract that

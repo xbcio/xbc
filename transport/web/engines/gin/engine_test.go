@@ -163,7 +163,7 @@ func TestNewEngineAppliesProcessGlobalsBeforeGinNew(t *testing.T) {
 func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	restoreProcessGlobals(t)
 
-	built, err := Factory{}.NewEngine(web.Options{HandleMethodNotAllowed: true})
+	built, err := Factory{}.NewEngine(web.Options{})
 	require.NoError(t, err, "NewEngine() 不应返回错误")
 	adapter, ok := built.(*engine)
 	require.True(t, ok, "NewEngine 应返回本包的 *engine")

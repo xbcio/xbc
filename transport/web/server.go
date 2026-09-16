@@ -105,15 +105,14 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		return errors.New("xbc: web Server has no EngineFactory configured; select an engine Bundle alongside web.Bundle()")
 	}
 	engine, err := s.factory.NewEngine(Options{
-		TrustedProxies:         cfg.TrustedProxies,
-		ReadTimeout:            cfg.ReadTimeout,
-		ReadHeaderTimeout:      cfg.ReadHeaderTimeout,
-		WriteTimeout:           cfg.WriteTimeout,
-		IdleTimeout:            cfg.IdleTimeout,
-		MaxHeaderBytes:         cfg.MaxHeaderBytes,
-		MaxMultipartMemory:     cfg.MaxMultipartMemory,
-		HandleMethodNotAllowed: true,
-		Logger:                 logger,
+		TrustedProxies:     cfg.TrustedProxies,
+		ReadTimeout:        cfg.ReadTimeout,
+		ReadHeaderTimeout:  cfg.ReadHeaderTimeout,
+		WriteTimeout:       cfg.WriteTimeout,
+		IdleTimeout:        cfg.IdleTimeout,
+		MaxHeaderBytes:     cfg.MaxHeaderBytes,
+		MaxMultipartMemory: cfg.MaxMultipartMemory,
+		Logger:             logger,
 	})
 	if err != nil {
 		return fmt.Errorf("xbc: web engine: %w", err)

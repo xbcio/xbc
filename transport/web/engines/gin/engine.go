@@ -35,7 +35,10 @@ func (f Factory) NewEngine(opts web.Options) (web.Engine, error) {
 	if err := e.SetTrustedProxies(opts.TrustedProxies); err != nil {
 		return nil, fmt.Errorf("xbc: web trusted_proxies: %w", err)
 	}
-	e.HandleMethodNotAllowed = opts.HandleMethodNotAllowed
+	// gin folds a method mismatch into its NoRoute handler unless this is set,
+	// and the Engine port requires the two to stay distinct so 405 keeps its
+	// own Problem Detail and its Allow header.
+	e.HandleMethodNotAllowed = true
 	e.MaxMultipartMemory = opts.MaxMultipartMemory
 	// ContextWithFallback is no longer needed: the neutral Ctx has a single
 	// Set/Get store and a single context.Context (the Handler's first
