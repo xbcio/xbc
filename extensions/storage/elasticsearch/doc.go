@@ -54,4 +54,18 @@
 // Supply API keys, passwords, and private certificate authorities through
 // secret-backed configuration. Credentials in node URLs are rejected, and this
 // package does not include configured credentials in its own errors or logs.
+//
+// # Readiness
+//
+// The primary *Client exports health.Contributor and contributes its cluster's
+// reachability as a readiness check. No separate Definition is needed: the
+// primary is this package's own type, so it carries the contract itself and each
+// configured instance appears in the aggregate report under its own identity --
+// "elasticsearch" for the default instance and "elasticsearch[<instance>]" for a
+// named one. The contribution is inert unless the application also selects the
+// health capability Bundle.
+//
+// An instance configured with health_probe: false contributes nothing. That flag
+// already suppresses the Init-time probe, and giving it a second, narrower
+// meaning for readiness would make it unpredictable.
 package elasticsearch

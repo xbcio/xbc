@@ -53,4 +53,14 @@
 // polling Redis. Stop rejects new enqueue calls, drains the worker, and closes
 // Redis. Tasks may be redelivered, so handlers should be idempotent and payloads
 // should not contain unprotected secrets.
+//
+// # Readiness
+//
+// The primary Plugin exports health.Contributor and contributes the reachability
+// of the Redis instance it owns as a readiness check named "asynq". Init pings
+// that connection once; without the check, losing it afterwards stays invisible
+// until an Enqueue call fails or the worker quietly stops consuming. A plugin
+// that has not initialized, or that has stopped, reports down rather than a probe
+// defect. The contribution is inert unless the application also selects the
+// health capability Bundle.
 package asynq

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -38,6 +39,7 @@ var definition = plugin.DefineConfigured(
 		Inputs:     plugin.Inputs(),
 		Exports: plugin.Contracts(
 			plugin.ExportAs(func(client *Client) BulkIndexer { return client }),
+			plugin.ExportAs(func(client *Client) health.Contributor { return client }),
 		),
 		Lifecycle: plugin.Lifecycle[*Client]{
 			Init:  initClient,

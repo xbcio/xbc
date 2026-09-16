@@ -70,4 +70,15 @@
 // concurrent-safe and shuts down Raft before closing its transport and
 // stores. Importing this package has no autoload side effects; import the
 // autoload subpackage only for the default composition.
+//
+// # Readiness
+//
+// The primary node exports health.Contributor and contributes cluster progress
+// as a readiness check named "raft". The plugin has no Init or Start stage, so
+// nothing else verifies that the cluster can commit anything: a node with a
+// listening transport and open stores may still have no leader because a
+// partition lost the majority or bootstrap never happened. The check asks only
+// whether a leader exists, so a follower stays ready, and it reads Raft state in
+// process without issuing a network call. The contribution is inert unless the
+// application also selects the health capability Bundle.
 package raft
