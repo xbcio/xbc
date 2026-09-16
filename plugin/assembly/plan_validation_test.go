@@ -287,6 +287,48 @@ func TestDeclaredSectionThatIsOffIsADisablementNotAnOrphan(t *testing.T) {
 	assert.Equal(t, []plugin.Key{"known"}, plan.Disabled())
 }
 
+// A Definition without a ConfigSpec still owns its section so it can be
+// toggled. That ownership stops the configuration layer's unowned-key walk at
+// the section boundary, so this layer is the only place left that can tell a
+// typo under it from a key somebody meant.
+func TestAPluginWithoutConfigurationStillRejectsKeysUnderItsSection(t *testing.T) {
+	t.Parallel()
+	definition := plugin.Define("known", func(plugin.BuildContext) (*validationValue, error) {
+		return &validationValue{}, nil
+	})
+
+	_, err := planFor(t, map[string]any{"plugins": map[string]any{
+		"known": map[string]any{"enabled": true, "timeuot": "2s"},
+	}}, definition)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin known declares no configuration")
+	assert.Contains(t, err.Error(), "plugins.known.timeuot")
+
+	plan, err := planFor(t, map[string]any{"plugins": map[string]any{
+		"known": map[string]any{"enabled": true},
+	}}, definition)
+	require.NoError(t, err, "the framework-owned enabled flag is the one accepted key")
+	assert.Equal(t, []plugin.Identity{{Plugin: "known", Instance: plugin.DefaultInstance}}, plan.Order())
+}
+
+// Every instance of a multi-instance Definition binds its own section, so the
+// same check has to reach inside the instance rather than stopping at the
+// plugin-level section that only holds instance maps.
+func TestAnInstanceOfAPluginWithoutConfigurationRejectsUnknownKeys(t *testing.T) {
+	t.Parallel()
+	descriptor := pluginmodel.DefinitionDescriptor{
+		Key:         "known",
+		Cardinality: pluginmodel.MultipleInstances,
+	}
+
+	_, err := planFor(t, map[string]any{"plugins": map[string]any{
+		"known": map[string]any{"primary": map[string]any{"dsn": "file::memory:"}},
+	}}, rawDefinition(descriptor))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin known[primary] declares no configuration")
+	assert.Contains(t, err.Error(), "plugins.known.primary.dsn")
+}
+
 func TestConfigurationFailuresNameTheOwningInstance(t *testing.T) {
 	t.Parallel()
 	type cfg struct {

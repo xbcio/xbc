@@ -409,9 +409,31 @@ func sectionEnabled(env *config.Environment, path string) (bool, error) {
 	return enabled, nil
 }
 
+// rejectKeysWithoutSchema keeps a Definition that declares no ConfigSpec as
+// strict as one that does. Such a Definition still owns its section so it can
+// be toggled, and that ownership is exactly what stops the configuration
+// layer's unowned-key walk at the section boundary. Without this check a typo
+// beneath it would be the one silently ignored key in the whole tree.
+func rejectKeysWithoutSchema(definition pluginmodel.DefinitionDescriptor, identity plugin.Identity, env *config.Environment) error {
+	path := instanceConfigPath(definition, identity)
+	var unknown []string
+	for name := range env.Sub(path) {
+		if name == "enabled" {
+			continue
+		}
+		unknown = append(unknown, path+"."+name)
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("xbc: plugin %s declares no configuration, so section %s accepts only enabled, got %s",
+		identity, path, strings.Join(unknown, ", "))
+}
+
 func prepareConfig(definition pluginmodel.DefinitionDescriptor, identity plugin.Identity, env *config.Environment) (any, error) {
 	if definition.Config == nil {
-		return nil, nil
+		return nil, rejectKeysWithoutSchema(definition, identity, env)
 	}
 	var raw any
 	var panicValue any
