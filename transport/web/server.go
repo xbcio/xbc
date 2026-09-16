@@ -24,6 +24,7 @@ type Server struct {
 
 	factory        EngineFactory
 	middlewares    []plugin.Entry[Middleware]
+	mappers        []plugin.Entry[ErrorMapper]
 	routes         []plugin.Entry[RouteContributor]
 	listeners      []plugin.Entry[RouteCatalogListener]
 	authenticators []plugin.Entry[authentication.Authenticator]
@@ -55,6 +56,7 @@ func newServer(
 	cfg Config,
 	factory EngineFactory,
 	middlewares []plugin.Entry[Middleware],
+	mappers []plugin.Entry[ErrorMapper],
 	routes []plugin.Entry[RouteContributor],
 	listeners []plugin.Entry[RouteCatalogListener],
 	authenticators []plugin.Entry[authentication.Authenticator],
@@ -64,6 +66,7 @@ func newServer(
 		cfg:            cfg,
 		factory:        factory,
 		middlewares:    append([]plugin.Entry[Middleware](nil), middlewares...),
+		mappers:        append([]plugin.Entry[ErrorMapper](nil), mappers...),
 		routes:         append([]plugin.Entry[RouteContributor](nil), routes...),
 		listeners:      append([]plugin.Entry[RouteCatalogListener](nil), listeners...),
 		authenticators: append([]plugin.Entry[authentication.Authenticator](nil), authenticators...),
@@ -125,14 +128,23 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		},
 	}
 
-	// The framework's authentication middleware is assembled here rather than
-	// selected as a plugin: enforcement of web.security is a guarantee, not an
-	// opt-in, and a configuration section has exactly one owning plugin. It
-	// still enters the ordering graph under AuthenticationMiddlewareKey, so the
-	// pins below resolve against a real entry. That key is therefore reserved:
-	// a contributed middleware claiming it is rejected by rule, before it can
-	// surface as a duplicate identity.
+	// The framework's error boundary and authentication middleware are
+	// assembled here rather than selected as plugins. Both are stages the
+	// ordering pins below make required, and a required stage must not be
+	// something a composition root can omit or an operator can disable: without
+	// the boundary every contributed ErrorMapper is unreachable, and without
+	// authentication every route is served unauthenticated even though
+	// web.security defaults to deny. Enforcing web.security is additionally
+	// this Definition's own configuration section, which has exactly one owning
+	// plugin. Both still enter the ordering graph under their canonical keys,
+	// so the pins resolve against real entries. Those keys are therefore
+	// reserved: a contributed middleware claiming one is rejected by rule,
+	// before it can surface as a duplicate identity.
 	if err := rejectReservedMiddlewareIdentities(s.middlewares); err != nil {
+		return err
+	}
+	boundary, err := newErrorBoundary(s.mappers)
+	if err != nil {
 		return err
 	}
 	authenticator, err := newAuthenticationMiddleware(cfg.Security, s.authenticators, s.extractors)
@@ -140,11 +152,16 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		return fmt.Errorf("xbc: web authentication: %w", err)
 	}
 	middlewares := append(
-		[]plugin.Entry[Middleware]{{Identity: authenticationIdentity, Value: authenticator}},
+		[]plugin.Entry[Middleware]{
+			{Identity: errorBoundaryIdentity, Value: boundary},
+			{Identity: authenticationIdentity, Value: authenticator},
+		},
 		s.middlewares...,
 	)
 
 	orderOptions := []middlewareOrderOption{
+		// The outer boundary must wrap every focused PhaseError middleware, so
+		// an unknown error still reaches Web's safe non-leaking fallbacks.
 		pinMiddlewareOutermost(Require(ErrorBoundaryKey)),
 		// Authentication runs before every other PhaseAuth middleware so
 		// authorization always observes a published Principal.

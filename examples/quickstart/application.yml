@@ -71,7 +71,8 @@ web:
 plugins:
   # The optional biz response plugin has no configuration section: selecting
   # biz.Bundle() is the complete opt-in for the success envelope and the
-  # biz.onerror middleware. The core web.onerror boundary needs no config.
+  # biz.onerror middleware. Web's outer error boundary has no section at all:
+  # the server assembles it, so there is nothing here to configure or disable.
 
   # Outermost panic boundary; sensitive request data and panic values are not
   # included in its structured log record.

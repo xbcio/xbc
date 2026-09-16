@@ -233,7 +233,9 @@ func TestServerUsesInjectedErrorMapperAndObservationSeesMappedStatus(t *testing.
 		routes: []plugin.Entry[web.RouteContributor]{
 			{Identity: plugin.Identity{Plugin: "orders"}, Value: application},
 		},
-		mappers: []web.ErrorMapper{application},
+		mappers: []plugin.Entry[web.ErrorMapper]{
+			{Identity: plugin.Identity{Plugin: "orders"}, Value: application},
+		},
 	})
 	require.NoError(t, server.Start(ctx))
 

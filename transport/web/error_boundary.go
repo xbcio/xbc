@@ -16,6 +16,15 @@ type ErrorOrder struct {
 	Before []OrderRef
 }
 
+// errorBoundary is the outermost PhaseError middleware. The Server assembles it
+// rather than selecting it as a plugin, for the same reason it assembles the
+// authentication middleware: a framework-owned ordering pin makes it required,
+// and a required stage must not be something a composition root can leave out
+// or an operator can switch off. As a Definition it was disableable, and
+// plugins.web-error-boundary.enabled=false failed startup by tripping that pin
+// -- reporting an unsatisfiable internal pin instead of the rule that every
+// contributed ErrorMapper needs a boundary to run in. Its identity is reserved
+// accordingly; see reserved_middleware.go.
 type errorBoundary struct {
 	mappers []ErrorMapper
 }
@@ -23,28 +32,27 @@ type errorBoundary struct {
 func (b *errorBoundary) Handler() Handler { return OnError(b.mappers...) }
 func (*errorBoundary) Order() Order       { return Order{Phase: PhaseError} }
 
-var errorMapperInput = plugin.Collect[ErrorMapper]()
+// errorBoundaryIdentity is the producer identity the Server attributes its
+// built-in error boundary to. Like authenticationIdentity it is an ordering
+// anchor rather than a selectable plugin, so Require(ErrorBoundaryKey) resolves
+// against a real entry.
+var errorBoundaryIdentity = plugin.Identity{Plugin: ErrorBoundaryKey}
 
-var errorBoundaryDefinition = plugin.Define(
-	ErrorBoundaryKey,
-	func(ctx plugin.BuildContext) (*errorBoundary, error) {
-		entries, err := orderErrorMappers(errorMapperInput.Get(ctx))
-		if err != nil {
-			return nil, err
-		}
-		mappers := make([]ErrorMapper, len(entries))
-		for i, entry := range entries {
-			mappers[i] = entry.Value
-		}
-		return &errorBoundary{mappers: mappers}, nil
-	},
-	plugin.Options[*errorBoundary]{
-		Inputs: plugin.Inputs(errorMapperInput),
-		Exports: plugin.Contracts(
-			plugin.ExportAs(func(boundary *errorBoundary) Middleware { return boundary }),
-		),
-	},
-)
+// newErrorBoundary builds the Server-owned boundary from every contributed
+// ErrorMapper, sorted by the independent ErrorOrder graph. A precedence
+// mistake among mappers therefore fails Start, in the same place a middleware
+// ordering mistake does.
+func newErrorBoundary(entries []plugin.Entry[ErrorMapper]) (*errorBoundary, error) {
+	ordered, err := orderErrorMappers(entries)
+	if err != nil {
+		return nil, err
+	}
+	mappers := make([]ErrorMapper, len(ordered))
+	for i, entry := range ordered {
+		mappers[i] = entry.Value
+	}
+	return &errorBoundary{mappers: mappers}, nil
+}
 
 func orderErrorMappers(entries []plugin.Entry[ErrorMapper]) ([]plugin.Entry[ErrorMapper], error) {
 	slices.SortFunc(entries, func(left, right plugin.Entry[ErrorMapper]) int {

@@ -47,7 +47,7 @@ type serverInputs struct {
 	listeners      []plugin.Entry[web.RouteCatalogListener]
 	authenticators []plugin.Entry[authentication.Authenticator]
 	extractors     []plugin.Entry[web.CredentialExtractor]
-	mappers        []web.ErrorMapper
+	mappers        []plugin.Entry[web.ErrorMapper]
 }
 
 // testEngineOf type-asserts a started Server's Engine back to the neutral test
@@ -223,11 +223,7 @@ func newPingServer(t *testing.T, cfg web.Config, inputs serverInputs) (*web.Serv
 	// zero-value check silently skips exactly those callers.
 	cfg.Security.Default = web.SecurityPermit
 
-	middlewares := make([]plugin.Entry[web.Middleware], 0, len(inputs.middlewares)+1)
-	middlewares = append(middlewares, plugin.Entry[web.Middleware]{
-		Identity: plugin.Identity{Plugin: web.ErrorBoundaryKey},
-		Value:    web.NewErrorBoundary(inputs.mappers...),
-	})
+	middlewares := make([]plugin.Entry[web.Middleware], 0, len(inputs.middlewares))
 	middlewares = append(middlewares, inputs.middlewares...)
 
 	routes := make([]plugin.Entry[web.RouteContributor], 0, len(inputs.routes)+1)
@@ -246,7 +242,7 @@ func newPingServer(t *testing.T, cfg web.Config, inputs serverInputs) (*web.Serv
 
 	host := newFakeHost()
 	ctx := contextFromHost(host)
-	server := web.NewServer(cfg, factory, middlewares, routes, inputs.listeners, inputs.authenticators, inputs.extractors)
+	server := web.NewServer(cfg, factory, middlewares, inputs.mappers, routes, inputs.listeners, inputs.authenticators, inputs.extractors)
 	t.Cleanup(func() {
 		if err := server.Stop(context.Background()); err != nil {
 			t.Errorf("stopping test server: %v", err)
@@ -496,10 +492,8 @@ func TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator(t *testing.T)
 	server := web.NewServer(
 		cfg,
 		enginetest.Factory{},
-		[]plugin.Entry[web.Middleware]{{
-			Identity: plugin.Identity{Plugin: web.ErrorBoundaryKey},
-			Value:    web.NewErrorBoundary(),
-		}},
+		nil,
+		nil,
 		[]plugin.Entry[web.RouteContributor]{{
 			Identity: plugin.Identity{Plugin: "managementtest"},
 			Value:    management,

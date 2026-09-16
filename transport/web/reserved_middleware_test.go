@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/plugin"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -15,11 +16,17 @@ import (
 // set. Every entry here is a plugin key that no Definition may claim, which is
 // only reviewable if the set itself is asserted somewhere.
 func TestReservedMiddlewareKeysNameTheFrameworkAssembledStages(t *testing.T) {
-	assert.Equal(t, []plugin.Key{web.AuthenticationMiddlewareKey}, web.ReservedMiddlewareKeys())
+	assert.Equal(t,
+		[]plugin.Key{web.AuthenticationMiddlewareKey, web.ErrorBoundaryKey},
+		web.ReservedMiddlewareKeys(),
+	)
 
-	// The error boundary is reserved by nothing: it is a real Definition
-	// selected through web.Bundle(), so it must not appear above.
-	assert.NotContains(t, web.ReservedMiddlewareKeys(), web.ErrorBoundaryKey)
+	// Neither key may be reachable as a Definition: the Server assembles both
+	// stages, so web.Bundle() carries the server alone.
+	entries := pluginmodel.BundleEntries(pluginmodel.Bundle(web.Bundle()))
+	require.Len(t, entries, 1, "web.Bundle() must contain only the server Definition")
+	require.True(t, pluginmodel.SameDefinition(
+		entries[0].Definition, pluginmodel.Definition(web.Definition())))
 }
 
 // TestStartRejectsAContributedMiddlewareClaimingAReservedIdentity is the guard

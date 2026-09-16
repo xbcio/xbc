@@ -17,10 +17,9 @@
 //		orders.Bundle(),
 //	))
 //
-// Web's Bundle contains the server and its independently identified error
-// boundary, but no engine: exactly one engine Bundle must be selected alongside
-// it, and transport/web/engines/gin is the one this repository ships. The
-// prelude adds the lightweight production baseline: recovery,
+// Web's Bundle contains the server, but no engine: exactly one engine Bundle
+// must be selected alongside it, and transport/web/engines/gin is the one this
+// repository ships. The prelude adds the lightweight production baseline: recovery,
 // request IDs, access logging, security headers, gzip, cooperative request
 // timeouts, and health probes. Business response envelopes, CORS,
 // authentication, authorization, persistence, telemetry exporters, and API
@@ -66,17 +65,22 @@
 // implementing authentication.RequiresPrincipal is framework-pinned after the
 // canonical authentication middleware.
 //
-// The Server assembles the authentication middleware itself rather than
-// selecting it as a plugin: enforcing web.security is a guarantee, and its
-// default is deny. Its identity is therefore reserved -- see
-// ReservedMiddlewareKeys -- and a contributed Middleware claiming a reserved key
-// fails startup. Ordering against it with Require(AuthenticationMiddlewareKey)
-// is the supported use of that key.
+// The Server assembles two middleware stages itself rather than selecting them
+// as plugins: the outermost error boundary and the authentication middleware.
+// A framework-owned ordering pin makes each one required, and a required stage
+// must not be omittable at the composition root or disableable through
+// plugins.<key>.enabled -- without the boundary every contributed ErrorMapper is
+// unreachable, and without authentication every route is served unauthenticated
+// even though web.security defaults to deny. Their identities are therefore
+// reserved -- see ReservedMiddlewareKeys -- and a contributed Middleware
+// claiming a reserved key fails startup. Ordering against them, with
+// Require(AuthenticationMiddlewareKey) or by sitting inside PhaseError, is the
+// supported use of those keys.
 //
-// ErrorMapper Plugins declare a separate ErrorOrder. The web-error-boundary
-// Plugin consumes and sorts all mapper entries, exports Middleware, and is
-// pinned outermost in PhaseError. The first mapper that recognizes an error
-// wins; safe non-leaking built-in mappings remain the fallback.
+// ErrorMapper Plugins declare a separate ErrorOrder. The Server collects and
+// sorts all mapper entries into that boundary, which is pinned outermost in
+// PhaseError. The first mapper that recognizes an error wins; safe non-leaking
+// built-in mappings remain the fallback.
 //
 // RouteCatalogListener receives the complete immutable catalog during traffic
 // preparation, after every contributor has run and authentication metadata has

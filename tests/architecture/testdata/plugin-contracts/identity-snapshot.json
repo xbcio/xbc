@@ -315,14 +315,6 @@
       "contracts": []
     },
     {
-      "key": "web-error-boundary",
-      "config_path": "plugins.web-error-boundary",
-      "cardinality": "single",
-      "contracts": [
-        "github.com/xbcio/xbc/transport/web.Middleware"
-      ]
-    },
-    {
       "key": "webhook",
       "config_path": "plugins.webhook",
       "cardinality": "multiple",
@@ -332,6 +324,7 @@
     }
   ],
   "reserved_keys": [
-    "authentication-middleware"
+    "authentication-middleware",
+    "web-error-boundary"
   ]
 }
