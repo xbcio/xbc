@@ -1,12 +1,44 @@
 package log
 
 import (
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// assertAmortizedZeroAlloc asserts that f allocates nothing per call once the
+// pool is warm, measured as the best (minimum) of several AllocsPerRun rounds.
+//
+// Why best-of-N rather than a single measurement: AllocsPerRun diffs the
+// PROCESS-wide runtime.MemStats.Mallocs counter, so every allocation made by
+// any other goroutine inside the measurement window is charged to f. Under
+// -race, or simply under parallel load, the window stretches from microseconds
+// to milliseconds and picks up a lot more of that foreign traffic; the same
+// allocation-free code then reports a non-zero average intermittently.
+//
+// Taking the minimum costs zero guard strength, because the noise is strictly
+// one-directional: foreign goroutines can only ADD mallocs to the window, they
+// can never cancel out an allocation f really made. So the minimum is the round
+// with the least contamination -- never a round where a real allocation went
+// missing. If the pooling in hitSlow/hitWindowSlow ever regresses to a fresh
+// make per call (2 allocs/call before the fix), every round measures avg == 2
+// and the assertion still fails, in every round, on the first one.
+func assertAmortizedZeroAlloc(t *testing.T, f func(), msgAndArgs ...any) {
+	t.Helper()
+	best := math.Inf(1)
+	for range 3 {
+		if avg := testing.AllocsPerRun(200, f); avg < best {
+			best = avg
+		}
+		if best == 0 {
+			return
+		}
+	}
+	assert.Zero(t, best, msgAndArgs...)
+}
 
 // The overflow path (a field name longer than maskKeyBufSize, or with more
 // words than maskKeyMaxWords) used to allocate a fresh buf+starts pair on
@@ -24,15 +56,15 @@ func TestHitSlowIsAmortizedZeroAlloc(t *testing.T) {
 	longHit := strings.Repeat("verylongsegment_", 6) + "password"
 	require.Greater(t, len(longHit), maskKeyBufSize, "Test case must really follow the overflow path")
 
-	avg := testing.AllocsPerRun(200, func() { _ = m.hit(longHit) })
-	assert.Zero(t, avg, "Overflow path should amortize zero allocations, actual test shows %v allocations per call", avg)
+	assertAmortizedZeroAlloc(t, func() { _ = m.hit(longHit) },
+		"Overflow path should amortize zero allocations")
 }
 
 func TestHitWindowSlowIsAmortizedZeroAlloc(t *testing.T) {
 	m := newMasker(nil)
 	manyWords := strings.Repeat("a_", 20) + "token_x" // > maskKeyMaxWords
-	avg := testing.AllocsPerRun(200, func() { _ = m.hitWindow(manyWords) })
-	assert.Zero(t, avg, "Window match overflow path should amortize zero allocations, actual test shows %v allocations per call", avg)
+	assertAmortizedZeroAlloc(t, func() { _ = m.hitWindow(manyWords) },
+		"Window match overflow path should amortize zero allocations")
 }
 
 // Pooling must not change any verdict: the slow path's rule is identical to
@@ -84,6 +116,6 @@ func TestSlowPathPoolDoesNotRetainOversizedBuffers(t *testing.T) {
 	assert.True(t, m.hit(huge), "Center word should still match for very large key")
 
 	ordinary := strings.Repeat("verylongsegment_", 6) + "password"
-	avg := testing.AllocsPerRun(200, func() { _ = m.hit(ordinary) })
-	assert.Zero(t, avg, "After very large key, normal overflow key should still amortize zero allocations")
+	assertAmortizedZeroAlloc(t, func() { _ = m.hit(ordinary) },
+		"After very large key, normal overflow key should still amortize zero allocations")
 }
