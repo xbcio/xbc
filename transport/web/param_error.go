@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -54,11 +53,20 @@ func newRequestError(status int, code, detail string, cause error) error {
 	return &requestError{status: status, code: code, detail: detail, cause: cause}
 }
 
-// ParamError adapts an error returned by one of Gin's ShouldBind methods to
-// Web's centralized onerror/Problem Detail contract. It does not select a binder, read
-// the request, or run validation; Gin remains the single owner of binding.
-// target is the value passed to Gin and is used only to translate validator
-// field paths to their public json, form, uri, or header names.
+// ParamError adapts an error returned by the engine's binding to Web's
+// centralized onerror/Problem Detail contract. It does not select a binder,
+// read the request, or run validation; the engine remains the single owner of
+// binding. target is the value that was bound, and is used only to translate
+// validator field paths to their public json, form, uri, or header names.
+//
+// An aggregate failure -- produced when each element of an array body is
+// validated separately -- is recognized through the standard library's
+// multi-error shape, Unwrap() []error. Ctx.Bind and Ctx.BindURI guarantee it:
+// an engine whose binder reports aggregates as its own opaque type normalizes
+// them in its adapter. An error handed here straight from an engine's native
+// binder through the escape hatch may therefore arrive unnormalized. It still
+// maps to a safe 400, but as invalid_request rather than a validation_failed
+// carrying per-field errors.
 func ParamError(err error, target any) error {
 	if err == nil {
 		return nil
@@ -106,8 +114,8 @@ func invalidBindingUsage(err error) bool {
 	if errors.As(err, &invalidValidation) {
 		return true
 	}
-	if sliceErrors, ok := asSliceValidationErrors(err); ok {
-		for _, item := range sliceErrors {
+	if items, ok := asAggregateErrors(err); ok {
+		for _, item := range items {
 			if invalidBindingUsage(item) {
 				return true
 			}
@@ -150,8 +158,25 @@ func validationFieldErrors(err error, root reflect.Type) ([]FieldError, bool) {
 	return errors, true
 }
 
+// collectFieldErrors walks err for every validator.FieldError it carries.
+//
+// The aggregate check runs before the plain validator.ValidationErrors check,
+// and that order is load-bearing, not cosmetic. errors.As on a concrete type
+// stops at the first match it finds while walking Unwrap() []error, so
+// errors.As(errors.Join(v1, v2), &validationErrors) binds only v1 and silently
+// drops v2's field errors. Recognizing the aggregate shape first and
+// recursing into every element ourselves is what makes every element's field
+// errors reach the client instead of only the first one's.
 func collectFieldErrors(err error, destination *[]validator.FieldError) bool {
 	if err == nil {
+		return true
+	}
+	if items, ok := asAggregateErrors(err); ok {
+		for _, item := range items {
+			if !collectFieldErrors(item, destination) {
+				return false
+			}
+		}
 		return true
 	}
 	var validationErrors validator.ValidationErrors
@@ -161,21 +186,22 @@ func collectFieldErrors(err error, destination *[]validator.FieldError) bool {
 		}
 		return true
 	}
-	if sliceErrors, ok := asSliceValidationErrors(err); ok {
-		for _, item := range sliceErrors {
-			if !collectFieldErrors(item, destination) {
-				return false
-			}
-		}
-		return true
-	}
 	return false
 }
 
-func asSliceValidationErrors(err error) (binding.SliceValidationError, bool) {
-	var sliceErrors binding.SliceValidationError
-	if errors.As(err, &sliceErrors) {
-		return sliceErrors, true
+// asAggregateErrors reports the elements of a multi-error. The shape checked
+// here is the standard library's: errors.Join produces it, errors.Is and
+// errors.As already traverse it, and any engine adapter can produce it without
+// this package naming an engine type.
+//
+// errors.As alone is not a substitute. It stops at the first match, and the
+// whole point of an aggregate binding failure -- one element of an array body
+// failed validation, and so did another -- is that every element's field errors
+// must reach the client.
+func asAggregateErrors(err error) ([]error, bool) {
+	var aggregate interface{ Unwrap() []error }
+	if errors.As(err, &aggregate) {
+		return aggregate.Unwrap(), true
 	}
 	return nil, false
 }

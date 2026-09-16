@@ -1,9 +1,11 @@
 package gin
 
 import (
+	"errors"
 	"net/http"
 
 	ginlib "github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -63,9 +65,39 @@ func (rc *requestContext) ClientIP() string { return rc.c.ClientIP() }
 
 func (rc *requestContext) Status(code int) { rc.c.Status(code) }
 
-func (rc *requestContext) Bind(obj any) error { return rc.c.ShouldBind(obj) }
+func (rc *requestContext) Bind(obj any) error { return normalizeBindError(rc.c.ShouldBind(obj)) }
 
-func (rc *requestContext) BindURI(obj any) error { return rc.c.ShouldBindUri(obj) }
+func (rc *requestContext) BindURI(obj any) error { return normalizeBindError(rc.c.ShouldBindUri(obj)) }
+
+// normalizeBindError restates gin's aggregate validation failure in the
+// standard library's multi-error shape, so web.ParamError can walk it without
+// naming a gin type. gin reports a per-element failure as
+// binding.SliceValidationError, which is a []error with no Unwrap; errors.Join
+// gives those same elements a shape errors.As and errors.Is already
+// understand.
+//
+// The recursion is not decorative. A slice of slices nests
+// SliceValidationError inside itself, and converting only the outer level
+// would leave the inner one opaque again.
+//
+// Every element gin ever appends to a SliceValidationError is the non-nil
+// result of a failed per-element validation (see gin's
+// defaultValidator.ValidateStruct, binding/default_validator.go): it only
+// appends when v.ValidateStruct(...) returns a non-nil error, so a nil
+// element is not reachable here. errors.Join skipping nils is therefore never
+// exercised by production input; it is not a silent-success hazard for this
+// call site.
+func normalizeBindError(err error) error {
+	var aggregate binding.SliceValidationError
+	if !errors.As(err, &aggregate) {
+		return err
+	}
+	normalized := make([]error, 0, len(aggregate))
+	for _, item := range aggregate {
+		normalized = append(normalized, normalizeBindError(item))
+	}
+	return errors.Join(normalized...)
+}
 
 // JSON renders obj and reports a render failure to its caller.
 //
