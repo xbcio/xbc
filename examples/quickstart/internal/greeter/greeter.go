@@ -4,7 +4,9 @@ package greeter
 
 import (
 	"context"
+	"time"
 
+	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
@@ -16,7 +18,10 @@ const Key plugin.Key = "greeter"
 // Plugin contributes the Quickstart's business routes.
 type Plugin struct{}
 
-var _ web.RouteContributor = (*Plugin)(nil)
+var (
+	_ web.RouteContributor = (*Plugin)(nil)
+	_ health.Contributor   = (*Plugin)(nil)
+)
 
 var definition = plugin.Define(
 	Key,
@@ -24,6 +29,7 @@ var definition = plugin.Define(
 	plugin.Options[*Plugin]{
 		Exports: plugin.Contracts(
 			plugin.ExportAs[web.RouteContributor](func(value *Plugin) web.RouteContributor { return value }),
+			plugin.ExportAs[health.Contributor](func(value *Plugin) health.Contributor { return value }),
 		),
 	},
 )
@@ -44,6 +50,23 @@ type GreetingRequest struct {
 // Greeting is the greeting endpoint's business payload.
 type Greeting struct {
 	Message string `json:"message" example:"hello from xbc"`
+}
+
+// HealthChecks implements health.Contributor. The aggregator prefixes every
+// name with this plugin's Identity, so the probe reports "greeter/greeting".
+//
+// A plugin that owns an external dependency pings it here, with a Timeout
+// tighter than the section default when the dependency is on a hot path. The
+// greeter has no dependency, so the check only reports that the plugin was
+// constructed and started: registering it is what makes the plugin visible in
+// /readyz at all.
+func (*Plugin) HealthChecks() []health.NamedChecker {
+	return []health.NamedChecker{{
+		Name:    "greeting",
+		Kind:    health.Readiness,
+		Timeout: 200 * time.Millisecond,
+		Checker: health.CheckFunc(func(context.Context) error { return nil }),
+	}}
 }
 
 // RegisterRoutes implements web.RouteContributor.

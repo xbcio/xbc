@@ -484,7 +484,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	t.Helper()
 	repositoryRoot := archRepositoryRoot(t)
 	webRoot := filepath.Join(repositoryRoot, "transport", "web")
-	roots := make([]string, 0, 35)
+	roots := make([]string, 0, 36)
 	for _, extensionPath := range archWebPackageExtensionPaths {
 		roots = append(roots, filepath.Join(webRoot, "extensions", filepath.FromSlash(extensionPath)))
 	}
@@ -499,7 +499,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 			protocolNeutral = append(protocolNeutral, moduleRoot)
 		}
 	}
-	require.Len(t, protocolNeutral, 11, "expected 11 protocol-neutral extension plugins plus the non-plugin authentication contract")
+	require.Len(t, protocolNeutral, 12, "expected 12 protocol-neutral extension plugins plus the non-plugin authentication contract")
 	roots = append(roots, protocolNeutral...)
 
 	webAdapter := filepath.Join(webRoot, "extensions", "authorization", "rbac")
@@ -512,7 +512,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	require.Len(t, webPlugins, 9, "expected 9 Web extension plugins plus the non-plugin RBAC adapter")
 	roots = append(roots, webPlugins...)
 
-	require.Len(t, roots, 35, "expected 15 Web package extensions, 11 protocol-neutral extension plugins, and 9 independently versioned Web extension plugins")
+	require.Len(t, roots, 36, "expected 15 Web package extensions, 12 protocol-neutral extension plugins, and 9 independently versioned Web extension plugins")
 	sort.Strings(roots)
 	return roots
 }

@@ -240,9 +240,15 @@
     },
     {
       "key": "health",
+      "config_type": "github.com/xbcio/xbc/extensions/reliability/health.Config",
+      "defaults": {
+        "Timeout": 2000000000
+      }
+    },
+    {
+      "key": "health-http",
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/reliability/health.Config",
       "defaults": {
-        "Timeout": 2000000000,
         "LivenessPath": "/healthz",
         "ReadinessPath": "/readyz",
         "DetailPolicy": "never"

@@ -5,28 +5,20 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/xbcio/xbc/plugin"
+	corehealth "github.com/xbcio/xbc/extensions/reliability/health"
 	transportweb "github.com/xbcio/xbc/transport/web"
 )
-
-var _ transportweb.RouteContributor = (*Plugin)(nil)
-
-func routeContracts() plugin.ContractSet[*Plugin] {
-	return plugin.Contracts(
-		plugin.ExportAs[transportweb.RouteContributor](func(value *Plugin) transportweb.RouteContributor { return value }),
-	)
-}
 
 // RegisterRoutes implements web.RouteContributor. Probe endpoints explicitly
 // bypass authentication so operational health never depends on credentials.
 func (p *Plugin) RegisterRoutes(router *transportweb.Router) {
-	router.GET(p.cfg.LivenessPath, p.probeHandler(Liveness)).Auth(transportweb.Public())
-	router.GET(p.cfg.ReadinessPath, p.probeHandler(Readiness)).Auth(transportweb.Public())
+	router.GET(p.cfg.LivenessPath, p.probeHandler(corehealth.Liveness)).Auth(transportweb.Public())
+	router.GET(p.cfg.ReadinessPath, p.probeHandler(corehealth.Readiness)).Auth(transportweb.Public())
 }
 
-func (p *Plugin) probeHandler(kind Kind) transportweb.Handler {
+func (p *Plugin) probeHandler(kind corehealth.Kind) transportweb.Handler {
 	return func(ctx context.Context, c *transportweb.Ctx) error {
-		report := p.Check(ctx, kind)
+		report := p.prober.Check(ctx, kind)
 		statusCode := http.StatusOK
 		if !report.Healthy() {
 			statusCode = http.StatusServiceUnavailable
@@ -37,19 +29,19 @@ func (p *Plugin) probeHandler(kind Kind) transportweb.Handler {
 }
 
 type webReport struct {
-	Status Status      `json:"status"`
-	Probe  Kind        `json:"probe"`
-	Checks []webResult `json:"checks"`
+	Status corehealth.Status `json:"status"`
+	Probe  corehealth.Kind   `json:"probe"`
+	Checks []webResult       `json:"checks"`
 }
 
 type webResult struct {
-	Name    string `json:"name"`
-	Status  Status `json:"status"`
-	Latency string `json:"latency"`
-	Error   string `json:"error,omitempty"`
+	Name    string            `json:"name"`
+	Status  corehealth.Status `json:"status"`
+	Latency string            `json:"latency"`
+	Error   string            `json:"error,omitempty"`
 }
 
-func renderReport(report Report, policy DetailPolicy) webReport {
+func renderReport(report corehealth.Report, policy corehealth.DetailPolicy) webReport {
 	out := webReport{
 		Status: report.Status,
 		Probe:  report.Kind,
@@ -61,7 +53,7 @@ func renderReport(report Report, policy DetailPolicy) webReport {
 			Status:  result.Status,
 			Latency: renderLatency(result.Latency),
 		}
-		if policy == DetailAlways && result.Error != nil {
+		if policy == corehealth.DetailAlways && result.Error != nil {
 			out.Checks[index].Error = result.Error.Error()
 		}
 	}

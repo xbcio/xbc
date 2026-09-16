@@ -116,10 +116,15 @@ plugins:
     duration: 15s
 
   health:
+    # Per-check budget for every contributed probe. Endpoint paths belong to the
+    # HTTP adapter below, because this section is the protocol-neutral
+    # capability: a background-only service configures it with no adapter at all.
     timeout: 2s
+
+  health-http:
     liveness_path: "/healthz"
-    # Returns 503 after shutdown begins; the delay above keeps it reachable
-    # before HTTP drain.
+    # Returns 503 after shutdown begins; web.shutdown.pre_drain_delay above
+    # keeps it reachable before HTTP drain.
     readiness_path: "/readyz"
     # Do not expose dependency errors on public probes.
     detail_policy: never

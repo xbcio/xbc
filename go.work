@@ -19,6 +19,7 @@ use (
 	./extensions/authentication
 	./extensions/authorization/rbac
 	./extensions/coordination/raft
+	./extensions/reliability/health
 	./extensions/storage/elasticsearch
 	./extensions/storage/gorm
 	./extensions/storage/objectstorage

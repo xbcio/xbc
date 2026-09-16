@@ -1,57 +1,43 @@
-// Package health owns XBC's protocol-independent health-check contracts and
-// aggregation plugin.
+// Package health serves the HTTP liveness and readiness probes for the
+// protocol-neutral extensions/reliability/health capability.
+//
+// This package owns no checks, no aggregation, no probe policy, and no
+// Contributor contract: it renders a Report for one wire format. A dependency
+// plugin contributes probes by exporting the neutral
+// extensions/reliability/health Contributor, never by importing this package.
+// Adding another transport therefore means adding a sibling adapter, not
+// changing the capability.
 //
 // # Usage
 //
-// Compose the health Bundle explicitly. The Definition consumes every Plugin
-// that exports Contributor and preserves each producer Identity for diagnostic
-// check names:
+// Bundle selects the adapter together with the aggregator it renders, so a Web
+// service needs one entry:
 //
 //	app, err := xbc.New(xbc.WithBundles(
-//		web.Bundle(),
-//		health.Bundle(),
-//		database.Bundle(),
+//		prelude.Bundle(),
+//		ginengine.Bundle(),
+//		healthhttp.Bundle(),
 //	))
 //
-// A dependency contributes one or more checks by exporting Contributor from
-// its canonical Definition:
+// The endpoints are registered as public routes, because an operational probe
+// that depends on credentials cannot answer whether the instance is serving.
+// Configuration is bound from plugins.health-http:
 //
-//	type DatabasePlugin struct {
-//		DB *sql.DB
-//	}
+//	plugins:
+//	  health:
+//	    timeout: 2s
+//	  health-http:
+//	    liveness_path: /healthz
+//	    readiness_path: /readyz
+//	    detail_policy: never
 //
-//	func (p *DatabasePlugin) HealthChecks() []health.NamedChecker {
-//		return []health.NamedChecker{{
-//			Name:    "primary",
-//			Kind:    health.Readiness,
-//			Timeout: 500 * time.Millisecond,
-//			Checker: health.CheckFunc(p.DB.PingContext),
-//		}}
-//	}
-//
-//	var definition = plugin.Define(
-//		"database",
-//		openDatabase,
-//		plugin.Options[*DatabasePlugin]{
-//			Exports: plugin.Contracts(
-//				plugin.ExportAs[health.Contributor](
-//					func(value *DatabasePlugin) health.Contributor { return value },
-//				),
-//			),
-//		},
-//	)
-//
-// Contributors are injected once during construction; Plugin.Check never scans
-// mutable runtime state. Each selected check runs with a bounded context, and
-// the aggregate report is stable and name-sorted.
-//
-// The plugin exports web.RouteContributor and registers public liveness and
-// readiness routes. Once XBC begins graceful shutdown, readiness immediately
-// reports Down while liveness remains Up. With a nonzero
-// web.shutdown.pre_drain_delay, Web leaves its listener up so external probes
-// can observe 503 before HTTP draining starts; at the 0s default, drain begins
-// immediately. Diagnostic errors are hidden by DetailNever by default to avoid
-// exposing internal addresses or dependency details. Bundle and ordinary imports
-// are side-effect free; executables using xbc.Run may opt into the leaf autoload
+// A down probe answers 503 with the same JSON body shape as an up probe.
+// detail_policy defaults to never, so dependency errors -- which routinely carry
+// internal addresses -- stay out of the response; they remain available to
+// programmatic callers through the neutral Report. With a nonzero
+// web.shutdown.pre_drain_delay, Web leaves its listener up after readiness turns
+// down so external probes can observe 503 before HTTP draining starts; at the 0s
+// default, drain begins immediately. Bundle and ordinary imports are
+// side-effect free; executables using xbc.Run may opt into the leaf autoload
 // adapter.
 package health

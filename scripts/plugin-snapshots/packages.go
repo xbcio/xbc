@@ -10,6 +10,7 @@ import (
 	"github.com/xbcio/xbc/extensions/messaging/kafka"
 	"github.com/xbcio/xbc/extensions/messaging/outbox"
 	"github.com/xbcio/xbc/extensions/messaging/webhook"
+	corehealth "github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/extensions/storage/elasticsearch"
 	"github.com/xbcio/xbc/extensions/storage/gorm"
 	"github.com/xbcio/xbc/extensions/storage/objectstorage"
@@ -54,6 +55,7 @@ import (
 // re-running that grep whenever a plugin package is added or removed.
 var bundleProviders = []func() plugin.Bundle{
 	asynq.Bundle,
+	corehealth.Bundle,
 	cron.Bundle,
 	elasticsearch.Bundle,
 	gorm.Bundle,
