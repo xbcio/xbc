@@ -7,11 +7,8 @@ import (
 	"net"
 	"net/http"
 	"slices"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/gin-gonic/gin"
 
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/log"
@@ -85,31 +82,6 @@ func (s *Server) Addr() string {
 	return s.ln.Addr().String()
 }
 
-type ginLogWriter struct {
-	logger log.Logger
-	level  log.Level
-}
-
-func (w ginLogWriter) Write(p []byte) (int, error) {
-	message := strings.TrimRight(string(p), "\n")
-	if message != "" {
-		if w.level == log.ErrorLevel {
-			w.logger.Error(message)
-		} else {
-			w.logger.Info(message)
-		}
-	}
-	return len(p), nil
-}
-
-func setGinMode(logger log.Logger) {
-	if logger != nil && logger.Enabled(log.DebugLevel) {
-		gin.SetMode(gin.DebugMode)
-		return
-	}
-	gin.SetMode(gin.ReleaseMode)
-}
-
 // Start assembles the immutable request pipeline, binds the listener, and
 // submits the serving loop while managed-task admission is open. The task waits
 // for the runtime-owned traffic gate (or task cancellation) before calling
@@ -125,9 +97,6 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	s.cfg = cfg
 
 	logger := ctx.Log()
-	setGinMode(logger)
-	gin.DefaultWriter = ginLogWriter{logger: logger, level: log.InfoLevel}
-	gin.DefaultErrorWriter = ginLogWriter{logger: logger, level: log.ErrorLevel}
 
 	if s.factory == nil {
 		return errors.New("xbc: web Server has no EngineFactory configured; select an engine Bundle alongside web.Bundle()")
@@ -141,6 +110,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		MaxHeaderBytes:         cfg.MaxHeaderBytes,
 		MaxMultipartMemory:     cfg.MaxMultipartMemory,
 		HandleMethodNotAllowed: true,
+		Logger:                 logger,
 	})
 	if err != nil {
 		return fmt.Errorf("xbc: web engine: %w", err)
