@@ -11,6 +11,7 @@ import (
 	"time"
 
 	xbcconfig "github.com/xbcio/xbc/config"
+	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/assembly"
 	pluginmodel "github.com/xbcio/xbc/plugin/model"
@@ -45,8 +46,11 @@ func TestDefinitionIsCanonicalAndBundleContainsIt(t *testing.T) {
 		t.Fatalf("Definition primary = %v, want *managedStore", descriptor.Primary)
 	}
 	storeType := reflect.TypeOf((*Store)(nil)).Elem()
-	if len(descriptor.Contracts) != 1 || descriptor.Contracts[0].Type != storeType {
-		t.Fatalf("Definition contracts = %+v, want %v", descriptor.Contracts, storeType)
+	contributorType := reflect.TypeOf((*health.Contributor)(nil)).Elem()
+	if len(descriptor.Contracts) != 2 ||
+		descriptor.Contracts[0].Type != storeType ||
+		descriptor.Contracts[1].Type != contributorType {
+		t.Fatalf("Definition contracts = %+v, want %v and %v", descriptor.Contracts, storeType, contributorType)
 	}
 	if descriptor.Config == nil || descriptor.Config.Type != reflect.TypeOf(Config{}) {
 		t.Fatalf("Definition config = %+v", descriptor.Config)

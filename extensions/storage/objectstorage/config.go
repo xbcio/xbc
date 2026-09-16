@@ -46,6 +46,7 @@ type S3Config struct {
 	SecretKey    string `yaml:"secret_key" mask:"true"`
 	SessionToken string `yaml:"session_token" mask:"true"`
 	Prefix       string `yaml:"prefix"`
+	HealthProbe  bool   `yaml:"health_probe" default:"true"`
 
 	DialTimeout           time.Duration `yaml:"dial_timeout"            default:"5s" validate:"gt=0"`
 	TLSHandshakeTimeout   time.Duration `yaml:"tls_handshake_timeout"   default:"5s" validate:"gt=0"`
@@ -66,6 +67,7 @@ func defaultConfig() Config {
 			TLS:                   true,
 			Region:                "us-east-1",
 			PathStyle:             true,
+			HealthProbe:           true,
 			DialTimeout:           5 * time.Second,
 			TLSHandshakeTimeout:   5 * time.Second,
 			ResponseHeaderTimeout: 15 * time.Second,

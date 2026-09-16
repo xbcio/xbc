@@ -52,4 +52,17 @@
 // TLS supports private CAs and client certificates. SASL PLAIN or SCRAM is
 // accepted only with TLS. Keep credentials in secret-backed configuration and
 // make handlers idempotent because broker redelivery is possible.
+//
+// # Readiness
+//
+// The primary Client exports health.Contributor and contributes broker
+// reachability as a readiness check named after the producing identity, "kafka"
+// or "kafka[<instance>]". Nothing else here observes the cluster -- the writer
+// batches lazily and consumer loops only log -- so an unreachable or
+// unauthenticated cluster is invisible until a Produce call fails. The check asks
+// one broker for cluster metadata through the writer's own Dialer, so it
+// traverses the configured TLS and SASL path and writes nothing. Reaching a
+// single broker is enough: requiring all of them would report the instance as
+// unable to serve during an ordinary rolling restart. The contribution is inert
+// unless the application also selects the health capability Bundle.
 package kafka
