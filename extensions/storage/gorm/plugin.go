@@ -33,13 +33,14 @@ var definition = plugin.DefineConfigured(
 	},
 )
 
-var bundle = plugin.BundleOf(definition)
+var bundle = plugin.BundleOf(definition, healthDefinition)
 
 // Definition returns GORM's canonical immutable declaration handle. Every call
 // returns the same handle and does not mutate process-global composition.
 func Definition() plugin.Definition { return definition }
 
-// Bundle returns GORM's side-effect-free explicit composition bundle.
+// Bundle returns GORM's side-effect-free explicit composition bundle: the
+// database Definition and the readiness probe that reports on its instances.
 func Bundle() plugin.Bundle { return bundle }
 
 // prepareConfig performs semantic validation after XBC has applied defaults,

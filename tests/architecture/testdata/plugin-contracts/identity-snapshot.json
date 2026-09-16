@@ -96,6 +96,14 @@
       "contracts": []
     },
     {
+      "key": "gorm-health",
+      "config_path": "plugins.gorm-health",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
+      ]
+    },
+    {
       "key": "gracefulshutdown",
       "config_path": "plugins.gracefulshutdown",
       "cardinality": "single",
@@ -226,6 +234,14 @@
       "config_path": "plugins.redis",
       "cardinality": "multiple",
       "contracts": []
+    },
+    {
+      "key": "redis-health",
+      "config_path": "plugins.redis-health",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
+      ]
     },
     {
       "key": "requestid",

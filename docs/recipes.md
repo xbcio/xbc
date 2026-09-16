@@ -294,7 +294,7 @@ web:
     pre_drain_delay: 2s
 ```
 
-Readiness only reports what contributes to it: selecting the health capability alone yields an empty `checks` array. An application component contributes by exporting `health.Contributor` from its own Definition. Checks inherit `plugins.health.timeout` unless the contributor sets a per-check timeout, and the neutral `plugins.health` section is separate from the HTTP-facing `plugins.health-http` section below.
+Readiness only reports what contributes to it: selecting the health capability alone yields an empty `checks` array. `redis.Bundle()` and `gorm.Bundle()` each select a readiness probe next to their client Definition, so every configured instance is probed once the health Bundle is also selected -- reported as `redis-health` and `gorm-health` for the default instance, or `redis-health/<instance>` for a named one. An application component contributes by exporting `health.Contributor` from its own Definition. Checks inherit `plugins.health.timeout` unless the contributor sets a per-check timeout, and the neutral `plugins.health` section is separate from the HTTP-facing `plugins.health-http` section below.
 
 The interval leaves the listener up after runtime cancellation so `/readyz` can return 503 before HTTP drain. It consumes the one shared runtime shutdown budget, still accepts ordinary traffic, and is not acknowledgement that a load balancer has withdrawn the instance. Choose it from probe and load-balancer convergence time while reserving enough budget for draining.
 

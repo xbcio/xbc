@@ -17,6 +17,6 @@ func TestImportDeclaresGormBundle(t *testing.T) {
 		Bundles: []plugin.Bundle{defaultautoload.Freeze()},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 1, plan.DefinitionCount())
-	assert.Equal(t, []plugin.Key{gormplugin.Key}, plan.Disabled())
+	assert.Equal(t, 2, plan.DefinitionCount())
+	assert.Equal(t, []plugin.Key{gormplugin.Key, gormplugin.HealthKey}, plan.Disabled())
 }

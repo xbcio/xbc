@@ -2,10 +2,11 @@ module github.com/xbcio/xbc/extensions/storage/gorm
 
 go 1.25.0
 
-// github.com/xbcio/xbc is deliberately absent from require while the core
-// module has no published tag. Repository builds resolve it through go.work;
-// adding a local replace or placeholder version here would make this module
-// non-publishable. Add the real tagged version after core is released.
+// github.com/xbcio/xbc and github.com/xbcio/xbc/extensions/reliability/health
+// are deliberately absent from require while those modules have no published
+// tag. Repository builds resolve them through go.work; adding a local replace or
+// placeholder version here would make this module non-publishable. Add the real
+// tagged versions after they are released.
 require (
 	github.com/stretchr/testify v1.12.1
 	gorm.io/driver/mysql v1.6.0

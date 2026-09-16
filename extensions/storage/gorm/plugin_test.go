@@ -73,8 +73,8 @@ func TestDefinitionIsCanonicalAndBundleDeduplicates(t *testing.T) {
 		Env:     testEnvironment(t, nil),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 1, plan.DefinitionCount())
-	assert.Equal(t, []plugin.Key{Key}, plan.Disabled())
+	assert.Equal(t, 2, plan.DefinitionCount())
+	assert.Equal(t, []plugin.Key{Key, HealthKey}, plan.Disabled())
 	assert.Empty(t, plan.Order(), "GORM remains disabled until plugins.gorm is configured")
 }
 
@@ -103,7 +103,9 @@ func TestDefinitionPlansConfiguredNamedInstancesAndPrimaryContract(t *testing.T)
 		{Plugin: Key, Instance: "primary"},
 		{Plugin: Key, Instance: "readonly"},
 	}
-	assert.Equal(t, want, plan.Order())
+	// The readiness probe collects both databases, so it is ordered after them.
+	assert.Equal(t, append(append([]plugin.Identity(nil), want...),
+		plugin.Identity{Plugin: HealthKey, Instance: plugin.DefaultInstance}), plan.Order())
 	assert.Equal(t, want, plan.Contracts(reflect.TypeOf((*gormlib.DB)(nil))))
 }
 
