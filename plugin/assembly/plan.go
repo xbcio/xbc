@@ -2,6 +2,7 @@ package assembly
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"runtime/debug"
@@ -526,9 +527,17 @@ func indexContracts(instances map[plugin.Identity]*plannedInstance) map[reflect.
 	return index
 }
 
+// dependencyEdge is one producer-before-consumer constraint, used as the key
+// under which the graph remembers why that constraint exists.
+type dependencyEdge struct {
+	producer plugin.Identity
+	consumer plugin.Identity
+}
+
 func wireGraph(instances map[plugin.Identity]*plannedInstance, contracts map[reflect.Type][]plugin.Identity) ([]plugin.Identity, error) {
 	indegree := make(map[plugin.Identity]int, len(instances))
 	outgoing := make(map[plugin.Identity]map[plugin.Identity]struct{}, len(instances))
+	contractOf := make(map[dependencyEdge]reflect.Type)
 	for identity := range instances {
 		indegree[identity] = 0
 		outgoing[identity] = make(map[plugin.Identity]struct{})
@@ -547,6 +556,12 @@ func wireGraph(instances map[plugin.Identity]*plannedInstance, contracts map[ref
 				if _, exists := outgoing[producer][consumer]; !exists {
 					outgoing[producer][consumer] = struct{}{}
 					indegree[consumer]++
+					// One consumer may reach the same producer through
+					// several tokens. The first one wins, which is stable
+					// even though the outer loop walks a map: every edge
+					// into this consumer is discovered while iterating this
+					// consumer's own ordered Inputs slice.
+					contractOf[dependencyEdge{producer: producer, consumer: consumer}] = token.Type
 				}
 			}
 		}
@@ -578,20 +593,132 @@ func wireGraph(instances map[plugin.Identity]*plannedInstance, contracts map[ref
 		}
 	}
 	if len(order) != len(instances) {
-		var cyclic []plugin.Identity
-		for identity, degree := range indegree {
-			if degree > 0 {
-				cyclic = append(cyclic, identity)
-			}
-		}
-		sortIdentities(cyclic)
-		parts := make([]string, len(cyclic))
-		for i, identity := range cyclic {
-			parts[i] = identity.String()
-		}
-		return nil, fmt.Errorf("xbc: plugin dependency cycle involves %s", strings.Join(parts, ", "))
+		return nil, cycleError(indegree, outgoing, contractOf)
 	}
 	return order, nil
+}
+
+// cycleError describes the residue Kahn's algorithm could not emit as one
+// concrete cycle.
+//
+// The residue holds two different kinds of node: those that actually sit on a
+// cycle, and those merely downstream of one, whose indegree can never reach
+// zero either. Reporting the residue as a set therefore points at a region of
+// the graph rather than at the loop that has to be broken, so the cycle path
+// is recovered explicitly and the rest is reported separately as collateral.
+func cycleError(
+	indegree map[plugin.Identity]int,
+	outgoing map[plugin.Identity]map[plugin.Identity]struct{},
+	contractOf map[dependencyEdge]reflect.Type,
+) error {
+	stuck := make(map[plugin.Identity]struct{}, len(indegree))
+	candidates := make([]plugin.Identity, 0, len(indegree))
+	for identity, degree := range indegree {
+		if degree > 0 {
+			stuck[identity] = struct{}{}
+			candidates = append(candidates, identity)
+		}
+	}
+	sortIdentities(candidates)
+	path := findCycle(candidates, stuck, outgoing)
+
+	labels := make([]string, len(path))
+	onCycle := make(map[plugin.Identity]struct{}, len(path))
+	for index, identity := range path {
+		labels[index] = identity.String()
+		onCycle[identity] = struct{}{}
+	}
+	var message strings.Builder
+	message.WriteString("xbc: plugin dependency cycle: ")
+	message.WriteString(strings.Join(labels, " → "))
+	for index := 0; index+1 < len(path); index++ {
+		edge := dependencyEdge{producer: path[index], consumer: path[index+1]}
+		if contract, known := contractOf[edge]; known {
+			fmt.Fprintf(&message, "\n  %s requires %s from %s", edge.consumer, contract, edge.producer)
+		}
+	}
+
+	blocked := make([]plugin.Identity, 0, len(candidates))
+	for _, identity := range candidates {
+		if _, cyclic := onCycle[identity]; !cyclic {
+			blocked = append(blocked, identity)
+		}
+	}
+	if len(blocked) > 0 {
+		labels := make([]string, len(blocked))
+		for index, identity := range blocked {
+			labels[index] = identity.String()
+		}
+		fmt.Fprintf(&message, "\n  also blocked by this cycle: %s", strings.Join(labels, ", "))
+	}
+	return errors.New(message.String())
+}
+
+// findCycle walks the subgraph induced by stuck and returns the first cycle it
+// reaches, as a path with its entry node repeated at the end.
+//
+// Both the choice of roots and the choice of successors are taken in canonical
+// identity order rather than from a map, so a graph that contains several
+// equally valid cycles still names the same one on every run.
+func findCycle(
+	roots []plugin.Identity,
+	stuck map[plugin.Identity]struct{},
+	outgoing map[plugin.Identity]map[plugin.Identity]struct{},
+) []plugin.Identity {
+	visited := make(map[plugin.Identity]struct{}, len(stuck))
+	onStack := make(map[plugin.Identity]struct{}, len(stuck))
+	var stack, found []plugin.Identity
+
+	var visit func(identity plugin.Identity) bool
+	visit = func(identity plugin.Identity) bool {
+		visited[identity] = struct{}{}
+		onStack[identity] = struct{}{}
+		stack = append(stack, identity)
+		for _, next := range stuckSuccessors(identity, stuck, outgoing) {
+			if _, looping := onStack[next]; looping {
+				entry := 0
+				for index, member := range stack {
+					if member == next {
+						entry = index
+						break
+					}
+				}
+				found = append(append([]plugin.Identity(nil), stack[entry:]...), next)
+				return true
+			}
+			if _, seen := visited[next]; !seen && visit(next) {
+				return true
+			}
+		}
+		delete(onStack, identity)
+		stack = stack[:len(stack)-1]
+		return false
+	}
+
+	for _, root := range roots {
+		if _, seen := visited[root]; seen {
+			continue
+		}
+		if visit(root) {
+			return found
+		}
+	}
+	return nil
+}
+
+func stuckSuccessors(
+	identity plugin.Identity,
+	stuck map[plugin.Identity]struct{},
+	outgoing map[plugin.Identity]map[plugin.Identity]struct{},
+) []plugin.Identity {
+	successors := make([]plugin.Identity, 0, len(outgoing[identity]))
+	for consumer := range outgoing[identity] {
+		if _, blocked := stuck[consumer]; blocked {
+			successors = append(successors, consumer)
+		}
+	}
+	sortIdentities(successors)
+	return successors
 }
 
 func resolveToken(consumer plugin.Identity, token pluginmodel.InputToken, instances map[plugin.Identity]*plannedInstance, contracts map[reflect.Type][]plugin.Identity) ([]plugin.Identity, error) {
