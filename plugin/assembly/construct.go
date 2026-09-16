@@ -19,6 +19,42 @@ const defaultShutdownTimeout = 15 * time.Second
 // ContextFactory creates the lifecycle Context for one planned identity.
 type ContextFactory func(plugin.Identity, log.Logger) *plugin.Context
 
+// Stage names one step the framework invokes on a single owned value. Every
+// constant's value is the exact name this package already prints in its
+// diagnostics, so a timing key and an error message can never disagree about
+// what ran -- which is why StageFactory is spelled lower case while the
+// Lifecycle hooks carry their Go field names.
+type Stage string
+
+const (
+	// StageFactory is the Definition's factory call. It is not a Lifecycle
+	// hook: it receives already-decoded configuration and resolved inputs,
+	// and the convention is that it performs no I/O. It is timed anyway,
+	// because a factory that breaks that convention would otherwise be the
+	// one slow step with nowhere to look.
+	StageFactory Stage = "factory"
+	// StageInit runs inside Construct, after ownership has transferred.
+	StageInit Stage = "Init"
+	// StageMigrate runs only when the run was asked to migrate.
+	StageMigrate Stage = "Migrate"
+	// StageStart runs before the traffic gate is released.
+	StageStart Stage = "Start"
+	// StageOpenTraffic is the last startup stage before the gate opens.
+	StageOpenTraffic Stage = "OpenTraffic"
+	// StageStop runs during the reverse unwind, on its own goroutine and
+	// under a shared deadline. Its duration is reported per attempt in
+	// StopRecord rather than in Instance.Timings.
+	StageStop Stage = "Stop"
+)
+
+// StageTiming is how long one stage took for one instance. A stage the
+// instance does not declare produces no StageTiming at all, so a reader can
+// tell "never ran" apart from "ran instantly".
+type StageTiming struct {
+	Stage    Stage
+	Duration time.Duration
+}
+
 // ConstructOptions configures the sole resource-owning transaction.
 type ConstructOptions struct {
 	ContextFactory  ContextFactory
@@ -33,6 +69,12 @@ type Instance struct {
 	context   *plugin.Context
 	lifecycle lifecycleDescriptor
 
+	// timings is appended to only by the single goroutine that drives this
+	// instance's lifecycle: Construct, and then the Invoke* methods the
+	// runtime calls in order. Stop is excluded by construction because it
+	// runs on its own goroutine and an abandoned Stop outlives the walk.
+	timings []StageTiming
+
 	stopMu  sync.Mutex
 	stopped bool
 }
@@ -46,6 +88,19 @@ func (instance *Instance) HasTrafficPreparation() bool {
 	return instance.lifecycle.openTraffic != nil
 }
 func (instance *Instance) HasStop() bool { return instance.lifecycle.stop != nil }
+
+// Timings returns how long each stage took for this instance, in the order the
+// stages ran, including a stage that ended in an error or a recovered panic:
+// "Start failed after 30s" is the reading an operator needs most.
+//
+// It is safe to call once the lifecycle driver has returned from the stage in
+// question. StageStop never appears here; see StopRecord.Duration.
+func (instance *Instance) Timings() []StageTiming {
+	if instance == nil {
+		return nil
+	}
+	return append([]StageTiming(nil), instance.timings...)
+}
 
 // Constructed is the complete owned value set returned only after every
 // factory and Init stage succeeds.
@@ -94,7 +149,9 @@ func Construct(plan *Plan, options ConstructOptions) (*Constructed, error) {
 			planned.logger,
 			slots,
 		)
+		factoryStarted := time.Now()
 		value, err := invokeFactory(planned, buildContext)
+		factoryElapsed := time.Since(factoryStarted)
 		pluginmodel.InvalidateBuildContext(buildContext)
 		if err != nil {
 			return nil, joinConstructionFailure(err, constructed, options.ShutdownTimeout)
@@ -117,18 +174,14 @@ func Construct(plan *Plan, options ConstructOptions) (*Constructed, error) {
 			value:     value,
 			context:   lifecycleContext,
 			lifecycle: planned.lifecycle,
+			timings:   []StageTiming{{Stage: StageFactory, Duration: factoryElapsed}},
 		}
 		// Ownership transfers before Init. From here onward this instance is in
 		// every rollback set, including an Init failure or panic.
 		constructed.instances = append(constructed.instances, instance)
 		constructed.byIdentity[identity] = instance
 
-		if err := instance.invoke("Init", func() error {
-			if instance.lifecycle.init == nil {
-				return nil
-			}
-			return instance.lifecycle.init(instance.value, instance.context)
-		}); err != nil {
+		if err := instance.invoke(StageInit, instance.lifecycle.init); err != nil {
 			return nil, joinConstructionFailure(err, constructed, options.ShutdownTimeout)
 		}
 	}
@@ -189,42 +242,37 @@ func joinConstructionFailure(cause error, constructed *Constructed, timeout time
 
 // InvokeMigration runs one frozen migration descriptor under a panic boundary.
 func (instance *Instance) InvokeMigration() error {
-	return instance.invoke("Migrate", func() error {
-		if instance.lifecycle.migrate == nil {
-			return nil
-		}
-		return instance.lifecycle.migrate(instance.value, instance.context)
-	})
+	return instance.invoke(StageMigrate, instance.lifecycle.migrate)
 }
 
 // InvokeStart runs one frozen start descriptor under a panic boundary.
 func (instance *Instance) InvokeStart() error {
-	return instance.invoke("Start", func() error {
-		if instance.lifecycle.start == nil {
-			return nil
-		}
-		return instance.lifecycle.start(instance.value, instance.context)
-	})
+	return instance.invoke(StageStart, instance.lifecycle.start)
 }
 
 // InvokeTrafficPreparation runs one frozen traffic-preparation descriptor.
 func (instance *Instance) InvokeTrafficPreparation() error {
-	return instance.invoke("OpenTraffic", func() error {
-		if instance.lifecycle.openTraffic == nil {
-			return nil
-		}
-		return instance.lifecycle.openTraffic(instance.value, instance.context)
-	})
+	return instance.invoke(StageOpenTraffic, instance.lifecycle.openTraffic)
 }
 
-func (instance *Instance) invoke(stage string, fn func() error) error {
-	_, err := instance.invokeClassified(stage, fn)
+// invoke runs one declared startup hook and records what it cost. A hook the
+// Definition never declared is not a zero-length stage, so it is neither run
+// nor timed.
+func (instance *Instance) invoke(stage Stage, hook func(any, *plugin.Context) error) error {
+	if hook == nil {
+		return nil
+	}
+	started := time.Now()
+	_, err := instance.invokeClassified(stage, func() error {
+		return hook(instance.value, instance.context)
+	})
+	instance.timings = append(instance.timings, StageTiming{Stage: stage, Duration: time.Since(started)})
 	return err
 }
 
 // invokeClassified runs one lifecycle stage under a panic boundary and tells
 // a recovered panic apart from a returned error without parsing diagnostics.
-func (instance *Instance) invokeClassified(stage string, fn func() error) (panicked bool, err error) {
+func (instance *Instance) invokeClassified(stage Stage, fn func() error) (panicked bool, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panicked = true
@@ -265,6 +313,13 @@ type StopRecord struct {
 	Outcome  StopOutcome
 	Err      error
 	TaskErr  error
+	// Duration is how long the walk waited on this instance: until Stop
+	// returned, or until the shared deadline expired and the Stop was
+	// abandoned. It is zero for a skipped or not-attempted instance. Because
+	// exactly one Stop is in flight at a time, these durations are what make
+	// an expired budget attributable to the instances that consumed it and
+	// not only to the ones it cut off.
+	Duration time.Duration
 }
 
 // ShutdownReport is the observable result of one reverse unwind.
@@ -299,7 +354,7 @@ func (report ShutdownReport) Identities(outcome StopOutcome) []plugin.Identity {
 // StopBounded stops one owned value at most once and abandons a stuck Stop
 // when the shared deadline expires.
 func (instance *Instance) StopBounded(deadline context.Context, budget time.Duration) error {
-	_, err := instance.stopBounded(deadline, budget)
+	_, _, err := instance.stopBounded(deadline, budget)
 	return err
 }
 
@@ -308,20 +363,21 @@ type stopResult struct {
 	err     error
 }
 
-func (instance *Instance) stopBounded(deadline context.Context, budget time.Duration) (StopOutcome, error) {
+func (instance *Instance) stopBounded(deadline context.Context, budget time.Duration) (StopOutcome, time.Duration, error) {
 	instance.stopMu.Lock()
 	if instance.stopped {
 		instance.stopMu.Unlock()
-		return StopSkipped, nil
+		return StopSkipped, 0, nil
 	}
 	instance.stopped = true
 	instance.stopMu.Unlock()
 	if instance.lifecycle.stop == nil {
-		return StopSkipped, nil
+		return StopSkipped, 0, nil
 	}
+	started := time.Now()
 	done := make(chan stopResult, 1)
 	go func() {
-		panicked, err := instance.invokeClassified("Stop", func() error {
+		panicked, err := instance.invokeClassified(StageStop, func() error {
 			return instance.lifecycle.stop(instance.value, deadline)
 		})
 		switch {
@@ -335,7 +391,7 @@ func (instance *Instance) stopBounded(deadline context.Context, budget time.Dura
 	}()
 	select {
 	case result := <-done:
-		return result.outcome, result.err
+		return result.outcome, time.Since(started), result.err
 	case <-deadline.Done():
 	}
 	// The budget is spent. Read done once more without blocking before
@@ -345,9 +401,9 @@ func (instance *Instance) stopBounded(deadline context.Context, budget time.Dura
 	// rather than by what it actually did.
 	select {
 	case result := <-done:
-		return result.outcome, result.err
+		return result.outcome, time.Since(started), result.err
 	default:
-		return StopAbandoned, fmt.Errorf("xbc: plugin %s Stop did not return within shutdown budget %s; abandoning it", instance.identity, budget)
+		return StopAbandoned, time.Since(started), fmt.Errorf("xbc: plugin %s Stop did not return within shutdown budget %s; abandoning it", instance.identity, budget)
 	}
 }
 
@@ -380,8 +436,8 @@ func (constructed *Constructed) Unwind(deadline context.Context, budget time.Dur
 			continue
 		}
 		report.Attempted = append(report.Attempted, instance.identity)
-		outcome, err := instance.stopBounded(deadline, budget)
-		record := StopRecord{Identity: instance.identity, Outcome: outcome, Err: err}
+		outcome, elapsed, err := instance.stopBounded(deadline, budget)
+		record := StopRecord{Identity: instance.identity, Outcome: outcome, Err: err, Duration: elapsed}
 		if err != nil {
 			errs = append(errs, err)
 		}
