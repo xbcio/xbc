@@ -427,7 +427,7 @@ func TestOrderMiddlewaresFrameworkOutermostPin(t *testing.T) {
 
 	ordered, misses, err := orderMiddlewares(
 		entries,
-		pinMiddlewareOutermost(Require(webErrorBoundaryKey)),
+		pinMiddlewareOutermost(plugin.Identity{Plugin: webErrorBoundaryKey}),
 	)
 	require.NoError(t, err)
 	assert.Empty(t, misses)
@@ -437,21 +437,24 @@ func TestOrderMiddlewaresFrameworkOutermostPin(t *testing.T) {
 	)
 }
 
-func TestOrderMiddlewaresOutermostBareKeyPinsAllInstancesAsOneOuterGroup(t *testing.T) {
+// TestOrderMiddlewaresOutermostPinLeavesItsTargetUnconstrainedAlone covers the
+// degenerate phase, where the pinned stage is the only entry in it. The only
+// edge the pin could add there is a self-edge, which the graph would report as
+// a cycle.
+func TestOrderMiddlewaresOutermostPinLeavesItsTargetUnconstrainedAlone(t *testing.T) {
 	t.Parallel()
 
 	ordered, misses, err := orderMiddlewares(
 		[]plugin.Entry[Middleware]{
-			middlewareEntry("focused-boundary", "", Order{Phase: PhaseError}),
-			middlewareEntry(webErrorBoundaryKey, "secondary", Order{Phase: PhaseError}),
 			middlewareEntry(webErrorBoundaryKey, "", Order{Phase: PhaseError}),
+			middlewareEntry("observer", "", Order{Phase: PhaseObserve}),
 		},
-		pinMiddlewareOutermost(Require(webErrorBoundaryKey)),
+		pinMiddlewareOutermost(plugin.Identity{Plugin: webErrorBoundaryKey}),
 	)
 	require.NoError(t, err)
 	assert.Empty(t, misses)
 	assert.Equal(t,
-		[]string{"web-error-boundary", "web-error-boundary[secondary]", "focused-boundary"},
+		[]string{"observer", "web-error-boundary"},
 		middlewareIdentities(ordered),
 	)
 }
@@ -467,7 +470,7 @@ func TestOrderMiddlewaresOutermostPinContradictionBecomesCycle(t *testing.T) {
 			}),
 			middlewareEntry(webErrorBoundaryKey, "", Order{Phase: PhaseError}),
 		},
-		pinMiddlewareOutermost(Require(webErrorBoundaryKey)),
+		pinMiddlewareOutermost(plugin.Identity{Plugin: webErrorBoundaryKey}),
 	)
 
 	var cycle *ordering.CycleError
@@ -478,20 +481,23 @@ func TestOrderMiddlewaresOutermostPinContradictionBecomesCycle(t *testing.T) {
 	)
 }
 
-func TestOrderMiddlewaresOutermostPinRequiresKnownTarget(t *testing.T) {
+// TestOrderMiddlewaresOutermostPinRequiresAPresentTarget pins the framework-bug
+// case. Both outermost pins name a stage the Server assembles itself, so an
+// absent target is not a composition or configuration outcome an application can
+// produce -- it would mean Start built the pin without installing the entry.
+func TestOrderMiddlewaresOutermostPinRequiresAPresentTarget(t *testing.T) {
 	t.Parallel()
 
 	_, _, err := orderMiddlewares(
 		[]plugin.Entry[Middleware]{
 			middlewareEntry("focused-boundary", "", Order{Phase: PhaseError}),
 		},
-		pinMiddlewareOutermost(Prefer(webErrorBoundaryKey)),
+		pinMiddlewareOutermost(plugin.Identity{Plugin: webErrorBoundaryKey}),
 	)
 
-	var missing *MissingMiddlewareOrderTargetError
-	require.ErrorAs(t, err, &missing)
-	assert.True(t, missing.Reference.Required(), "framework pins are required")
-	assert.Equal(t, webErrorBoundaryKey, missing.Reference.Key())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "framework outermost pin")
+	assert.ErrorContains(t, err, webErrorBoundaryKey.String())
 }
 
 func TestOrderMiddlewaresFrameworkAfterPinModelsRequiresPrincipalEdge(t *testing.T) {
