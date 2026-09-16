@@ -10,6 +10,7 @@ import (
 	hibiken "github.com/hibiken/asynq"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -31,6 +32,7 @@ var definition = plugin.DefineConfigured(
 		Inputs:     plugin.Inputs(handlerContributors),
 		Exports: plugin.Contracts(
 			plugin.ExportAs(func(value *Plugin) Enqueuer { return value }),
+			plugin.ExportAs(func(value *Plugin) health.Contributor { return value }),
 		),
 		Lifecycle: plugin.Lifecycle[*Plugin]{
 			Init:  (*Plugin).init,

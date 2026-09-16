@@ -2,9 +2,10 @@ module github.com/xbcio/xbc/extensions/jobs/asynq
 
 go 1.25.0
 
-// The core module is deliberately absent until it has a real release tag.
-// Repository builds resolve XBC imports through a workspace; this publishable
-// manifest intentionally has no filesystem replace or placeholder version.
+// The core module and the protocol-neutral health capability are deliberately
+// absent until they have real release tags. Repository builds resolve XBC
+// imports through a workspace; this publishable manifest intentionally has no
+// filesystem replace or placeholder version.
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0 // test only
 	github.com/hibiken/asynq v0.26.0

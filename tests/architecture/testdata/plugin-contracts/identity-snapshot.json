@@ -22,7 +22,8 @@
       "config_path": "plugins.asynq",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/jobs/asynq.Enqueuer"
+        "github.com/xbcio/xbc/extensions/jobs/asynq.Enqueuer",
+        "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
       ]
     },
     {
@@ -86,6 +87,7 @@
       "config_path": "plugins.elasticsearch",
       "cardinality": "multiple",
       "contracts": [
+        "github.com/xbcio/xbc/extensions/reliability/health.Contributor",
         "github.com/xbcio/xbc/extensions/storage/elasticsearch.BulkIndexer"
       ]
     },
@@ -202,7 +204,8 @@
       "config_path": "plugins.raft",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/coordination/raft.Node"
+        "github.com/xbcio/xbc/extensions/coordination/raft.Node",
+        "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
       ]
     },
     {

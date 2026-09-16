@@ -13,6 +13,7 @@ import (
 	hashiraft "github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 
+	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -38,6 +39,7 @@ var definition = plugin.DefineConfigured(
 		Inputs:     plugin.Inputs(fsmInput),
 		Exports: plugin.Contracts(
 			plugin.ExportAs(func(n *node) Node { return n }),
+			plugin.ExportAs(func(n *node) health.Contributor { return n }),
 		),
 		Lifecycle: plugin.Lifecycle[*node]{
 			Stop: (*node).stop,

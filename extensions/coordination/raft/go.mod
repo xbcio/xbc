@@ -2,9 +2,10 @@ module github.com/xbcio/xbc/extensions/coordination/raft
 
 go 1.25.0
 
-// The XBC core module is intentionally absent until it has a real release tag.
-// Repository development resolves it through go.work; this publishable module
-// contains neither a local replace nor a synthetic XBC requirement.
+// The XBC core module and the protocol-neutral health capability are
+// intentionally absent until they have real release tags. Repository development
+// resolves them through go.work; this publishable module contains neither a
+// local replace nor a synthetic XBC requirement.
 require (
 	github.com/hashicorp/raft v1.7.3
 	github.com/hashicorp/raft-boltdb/v2 v2.3.1
