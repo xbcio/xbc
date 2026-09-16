@@ -28,7 +28,10 @@ type Context struct {
 var _ context.Context = (*Context)(nil)
 
 // NewRuntimeContext is framework assembly API. Ordinary Plugins receive a
-// Context from lifecycle methods and never construct one.
+// Context from lifecycle methods and never construct one: the host passed here
+// owns the execution context the Context reports, so a plugin building its own
+// would run lifecycle work against a host the runtime does not own. An
+// architecture guard keeps the runtime the only production caller.
 func NewRuntimeContext(host RuntimeHost, id Identity) *Context {
 	return &Context{host: host, id: id.Normalized()}
 }
