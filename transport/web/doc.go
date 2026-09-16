@@ -66,6 +66,13 @@
 // implementing authentication.RequiresPrincipal is framework-pinned after the
 // canonical authentication middleware.
 //
+// The Server assembles the authentication middleware itself rather than
+// selecting it as a plugin: enforcing web.security is a guarantee, and its
+// default is deny. Its identity is therefore reserved -- see
+// ReservedMiddlewareKeys -- and a contributed Middleware claiming a reserved key
+// fails startup. Ordering against it with Require(AuthenticationMiddlewareKey)
+// is the supported use of that key.
+//
 // ErrorMapper Plugins declare a separate ErrorOrder. The web-error-boundary
 // Plugin consumes and sorts all mapper entries, exports Middleware, and is
 // pinned outermost in PhaseError. The first mapper that recognizes an error

@@ -126,10 +126,15 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	}
 
 	// The framework's authentication middleware is assembled here rather than
-	// selected as a plugin: it enforces this Server's own web.security section,
-	// and a configuration section has exactly one owning plugin. It still enters
-	// the ordering graph under AuthenticationMiddlewareKey, so the pins below
-	// resolve against a real entry.
+	// selected as a plugin: enforcement of web.security is a guarantee, not an
+	// opt-in, and a configuration section has exactly one owning plugin. It
+	// still enters the ordering graph under AuthenticationMiddlewareKey, so the
+	// pins below resolve against a real entry. That key is therefore reserved:
+	// a contributed middleware claiming it is rejected by rule, before it can
+	// surface as a duplicate identity.
+	if err := rejectReservedMiddlewareIdentities(s.middlewares); err != nil {
+		return err
+	}
 	authenticator, err := newAuthenticationMiddleware(cfg.Security, s.authenticators, s.extractors)
 	if err != nil {
 		return fmt.Errorf("xbc: web authentication: %w", err)

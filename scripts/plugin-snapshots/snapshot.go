@@ -10,8 +10,12 @@ import (
 // identitySnapshot is the top-level shape of identity-snapshot.json: every
 // plugin's canonical identity, deliberately excluding anything (Origin,
 // source file, line number) that would churn on an unrelated code move.
+// ReservedKeys records the part of the plugin key namespace that transports
+// claim for stages they assemble themselves, which has no Definition and would
+// otherwise be invisible to review.
 type identitySnapshot struct {
-	Plugins []identityPlugin `json:"plugins"`
+	Plugins      []identityPlugin `json:"plugins"`
+	ReservedKeys []string         `json:"reserved_keys"`
 }
 
 type identityPlugin struct {
@@ -35,7 +39,7 @@ type defaultPlugin struct {
 
 // buildIdentitySnapshot converts descriptors (already sorted by key) into the
 // identity-snapshot.json document.
-func buildIdentitySnapshot(descriptors []pluginmodel.DefinitionDescriptor) identitySnapshot {
+func buildIdentitySnapshot(descriptors []pluginmodel.DefinitionDescriptor, reserved []pluginmodel.Key) identitySnapshot {
 	plugins := make([]identityPlugin, 0, len(descriptors))
 	for _, descriptor := range descriptors {
 		contracts := make([]string, 0, len(descriptor.Contracts))
@@ -50,7 +54,11 @@ func buildIdentitySnapshot(descriptors []pluginmodel.DefinitionDescriptor) ident
 			Contracts:   contracts,
 		})
 	}
-	return identitySnapshot{Plugins: plugins}
+	reservedKeys := make([]string, 0, len(reserved))
+	for _, key := range reserved {
+		reservedKeys = append(reservedKeys, key.String())
+	}
+	return identitySnapshot{Plugins: plugins, ReservedKeys: reservedKeys}
 }
 
 // buildDefaultSnapshot converts descriptors (already sorted by key) into the

@@ -15,7 +15,57 @@ import (
 // entries and Definition metadata; it never invokes a factory, a planner, or
 // plugin/assembly's Construct.
 func collectDescriptors() ([]pluginmodel.DefinitionDescriptor, error) {
-	return collectDescriptorsFromBundles(bundleProviders)
+	descriptors, err := collectDescriptorsFromBundles(bundleProviders)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectReservedKeys(descriptors, collectReservedKeys()); err != nil {
+		return nil, err
+	}
+	return descriptors, nil
+}
+
+// collectReservedKeys returns the sorted, de-duplicated keys transports reserve
+// for stages they assemble themselves.
+func collectReservedKeys() []pluginmodel.Key {
+	seen := make(map[pluginmodel.Key]struct{})
+	keys := make([]pluginmodel.Key, 0, len(reservedKeyProviders))
+	for _, provider := range reservedKeyProviders {
+		for _, key := range provider() {
+			reserved := pluginmodel.Key(key)
+			if _, duplicate := seen[reserved]; duplicate {
+				continue
+			}
+			seen[reserved] = struct{}{}
+			keys = append(keys, reserved)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	return keys
+}
+
+// rejectReservedKeys fails generation when a Definition claims a key a transport
+// reserves. plugin/assembly's freeze only compares Definition keys against each
+// other, so nothing else in the repository catches this: the symptom would
+// otherwise be a duplicate middleware identity at Start, in whichever
+// application happened to select both.
+func rejectReservedKeys(descriptors []pluginmodel.DefinitionDescriptor, reserved []pluginmodel.Key) error {
+	if len(reserved) == 0 {
+		return nil
+	}
+	index := make(map[pluginmodel.Key]struct{}, len(reserved))
+	for _, key := range reserved {
+		index[key] = struct{}{}
+	}
+	for _, descriptor := range descriptors {
+		if _, claimed := index[descriptor.Key]; claimed {
+			return fmt.Errorf(
+				"plugin-snapshots: plugin key %q is reserved by a transport for a stage it assembles itself, but %s declares a Definition for it",
+				descriptor.Key, descriptor.Origin,
+			)
+		}
+	}
+	return nil
 }
 
 // collectDescriptorsFromBundles mirrors plugin/assembly's bundle freeze

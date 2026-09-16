@@ -63,7 +63,7 @@ func run(args []string) int {
 		return 1
 	}
 
-	identity := buildIdentitySnapshot(descriptors)
+	identity := buildIdentitySnapshot(descriptors, collectReservedKeys())
 	generatedIdentity, err := marshalSnapshot(identity)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "encode identity snapshot: %v\n", err)

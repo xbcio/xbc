@@ -14,7 +14,9 @@ const (
 
 	// AuthenticationMiddlewareKey is the canonical producer identity expected
 	// for the Web authentication middleware. RequiresPrincipal entries are
-	// framework-pinned after this key.
+	// framework-pinned after this key. The Server assembles that middleware
+	// itself, so this key is reserved and no Definition may claim it; see
+	// ReservedMiddlewareKeys.
 	AuthenticationMiddlewareKey plugin.Key = "authentication-middleware"
 
 	// ConfigPath is the canonical configuration section for the HTTP server.
@@ -26,9 +28,10 @@ var (
 	routeInput      = plugin.Collect[RouteContributor]()
 	listenerInput   = plugin.Collect[RouteCatalogListener]()
 	// The Server, not a separate Definition, assembles the built-in
-	// authentication middleware: the policy it enforces lives in this
-	// Definition's own web.security section, and a configuration section has
-	// exactly one owning plugin.
+	// authentication middleware: enforcing web.security is a guarantee rather
+	// than an opt-in capability, and a configuration section has exactly one
+	// owning plugin. AuthenticationMiddlewareKey is reserved accordingly; see
+	// reserved_middleware.go.
 	authenticatorInput = plugin.Collect[authentication.Authenticator]()
 	extractorInput     = plugin.Collect[CredentialExtractor]()
 	// engineInput selects the HTTP engine adapter. web.Server never

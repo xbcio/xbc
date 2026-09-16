@@ -93,3 +93,12 @@ var bundleProviders = []func() plugin.Bundle{
 	tenant.Bundle,
 	timeout.Bundle,
 }
+
+// reservedKeyProviders lists every accessor for plugin keys a transport
+// reserves for stages it assembles itself rather than exposing as a Definition.
+// Such a key has no Definition and therefore no descriptor, so without this list
+// the snapshot would silently omit part of the plugin key namespace and nothing
+// would stop a Bundle from claiming a reserved key.
+var reservedKeyProviders = []func() []plugin.Key{
+	web.ReservedMiddlewareKeys,
+}
