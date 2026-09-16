@@ -121,6 +121,12 @@
       "key": "health",
       "config_path": "plugins.health",
       "cardinality": "single",
+      "contracts": []
+    },
+    {
+      "key": "health-http",
+      "config_path": "plugins.health-http",
+      "cardinality": "single",
       "contracts": [
         "github.com/xbcio/xbc/transport/web.RouteContributor"
       ]

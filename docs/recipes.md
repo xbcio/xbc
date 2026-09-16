@@ -294,6 +294,8 @@ web:
     pre_drain_delay: 2s
 ```
 
+Readiness only reports what contributes to it: selecting the health capability alone yields an empty `checks` array. An application component contributes by exporting `health.Contributor` from its own Definition. Checks inherit `plugins.health.timeout` unless the contributor sets a per-check timeout, and the neutral `plugins.health` section is separate from the HTTP-facing `plugins.health-http` section below.
+
 The interval leaves the listener up after runtime cancellation so `/readyz` can return 503 before HTTP drain. It consumes the one shared runtime shutdown budget, still accepts ordinary traffic, and is not acknowledgement that a load balancer has withdrawn the instance. Choose it from probe and load-balancer convergence time while reserving enough budget for draining.
 
 pprof and remote shutdown are disabled by default. Neither endpoint carries its own authentication mechanism: they fall through to the `web.security` global default, which is `deny` out of the box. An application that enables them must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`.
@@ -316,6 +318,9 @@ When Casbin is also selected, its `missing_permission` setting defaults to `deny
 ```yaml
 plugins:
   health:
+    timeout: 2s
+
+  health-http:
     liveness_path: "/healthz"
     readiness_path: "/readyz"
     detail_policy: never
