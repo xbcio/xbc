@@ -1,9 +1,10 @@
-// Package web provides XBC's optional Gin-backed HTTP transport.
+// Package web provides XBC's optional engine-neutral HTTP transport.
 //
 // Web owns the HTTP server Plugin, route registration, domain-specific
-// middleware and error-mapper ordering, and the immutable route catalog. It
-// deliberately exposes Gin types: this module is a concrete transport runtime,
-// not a protocol-neutral abstraction.
+// middleware and error-mapper ordering, and the immutable route catalog. Its
+// surface names no HTTP engine: the engine arrives as a selected engine Bundle,
+// and engine-specific capabilities are reached through that adapter's escape
+// hatch rather than through this package.
 //
 // # Composition
 //
@@ -17,7 +18,9 @@
 //	))
 //
 // Web's Bundle contains the server and its independently identified error
-// boundary. The prelude adds the lightweight production baseline: recovery,
+// boundary, but no engine: exactly one engine Bundle must be selected alongside
+// it, and transport/web/engines/gin is the one this repository ships. The
+// prelude adds the lightweight production baseline: recovery,
 // request IDs, access logging, security headers, gzip, cooperative request
 // timeouts, and health probes. Business response envelopes, CORS,
 // authentication, authorization, persistence, telemetry exporters, and API
@@ -115,21 +118,22 @@
 // before spilling to temporary files; it does not replace the total body limit.
 //
 // TrustedProxies is empty by default, so forwarded headers such as
-// X-Forwarded-For cannot influence Gin's client address. Configure only exact
-// proxy IP addresses or CIDRs when the application is behind known reverse
+// X-Forwarded-For cannot influence the engine's client address. Configure only
+// exact proxy IP addresses or CIDRs when the application is behind known reverse
 // proxies. Never trust 0.0.0.0/0 or ::/0, and require the upstream proxy to
 // remove client-supplied forwarding headers before adding its own.
 //
 // # HTTP error contract
 //
 // Built-in 404, 405, 413, timeout, panic, authentication, authorization, and
-// Gin binding or validation failures use RFC 9457 application/problem+json.
+// binding or validation failures use RFC 9457 application/problem+json.
 // ProblemDetail contains the five standard members and carries a stable
 // application code as a top-level extension. It is an HTTP output model, not a
 // base type for domain errors.
 //
 // Handle and AbortError resolve failures through the active mapper chain, which
-// also receives errors reported through Gin Context.Error. The first resolved
+// also receives errors the engine adapter collected from native middleware
+// reporting through the engine's own error accumulator. The first resolved
 // mapper that recognizes an error wins. Unknown errors become a fixed,
 // non-leaking 500 response, context deadlines become 504, and an error cannot
 // masquerade as HTTP 200. Plugins can contribute a nested boundary with
@@ -137,9 +141,13 @@
 //
 // # Request binding and validation
 //
-// Use Ctx.Bind or Ctx.BindURI, which already adapt failures through
-// ParamError. For a binder Ctx does not expose, reach through Ctx.Gin and
-// adapt the failure yourself; Web does not duplicate Gin's binder APIs:
+// Use Ctx.Bind or Ctx.BindURI, which already adapt failures through ParamError.
+// They are the correct entry point because the neutral surface defines binding
+// as an action rather than a binder catalogue: the engine adapter performs it
+// and normalizes the failure before the error boundary sees it. For a binder Ctx
+// does not expose, take the native context from the selected engine adapter's
+// escape hatch -- ginengine.FromCtx(c) for the Gin adapter -- and pass the
+// resulting error to ParamError yourself:
 //
 //	router.POST("/orders", func(ctx context.Context, c *web.Ctx) error {
 //		var request CreateOrderRequest
@@ -150,15 +158,18 @@
 //		return nil
 //	})
 //
-// Do not use Gin's Bind or MustBind families: they write a 400 response before
-// the centralized error boundary can handle the failure. ParamError adapts an
-// existing error; it does not read the body, choose a binder, or run validation
-// again. Validation responses expose a public field name, a constraint code,
-// and a safe message without echoing rejected values.
+// Do not use an engine's own Bind or MustBind families: they write a 400
+// response before the centralized error boundary can handle the failure.
+// ParamError adapts an existing error; it does not read the body, choose a
+// binder, or run validation again. Validation responses expose a public field
+// name, a constraint code, and a safe message without echoing rejected values.
 //
-// Applications that reject unknown JSON fields must explicitly enable Gin's
-// decoder option during startup. Additional formats should implement Gin's
-// binding.Binding or binding.BindingBody extension points rather than adding a
-// parallel binding API to Web. Domain packages should remain transport-neutral
-// and be adapted with ErrorMapper at the application boundary.
+// DTO struct tags are the one place where the engine choice does leak into
+// application code, and the leak is deliberate rather than papered over: the
+// neutral surface defines the binding action, not the tag language, so binding
+// and validation tags follow the selected engine. Rejecting unknown JSON fields,
+// and supporting additional formats, are configured through that engine's own
+// extension points rather than through a parallel binding API in Web. Domain
+// packages should remain transport-neutral and be adapted with ErrorMapper at
+// the application boundary.
 package web
