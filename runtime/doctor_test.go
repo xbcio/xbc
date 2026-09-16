@@ -103,6 +103,58 @@ type secretiveConfig struct {
 	DSN string `yaml:"dsn"`
 }
 
+// doctorContract is exported by exactly one plugin below; doctorAbsentContract
+// is exported by nothing, which is the only way to produce an input that
+// resolved to nothing.
+type doctorContract interface{ Diagnosed() }
+
+type doctorAbsentContract interface{ Absent() }
+
+type doctorProducerValue struct{}
+
+func (*doctorProducerValue) Diagnosed() {}
+
+// TestDoctorNamesSelectionSiteAndUnsatisfiedInputs covers the two questions the
+// enabled-instances table cannot answer: who selected this plugin, and what is
+// actually feeding it.
+//
+// The unsatisfied optional and collecting inputs are the point. Both are legal,
+// so planning succeeds, no log line is written, and nothing else in the system
+// distinguishes "no exporter is enabled" from "wired correctly". If doctor stops
+// printing them, an operator has no way left to discover that the extension they
+// believe is attached never was.
+func TestDoctorNamesSelectionSiteAndUnsatisfiedInputs(t *testing.T) {
+	producer := plugin.Define("producer", func(plugin.BuildContext) (*doctorProducerValue, error) {
+		return &doctorProducerValue{}, nil
+	}, plugin.Options[*doctorProducerValue]{
+		Exports: plugin.Contracts(plugin.ExportAs(func(value *doctorProducerValue) doctorContract { return value })),
+	})
+	required := plugin.RequireOne[doctorContract]()
+	optional := plugin.OptionalOne[doctorAbsentContract]()
+	collected := plugin.Collect[doctorAbsentContract]()
+	consumer := plugin.Define("consumer", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Inputs: plugin.Inputs(required, optional, collected)})
+	solitary := plugin.Define("solitary", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+
+	app := newRuntimeTestApp(producer, consumer, solitary)
+	out := runDoctor(t, app, runtimeTestConfig(t, time.Second)...)
+
+	assert.Contains(t, out, "selection and inputs, in start order")
+	assert.Regexp(t, `selected at /.*runtime_test\.go:\d+`, out,
+		"an instance names the composition site that selected it, as an openable source location")
+	assert.Regexp(t, `requires one\s+runtime\.doctorContract\s+from producer`, out,
+		"a satisfied input names its producer")
+	assert.Regexp(t, `requires optional\s+runtime\.doctorAbsentContract\s+unsatisfied: no enabled plugin exports it`, out,
+		"an optional input that resolved to nothing is legal, silent, and must still be reported")
+	assert.Regexp(t, `requires many\s+runtime\.doctorAbsentContract\s+unsatisfied: no enabled plugin exports it`, out,
+		"a collecting input that resolved to nothing is equally invisible everywhere else")
+	assert.Regexp(t, `solitary\n\s+selected at .*\n\s+no declared inputs`, out,
+		"a plugin with no inputs says so, so that absence is not read as a truncated report")
+}
+
 // TestEnvironmentAloneActivatesAWhenConfiguredPlugin is the end-to-end shape of
 // the whole task: a container that sets one variable and mounts no
 // configuration file must be able to turn a plugin on.

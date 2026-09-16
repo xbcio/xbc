@@ -374,3 +374,36 @@ DEBUG xbc: reverse unwind finished inside its budget  budget=15s reason=signal w
 A shutdown that ran out of budget warns instead, and the warning carries the same `waited` list alongside the plugins that were abandoned or never attempted -- the casualty list names who was cut off, the waits name who spent the budget.
 
 These reports contain only identities, stage names, and durations; no configured value reaches them.
+
+
+## Diagnosing why a plugin is in the graph
+
+`doctor` answers two questions the enabled-instances table cannot: who selected each plugin, and what is actually feeding it. Its `selection and inputs` section walks the same start order and prints, per instance, the composition site that introduced it and one line per declared input:
+
+```
+selection and inputs, in start order
+  health
+    selected at /Users/dev/xbc/extensions/reliability/health/plugin.go:48
+    requires many      health.Contributor                     from greeter
+  health-http
+    selected at /Users/dev/xbc/transport/web/extensions/reliability/health/plugin.go:56
+    requires ref       *health.Plugin                         from health
+  web-engine-gin
+    selected at /Users/dev/xbc/transport/web/engines/gin/bundle.go:30
+    no declared inputs
+  web
+    selected at /Users/dev/xbc/transport/web/plugin.go:87
+    requires one       web.EngineFactory                      from web-engine-gin
+    requires many      web.Middleware                         from accesslog, biz, cors, gzip, recovery, requestid, securityheaders, timeout
+    requires many      web.ErrorMapper                        unsatisfied: no enabled plugin exports it
+    requires many      web.RouteContributor                   from greeter, health-http, swag
+    requires many      web.RouteCatalogListener               from swag
+    requires many      authentication.Authenticator           unsatisfied: no enabled plugin exports it
+    requires many      web.CredentialExtractor                unsatisfied: no enabled plugin exports it
+```
+
+`unsatisfied` is the line to look for. `ref` and `one` inputs cannot appear that way -- a missing or ambiguous producer fails planning with an error naming the consumer -- but `optional` and `many` inputs binding nothing is legal by design, which is what makes it dangerous: the application starts, nothing is logged, and the capability you selected a Bundle for is simply absent. The output above is the quickstart's own, and it is correct there: no authenticator or credential extractor Bundle is selected, which is exactly why its `web.security` rules may only `permit` and not `authenticate`, and no plugin contributes an error mapper, so errors fall back to Web's built-in problem mapping. The same three lines in a deployment that does select `jwt.Bundle()` mean the Bundle never reached the composition root, or its section is disabled -- and in that deployment the first authenticating rule would fail startup instead of silently letting a request through.
+
+`selected at` is the `BundleOf` call that first introduced the Definition, as an absolute `file:line`. For a plugin selected through an aggregate such as `prelude.Bundle()`, that site is the owning package's own `Bundle()` rather than the aggregate, because that is where the Definition entered a Bundle; for an application plugin it is the application's own file. Selecting the same Definition twice -- an aggregate plus an explicit selection -- stays legal and is not reported as a conflict; the first selection wins and is the one printed. Two *different* Definitions claiming one key is the real conflict, and that fails planning with both declaration and selection sites named.
+
+Like the rest of `doctor`, this section prints only identities, contract type names, and source locations. Reading it never constructs a plugin, opens a connection, or starts a goroutine.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/assembly"
 	"github.com/xbcio/xbc/plugin/ordering"
 )
 
@@ -35,6 +36,50 @@ func TestArchOrderingPublicAPIShape(t *testing.T) {
 	assert.Equal(t, "Direction", directionType.Name(), "After/Before must belong to named type ordering.Direction")
 	assert.Equal(t, "github.com/xbcio/xbc/plugin/ordering", directionType.PkgPath())
 	assert.NotEqual(t, after, before, "After and Before must be different typed directions")
+}
+
+// TestArchAssemblyPlanPublicAPIShape locks the read-only surface a diagnostic
+// reads a frozen graph through. Two rules are semantic rather than cosmetic: a
+// plan answers questions in terms of identities, configuration paths, contracts
+// and composition sites, and it never hands out an internal input token
+// identifier, which is a per-process counter with no meaning outside wiring.
+func TestArchAssemblyPlanPublicAPIShape(t *testing.T) {
+	planType := reflect.TypeOf((*assembly.Plan)(nil))
+
+	want := map[string]reflect.Type{
+		"Order":              reflect.TypeOf((func(*assembly.Plan) []plugin.Identity)(nil)),
+		"DefinitionCount":    reflect.TypeOf((func(*assembly.Plan) int)(nil)),
+		"Disabled":           reflect.TypeOf((func(*assembly.Plan) []plugin.Key)(nil)),
+		"DisabledDetail":     reflect.TypeOf((func(*assembly.Plan) []assembly.DisabledDefinition)(nil)),
+		"InstanceConfigPath": reflect.TypeOf((func(*assembly.Plan, plugin.Identity) string)(nil)),
+		"InstanceSelectedAt": reflect.TypeOf((func(*assembly.Plan, plugin.Identity) string)(nil)),
+		"InstanceInputs":     reflect.TypeOf((func(*assembly.Plan, plugin.Identity) []assembly.InputEdge)(nil)),
+		"Contracts":          reflect.TypeOf((func(*assembly.Plan, reflect.Type) []plugin.Identity)(nil)),
+	}
+	for name, signature := range want {
+		method, ok := planType.MethodByName(name)
+		require.True(t, ok, "assembly.Plan.%s must exist", name)
+		assert.Equal(t, signature, method.Type, "assembly.Plan.%s signature drift", name)
+	}
+	for index := 0; index < planType.NumMethod(); index++ {
+		method := planType.Method(index)
+		_, expected := want[method.Name]
+		assert.Truef(t, expected, "assembly.Plan exposes unreviewed accessor %s", method.Name)
+	}
+
+	edgeFields := map[string]reflect.Type{
+		"Contract":  reflect.TypeOf((*reflect.Type)(nil)).Elem(),
+		"Query":     reflect.TypeOf(assembly.InputQuery("")),
+		"Producers": reflect.TypeOf([]plugin.Identity(nil)),
+	}
+	edgeType := reflect.TypeOf(assembly.InputEdge{})
+	for name, fieldType := range edgeFields {
+		field, ok := edgeType.FieldByName(name)
+		require.True(t, ok, "assembly.InputEdge.%s must exist", name)
+		assert.Equal(t, fieldType, field.Type, "assembly.InputEdge.%s type drift", name)
+	}
+	assert.Equal(t, len(edgeFields), edgeType.NumField(),
+		"assembly.InputEdge must not grow a field without review, in particular not an input token identifier")
 }
 
 // TestArchRetiredCompositionAPIsStayRetired checks declarations, not call sites.

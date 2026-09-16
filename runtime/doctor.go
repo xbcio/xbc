@@ -12,14 +12,15 @@ import (
 const doctorSubcommand = "doctor"
 
 // reportDoctor writes the outcome of a complete, read-only assembly: which
-// plugins the configuration turned on, which section each instance binds, why
-// the remaining Definitions stayed off, and which sources contributed.
+// plugins the configuration turned on, which section each instance binds, where
+// each instance was selected, what feeds its declared inputs, why the remaining
+// Definitions stayed off, and which sources contributed.
 //
-// Everything printed here is a path, an identity or a source label. No
-// configured value is ever written, which is what makes the command safe to
-// run against a production environment full of secrets. Sections are separated
-// by a blank line so a later command can append its own without reformatting
-// the ones above it.
+// Everything printed here is a path, an identity, a contract type name or a
+// source label. No configured value is ever written, which is what makes the
+// command safe to run against a production environment full of secrets.
+// Sections are separated by a blank line so a later command can append its own
+// without reformatting the ones above it.
 func (a *App) reportDoctor(plan *assembly.Plan, migrate bool) {
 	out := a.diagnostics()
 
@@ -54,6 +55,24 @@ func (a *App) reportDoctor(plan *assembly.Plan, migrate bool) {
 	}
 	fmt.Fprintln(out)
 
+	fmt.Fprintln(out, "selection and inputs, in start order")
+	if len(order) == 0 {
+		fmt.Fprintln(out, "  (none)")
+	}
+	for _, identity := range order {
+		fmt.Fprintln(out, "  "+identity.String())
+		fmt.Fprintf(out, "    selected at %s\n", plan.InstanceSelectedAt(identity))
+		edges := plan.InstanceInputs(identity)
+		if len(edges) == 0 {
+			fmt.Fprintln(out, "    no declared inputs")
+		}
+		for _, edge := range edges {
+			fmt.Fprintf(out, "    requires %-9s %-38s %s\n",
+				edge.Query, edge.Contract, describeProducers(edge))
+		}
+	}
+	fmt.Fprintln(out)
+
 	fmt.Fprintln(out, "disabled plugins")
 	if len(disabled) == 0 {
 		fmt.Fprintln(out, "  (none)")
@@ -65,6 +84,22 @@ func (a *App) reportDoctor(plan *assembly.Plan, migrate bool) {
 
 	fmt.Fprintln(out, "migration")
 	fmt.Fprintf(out, "  this run would migrate: %t\n", migrate)
+}
+
+// describeProducers names what wiring bound to one declared input. An input
+// that bound nothing is spelled out instead of left blank, because an optional
+// or collecting query resolving to nothing is legal, silent, and identical from
+// the outside to one that resolved: doctor is the only place an operator can
+// find out that the extension they believed was attached never was.
+func describeProducers(edge assembly.InputEdge) string {
+	if len(edge.Producers) == 0 {
+		return "unsatisfied: no enabled plugin exports it"
+	}
+	labels := make([]string, len(edge.Producers))
+	for index, producer := range edge.Producers {
+		labels[index] = producer.String()
+	}
+	return "from " + strings.Join(labels, ", ")
 }
 
 // describeOrigins renders where a section's values came from. A section nobody

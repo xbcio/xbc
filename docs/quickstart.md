@@ -14,7 +14,7 @@ Inspect the complete application plan without constructing resources or opening 
 go run ./examples/quickstart doctor --config examples/quickstart/application.yml
 ```
 
-`doctor` validates configuration, plugin activation, typed inputs and contracts, and dependency order. Its output includes source paths and plugin identities, but never configuration values.
+`doctor` validates configuration, plugin activation, typed inputs and contracts, and dependency order. It then reports the enabled instances in start order, where each one was selected, and which producers were bound to each of its declared inputs -- including the optional and collecting inputs that were bound to nothing. Its output includes source paths, plugin identities, and contract type names, but never configuration values. See [Diagnosing why a plugin is in the graph](recipes.md#diagnosing-why-a-plugin-is-in-the-graph) for how to read that section.
 
 Start the application:
 

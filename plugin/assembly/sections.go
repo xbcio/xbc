@@ -20,7 +20,7 @@ const pluginsRoot = "plugins"
 // deterministic, and keeping it here avoids leaking a half-built catalog into
 // the caller.
 func ConfigSections(bundles []plugin.Bundle) ([]config.Section, error) {
-	definitions, err := freezeBundles(bundles)
+	selections, err := freezeBundles(bundles)
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +29,8 @@ func ConfigSections(bundles []plugin.Bundle) ([]config.Section, error) {
 		Owner: "the assembly layer",
 		Kind:  config.SectionNamespace,
 	}}
-	for _, definition := range definitions {
+	for _, selection := range selections {
+		definition := selection.descriptor
 		kind := config.SectionTyped
 		if definition.Cardinality == pluginmodel.MultipleInstances {
 			kind = config.SectionInstanced
