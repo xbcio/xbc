@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/assembly"
 )
@@ -59,12 +60,15 @@ func (a *App) unwind(reason string) error {
 }
 
 // reportShutdown makes the budget's casualties visible to an operator. A clean
-// reverse unwind stays silent; anything the budget cut short names the exact
-// plugins, because "the process exited" alone hides skipped cleanup.
+// reverse unwind stays silent at warn level; anything the budget cut short
+// names the exact plugins, because "the process exited" alone hides skipped
+// cleanup. Either way the per-instance waits are recorded, because the
+// casualty list names who was cut off and not who spent the budget.
 func (a *App) reportShutdown(reason string, budget time.Duration) {
 	abandoned := a.shutdownReport.Identities(assembly.StopAbandoned)
 	notAttempted := a.shutdownReport.Identities(assembly.StopNotAttempted)
 	if len(abandoned) == 0 && len(notAttempted) == 0 {
+		a.reportShutdownTimings(reason, budget)
 		return
 	}
 	a.log().Warn("xbc: shutdown budget expired before the reverse unwind finished",
@@ -72,7 +76,44 @@ func (a *App) reportShutdown(reason string, budget time.Duration) {
 		"budget", budget.String(),
 		"abandoned", identityLabels(abandoned),
 		"not_attempted", identityLabels(notAttempted),
+		"waited", stopWaitLabels(a.shutdownReport),
 	)
+}
+
+// reportShutdownTimings answers the question the warning cannot: a shutdown
+// that stayed inside its budget can still dominate a rolling restart, and
+// nothing else says which plugin's Stop the seconds went to. It is debug for
+// the same reason the startup breakdown is: its size follows the number of
+// selected plugins.
+func (a *App) reportShutdownTimings(reason string, budget time.Duration) {
+	if !a.log().Enabled(log.DebugLevel) {
+		return
+	}
+	waited := stopWaitLabels(a.shutdownReport)
+	if len(waited) == 0 {
+		return
+	}
+	a.log().Debug("xbc: reverse unwind finished inside its budget",
+		"reason", reason,
+		"budget", budget.String(),
+		"waited", waited,
+	)
+}
+
+// stopWaitLabels renders how long the walk waited on each instance it actually
+// waited for, in reverse graph order. Skipped and not-attempted instances are
+// omitted rather than reported as "0s": nothing was waited for there, and a
+// zero would read as a Stop that returned instantly. The outcome decides that,
+// not the measured duration, so a genuinely instant Stop is still reported.
+func stopWaitLabels(report assembly.ShutdownReport) []string {
+	var labels []string
+	for _, record := range report.Records {
+		if record.Outcome == assembly.StopSkipped || record.Outcome == assembly.StopNotAttempted {
+			continue
+		}
+		labels = append(labels, record.Identity.String()+" "+record.Duration.String())
+	}
+	return labels
 }
 
 func identityLabels(identities []plugin.Identity) []string {

@@ -344,3 +344,33 @@ Select the corresponding Bundles at the composition root before configuring thes
 XBC does not echo these values. `doctor` output and startup reports contain only paths, identities, and source labels, while validation errors describe fields tagged with `mask:"true"` without reproducing their values.
 
 Do not trust forwarded headers from the public network unless a trusted reverse proxy removes untrusted values first. Remote shutdown reuses core's unified cancellation, HTTP drain, and reverse-order plugin shutdown path; it must not call `os.Exit` independently.
+
+
+## Diagnosing a slow boot or a slow shutdown
+
+Every boot logs how long it took to become servable on the released-gate line:
+
+```
+INFO  xbc: application traffic gate released  instances=14 order=... startup=7.562ms
+```
+
+Set `log.level` to `debug` to get the breakdown behind that number. It arrives as a single record listing the six ordered startup phases, then one line per instance naming only the stages that actually ran:
+
+```
+DEBUG xbc: startup timings, total 7.562ms
+  phases: bootstrap 1.488ms, planning 4.492ms, construct 368µs, migrate 0s, start 1.021ms, traffic 185µs
+  health                       factory 1.25µs, Init 3.041µs
+  web                          factory 22.583µs, Start 1.019ms, OpenTraffic 185µs
+```
+
+Read the phase line first: it separates a slow configuration source or a slow plugin graph from a plugin that is slow to start. A stage the plugin never declared is absent rather than reported as `0s`, and a stage that ended in an error still reports what it spent.
+
+The reverse unwind is reported the same way. A shutdown that stayed inside its budget records the per-instance waits at debug, which is what attributes a slow rolling restart to a plugin:
+
+```
+DEBUG xbc: reverse unwind finished inside its budget  budget=15s reason=signal waited="[web 2.001s]"
+```
+
+A shutdown that ran out of budget warns instead, and the warning carries the same `waited` list alongside the plugins that were abandoned or never attempted -- the casualty list names who was cut off, the waits name who spent the budget.
+
+These reports contain only identities, stage names, and durations; no configured value reaches them.

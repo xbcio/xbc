@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/xbcio/xbc/config"
 	"github.com/xbcio/xbc/log"
@@ -57,13 +58,21 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	if err := a.ensureStarting("command parsing"); err != nil {
 		return 1, err
 	}
+	// startedAt anchors the one number an operator always wants: how long the
+	// process took to reach servable. It is taken after argument parsing has
+	// succeeded, because a usage error never boots anything.
+	startedAt := time.Now()
+	var phases startupPhases
+	bootstrapStarted := time.Now()
 	if err := a.bootstrap(command); err != nil {
 		return 1, err
 	}
+	phases.bootstrap = time.Since(bootstrapStarted)
 	if err := a.ensureStarting("bootstrapping"); err != nil {
 		return 1, err
 	}
 
+	planningStarted := time.Now()
 	plan, err := assembly.BuildPlan(assembly.PlanOptions{
 		Bundles: a.bundles,
 		Env:     a.env,
@@ -72,6 +81,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	if err != nil {
 		return 1, err
 	}
+	phases.planning = time.Since(planningStarted)
 	a.plan = plan
 	migrate := command.wantsMigration(a.settings.AutoMigrate)
 	if command.subcommand == doctorSubcommand {
@@ -86,6 +96,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 		return 1, err
 	}
 
+	constructStarted := time.Now()
 	owned, err := assembly.Construct(plan, assembly.ConstructOptions{
 		ShutdownTimeout: a.settings.ShutdownTimeout,
 		ContextFactory: func(identity plugin.Identity, logger log.Logger) *plugin.Context {
@@ -95,6 +106,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	if err != nil {
 		return 1, err
 	}
+	phases.construct = time.Since(constructStarted)
 	a.owned = owned
 	instances := owned.Instances()
 	if err := a.ensureStarting("construction"); err != nil {
@@ -102,9 +114,11 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	}
 
 	if migrate {
+		migrateStarted := time.Now()
 		if err := a.migrateAll(instances); err != nil {
 			return 1, a.abort(err)
 		}
+		phases.migrate = time.Since(migrateStarted)
 	}
 	if command.subcommand == "migrate" {
 		if !a.requestStop(stopReasonCompleted) && a.currentStopReason() != stopReasonCompleted {
@@ -116,19 +130,26 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 		return 0, nil
 	}
 
+	startStarted := time.Now()
 	if err := a.startAll(instances); err != nil {
 		return 1, a.abort(err)
 	}
+	phases.start = time.Since(startStarted)
+	trafficStarted := time.Now()
 	if err := a.prepareTraffic(instances); err != nil {
 		return 1, a.abort(err)
 	}
+	phases.openTraffic = time.Since(trafficStarted)
 	if !a.releaseTraffic() {
 		return 1, a.abort(a.errStopDuringStartup("traffic gate release"))
 	}
 	if err := a.assertLiveness(instances); err != nil {
 		return 1, a.abort(err)
 	}
+	total := time.Since(startedAt)
+	a.startup = startupTiming{total: total, phases: phases}
 	a.reportStarted(instances, migrate)
+	a.reportStartupTimings(instances)
 	return a.wait()
 }
 
