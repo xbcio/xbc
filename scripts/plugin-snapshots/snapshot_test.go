@@ -21,11 +21,11 @@ func TestSnapshotsAreDeterministic(t *testing.T) {
 		t.Fatalf("collectDescriptors: %v", err)
 	}
 
-	identityA, err := marshalSnapshot(buildIdentitySnapshot(descriptorsA))
+	identityA, err := marshalSnapshot(buildIdentitySnapshot(descriptorsA, collectReservedKeys()))
 	if err != nil {
 		t.Fatalf("marshal identity snapshot: %v", err)
 	}
-	identityB, err := marshalSnapshot(buildIdentitySnapshot(descriptorsB))
+	identityB, err := marshalSnapshot(buildIdentitySnapshot(descriptorsB, collectReservedKeys()))
 	if err != nil {
 		t.Fatalf("marshal identity snapshot: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestSessionDescriptorRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectDescriptors: %v", err)
 	}
-	identity := buildIdentitySnapshot(descriptors)
+	identity := buildIdentitySnapshot(descriptors, collectReservedKeys())
 
 	var session *identityPlugin
 	for i := range identity.Plugins {
@@ -206,7 +206,7 @@ func TestDefaultSnapshotPluginCountIsFewerThanIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectDescriptors: %v", err)
 	}
-	identity := buildIdentitySnapshot(descriptors)
+	identity := buildIdentitySnapshot(descriptors, collectReservedKeys())
 	defaults := buildDefaultSnapshot(descriptors)
 	if len(defaults.Plugins) >= len(identity.Plugins) {
 		t.Fatalf("expected fewer default-snapshot plugins (%d) than identity-snapshot plugins (%d)", len(defaults.Plugins), len(identity.Plugins))
@@ -224,5 +224,65 @@ func TestMarshalSnapshotIndentAndTrailingNewline(t *testing.T) {
 	var decoded identitySnapshot
 	if err := json.Unmarshal(contents, &decoded); err != nil {
 		t.Fatalf("marshalSnapshot output does not round-trip through json.Unmarshal: %v", err)
+	}
+}
+
+// TestIdentitySnapshotRecordsReservedKeysThatHaveNoDefinition covers the part of
+// the plugin key namespace a transport claims for a stage it assembles itself.
+// Such a key has no Definition, so nothing else in the snapshot pipeline would
+// surface it and a reviewer could not tell the name was taken.
+func TestIdentitySnapshotRecordsReservedKeysThatHaveNoDefinition(t *testing.T) {
+	descriptors, err := collectDescriptors()
+	if err != nil {
+		t.Fatalf("collectDescriptors: %v", err)
+	}
+	identity := buildIdentitySnapshot(descriptors, collectReservedKeys())
+
+	if len(identity.ReservedKeys) == 0 {
+		t.Fatal("identity snapshot records no reserved keys; this test would pass without checking anything")
+	}
+	want := "authentication-middleware"
+	found := false
+	for _, key := range identity.ReservedKeys {
+		if key == want {
+			found = true
+		}
+		for _, declared := range identity.Plugins {
+			if declared.Key == key {
+				t.Errorf("reserved key %q also appears as a Definition in the snapshot", key)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("identity snapshot reserved keys = %v, missing %q", identity.ReservedKeys, want)
+	}
+}
+
+func TestCollectDescriptorsRejectsADefinitionClaimingAReservedKey(t *testing.T) {
+	const reserved pluginmodel.Key = "authentication-middleware"
+	definition := plugin.Define(plugin.Key(reserved), func(plugin.BuildContext) (*snapshotTestPlugin, error) {
+		return &snapshotTestPlugin{}, nil
+	})
+	bundle := plugin.BundleOf(definition)
+	descriptors, err := collectDescriptorsFromBundles([]func() plugin.Bundle{
+		func() plugin.Bundle { return bundle },
+	})
+	if err != nil {
+		t.Fatalf("collectDescriptorsFromBundles: %v", err)
+	}
+
+	err = rejectReservedKeys(descriptors, collectReservedKeys())
+	if err == nil {
+		t.Fatalf("a Definition claiming the reserved key %q was accepted", reserved)
+	}
+	if !strings.Contains(err.Error(), reserved.String()) {
+		t.Errorf("error does not name the reserved key %q:\n%s", reserved, err)
+	}
+	descriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(definition))
+	if !ok {
+		t.Fatal("DescribeDefinition returned false")
+	}
+	if !strings.Contains(err.Error(), descriptor.Origin) {
+		t.Errorf("error does not report the declaring origin %q:\n%s", descriptor.Origin, err)
 	}
 }

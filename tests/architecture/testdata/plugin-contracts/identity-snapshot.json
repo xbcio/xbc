@@ -325,5 +325,8 @@
         "github.com/xbcio/xbc/extensions/messaging/webhook.Dispatcher"
       ]
     }
+  ],
+  "reserved_keys": [
+    "authentication-middleware"
   ]
 }

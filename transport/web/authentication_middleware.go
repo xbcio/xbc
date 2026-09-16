@@ -91,11 +91,16 @@ var authenticationIdentity = plugin.Identity{Plugin: AuthenticationMiddlewareKey
 // middleware from the Web configuration section and the collected
 // authentication contributions.
 //
-// This is deliberately not a plugin Definition. The policy it enforces lives at
-// web.security, and a configuration section has exactly one owning plugin, so a
-// second Definition claiming ConfigPath would fail universe construction. The
-// Server owns the web section and therefore owns this middleware; it installs
-// it under authenticationIdentity rather than through the plugin catalog.
+// This is deliberately not a plugin Definition, and must not become one.
+// Enforcement of web.security is a framework guarantee rather than a selectable
+// capability: the default is deny, so a Bundle a composition root forgot to
+// select would silently serve every route unauthenticated. Separately, the
+// policy it enforces lives at web.security, and a configuration section has
+// exactly one owning plugin, so a second Definition claiming that path would
+// fail universe construction. The Server owns the web section and therefore owns
+// this middleware; it installs it under authenticationIdentity rather than
+// through the plugin catalog, and reserves that key -- see
+// reserved_middleware.go -- so no plugin can claim it.
 func newAuthenticationMiddleware(
 	security SecurityConfig,
 	authenticators []plugin.Entry[authentication.Authenticator],
