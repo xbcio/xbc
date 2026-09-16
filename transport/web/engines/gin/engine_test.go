@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	ginlib "github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -28,7 +28,9 @@ import (
 // in flight. The timeouts in this test are failure bounds only -- reaching one
 // fails the test, and nothing passes because a duration elapsed.
 func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
-	ginlib.SetMode(ginlib.TestMode)
+	// NewEngine now sets gin's mode itself via applyProcessGlobals, so this
+	// only restores whatever this test's own NewEngine call leaves behind.
+	restoreProcessGlobals(t)
 
 	engine, err := Factory{}.NewEngine(web.Options{})
 	require.NoError(t, err, "NewEngine() 不应返回错误")
@@ -126,6 +128,28 @@ func TestNewEngineMapsOptionsOntoTheHTTPServer(t *testing.T) {
 	assert.Equal(t, 15000, adapter.srv.MaxHeaderBytes, "MaxHeaderBytes 必须落到 http.Server 上")
 }
 
+// TestNewEngineAppliesProcessGlobalsBeforeGinNew pins the ordering documented
+// at the applyProcessGlobals call site in NewEngine: gin decides at
+// construction time whether to print its debug banner, so the mode and
+// DefaultWriter must already be switched to the logger before ginlib.New()
+// runs, not after. A version that called ginlib.New() first would still
+// compile and pass every other test in this package -- New()'s
+// construction-time banner is the only place where being one line too late
+// becomes observable, because everything else this adapter does happens
+// after construction.
+func TestNewEngineAppliesProcessGlobalsBeforeGinNew(t *testing.T) {
+	restoreProcessGlobals(t)
+	logger := &capturingLogger{Logger: log.Nop(), debug: true}
+
+	_, err := Factory{}.NewEngine(web.Options{Logger: logger})
+	require.NoError(t, err, "NewEngine() 不应返回错误")
+
+	require.Len(t, logger.info, 1,
+		"applyProcessGlobals 必须先于 ginlib.New() 执行，New() 构造期打印的 debug 横幅才能落到 logger 而不是进程默认输出")
+	assert.Contains(t, logger.info[0], `Running in "debug" mode`,
+		"捕获到的内容必须是 gin 构造期的 debug 横幅，而不是随便什么输出")
+}
+
 // TestMethodNotAllowedSetsAllowHeader pins this adapter's half of the
 // web.Engine NoMethod contract. The framework's 405 Problem Detail is produced
 // by the NoMethod chain, which knows only that the method was wrong -- the list
@@ -137,7 +161,7 @@ func TestNewEngineMapsOptionsOntoTheHTTPServer(t *testing.T) {
 // this test is here: behaviour inherited from a dependency is the kind that
 // disappears silently on an upgrade.
 func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
-	ginlib.SetMode(ginlib.TestMode)
+	restoreProcessGlobals(t)
 
 	built, err := Factory{}.NewEngine(web.Options{HandleMethodNotAllowed: true})
 	require.NoError(t, err, "NewEngine() 不应返回错误")
@@ -244,7 +268,7 @@ func bufferResponse(_ context.Context, c *web.Ctx) error {
 // same response whichever adapter is underneath it, and JSON must agree with
 // String on either one.
 func TestBodylessStatusCommitsThroughTheInstalledWriter(t *testing.T) {
-	ginlib.SetMode(ginlib.TestMode)
+	restoreProcessGlobals(t)
 
 	renderers := []struct {
 		name   string
