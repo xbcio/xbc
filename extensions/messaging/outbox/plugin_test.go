@@ -110,7 +110,7 @@ func TestPlannedDefinitionSelectsNamedDatabaseAndExportsDispatcher(t *testing.T)
 		func(plugin.BuildContext) (*gorm.DB, error) { return db, nil },
 		plugin.Options[*gorm.DB]{Instances: plugin.MultipleInstances},
 	)
-	environment := outboxEnvironment(t, map[string]any{
+	environment := outboxEnvironment(t, map[string]any{"writer": map[string]any{}}, map[string]any{
 		"db_instance":       "writer",
 		"table":             "plugin_outbox",
 		"migrate":           true,
@@ -166,7 +166,7 @@ func TestPlannedPublisherInputIsOptionalAndUsedWhenWorkerEnabled(t *testing.T) {
 		gormPluginKey,
 		func(plugin.BuildContext) (*gorm.DB, error) { return db, nil },
 	)
-	environment := outboxEnvironment(t, map[string]any{
+	environment := outboxEnvironment(t, nil, map[string]any{
 		"worker": map[string]any{"enabled": true},
 	})
 
@@ -360,16 +360,16 @@ func openPluginTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func outboxEnvironment(t *testing.T, outbox map[string]any) *config.Environment {
+// outboxEnvironment takes the gorm section so each test declares the shape of
+// the database Definition it actually stubs: a section that names an instance
+// only fits a multi-instance stub.
+func outboxEnvironment(t *testing.T, gorm, outbox map[string]any) *config.Environment {
 	t.Helper()
-	environment, err := config.NewEnvironment(map[string]any{
-		"plugins": map[string]any{
-			"gorm": map[string]any{
-				"writer": map[string]any{},
-			},
-			"outbox": outbox,
-		},
-	}, "")
+	plugins := map[string]any{"outbox": outbox}
+	if gorm != nil {
+		plugins["gorm"] = gorm
+	}
+	environment, err := config.NewEnvironment(map[string]any{"plugins": plugins}, "")
 	require.NoError(t, err)
 	return environment
 }
