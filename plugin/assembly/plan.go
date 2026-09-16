@@ -44,6 +44,7 @@ type DisabledDefinition struct {
 type plannedInstance struct {
 	identity   plugin.Identity
 	definition pluginmodel.DefinitionDescriptor
+	selectedAt string
 	configPath string
 	plan       pluginmodel.InstancePlan
 	bindings   map[uint64][]plugin.Identity
@@ -110,6 +111,94 @@ func (plan *Plan) InstanceConfigPath(identity plugin.Identity) string {
 	return instance.configPath
 }
 
+// InstanceSelectedAt returns the composition site that first selected the
+// Definition behind identity: the BundleOf call that introduced it, as an
+// absolute file:line. It answers "who put this plugin in my graph", which the
+// Definition's own declaration site cannot, because that site lives inside the
+// plugin's own package no matter who selected it.
+//
+// Selecting the same Definition twice is legitimate -- an aggregate Bundle and
+// an explicit selection routinely overlap -- and the first site wins. It
+// returns "" when identity is not part of the plan.
+func (plan *Plan) InstanceSelectedAt(identity plugin.Identity) string {
+	if plan == nil {
+		return ""
+	}
+	instance, exists := plan.instances[identity]
+	if !exists {
+		return ""
+	}
+	return instance.selectedAt
+}
+
+// InstanceInputs returns identity's declared inputs in declaration order, each
+// with the producers wiring bound to it. It returns nil when identity is not
+// part of the plan.
+func (plan *Plan) InstanceInputs(identity plugin.Identity) []InputEdge {
+	if plan == nil {
+		return nil
+	}
+	instance, exists := plan.instances[identity]
+	if !exists {
+		return nil
+	}
+	edges := make([]InputEdge, 0, len(instance.plan.Inputs))
+	for _, token := range instance.plan.Inputs {
+		producers := append([]plugin.Identity(nil), instance.bindings[token.ID]...)
+		sortIdentities(producers)
+		edges = append(edges, InputEdge{
+			Contract:  token.Type,
+			Query:     describeQuery(token.Kind),
+			Producers: producers,
+		})
+	}
+	return edges
+}
+
+// InputQuery names how one declared input binds producers, in the vocabulary
+// of the declaration that created it.
+type InputQuery string
+
+const (
+	// QueryRef binds the one producer the declaration named by identity.
+	QueryRef InputQuery = "ref"
+	// QueryOne binds the single enabled exporter of a contract.
+	QueryOne InputQuery = "one"
+	// QueryOptional binds at most one enabled exporter, possibly none.
+	QueryOptional InputQuery = "optional"
+	// QueryMany binds every enabled exporter, possibly none.
+	QueryMany InputQuery = "many"
+)
+
+// InputEdge is one declared input of one enabled instance together with the
+// producers wiring bound to it.
+//
+// Producers is empty exactly when an optional or many query matched no enabled
+// exporter. That outcome is deliberately legal: it raises no error, writes no
+// log line, and is otherwise indistinguishable from a satisfied input. Keeping
+// the edge and leaving Producers empty, rather than omitting the edge, is what
+// lets a diagnostic say "you think this is wired, and it is not".
+type InputEdge struct {
+	Contract  reflect.Type
+	Query     InputQuery
+	Producers []plugin.Identity
+}
+
+func describeQuery(kind pluginmodel.QueryKind) InputQuery {
+	switch kind {
+	case pluginmodel.QueryRef:
+		return QueryRef
+	case pluginmodel.QueryOne:
+		return QueryOne
+	case pluginmodel.QueryOptional:
+		return QueryOptional
+	case pluginmodel.QueryMany:
+		return QueryMany
+	default:
+		return InputQuery(fmt.Sprintf("query(%d)", kind))
+	}
+}
+
 // Contracts returns the identities exporting contract in graph order.
 func (plan *Plan) Contracts(contract reflect.Type) []plugin.Identity {
 	if plan == nil {
@@ -154,11 +243,24 @@ func BuildPlan(options PlanOptions) (*Plan, error) {
 	}, nil
 }
 
-func freezeBundles(bundles []plugin.Bundle) ([]pluginmodel.DefinitionDescriptor, error) {
+// selectedDefinition is one frozen Definition together with the composition
+// site that selected it. The two origins answer different questions: the
+// descriptor's own Origin is the Define call inside the plugin's package, while
+// selectedAt is the BundleOf call in whoever chose to include it.
+type selectedDefinition struct {
+	descriptor pluginmodel.DefinitionDescriptor
+	selectedAt string
+}
+
+func freezeBundles(bundles []plugin.Bundle) ([]selectedDefinition, error) {
 	byHandle := make(map[pluginmodel.Definition]pluginmodel.BundleEntry)
 	byKey := make(map[pluginmodel.Key]pluginmodel.BundleEntry)
 	for _, publicBundle := range bundles {
 		for _, entry := range pluginmodel.BundleEntries(pluginmodel.Bundle(publicBundle)) {
+			// Selecting the same Definition again is expected usage, not a
+			// mistake: an aggregate Bundle and an explicit selection overlap
+			// routinely. The first selection site is the one kept, so that a
+			// diagnostic names where the Definition entered the graph.
 			if _, repeated := byHandle[entry.Definition]; repeated {
 				continue
 			}
@@ -181,12 +283,12 @@ func freezeBundles(bundles []plugin.Bundle) ([]pluginmodel.DefinitionDescriptor,
 		}
 	}
 
-	definitions := make([]pluginmodel.DefinitionDescriptor, 0, len(byKey))
+	definitions := make([]selectedDefinition, 0, len(byKey))
 	for _, entry := range byKey {
 		descriptor, _ := pluginmodel.DescribeDefinition(entry.Definition)
-		definitions = append(definitions, descriptor)
+		definitions = append(definitions, selectedDefinition{descriptor: descriptor, selectedAt: entry.Origin})
 	}
-	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Key < definitions[j].Key })
+	sort.Slice(definitions, func(i, j int) bool { return definitions[i].descriptor.Key < definitions[j].descriptor.Key })
 	return definitions, nil
 }
 
@@ -252,10 +354,11 @@ func validateConfigPath(path string) error {
 	return nil
 }
 
-func expandDefinitions(definitions []pluginmodel.DefinitionDescriptor, env *config.Environment, logger log.Logger) (map[plugin.Identity]*plannedInstance, []DisabledDefinition, error) {
+func expandDefinitions(selections []selectedDefinition, env *config.Environment, logger log.Logger) (map[plugin.Identity]*plannedInstance, []DisabledDefinition, error) {
 	instances := make(map[plugin.Identity]*plannedInstance)
 	var disabled []DisabledDefinition
-	for _, definition := range definitions {
+	for _, selection := range selections {
+		definition := selection.descriptor
 		path := definitionPath(definition)
 		if definition.Activation.Kind == pluginmodel.ActivationConfigured && !env.Exists(definition.Activation.Path) {
 			disabled = append(disabled, DisabledDefinition{
@@ -298,6 +401,7 @@ func expandDefinitions(definitions []pluginmodel.DefinitionDescriptor, env *conf
 			instances[identity] = &plannedInstance{
 				identity:   identity,
 				definition: definition,
+				selectedAt: selection.selectedAt,
 				configPath: instanceConfigPath(definition, identity),
 				plan:       instancePlan,
 				bindings:   make(map[uint64][]plugin.Identity),
