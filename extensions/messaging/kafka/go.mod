@@ -2,9 +2,10 @@ module github.com/xbcio/xbc/extensions/messaging/kafka
 
 go 1.25.0
 
-// The core module is deliberately absent until it has a real release tag.
-// Repository builds resolve XBC imports through go.work; this publishable
-// manifest intentionally has no filesystem replace or placeholder version.
+// The core module and the protocol-neutral health capability are deliberately
+// absent until they have real release tags. Repository builds resolve XBC
+// imports through go.work; this publishable manifest intentionally has no
+// filesystem replace or placeholder version.
 require github.com/segmentio/kafka-go v0.4.49
 
 require (

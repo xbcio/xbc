@@ -163,7 +163,8 @@
       "config_path": "plugins.kafka",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/messaging/kafka.Producer"
+        "github.com/xbcio/xbc/extensions/messaging/kafka.Producer",
+        "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
       ]
     },
     {
@@ -180,6 +181,7 @@
       "config_path": "plugins.objectstorage",
       "cardinality": "multiple",
       "contracts": [
+        "github.com/xbcio/xbc/extensions/reliability/health.Contributor",
         "github.com/xbcio/xbc/extensions/storage/objectstorage.Store"
       ]
     },

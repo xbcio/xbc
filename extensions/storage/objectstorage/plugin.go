@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -17,6 +18,9 @@ const Key plugin.Key = "objectstorage"
 // backend and making Close idempotent even if a future backend is not.
 type managedStore struct {
 	backend Store
+	// probeReachability is set only for a remote backend whose operator did not
+	// opt out. A local directory has no peer to probe.
+	probeReachability bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -36,6 +40,7 @@ var definition = plugin.DefineConfigured(
 		Activation: plugin.WhenConfigured("plugins.objectstorage"),
 		Exports: plugin.Contracts(
 			plugin.ExportAs(func(store *managedStore) Store { return store }),
+			plugin.ExportAs(func(store *managedStore) health.Contributor { return store }),
 		),
 		Lifecycle: plugin.Lifecycle[*managedStore]{
 			Stop: stopStore,
@@ -72,7 +77,7 @@ func newStore(_ plugin.BuildContext, cfg Config) (*managedStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &managedStore{backend: backend}, nil
+	return &managedStore{backend: backend, probeReachability: cfg.Backend == BackendS3 && cfg.S3.HealthProbe}, nil
 }
 
 func (s *managedStore) Put(ctx context.Context, key string, body io.Reader, options PutOptions) (ObjectInfo, error) {

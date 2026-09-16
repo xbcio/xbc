@@ -2,9 +2,10 @@ module github.com/xbcio/xbc/extensions/storage/objectstorage
 
 go 1.25.0
 
-// The core module is deliberately absent from require until it has a real
-// release tag. Repository builds resolve it through go.work; no unpublished
-// placeholder dependency or filesystem replacement is used here.
+// The core module and the protocol-neutral health capability are deliberately
+// absent from require until they have real release tags. Repository builds
+// resolve them through go.work; no unpublished placeholder dependency or
+// filesystem replacement is used here.
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.6

@@ -112,6 +112,8 @@ type fakeWriter struct {
 
 	writes     [][]Message
 	writeErr   error
+	pingErr    error
+	pingCalls  int
 	closeErr   error
 	active     int
 	maxActive  int
@@ -123,6 +125,29 @@ type fakeWriter struct {
 	closeBlock   <-chan struct{}
 	closeStarted chan struct{}
 	closeOnce    sync.Once
+	pingBlock    <-chan struct{}
+}
+
+func (w *fakeWriter) Ping(ctx context.Context) error {
+	w.mu.Lock()
+	w.pingCalls++
+	block := w.pingBlock
+	err := w.pingErr
+	w.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
+func (w *fakeWriter) pings() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.pingCalls
 }
 
 func (w *fakeWriter) Write(ctx context.Context, messages []Message) error {

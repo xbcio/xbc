@@ -15,8 +15,13 @@ import (
 	"github.com/segmentio/kafka-go/sasl/scram"
 )
 
+// messageWriter is the producer seam. Ping exists separately from Write because
+// readiness must prove the cluster answers without producing a message; it is
+// part of this interface rather than a new one so a writer implementation cannot
+// be reachable through Write while claiming a different reachability answer.
 type messageWriter interface {
 	Write(context.Context, []Message) error
+	Ping(context.Context) error
 	Close() error
 }
 
@@ -47,20 +52,27 @@ func (kafkaFactory) NewWriter(cfg normalizedConfig) (messageWriter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &writerAdapter{writer: kafkago.NewWriter(kafkago.WriterConfig{
-		Brokers:          cfg.Brokers,
-		Topic:            cfg.Producer.Topic,
-		Dialer:           dialer,
-		BatchSize:        cfg.Producer.BatchSize,
-		BatchBytes:       cfg.Producer.BatchBytes,
-		BatchTimeout:     cfg.Producer.BatchTimeout,
-		ReadTimeout:      cfg.Producer.ReadTimeout,
-		WriteTimeout:     cfg.Producer.WriteTimeout,
-		RequiredAcks:     requiredAcks(cfg.Producer.RequiredAcks),
-		MaxAttempts:      cfg.Producer.MaxAttempts,
-		CompressionCodec: codec,
-		Async:            false,
-	})}, nil
+	return &writerAdapter{
+		writer: kafkago.NewWriter(kafkago.WriterConfig{
+			Brokers:          cfg.Brokers,
+			Topic:            cfg.Producer.Topic,
+			Dialer:           dialer,
+			BatchSize:        cfg.Producer.BatchSize,
+			BatchBytes:       cfg.Producer.BatchBytes,
+			BatchTimeout:     cfg.Producer.BatchTimeout,
+			ReadTimeout:      cfg.Producer.ReadTimeout,
+			WriteTimeout:     cfg.Producer.WriteTimeout,
+			RequiredAcks:     requiredAcks(cfg.Producer.RequiredAcks),
+			MaxAttempts:      cfg.Producer.MaxAttempts,
+			CompressionCodec: codec,
+			Async:            false,
+		}),
+		// Ping reuses the writer's own Dialer so the probe traverses the same
+		// TLS and SASL path as production traffic. A probe that skipped
+		// authentication could report up while every Produce is rejected.
+		dialer:  dialer,
+		brokers: append([]string(nil), cfg.Brokers...),
+	}, nil
 }
 
 func (kafkaFactory) NewReader(cfg normalizedConfig, _ string, consumer ConsumerConfig) (messageReader, error) {
@@ -193,7 +205,11 @@ func startOffset(value string) int64 {
 	return kafkago.FirstOffset
 }
 
-type writerAdapter struct{ writer *kafkago.Writer }
+type writerAdapter struct {
+	writer  *kafkago.Writer
+	dialer  *kafkago.Dialer
+	brokers []string
+}
 
 func (w *writerAdapter) Write(ctx context.Context, messages []Message) error {
 	wire := make([]kafkago.Message, len(messages))
@@ -207,6 +223,40 @@ func (w *writerAdapter) Write(ctx context.Context, messages []Message) error {
 	return w.writer.WriteMessages(ctx, wire...)
 }
 func (w *writerAdapter) Close() error { return w.writer.Close() }
+
+// Ping asks one broker for cluster metadata. Reaching a single broker is the
+// right granularity for readiness: it proves DNS, TCP, TLS and SASL all work and
+// that the cluster is answering, while requiring every configured broker would
+// report the instance as unable to serve during an ordinary rolling restart.
+func (w *writerAdapter) Ping(ctx context.Context) error {
+	if len(w.brokers) == 0 {
+		return errors.New("kafka: no brokers configured")
+	}
+	failures := make([]error, 0, len(w.brokers))
+	for _, broker := range w.brokers {
+		connection, err := w.dialer.DialContext(ctx, "tcp", broker)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("kafka: dial broker %s: %w", broker, err))
+			continue
+		}
+		// Conn works with deadlines rather than contexts, so the caller's
+		// deadline has to be transferred explicitly or the metadata read could
+		// outlive the health check that asked for it.
+		if deadline, ok := ctx.Deadline(); ok {
+			_ = connection.SetDeadline(deadline)
+		}
+		_, err = connection.Brokers()
+		// A close failure after a successful metadata answer says nothing about
+		// reachability, which is the only question being asked.
+		_ = connection.Close()
+		if err != nil {
+			failures = append(failures, fmt.Errorf("kafka: read metadata from broker %s: %w", broker, err))
+			continue
+		}
+		return nil
+	}
+	return errors.Join(failures...)
+}
 
 type readerAdapter struct{ reader *kafkago.Reader }
 

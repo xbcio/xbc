@@ -55,4 +55,20 @@
 // beneath its configured root, while the S3 backend supports TLS and bounded
 // network timeouts. Keep S3 credentials in secret-backed configuration and do
 // not enable SkipVerify outside isolated development environments.
+//
+// # Readiness
+//
+// The primary Store exports health.Contributor. An S3-backed instance
+// contributes its bucket's reachability as a readiness check named after the
+// producing identity, "objectstorage" or "objectstorage[<instance>]"; a local
+// instance contributes nothing, having no peer whose loss could go unnoticed. The
+// contribution is inert unless the application also selects the health capability
+// Bundle.
+//
+// The probe is one HeadObject for a key expected to be absent, so it needs no
+// permission beyond what Get and Stat already require and never writes anything.
+// S3 answers HeadObject for a missing key with 403 instead of 404 when the caller
+// lacks s3:ListBucket on the bucket; such a deployment grants that permission or
+// sets s3.health_probe: false. A 403 is deliberately not treated as reachable,
+// because that would also accept an expired or revoked credential.
 package objectstorage

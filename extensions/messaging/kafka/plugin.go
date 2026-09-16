@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -31,6 +32,7 @@ var definition = plugin.DefineConfigured(
 		Inputs:     plugin.Inputs(),
 		Exports: plugin.Contracts(
 			plugin.ExportAs(func(client *Client) Producer { return client }),
+			plugin.ExportAs(func(client *Client) health.Contributor { return client }),
 		),
 		Lifecycle: plugin.Lifecycle[*Client]{
 			Start: (*Client).start,

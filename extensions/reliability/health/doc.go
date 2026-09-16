@@ -55,8 +55,10 @@
 //
 // A contribution with an empty Name is reported under the producing Identity
 // alone, which is what distinguishes the instances of a multi-instance plugin
-// from each other. extensions/storage/elasticsearch, extensions/jobs/asynq, and
-// extensions/coordination/raft own their primary type and use this direct shape.
+// from each other. extensions/storage/elasticsearch,
+// extensions/storage/objectstorage, extensions/messaging/kafka,
+// extensions/jobs/asynq, and extensions/coordination/raft own their primary type
+// and use this direct shape.
 //
 // A plugin whose primary value is a third-party type cannot implement
 // Contributor, because a Definition may only declare contracts its primary type

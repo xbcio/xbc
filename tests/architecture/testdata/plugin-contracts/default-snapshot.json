@@ -370,6 +370,7 @@
           "SecretKey": "",
           "SessionToken": "",
           "Prefix": "",
+          "HealthProbe": true,
           "DialTimeout": 5000000000,
           "TLSHandshakeTimeout": 5000000000,
           "ResponseHeaderTimeout": 15000000000,
