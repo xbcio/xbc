@@ -12,8 +12,8 @@ xbc/
 ├── docs/                                # User guides and deployment recipes
 ├── examples/                            # Independent module with runnable consumer examples
 │   └── quickstart/                      # Minimal explicit application composition
-├── authentication/                      # Protocol-neutral authentication contracts
 ├── extensions/                          # Optional protocol-neutral capabilities
+│   ├── authentication/                  # Protocol-neutral authentication contracts; zero-dependency module
 │   ├── authorization/rbac/              # RBAC business plugin module
 │   ├── coordination/raft/               # Coordination extension module
 │   ├── storage/{elasticsearch,gorm,
@@ -36,7 +36,7 @@ xbc/
 ├── transport/
 │   └── web/                             # Independent engine-neutral Web runtime module
 │       ├── autoload/                    # Optional Web runtime autoload adapter
-│       ├── engines/gin/                 # Gin engine adapter module; the only place Gin is compiled in
+│       ├── engines/gin/                 # Gin engine adapter module; the only module that imports Gin
 │       ├── extensions/                  # All Web plugins, grouped by capability
 │       │   ├── authentication/{apikey,jwt,session}/
 │       │   ├── authorization/{casbin,casbin-gorm,casbin-redis,rbac,tenant}/
@@ -53,7 +53,7 @@ xbc/
 └── xbc.go                               # Thin application facade and recommended entry point
 ```
 
-This layout follows four rules: the root-level `runtime` owns low-level process execution and private command parsing; the Plugin model, assembly, and optional collection mechanism stay under `plugin`; protocol-neutral authentication contracts live in `authentication`, while selectable RBAC policy belongs to the authorization extension group; and optional capabilities are grouped by purpose beneath `extensions` rather than collected under the narrower name `integrations`. Group directories are namespaces rather than packages. Protocol-neutral extension leaves are independently versioned modules. Under Web, lightweight leaves remain packages of `transport/web`, while dependency-heavy leaves and the RBAC adapter are independent modules in the same capability hierarchy. The Web RBAC leaf is deliberately a thin transport adapter rather than a plugin; the protocol-neutral RBAC leaf owns the Definition and lifecycle.
+This layout follows four rules: the root-level `runtime` owns low-level process execution and private command parsing; the Plugin model, assembly, and optional collection mechanism stay under `plugin`; protocol-neutral authentication contracts live in `extensions/authentication`, while selectable RBAC policy belongs to the authorization extension group; and optional capabilities are grouped by purpose beneath `extensions` rather than collected under the narrower name `integrations`. Group directories are namespaces rather than packages. Protocol-neutral extension leaves are independently versioned modules. Under Web, lightweight leaves remain packages of `transport/web`, while dependency-heavy leaves, the engine adapter, and the RBAC adapter are independent modules in the same capability hierarchy. The Web RBAC leaf is deliberately a thin transport adapter rather than a plugin; the protocol-neutral RBAC leaf owns the Definition and lifecycle.
 
 The root `xbc` package therefore stays a stable, thin facade. All Web plugins have one discoverable home under `transport/web/extensions`; lightweight plugins are released with the Web runtime while optional dependency-heavy modules remain isolated. Do not add vague `common`, `utils`, or `pkg` packages, and do not create empty directories or placeholder APIs for unimplemented capabilities. A new `transport/<stack>` should be created only once a new protocol runtime stack is genuinely implemented; gRPC is explicitly not implemented in this round. The full constraints are defined jointly by `AGENTS.md` and the guards in `tests/architecture/`.
 

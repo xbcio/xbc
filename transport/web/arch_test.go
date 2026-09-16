@@ -34,7 +34,6 @@ type packageJSON struct {
 	Imports      []string
 	TestImports  []string
 	XTestImports []string
-	Deps         []string
 }
 
 var packageExtensionPrefixes = []string{
@@ -260,10 +259,14 @@ func TestWebDependencyClosureExcludesAnyHTTPEngine(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", "./...").Output()
 	require.NoError(t, err, "go list -deps ./... failed")
 
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.NotEmpty(t, lines, "go list -deps ./... returned no dependencies, HTTP engine dependency closure guard actually did not take effect")
+	// Emptiness has to be judged before the split, not after: strings.Split of
+	// an empty string yields a one-element slice holding "", so a NotEmpty
+	// assertion on the split result passes for output that lists nothing at all
+	// and this guard would silently stop guarding.
+	listed := strings.TrimSpace(string(out))
+	require.NotEmpty(t, listed, "go list -deps ./... returned no dependencies, HTTP engine dependency closure guard actually did not take effect")
 
-	for _, dep := range lines {
+	for _, dep := range strings.Split(listed, "\n") {
 		if engine := hasEnginePrefix(dep); engine != "" {
 			assert.Fail(t, "forbidden HTTP engine in dependency closure",
 				"production dependency closure contains %q, naming engine %q", dep, engine)
