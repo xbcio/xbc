@@ -207,6 +207,81 @@ func TestServerReturnsProblemDetailsForRoutingAndKnownBodyOverflow(t *testing.T)
 	}
 }
 
+// TestFrameworkGeneratedProblemsTravelThroughTheGlobalChain pins the reach of
+// the global middleware chain for the three responses the framework produces
+// itself. An oversized body, an unmatched path, and a method mismatch are all
+// requests a client made: request ids, access logs, metrics, CORS and security
+// headers lose their meaning the moment one of them answers outside the chain.
+// The observer sits in PhaseObserve, where an access log lives, so it sees each
+// response exactly as such a plugin would.
+func TestFrameworkGeneratedProblemsTravelThroughTheGlobalChain(t *testing.T) {
+	bodyRoute := fakeRouteContributor{register: func(router *web.Router) {
+		router.POST("/body", func(_ context.Context, c *web.Ctx) error { c.Status(http.StatusNoContent); return nil })
+	}}
+	observed := make([]int, 0, 3)
+	observer := fakeMiddleware{
+		order: web.Order{Phase: web.PhaseObserve},
+		handler: func(_ context.Context, c *web.Ctx) error {
+			c.Next()
+			observed = append(observed, c.Writer().Status())
+			return nil
+		},
+	}
+	// The innermost contributed phase. If it runs, every phase between it and
+	// PhaseObserve ran too -- including PhaseAuth, so an oversized request to a
+	// protected route is answered by authentication before the body limit ever
+	// looks at it. That is the intended precedence: a caller who is not allowed
+	// to reach the route learns nothing about how it processes requests.
+	innermost := 0
+	inner := fakeMiddleware{
+		order: web.Order{Phase: web.PhaseBusiness},
+		handler: func(_ context.Context, c *web.Ctx) error {
+			innermost++
+			c.Next()
+			return nil
+		},
+	}
+	cfg := web.DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.MaxRequestBodyBytes = 8
+	server, ctx, _ := newPingServer(t, cfg, serverInputs{
+		middlewares: []plugin.Entry[web.Middleware]{
+			{Identity: plugin.Identity{Plugin: "observer"}, Value: observer},
+			{Identity: plugin.Identity{Plugin: "inner"}, Value: inner},
+		},
+		routes: []plugin.Entry[web.RouteContributor]{
+			{Identity: plugin.Identity{Plugin: "bodytest"}, Value: bodyRoute},
+		},
+	})
+	require.NoError(t, server.Start(ctx))
+
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		status int
+	}{
+		{name: "oversized body", method: http.MethodPost, path: "/body", body: "0123456789", status: http.StatusRequestEntityTooLarge},
+		{name: "unmatched path", method: http.MethodGet, path: "/missing", status: http.StatusNotFound},
+		{name: "method mismatch", method: http.MethodPost, path: "/ping", status: http.StatusMethodNotAllowed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			observed = observed[:0]
+			innermost = 0
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			response := httptest.NewRecorder()
+			testEngineOf(t, server).ServeHTTP(response, request)
+
+			require.Equal(t, test.status, response.Code)
+			assert.Equal(t, []int{test.status}, observed,
+				"a PhaseObserve middleware must run and observe the final status")
+			assert.Equal(t, 1, innermost,
+				"the whole ordered chain must run, not just its outer phases")
+		})
+	}
+}
+
 func newPingServer(t *testing.T, cfg web.Config, inputs serverInputs) (*web.Server, *plugin.Context, *fakeHost) {
 	t.Helper()
 
