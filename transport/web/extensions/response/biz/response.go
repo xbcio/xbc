@@ -1,10 +1,9 @@
 package biz
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
-
-	"github.com/gin-gonic/gin/codec/json"
 
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/requestid"
@@ -84,10 +83,15 @@ func Write[T any](c *web.Ctx, status int, data T) error {
 	if requestID, ok := requestid.From(c); ok {
 		response.RequestID = requestID
 	}
-	// json.API is Gin's selected codec, so an application that builds with the
-	// sonic, go_json, or jsoniter tag serializes envelopes and Gin's own
-	// responses through one implementation.
-	payload, err := json.API.Marshal(response)
+	// The envelope is encoded with the standard library. Sharing the engine's
+	// pluggable codec -- and with it the sonic, go_json and jsoniter build tags
+	// -- is no longer available here: this package speaks the neutral Web
+	// contract and has no engine to borrow a codec from. An application that
+	// builds with one of those tags still gets it for the engine's own
+	// responses; only this envelope changes, and it is a small flat struct for
+	// which the standard encoder is not the cost that would justify reopening
+	// an engine dependency.
+	payload, err := json.Marshal(response)
 	if err != nil {
 		return fmt.Errorf("biz: encode success response: %w", err)
 	}
