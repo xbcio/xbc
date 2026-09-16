@@ -11,24 +11,37 @@ import (
 // They are ordering anchors, not plugin Definitions, and the distinction is
 // deliberate rather than provisional.
 //
+// The common rule is that a framework-owned ordering pin makes each of these
+// stages required, and a required stage cannot be an opt-in plugin: it would be
+// selectable at the composition root and disableable through
+// plugins.<key>.enabled, and neither omission has a coherent meaning.
+//
 // Authentication enforcement is a framework guarantee: web.security defaults to
 // deny, and Start fails when a route needs authentication that no registered
-// authenticator can satisfy. A guarantee cannot be an opt-in plugin -- if the
-// middleware were selected at the composition root, omitting its Bundle would
-// silently serve every route unauthenticated, which is exactly the failure the
-// deny default exists to prevent. It also enforces this Definition's own
-// web.security section, and config.NewUniverse gives each section exactly one
-// owning plugin, so a second Definition cannot claim it without first moving
-// the section out of web.Config.
+// authenticator can satisfy. Omitting its Bundle would silently serve every
+// route unauthenticated, which is exactly the failure the deny default exists to
+// prevent. It also enforces the Server Definition's own web.security section,
+// and config.NewUniverse gives each section exactly one owning plugin, so a
+// second Definition cannot claim it without first moving the section out of
+// web.Config.
 //
-// What the anchor is for is ordering: a contributed middleware declares
+// The error boundary is the outermost PhaseError middleware, the scope every
+// contributed ErrorMapper runs in and the last stop where an unknown error
+// still becomes a safe non-leaking Problem Detail. As a Definition it added no
+// selectability -- it had no configuration and always travelled inside
+// web.Bundle() -- while disabling it reported an unsatisfiable internal
+// ordering pin rather than the rule it broke.
+//
+// What the anchors are for is ordering: a contributed middleware declares
 // After: Require(AuthenticationMiddlewareKey) so authorization always observes a
-// published Principal. Because that anchor lives in the same flat namespace as
-// plugin keys, the reservation has to be explicit and enforced -- otherwise a
-// plugin could claim the key and the only symptom would be a duplicate-identity
-// failure at Start.
+// published Principal, and a focused error middleware sits inside
+// ErrorBoundaryKey by phase. Because those anchors live in the same flat
+// namespace as plugin keys, the reservation has to be explicit and enforced --
+// otherwise a plugin could claim one and the only symptom would be a
+// duplicate-identity failure at Start.
 var reservedMiddlewareKeys = map[plugin.Key]string{
 	AuthenticationMiddlewareKey: "the Server assembles the authentication middleware from its own web.security section",
+	ErrorBoundaryKey:            "the Server assembles the outermost error boundary from the collected ErrorMapper plugins",
 }
 
 // ReservedMiddlewareIdentityError reports a contributed middleware that claims

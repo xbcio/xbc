@@ -98,7 +98,6 @@ func TestCollectDescriptorsIncludesEveryBundleEntry(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"web-error-boundary":    false,
 		"gracefulshutdown-http": false,
 	}
 	for _, descriptor := range descriptors {

@@ -9,7 +9,11 @@ const (
 	// Key is the stable identity of the HTTP server Plugin.
 	Key plugin.Key = "web"
 
-	// ErrorBoundaryKey identifies the independently ordered error boundary.
+	// ErrorBoundaryKey is the canonical producer identity of the outermost
+	// error boundary. The Server assembles that boundary itself from the
+	// collected ErrorMapper plugins, so this key is reserved and no Definition
+	// may claim it; see ReservedMiddlewareKeys. Ordering against it inside
+	// PhaseError is the supported use of the key.
 	ErrorBoundaryKey plugin.Key = "web-error-boundary"
 
 	// AuthenticationMiddlewareKey is the canonical producer identity expected
@@ -27,11 +31,15 @@ var (
 	middlewareInput = plugin.Collect[Middleware]()
 	routeInput      = plugin.Collect[RouteContributor]()
 	listenerInput   = plugin.Collect[RouteCatalogListener]()
-	// The Server, not a separate Definition, assembles the built-in
-	// authentication middleware: enforcing web.security is a guarantee rather
-	// than an opt-in capability, and a configuration section has exactly one
-	// owning plugin. AuthenticationMiddlewareKey is reserved accordingly; see
-	// reserved_middleware.go.
+	// The Server, not a separate Definition, assembles the outermost error
+	// boundary and the built-in authentication middleware. Both are stages a
+	// framework-owned ordering pin makes required, and a required stage cannot
+	// be an opt-in plugin: omitting or disabling it would either serve every
+	// route unauthenticated or leave every contributed ErrorMapper unreachable.
+	// Enforcing web.security is additionally this Definition's own config
+	// section, which has exactly one owning plugin. Both keys are reserved
+	// accordingly; see reserved_middleware.go.
+	errorMapperInput   = plugin.Collect[ErrorMapper]()
 	authenticatorInput = plugin.Collect[authentication.Authenticator]()
 	extractorInput     = plugin.Collect[CredentialExtractor]()
 	// engineInput selects the HTTP engine adapter. web.Server never
@@ -55,6 +63,7 @@ var (
 				cfg,
 				engineInput.Get(ctx).Value,
 				middlewareInput.Get(ctx),
+				errorMapperInput.Get(ctx),
 				routeInput.Get(ctx),
 				listenerInput.Get(ctx),
 				authenticatorInput.Get(ctx),
@@ -66,6 +75,7 @@ var (
 			Inputs: plugin.Inputs(
 				engineInput,
 				middlewareInput,
+				errorMapperInput,
 				routeInput,
 				listenerInput,
 				authenticatorInput,
@@ -74,7 +84,7 @@ var (
 		},
 	)
 
-	bundle = plugin.BundleOf(definition, errorBoundaryDefinition)
+	bundle = plugin.BundleOf(definition)
 )
 
 // New constructs a side-effect-free server with production-safe defaults.
@@ -82,11 +92,13 @@ var (
 // hosts supply their own EngineFactory (an engine adapter's Factory, or a
 // test double) since Start fails without one.
 func New(factory EngineFactory) *Server {
-	return newServer(DefaultConfig(), factory, nil, nil, nil, nil, nil)
+	return newServer(DefaultConfig(), factory, nil, nil, nil, nil, nil, nil)
 }
 
 // Definition returns the canonical HTTP server declaration handle.
 func Definition() plugin.Definition { return definition }
 
-// Bundle returns Web's server and independently ordered error boundary.
+// Bundle returns Web's HTTP server. The error boundary and the authentication
+// middleware travel inside it rather than as separate Definitions, because the
+// Server assembles both; see ReservedMiddlewareKeys.
 func Bundle() plugin.Bundle { return bundle }

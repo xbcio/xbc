@@ -113,16 +113,9 @@ const ProblemContentType = problemContentType
 
 // Server construction. NewServer is the constructor the plugin definition
 // calls; a lifecycle test drives it directly so it can supply its own engine
-// factory and plugin entries.
+// factory and plugin entries. The Server assembles its own error boundary from
+// the ErrorMapper entries handed in, so a test no longer has to install one.
 var NewServer = newServer
-
-// NewErrorBoundary builds the error-boundary Middleware the plugin graph
-// normally assembles from the collected ErrorMapper plugins. Every server a
-// test starts needs one installed, or a handler's error reaches no mapper at
-// all.
-func NewErrorBoundary(mappers ...ErrorMapper) Middleware {
-	return &errorBoundary{mappers: append([]ErrorMapper(nil), mappers...)}
-}
 
 // Engine returns the Engine a started Server built through its factory, so a
 // test can dispatch requests into the assembled route tree with httptest
