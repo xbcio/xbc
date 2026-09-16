@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -160,7 +161,7 @@ func TestOptionalRejectsAmbiguityButAcceptsAbsence(t *testing.T) {
 	}, plan.Order())
 }
 
-func TestDependencyCyclesAreNamedRatherThanDeadlocked(t *testing.T) {
+func TestDependencyCyclesAreTracedRatherThanDeadlocked(t *testing.T) {
 	t.Parallel()
 	toSecond := plugin.RefTo[*store]("second")
 	first := plugin.Define("first", func(context plugin.BuildContext) (*store, error) {
@@ -173,7 +174,93 @@ func TestDependencyCyclesAreNamedRatherThanDeadlocked(t *testing.T) {
 
 	_, err := planFor(t, nil, first, second)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "xbc: plugin dependency cycle involves first, second")
+	assert.EqualError(t, err, "xbc: plugin dependency cycle: first → second → first"+
+		"\n  second requires *assembly.store from first"+
+		"\n  first requires *assembly.store from second",
+		"the loop is reported as a walkable path with the contract behind each edge")
+}
+
+// TestDependencyCycleTracesLongerLoopsDeterministically pins that a cycle
+// wider than one back-edge still yields one full path, and the same path every
+// time. Both the graph's adjacency and its indegree residue are maps, whose
+// iteration Go deliberately randomizes, so an implementation that picked its
+// DFS roots or successors straight out of them would report a different (yet
+// equally valid) rotation of this loop from run to run.
+func TestDependencyCycleTracesLongerLoopsDeterministically(t *testing.T) {
+	t.Parallel()
+	toBeta := plugin.RefTo[*store]("beta")
+	alpha := plugin.Define("alpha", func(context plugin.BuildContext) (*store, error) {
+		return &store{name: toBeta.Get(context).Value.Name()}, nil
+	}, plugin.Options[*store]{Inputs: plugin.Inputs(toBeta)})
+	toGamma := plugin.RefTo[*store]("gamma")
+	beta := plugin.Define("beta", func(context plugin.BuildContext) (*store, error) {
+		return &store{name: toGamma.Get(context).Value.Name()}, nil
+	}, plugin.Options[*store]{Inputs: plugin.Inputs(toGamma)})
+	toAlpha := plugin.RefTo[*store]("alpha")
+	gamma := plugin.Define("gamma", func(context plugin.BuildContext) (*store, error) {
+		return &store{name: toAlpha.Get(context).Value.Name()}, nil
+	}, plugin.Options[*store]{Inputs: plugin.Inputs(toAlpha)})
+
+	// Arrows point in build order, so the path is the reverse of the
+	// "requires" chain alpha -> beta -> gamma -> alpha.
+	const expected = "xbc: plugin dependency cycle: alpha → gamma → beta → alpha" +
+		"\n  gamma requires *assembly.store from alpha" +
+		"\n  beta requires *assembly.store from gamma" +
+		"\n  alpha requires *assembly.store from beta"
+	for attempt := 0; attempt < 50; attempt++ {
+		_, err := planFor(t, nil, alpha, beta, gamma)
+		require.Error(t, err)
+		require.EqualError(t, err, expected, "the same graph must always name the same loop")
+	}
+}
+
+// TestDependencyCycleSeparatesTrappedConsumersFromCycleMembers pins the
+// distinction Kahn's residue alone cannot make: "downstream" never becomes
+// ready either, because its only producer sits in a loop, but it is not part
+// of that loop and breaking it is not what fixes the graph.
+func TestDependencyCycleSeparatesTrappedConsumersFromCycleMembers(t *testing.T) {
+	t.Parallel()
+	toSecond := plugin.RefTo[*store]("second")
+	first := plugin.Define("first", func(context plugin.BuildContext) (*store, error) {
+		return &store{name: toSecond.Get(context).Value.Name()}, nil
+	}, plugin.Options[*store]{Inputs: plugin.Inputs(toSecond)})
+	toFirst := plugin.RefTo[*store]("first")
+	second := plugin.Define("second", func(context plugin.BuildContext) (*store, error) {
+		return &store{name: toFirst.Get(context).Value.Name()}, nil
+	}, plugin.Options[*store]{Inputs: plugin.Inputs(toFirst)})
+	downstreamToFirst := plugin.RefTo[*store]("first")
+	downstream := plugin.Define("downstream", func(context plugin.BuildContext) (*validationValue, error) {
+		_ = downstreamToFirst.Get(context)
+		return &validationValue{}, nil
+	}, plugin.Options[*validationValue]{Inputs: plugin.Inputs(downstreamToFirst)})
+
+	_, err := planFor(t, nil, first, second, downstream)
+	require.Error(t, err)
+	assert.EqualError(t, err, "xbc: plugin dependency cycle: first → second → first"+
+		"\n  second requires *assembly.store from first"+
+		"\n  first requires *assembly.store from second"+
+		"\n  also blocked by this cycle: downstream",
+		"a consumer trapped behind the cycle is named apart from the cycle itself")
+
+	cyclePath, _, _ := strings.Cut(err.Error(), "\n")
+	assert.NotContains(t, cyclePath, "downstream",
+		"a plugin that merely depends on the cycle is not one of its members")
+}
+
+func TestSelfDependencyIsReportedAtItsTokenRatherThanAsACycle(t *testing.T) {
+	t.Parallel()
+	toSelf := plugin.RefTo[*store]("loop")
+	loop := plugin.Define("loop", func(context plugin.BuildContext) (*store, error) {
+		return &store{name: toSelf.Get(context).Value.Name()}, nil
+	}, plugin.Options[*store]{Inputs: plugin.Inputs(toSelf)})
+
+	_, err := planFor(t, nil, loop)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "xbc: plugin loop input token ",
+		"a one-node loop keeps naming the exact token that closes it")
+	assert.Contains(t, err.Error(), " (*assembly.store) creates a self-dependency")
+	assert.NotContains(t, err.Error(), "dependency cycle",
+		"the token-level report is more precise than a one-hop path would be")
 }
 
 func TestNilPlanAndUnknownIdentityAreRejectedWithoutPanicking(t *testing.T) {
