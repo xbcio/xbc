@@ -216,3 +216,71 @@ func TestCtxBindAdaptsEngineBindingErrorsLikeParamError(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, bad.Code)
 	assert.Equal(t, "validation_failed", decodeProblem(t, bad).Properties["code"])
 }
+
+// TestParamErrorCollectsEveryElementOfAGinSliceBinding is the end-to-end half
+// of the aggregate contract: gin reports a per-element validation failure as
+// binding.SliceValidationError, which carries no Unwrap, and the adapter is
+// the only party that can restate it in a shape transport/web understands.
+// The path exercised is Ctx.Bind, since that is what normalizes the error
+// before web.ParamError ever sees it; ShouldBindJSON called directly, as
+// serveJSONBindingRequest does for the other tests in this file, hands
+// web.ParamError the raw unnormalized gin type on purpose and is not this
+// contract.
+//
+// The body carries two invalid elements on purpose, each failing a different
+// field. With one, an adapter that forgot to normalize at all -- or that
+// normalized only the first element instead of every one of them -- would
+// still produce the same validation_failed this test asserts, and the test
+// would pass while guarding nothing. With two distinct failures, dropping
+// either one is visible.
+func TestParamErrorCollectsEveryElementOfAGinSliceBinding(t *testing.T) {
+	body := `[{"name":"Alice","email":"not-an-email","address":{"city":"Shanghai"}},` +
+		`{"name":"ab","email":"bob@example.com","address":{"city":"Beijing"}}]`
+
+	request := httptest.NewRequest(http.MethodPost, "/requests", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := run(http.MethodPost, "/requests", request, func(_ context.Context, c *web.Ctx) error {
+		var destination []bindingRequest
+		return c.Bind(&destination)
+	})
+
+	assert.Equal(t, http.StatusBadRequest, response.Code)
+	problem := decodeProblem(t, response)
+	assert.Equal(t, "validation_failed", problem.Properties["code"])
+
+	var fields []string
+	for _, fieldError := range decodeFieldErrors(t, problem) {
+		fields = append(fields, fieldError.Field+":"+fieldError.Code)
+	}
+	assert.Contains(t, fields, "email:email", "数组第一个元素（下标 0）的字段错误必须出现")
+	assert.Contains(t, fields, "name:min", "数组第二个元素（下标 1）的字段错误必须出现，不能被第一个元素吞掉")
+}
+
+// TestParamErrorCollectsEveryElementOfANestedGinSliceBinding pins the
+// recursive half of normalizeBindError: gin nests a SliceValidationError
+// inside itself for an array of arrays, and converting only the outer level
+// would leave the inner one opaque again -- collectFieldErrors would then see
+// a raw gin type it does not recognize and fall back to a fieldless 400
+// instead of validation_failed.
+func TestParamErrorCollectsEveryElementOfANestedGinSliceBinding(t *testing.T) {
+	body := `[[{"name":"Alice","email":"bad","address":{"city":"Shanghai"}}],` +
+		`[{"name":"zz","email":"bob@example.com","address":{"city":"Beijing"}}]]`
+
+	request := httptest.NewRequest(http.MethodPost, "/requests", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := run(http.MethodPost, "/requests", request, func(_ context.Context, c *web.Ctx) error {
+		var destination [][]bindingRequest
+		return c.Bind(&destination)
+	})
+
+	assert.Equal(t, http.StatusBadRequest, response.Code)
+	problem := decodeProblem(t, response)
+	assert.Equal(t, "validation_failed", problem.Properties["code"])
+
+	var fields []string
+	for _, fieldError := range decodeFieldErrors(t, problem) {
+		fields = append(fields, fieldError.Field+":"+fieldError.Code)
+	}
+	assert.Contains(t, fields, "email:email", "外层第一个元素内部的字段错误必须出现")
+	assert.Contains(t, fields, "name:min", "外层第二个元素内部的字段错误必须出现，嵌套的一层不能被漏掉")
+}
