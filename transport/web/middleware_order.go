@@ -29,9 +29,6 @@ type MissingMiddlewareOrderTargetError struct {
 }
 
 func (e *MissingMiddlewareOrderTargetError) Error() string {
-	if e.Middleware.Plugin == "" {
-		return fmt.Sprintf("xbc: framework middleware pin requires missing target %s", e.Reference)
-	}
 	return fmt.Sprintf(
 		"xbc: middleware %s requires %s=%q, but no matching middleware is present",
 		e.Middleware, e.Direction, e.Reference,
@@ -65,7 +62,7 @@ func (e *DuplicateMiddlewareIdentityError) Error() string {
 }
 
 type middlewareOrderOptions struct {
-	outermost []OrderRef
+	outermost []plugin.Identity
 	after     []middlewareAfterPin
 }
 
@@ -78,12 +75,14 @@ type middlewareAfterPin struct {
 // public ordering mechanism.
 type middlewareOrderOption func(*middlewareOrderOptions)
 
-// pinMiddlewareOutermost pins every matching entry before every other entry in
-// its phase. Web uses this for the canonical error boundary. The target is made
-// required even if the supplied reference was created with Prefer.
-func pinMiddlewareOutermost(ref OrderRef) middlewareOrderOption {
+// pinMiddlewareOutermost pins one exact middleware identity before every other
+// entry in its phase. Web uses it for the two stages the Server assembles
+// itself -- the error boundary and the authentication middleware -- so the
+// target is a framework-owned Identity rather than a contributed key that might
+// resolve to several instances or to nothing.
+func pinMiddlewareOutermost(identity plugin.Identity) middlewareOrderOption {
 	return func(options *middlewareOrderOptions) {
-		options.outermost = append(options.outermost, ref.asRequired())
+		options.outermost = append(options.outermost, identity)
 	}
 }
 
@@ -287,31 +286,20 @@ func orderMiddlewares(
 		}
 	}
 
-	for _, ref := range options.outermost {
-		targets := resolve(ref)
-		if len(targets) == 0 {
-			return nil, nil, &MissingMiddlewareOrderTargetError{Reference: ref}
+	for _, identity := range options.outermost {
+		target, ok := byIdentity[identityOf(identity)]
+		if !ok {
+			return nil, nil, fmt.Errorf(
+				"xbc: cannot apply framework outermost pin to absent middleware %s", identity)
 		}
-
-		// A bare key can match multiple instances. They form one canonically
-		// ordered outer group rather than pinning each other into a cycle.
-		targetIDs := make(map[middlewareIdentity]struct{}, len(targets))
-		for _, target := range targets {
-			targetIDs[target.id] = struct{}{}
-		}
-		for _, target := range targets {
-			graph := graphFor(target.order.Phase)
-			for i := range nodes {
-				other := &nodes[i]
-				if other.order.Phase != target.order.Phase {
-					continue
-				}
-				if _, isPinned := targetIDs[other.id]; isPinned {
-					continue
-				}
-				graph.AddHardEdge(
-					target.entry.Identity.String(), other.entry.Identity.String())
+		graph := graphFor(target.order.Phase)
+		for i := range nodes {
+			other := &nodes[i]
+			if other.order.Phase != target.order.Phase || other.id == target.id {
+				continue
 			}
+			graph.AddHardEdge(
+				target.entry.Identity.String(), other.entry.Identity.String())
 		}
 	}
 

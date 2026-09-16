@@ -162,10 +162,10 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	orderOptions := []middlewareOrderOption{
 		// The outer boundary must wrap every focused PhaseError middleware, so
 		// an unknown error still reaches Web's safe non-leaking fallbacks.
-		pinMiddlewareOutermost(Require(ErrorBoundaryKey)),
+		pinMiddlewareOutermost(errorBoundaryIdentity),
 		// Authentication runs before every other PhaseAuth middleware so
 		// authorization always observes a published Principal.
-		pinMiddlewareOutermost(Require(AuthenticationMiddlewareKey)),
+		pinMiddlewareOutermost(authenticationIdentity),
 	}
 	// Only contributed middleware can require a principal. Scanning the built-in
 	// entry too would let a future edit pin authentication after itself.
