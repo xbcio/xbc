@@ -103,7 +103,10 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 // lost its bound. Each field therefore gets a distinct value, which is also
 // what makes a swapped pair fail rather than pass.
 func TestNewEngineMapsOptionsOntoTheHTTPServer(t *testing.T) {
-	ginlib.SetMode(ginlib.TestMode)
+	// NewEngine now sets gin's mode itself via applyProcessGlobals, so an
+	// explicit SetMode(TestMode) here would only be overwritten; the
+	// restoration below keeps that mode choice from leaking into other tests.
+	restoreProcessGlobals(t)
 
 	built, err := Factory{}.NewEngine(web.Options{
 		ReadTimeout:       11 * time.Second,

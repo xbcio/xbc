@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 	"time"
+
+	"github.com/xbcio/xbc/log"
 )
 
 // Engine is the port every HTTP engine adapter implements. The chain is
@@ -43,6 +45,15 @@ type Options struct {
 	MaxHeaderBytes         int
 	MaxMultipartMemory     int64
 	HandleMethodNotAllowed bool
+
+	// Logger is the Server's logger, handed to the engine so an adapter can
+	// route the engine's own diagnostic output into xbc's logging instead of
+	// the process's standard streams, and can match its verbosity to what that
+	// logger accepts. An engine that produces no such output ignores it.
+	//
+	// Server always supplies one. An application constructing Options by hand
+	// may leave it nil, and an adapter must tolerate that.
+	Logger log.Logger
 }
 
 // EngineFactory is exported by an engine plugin. web.Server calls it during

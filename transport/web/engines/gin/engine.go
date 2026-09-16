@@ -28,6 +28,9 @@ type engine struct {
 // engine serves through, both previously constructed directly in
 // (*web.Server).Start.
 func (f Factory) NewEngine(opts web.Options) (web.Engine, error) {
+	// Before ginlib.New: gin decides at construction time whether to print its
+	// debug banner, and it prints it to DefaultWriter.
+	applyProcessGlobals(opts.Logger)
 	e := ginlib.New()
 	if err := e.SetTrustedProxies(opts.TrustedProxies); err != nil {
 		return nil, fmt.Errorf("xbc: web trusted_proxies: %w", err)
