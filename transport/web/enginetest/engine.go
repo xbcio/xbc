@@ -54,17 +54,13 @@ type Engine struct {
 	// same division of labour web.Router and web.Engine already have.
 	chain []web.Handler
 
-	noRoute                []web.Handler
-	noMethod               []web.Handler
-	handleMethodNotAllowed bool
+	noRoute  []web.Handler
+	noMethod []web.Handler
 }
 
 // New builds an Engine with no routes and no global chain.
 func New() *Engine {
-	e := &Engine{
-		mux:                    http.NewServeMux(),
-		handleMethodNotAllowed: true,
-	}
+	e := &Engine{mux: http.NewServeMux()}
 	e.srv = &http.Server{Handler: e}
 	e.mux.Handle(unmatchedPattern, http.HandlerFunc(e.serveUnmatched))
 	return e
@@ -79,7 +75,6 @@ type Factory struct{}
 // package documentation for why that is deliberate rather than pending.
 func (Factory) NewEngine(opts web.Options) (web.Engine, error) {
 	e := New()
-	e.handleMethodNotAllowed = opts.HandleMethodNotAllowed
 	e.srv.ReadTimeout = opts.ReadTimeout
 	e.srv.ReadHeaderTimeout = opts.ReadHeaderTimeout
 	e.srv.WriteTimeout = opts.WriteTimeout
@@ -188,20 +183,18 @@ func (e *Engine) register(method, path string, handlers []web.Handler) {
 // -- unmatched requests --
 
 func (e *Engine) serveUnmatched(w http.ResponseWriter, r *http.Request) {
-	if e.handleMethodNotAllowed {
-		if allowed := e.methodsRegisteredForPath(r); len(allowed) > 0 {
-			// The port requires Allow on every 405, and only the engine knows
-			// the path's other methods, so it is set here rather than left to
-			// the chain. It must precede the chain: the chain writes the status,
-			// and a header set after the status line never reaches the client.
-			w.Header().Set("Allow", strings.Join(allowed, ", "))
-			if len(e.noMethod) == 0 {
-				http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
-				return
-			}
-			run(e.noMethod, w, r)
+	if allowed := e.methodsRegisteredForPath(r); len(allowed) > 0 {
+		// The port requires Allow on every 405, and only the engine knows
+		// the path's other methods, so it is set here rather than left to
+		// the chain. It must precede the chain: the chain writes the status,
+		// and a header set after the status line never reaches the client.
+		w.Header().Set("Allow", strings.Join(allowed, ", "))
+		if len(e.noMethod) == 0 {
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 			return
 		}
+		run(e.noMethod, w, r)
+		return
 	}
 	if len(e.noRoute) == 0 {
 		http.NotFound(w, r)
