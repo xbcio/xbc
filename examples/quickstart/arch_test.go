@@ -55,15 +55,18 @@ func forbiddenDirectImport(dep string) string {
 // modules, but this quickstart must not bypass the facade for low-level core implementation. See
 // packageJSON's doc comment for why this reads direct imports rather than Deps.
 //
-// It walks every package in the module, not just this one, so adding a second
-// example or a helper package under examples/ is covered without touching
-// this file.
+// It walks every package in the examples module, not just this one, so adding a
+// second example or a helper package under examples/ is covered without
+// touching this file. That is why go list runs from the module root rather than
+// from this package's directory.
 func TestExamplesDoNotDirectlyImportCoreImplementationPackages(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("Go command is unavailable, skip dependency direction check")
 	}
 
-	out, err := exec.Command("go", "list", "-json", "./...").Output()
+	list := exec.Command("go", "list", "-json", "./...")
+	list.Dir = ".."
+	out, err := list.Output()
 	if err != nil {
 		t.Fatalf("go list -json ./... failed: %v", err)
 	}

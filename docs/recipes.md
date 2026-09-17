@@ -284,6 +284,53 @@ Distributed mode uses a random owner token, a `SET NX` lease with TTL, and Lua s
 
 This mechanism provides at-most-one-active-owner coordination, not exactly-once business execution. Jobs must remain idempotent and record retryable outcomes.
 
+## Background-only service
+
+A background service is not a special mode. It is the same composition root with no transport selected, so nothing binds a port and nothing serves probes:
+
+```go
+func main() {
+	xbc.Run(xbc.WithBundles(
+		health.Bundle(),
+		sweeper.Bundle(),
+		healthlog.Bundle(),
+	))
+}
+```
+
+What keeps such a process running is a critical managed task, and a plugin may submit one only from its `Start` hook:
+
+```go
+func (p *Plugin) Start(ctx *plugin.Context) error {
+	gate := ctx.TrafficGate()
+	if !ctx.GoCritical(func(taskCtx context.Context) { p.run(taskCtx, gate) }) {
+		return errors.New("sweeper: runtime rejected the sweep task")
+	}
+	return nil
+}
+```
+
+`GoCritical` rather than `Go` is the load-bearing choice. Only a critical task counts as a long-lived capability, so an application whose plugins neither open traffic nor submit one is refused at startup instead of idling until a signal with nothing running inside it. Keep `Context.Go` for supporting loops that may legitimately end on their own; an unprompted return from a critical task requests shutdown and exits non-zero.
+
+Wait on `ctx.TrafficGate()` before doing any work, exactly as a serving transport does. The gate closes only after every plugin's traffic preparation has succeeded, so background work never observes a half-built application. Return when the task context is canceled: that return is prompted, and it is how the plugin cooperates with reverse-order shutdown.
+
+Health does not require HTTP. `plugins.health` is the protocol-neutral capability and its endpoint adapter is a separate plugin, so a background service configures the section with no adapter selected and reads the aggregate programmatically through `Plugin.Check`:
+
+```yaml
+plugins:
+  health:
+    timeout: 2s
+```
+
+Adding a `web:` section to a service that selected no transport fails startup by name, because every section must be owned by a selected plugin or by the framework.
+
+`examples/worker` is a runnable version of all of the above, including a readiness report that stays down until the first unit of work lands:
+
+```sh
+go run ./examples/worker --config examples/worker/application.yml
+go run ./examples/worker doctor --config examples/worker/application.yml
+```
+
 ## Operational endpoints and secrets
 
 Health endpoints return aggregate status by default. Use `detail_policy: never` to prevent unauthenticated probes from receiving dependency errors. When XBC begins graceful shutdown, readiness changes to 503 immediately while liveness remains Up. `web.shutdown.pre_drain_delay` defaults to `0s`, which begins HTTP draining immediately; configure a nonzero, deployment-specific interval when probes or load balancers need time to observe the readiness transition:
