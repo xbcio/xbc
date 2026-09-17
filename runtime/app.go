@@ -53,6 +53,11 @@ type App struct {
 	// report that reads it, and is never written again.
 	startup startupTiming
 
+	// progress is where startup currently is. Unlike startup it is written
+	// before each step rather than after it, and read by the slow-startup
+	// watchdog while a step is still running, so it carries its own mutex.
+	progress startupProgress
+
 	// Tests may set ready to observe the post-gate run-loop boundary.
 	ready chan struct{}
 }

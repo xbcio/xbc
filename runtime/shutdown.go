@@ -24,6 +24,11 @@ func (a *App) abort(cause error) error {
 // so an abandoned or not-attempted Plugin still cannot leak its goroutines.
 func (a *App) unwind(reason string) error {
 	a.requestStop(reason)
+	// Whatever startup was waiting for, it is no longer waiting for it: from
+	// here the process is cleaning up under the shutdown budget, which reports
+	// itself. See startupProgress.conclude for why the slow-startup report has
+	// to fall silent here specifically and not on the stop request.
+	a.progress.conclude()
 	a.unwindOnce.Do(func() {
 		if a.tasks != nil {
 			a.tasks.closeAdmission()

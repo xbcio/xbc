@@ -37,11 +37,12 @@ const (
 // to somebody else: "log" to the log package, "plugins" to the assembly package,
 // "app" to the application author.
 //
-// Both members live here rather than in any plugin because both are
-// decisions only the process-level driver can make. A plugin cannot know how
+// Every member lives here rather than in any plugin because each is a
+// decision only the process-level driver can make. A plugin cannot know how
 // long the whole shutdown may take (its own Stop is one of many sharing that
-// budget), and a plugin cannot decide whether this particular boot is allowed
-// to write to a schema.
+// budget), a plugin cannot decide whether this particular boot is allowed to
+// write to a schema, and no plugin can see the whole startup it may be the one
+// holding up.
 type settings struct {
 	// ShutdownTimeout is the total budget for one unwind: draining managed
 	// tasks and stopping every initialized plugin, together. It is a
@@ -55,6 +56,23 @@ type settings struct {
 	// and binding it to every boot means every rolling restart silently
 	// touches the schema.
 	AutoMigrate bool `yaml:"auto_migrate"`
+
+	// SlowStartupAfter is how long a startup may run before the runtime
+	// reports where it currently is, and how often it repeats that report
+	// until startup finishes. It reports only: it never cancels, aborts, or
+	// times out a startup, and no deadline is derived from it.
+	//
+	// 0s turns the report off. The default is deliberately a positive value
+	// rather than 0s, because the failure this exists for -- a plugin hook
+	// that never returns -- is silent under the default configuration
+	// otherwise: the released-gate line and the per-plugin timing breakdown
+	// are both emitted after every phase has returned, so on the one boot
+	// that never finishes neither of them is ever reached.
+	//
+	// An application whose migrations legitimately run for minutes should
+	// raise this or set it to 0s; otherwise every such boot warns about a
+	// startup that is doing exactly what it was asked to do.
+	SlowStartupAfter time.Duration `yaml:"slow_startup_after" default:"30s" validate:"gte=0"`
 }
 
 // loadSettings binds the "xbc" section onto a zero settings and validates it.

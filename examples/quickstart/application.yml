@@ -18,6 +18,11 @@
 xbc:
   # One budget covers cancellation, HTTP drain, and reverse-order plugin Stop.
   shutdown_timeout: 15s
+  # While startup is unfinished, report every 30s which phase it is in and which
+  # plugin still holds it. Reporting only: it never aborts or times out a
+  # startup. Raise it, or set 0s to switch it off, when migrations legitimately
+  # run for minutes.
+  slow_startup_after: 30s
 
 log:
   level: info

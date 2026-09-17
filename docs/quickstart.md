@@ -83,6 +83,8 @@ Only Bundles selected at the composition root can own configuration sections. A 
 
 The example sets `web.shutdown.pre_drain_delay: 2s` so `/readyz` can return 503 after runtime cancellation before HTTP draining begins. The transport default is `0s`; a nonzero deployment-specific interval consumes the shared shutdown budget and still accepts ordinary traffic, so it is a propagation opportunity rather than acknowledgement that a load balancer has withdrawn the instance.
 
+`xbc.slow_startup_after` (default `30s`) covers the opposite end: while startup has not finished, the runtime repeats a warning naming the phase it is in and the plugin and lifecycle stage still holding it, for example `phase=start plugin=gorm[primary] stage=Start`. The `plugin` field is the one to act on — it names the hook that has not returned. This is a report and not a timeout: nothing is cancelled or aborted, and startup keeps waiting for the plugin however long it takes. Reports repeat so consecutive lines can be compared: an unchanged phase and plugin mean stuck, a moving one means slow but progressing. Set it to `0s` to switch the report off, or raise it, when migrations legitimately run for minutes.
+
 ### Files and profiles
 
 Without `--config`, XBC uses the first file found in the current working directory:

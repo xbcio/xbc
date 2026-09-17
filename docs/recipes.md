@@ -302,6 +302,15 @@ Two integrations deliberately contribute nothing. `outbox` depends only on a `go
 
 The interval leaves the listener up after runtime cancellation so `/readyz` can return 503 before HTTP drain. It consumes the one shared runtime shutdown budget, still accepts ordinary traffic, and is not acknowledgement that a load balancer has withdrawn the instance. Choose it from probe and load-balancer convergence time while reserving enough budget for draining.
 
+A startup that never reaches the listener is reported the other way round. `xbc.slow_startup_after` defaults to `30s`, and while startup is unfinished the runtime repeats a warning naming the phase plus the plugin and lifecycle stage still holding it:
+
+```yaml
+xbc:
+  slow_startup_after: 30s
+```
+
+Read the `plugin` field first: it names the hook that has not returned, which the startup timing breakdown cannot do — that breakdown is emitted only after every phase returns, so a boot stuck in `Start` produces none of it. The threshold is a reporting threshold, not a deadline: nothing is cancelled or aborted, and the startup keeps waiting. Compare consecutive lines to tell the two failures apart — an unchanged phase and plugin mean stuck, a moving one means slow but progressing. An application whose migrations legitimately run for minutes should raise the value or set `0s` to switch the report off.
+
 pprof and remote shutdown are disabled by default. Neither endpoint carries its own authentication mechanism: they fall through to the `web.security` global default, which is `deny` out of the box. An application that enables them must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`.
 
 The `deny` default only means "must authenticate" -- it accepts any registered scheme, not "reachable by operators only". If the application registers an authenticator for any purpose and writes no tier-1 rule for these routes, pprof, metrics, and remote shutdown become reachable by any authenticated principal, not just operators. Restricting them to operators requires two things: a tier-1 rule that narrows the accepted scheme, and an authorization layer on top of authentication, because none of these three routes carries a `.Perm` for Casbin or another authorizer to check (see below).

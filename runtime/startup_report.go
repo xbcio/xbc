@@ -64,12 +64,12 @@ type startupPhases struct {
 
 func (p startupPhases) String() string {
 	return joinTimings([]labelledDuration{
-		{"bootstrap", p.bootstrap},
-		{"planning", p.planning},
-		{"construct", p.construct},
-		{"migrate", p.migrate},
-		{"start", p.start},
-		{"traffic", p.openTraffic},
+		{phaseBootstrap, p.bootstrap},
+		{phasePlanning, p.planning},
+		{phaseConstruct, p.construct},
+		{phaseMigrate, p.migrate},
+		{phaseStart, p.start},
+		{phaseTraffic, p.openTraffic},
 	})
 }
 

@@ -36,17 +36,43 @@ func TestSettingsFallBackToDeclaredDefaultsWithoutAnXbcSection(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 30*time.Second, loaded.ShutdownTimeout)
 	assert.False(t, loaded.AutoMigrate, "migration is a side-effecting write and is never on by default")
+	assert.Equal(t, 30*time.Second, loaded.SlowStartupAfter,
+		"the default is positive because a startup that hangs is otherwise silent under the default configuration")
 }
 
 func TestSettingsBindEveryDeclaredKeyNotJustTheFirst(t *testing.T) {
 	t.Parallel()
 	loaded, err := loadSettings(settingsEnvironment(t, map[string]any{"xbc": map[string]any{
-		"shutdown_timeout": "5s",
-		"auto_migrate":     true,
+		"shutdown_timeout":   "5s",
+		"auto_migrate":       true,
+		"slow_startup_after": "2m",
 	}}))
 	require.NoError(t, err)
 	assert.Equal(t, 5*time.Second, loaded.ShutdownTimeout)
 	assert.True(t, loaded.AutoMigrate)
+	assert.Equal(t, 2*time.Minute, loaded.SlowStartupAfter)
+}
+
+// TestSettingsAcceptZeroButNotANegativeSlowStartupThreshold pins the asymmetry
+// with shutdown_timeout above. Zero is the documented off switch, matching
+// web.shutdown.pre_drain_delay and the access log's slow_request, because the
+// threshold gates a report and not a deadline: an application with legitimately
+// long migrations turns it off rather than being warned on every boot. Negative
+// is not an off switch, it is a mistake, and it must not be silently read as
+// one.
+func TestSettingsAcceptZeroButNotANegativeSlowStartupThreshold(t *testing.T) {
+	t.Parallel()
+	loaded, err := loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"slow_startup_after": "0s"},
+	}))
+	require.NoError(t, err)
+	assert.Zero(t, loaded.SlowStartupAfter, "zero is how the report is turned off")
+
+	_, err = loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"slow_startup_after": "-1s"},
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "slow_startup_after")
 }
 
 func TestSettingsRejectANonPositiveOrUnparsableShutdownBudget(t *testing.T) {

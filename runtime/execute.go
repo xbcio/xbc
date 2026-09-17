@@ -63,15 +63,29 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	// succeeded, because a usage error never boots anything.
 	startedAt := time.Now()
 	var phases startupPhases
+	// Recorded before the watchdog exists, so that the sliver between starting
+	// it and entering planning reports the phase that has genuinely just been
+	// running rather than no phase at all.
+	a.progress.enterPhase(phaseBootstrap)
 	bootstrapStarted := time.Now()
 	if err := a.bootstrap(command); err != nil {
 		return 1, err
 	}
 	phases.bootstrap = time.Since(bootstrapStarted)
+	// The watchdog cannot start any earlier than this: its interval is a
+	// configured setting, so bootstrap has to produce it first, and there is
+	// no logger to report through until bootstrap has installed one. A boot
+	// that hangs inside configuration loading is therefore out of its reach;
+	// every phase after it is covered. The deferred stop is the backstop for
+	// every failure return below; the successful path stops it explicitly
+	// before announcing the released gate.
+	stopWatch := a.watchSlowStartup(a.log(), startedAt, a.settings.SlowStartupAfter)
+	defer stopWatch()
 	if err := a.ensureStarting("bootstrapping"); err != nil {
 		return 1, err
 	}
 
+	a.progress.enterPhase(phasePlanning)
 	planningStarted := time.Now()
 	plan, err := assembly.BuildPlan(assembly.PlanOptions{
 		Bundles: a.bundles,
@@ -96,12 +110,17 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 		return 1, err
 	}
 
+	a.progress.enterPhase(phaseConstruct)
 	constructStarted := time.Now()
 	owned, err := assembly.Construct(plan, assembly.ConstructOptions{
 		ShutdownTimeout: a.settings.ShutdownTimeout,
 		ContextFactory: func(identity plugin.Identity, logger log.Logger) *plugin.Context {
 			return plugin.NewRuntimeContext(hostAdapter{app: a, logger: logger}, identity)
 		},
+		// One record per stage, written before the hook runs. Every phase from
+		// here on hands control to plugin code that may not come back, and
+		// this is what names the plugin holding it.
+		OnStageBegin: a.progress.enterStage,
 	})
 	if err != nil {
 		return 1, err
@@ -114,6 +133,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	}
 
 	if migrate {
+		a.progress.enterPhase(phaseMigrate)
 		migrateStarted := time.Now()
 		if err := a.migrateAll(instances); err != nil {
 			return 1, a.abort(err)
@@ -130,11 +150,13 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 		return 0, nil
 	}
 
+	a.progress.enterPhase(phaseStart)
 	startStarted := time.Now()
 	if err := a.startAll(instances); err != nil {
 		return 1, a.abort(err)
 	}
 	phases.start = time.Since(startStarted)
+	a.progress.enterPhase(phaseTraffic)
 	trafficStarted := time.Now()
 	if err := a.prepareTraffic(instances); err != nil {
 		return 1, a.abort(err)
@@ -148,6 +170,10 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	}
 	total := time.Since(startedAt)
 	a.startup = startupTiming{total: total, phases: phases}
+	// Startup is over, so the watchdog is joined before anything announces
+	// that: a report claiming startup has not finished must not be able to
+	// land after the line saying it has.
+	stopWatch()
 	a.reportStarted(instances, migrate)
 	a.reportStartupTimings(instances)
 	return a.wait()

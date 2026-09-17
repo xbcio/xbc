@@ -159,3 +159,119 @@ func TestShutdownRecordsAttributeTheBudgetToWhatConsumedIt(t *testing.T) {
 	assert.GreaterOrEqual(t, durations["a-slow-stop"], timingProbe)
 	assert.Zero(t, durations["z-no-stop"], "there was nothing to wait for, so nothing was waited for")
 }
+
+// TestStageBeginAnnouncesEveryStageBeforeItRuns is the observation Timings
+// cannot provide. A timing entry is appended after the hook returns, so the
+// stage a caller most needs named -- the one that has not returned -- has no
+// entry at all. This callback is the only thing that names it, and it is only
+// usable if it fires strictly before the hook body: the interleaving assertion,
+// not the count, is what pins that.
+func TestStageBeginAnnouncesEveryStageBeforeItRuns(t *testing.T) {
+	t.Parallel()
+	var events []string
+	record := func(event string) { events = append(events, event) }
+	lifecycle := func(key string) plugin.Lifecycle[*store] {
+		return plugin.Lifecycle[*store]{
+			Init:        func(*store, *plugin.Context) error { record("hook " + key + " Init"); return nil },
+			Migrate:     func(*store, *plugin.Context) error { record("hook " + key + " Migrate"); return nil },
+			Start:       func(*store, *plugin.Context) error { record("hook " + key + " Start"); return nil },
+			OpenTraffic: func(*store, *plugin.Context) error { record("hook " + key + " OpenTraffic"); return nil },
+			Stop:        func(*store, context.Context) error { record("hook " + key + " Stop"); return nil },
+		}
+	}
+	first := plugin.Define("a-first", func(plugin.BuildContext) (*store, error) {
+		record("hook a-first factory")
+		return &store{name: "a-first"}, nil
+	}, plugin.Options[*store]{Lifecycle: lifecycle("a-first")})
+	second := plugin.Define("b-second", func(plugin.BuildContext) (*store, error) {
+		record("hook b-second factory")
+		return &store{name: "b-second"}, nil
+	}, plugin.Options[*store]{Lifecycle: lifecycle("b-second")})
+
+	plan, err := planFor(t, nil, first, second)
+	require.NoError(t, err)
+	constructed, err := Construct(plan, ConstructOptions{
+		OnStageBegin: func(identity plugin.Identity, stage Stage) {
+			record("begin " + identity.String() + " " + string(stage))
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		"begin a-first factory", "hook a-first factory",
+		"begin a-first Init", "hook a-first Init",
+		"begin b-second factory", "hook b-second factory",
+		"begin b-second Init", "hook b-second Init",
+	}, events, "each stage is announced once, immediately before it runs, in graph order")
+
+	events = nil
+	instance, ok := constructed.Instance(plugin.Identity{Plugin: "a-first"})
+	require.True(t, ok)
+	require.NoError(t, instance.InvokeMigration())
+	require.NoError(t, instance.InvokeStart())
+	require.NoError(t, instance.InvokeTrafficPreparation())
+
+	assert.Equal(t, []string{
+		"begin a-first Migrate", "hook a-first Migrate",
+		"begin a-first Start", "hook a-first Start",
+		"begin a-first OpenTraffic", "hook a-first OpenTraffic",
+	}, events, "the stages the runtime drives after construction are announced the same way")
+
+	events = nil
+	deadline, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, err = constructed.Unwind(deadline, time.Minute, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"hook b-second Stop", "hook a-first Stop"}, events,
+		"Stop announces nothing: it is bounded, reported per attempt, and already observable while in flight")
+}
+
+// TestStageBeginIsNotAnnouncedForAnUndeclaredHook keeps the callback saying
+// what it claims. A stage that never runs must not be announced as beginning,
+// or the last announcement would name a plugin that is doing nothing -- which
+// is precisely the reading the callback exists to make trustworthy.
+func TestStageBeginIsNotAnnouncedForAnUndeclaredHook(t *testing.T) {
+	t.Parallel()
+	definition := plugin.Define("bare-begin", func(plugin.BuildContext) (*store, error) {
+		return &store{name: "bare-begin"}, nil
+	})
+	plan, err := planFor(t, nil, definition)
+	require.NoError(t, err)
+	var stages []Stage
+	constructed, err := Construct(plan, ConstructOptions{
+		OnStageBegin: func(_ plugin.Identity, stage Stage) { stages = append(stages, stage) },
+	})
+	require.NoError(t, err)
+	instance, ok := constructed.Instance(plugin.Identity{Plugin: "bare-begin"})
+	require.True(t, ok)
+	require.NoError(t, instance.InvokeMigration())
+	require.NoError(t, instance.InvokeStart())
+	require.NoError(t, instance.InvokeTrafficPreparation())
+
+	assert.Equal(t, []Stage{StageFactory}, stages,
+		"a factory always runs; an undeclared hook announces nothing")
+}
+
+// TestConstructWithoutStageObservationBehavesIdentically pins that the
+// observation is optional. Every other test in this package constructs with no
+// callback at all, so a construction path that depended on one would fail
+// everywhere; this states the contract where a reader can find it.
+func TestConstructWithoutStageObservationBehavesIdentically(t *testing.T) {
+	t.Parallel()
+	definition := plugin.Define("unobserved", func(plugin.BuildContext) (*store, error) {
+		return &store{name: "unobserved"}, nil
+	}, plugin.Options[*store]{Lifecycle: plugin.Lifecycle[*store]{
+		Init:  func(*store, *plugin.Context) error { return nil },
+		Start: func(*store, *plugin.Context) error { return nil },
+	}})
+	plan, err := planFor(t, nil, definition)
+	require.NoError(t, err)
+	constructed, err := Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+	instance, ok := constructed.Instance(plugin.Identity{Plugin: "unobserved"})
+	require.True(t, ok)
+	require.NoError(t, instance.InvokeStart())
+
+	assert.Equal(t, []Stage{StageFactory, StageInit, StageStart}, timingStages(instance.Timings()),
+		"an unobserved construction runs and times exactly the same stages")
+}
