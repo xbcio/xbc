@@ -76,13 +76,16 @@ func (c *Context) TrafficGate() <-chan struct{} {
 
 // Go submits a non-critical managed task. Submission is accepted only while
 // this Plugin's Start hook is executing; false means the admission window is
-// closed.
+// closed. A non-critical task may return whenever its work is done, so it does
+// not count as the long-lived capability the runtime requires of a startable
+// application; use GoCritical for work that must last the process lifetime.
 func (c *Context) Go(fn func(context.Context)) bool {
 	return c != nil && c.host != nil && c.host.SubmitTask(c.id, fn, false)
 }
 
 // GoCritical submits a task whose panic or unprompted return requests
-// application shutdown.
+// application shutdown. Because such a task is expected to run for the process
+// lifetime, it satisfies the runtime's long-lived capability requirement.
 func (c *Context) GoCritical(fn func(context.Context)) bool {
 	return c != nil && c.host != nil && c.host.SubmitTask(c.id, fn, true)
 }

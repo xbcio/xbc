@@ -13,14 +13,14 @@ import (
 )
 
 type taskRuntime struct {
-	mu           sync.Mutex
-	admitting    map[plugin.Identity]bool
-	groups       map[plugin.Identity]*pluginTasks
-	spawned      int
-	closed       bool
-	shuttingDown atomic.Bool
-	logger       log.Logger
-	onCritical   func(string)
+	mu            sync.Mutex
+	admitting     map[plugin.Identity]bool
+	groups        map[plugin.Identity]*pluginTasks
+	criticalTasks int
+	closed        bool
+	shuttingDown  atomic.Bool
+	logger        log.Logger
+	onCritical    func(string)
 }
 
 type pluginTasks struct {
@@ -77,7 +77,9 @@ func (runtime *taskRuntime) submit(identity plugin.Identity, fn func(context.Con
 		runtime.groups[identity] = group
 	}
 	group.wg.Add(1)
-	runtime.spawned++
+	if critical {
+		runtime.criticalTasks++
+	}
 	runtime.mu.Unlock()
 
 	go runtime.runTask(identity, group, fn, critical)
@@ -178,10 +180,14 @@ func waitTasks(group *pluginTasks, owner string, deadline context.Context) error
 	}
 }
 
-func (runtime *taskRuntime) spawnedCount() int {
+// criticalTaskCount reports how many critical managed tasks were admitted, not
+// how many are still running. Counting cumulatively is safe for the liveness
+// judgement it feeds: a critical task that has already returned has requested
+// shutdown on its way out, so startup aborts before the count is consulted.
+func (runtime *taskRuntime) criticalTaskCount() int {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	return runtime.spawned
+	return runtime.criticalTasks
 }
 
 func (runtime *taskRuntime) log() log.Logger {

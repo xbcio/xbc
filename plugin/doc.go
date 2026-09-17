@@ -282,8 +282,11 @@
 //
 // ctx.Go and ctx.GoCritical accept submissions only while that same
 // Plugin's Start is executing; both return false once the admission window
-// has closed. ctx.TrafficGate() stays open (unclosed, so every receive
-// blocks) throughout fallible traffic preparation and is closed exactly
+// has closed. Only a critical task counts as a long-lived capability: an
+// application whose Plugins neither open traffic nor submit one is refused
+// at startup rather than left idling until a signal. ctx.TrafficGate()
+// stays open (unclosed, so every receive blocks) throughout fallible
+// traffic preparation and is closed exactly
 // once, by the runtime, only after every participant's OpenTraffic has
 // succeeded — never by a Plugin itself. ctx.RequestShutdown(reason) asks
 // the whole application to stop and is safe to call from any goroutine a

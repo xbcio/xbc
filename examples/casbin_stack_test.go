@@ -38,7 +38,7 @@ type stackProbe struct {
 }
 
 func (probe *stackProbe) start(ctx *plugin.Context) error {
-	if !ctx.Go(func(taskCtx context.Context) { <-taskCtx.Done() }) {
+	if !ctx.GoCritical(func(taskCtx context.Context) { <-taskCtx.Done() }) {
 		return fmt.Errorf("casbin stack probe: runtime rejected liveness task")
 	}
 	probe.ready <- probe.handles

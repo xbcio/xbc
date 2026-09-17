@@ -143,15 +143,33 @@ func TestStartupRequiresALongLivedCapability(t *testing.T) {
 	code, err := inert.Execute(context.Background(), runtimeTestConfig(t, time.Second))
 	assert.Equal(t, 1, code)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "xbc: no plugin provides a long-lived capability; enabled plugins: inert")
+	assert.Contains(t, err.Error(), "xbc: no plugin provides a long-lived capability")
+	assert.Contains(t, err.Error(), "enabled plugins: inert")
+
+	transient := newRuntimeTestApp(plugin.Define("transient", value, plugin.Options[*runtimeTestValue]{
+		Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+			Start: func(_ *runtimeTestValue, ctx *plugin.Context) error {
+				ctx.Go(func(context.Context) {})
+				return nil
+			},
+		},
+	}))
+	// Routed through the bounded helper on purpose: should this guard ever
+	// stop rejecting a transient task, the application would block in wait()
+	// forever, and a hanging test says far less than a failing one.
+	transientResult := executeRuntimeTest(transient, runtimeTestConfig(t, time.Second)...)
+	completed := awaitRuntimeTestResult(t, transientResult)
+	assert.Equal(t, 1, completed.code, "a non-critical task must not buy a process that then idles until a signal")
+	require.Error(t, completed.err)
+	assert.Contains(t, completed.err.Error(), "xbc: no plugin provides a long-lived capability")
 
 	for name, lifecycle := range map[string]plugin.Lifecycle[*runtimeTestValue]{
 		"traffic opener": {
 			OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
 		},
-		"managed task": {
+		"critical managed task": {
 			Start: func(_ *runtimeTestValue, ctx *plugin.Context) error {
-				ctx.Go(func(taskContext context.Context) { <-taskContext.Done() })
+				ctx.GoCritical(func(taskContext context.Context) { <-taskContext.Done() })
 				return nil
 			},
 		},
