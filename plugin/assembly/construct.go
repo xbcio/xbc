@@ -59,6 +59,26 @@ type StageTiming struct {
 type ConstructOptions struct {
 	ContextFactory  ContextFactory
 	ShutdownTimeout time.Duration
+
+	// OnStageBegin, when set, is called immediately before this package
+	// invokes one startup stage on one instance: the factory and Init inside
+	// Construct, and Migrate, Start and OpenTraffic through the Invoke*
+	// methods. A hook the Definition never declared announces nothing,
+	// because nothing runs. StageStop announces nothing either: it is already
+	// bounded by the shutdown budget and reported per attempt in StopRecord,
+	// and it runs on its own goroutine, so it is the one stage a caller can
+	// already see while it is still in flight.
+	//
+	// Only the beginning is reported, and that is enough to name the stage
+	// currently in flight: these stages are strictly serial, so the last one
+	// announced is the one that has not returned yet. StageTiming cannot
+	// answer that question at all, because an entry is appended only after
+	// the hook returns -- which is precisely why the stage an operator most
+	// needs named, the one that never returns, has no timing.
+	//
+	// It runs on the goroutine driving the stage, outside the panic boundary,
+	// so an implementation must neither block nor panic.
+	OnStageBegin func(plugin.Identity, Stage)
 }
 
 // Instance is one successfully factory-returned, framework-owned primary
@@ -74,6 +94,11 @@ type Instance struct {
 	// runtime calls in order. Stop is excluded by construction because it
 	// runs on its own goroutine and an abandoned Stop outlives the walk.
 	timings []StageTiming
+
+	// onStageBegin is ConstructOptions.OnStageBegin, or nil. A nil callback
+	// is never called, so an unobserved construction costs one comparison
+	// per stage.
+	onStageBegin func(plugin.Identity, Stage)
 
 	stopMu  sync.Mutex
 	stopped bool
@@ -149,6 +174,9 @@ func Construct(plan *Plan, options ConstructOptions) (*Constructed, error) {
 			planned.logger,
 			slots,
 		)
+		if options.OnStageBegin != nil {
+			options.OnStageBegin(identity, StageFactory)
+		}
 		factoryStarted := time.Now()
 		value, err := invokeFactory(planned, buildContext)
 		factoryElapsed := time.Since(factoryStarted)
@@ -170,11 +198,12 @@ func Construct(plan *Plan, options ConstructOptions) (*Constructed, error) {
 			lifecycleContext = options.ContextFactory(identity, planned.logger)
 		}
 		instance := &Instance{
-			identity:  identity,
-			value:     value,
-			context:   lifecycleContext,
-			lifecycle: planned.lifecycle,
-			timings:   []StageTiming{{Stage: StageFactory, Duration: factoryElapsed}},
+			identity:     identity,
+			value:        value,
+			context:      lifecycleContext,
+			lifecycle:    planned.lifecycle,
+			timings:      []StageTiming{{Stage: StageFactory, Duration: factoryElapsed}},
+			onStageBegin: options.OnStageBegin,
 		}
 		// Ownership transfers before Init. From here onward this instance is in
 		// every rollback set, including an Init failure or panic.
@@ -256,11 +285,14 @@ func (instance *Instance) InvokeTrafficPreparation() error {
 }
 
 // invoke runs one declared startup hook and records what it cost. A hook the
-// Definition never declared is not a zero-length stage, so it is neither run
-// nor timed.
+// Definition never declared is not a zero-length stage, so it is neither run,
+// nor timed, nor announced.
 func (instance *Instance) invoke(stage Stage, hook func(any, *plugin.Context) error) error {
 	if hook == nil {
 		return nil
+	}
+	if instance.onStageBegin != nil {
+		instance.onStageBegin(instance.identity, stage)
 	}
 	started := time.Now()
 	_, err := instance.invokeClassified(stage, func() error {
