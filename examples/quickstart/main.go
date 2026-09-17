@@ -17,12 +17,6 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"os"
-	"os/signal"
-	"syscall"
-
 	"github.com/xbcio/xbc"
 	_ "github.com/xbcio/xbc/examples/quickstart/docs"
 	"github.com/xbcio/xbc/examples/quickstart/internal/greeter"
@@ -34,7 +28,7 @@ import (
 )
 
 func main() {
-	app, err := xbc.New(xbc.WithBundles(
+	xbc.Run(xbc.WithBundles(
 		prelude.Bundle(),
 		ginengine.Bundle(),
 		biz.Bundle(),
@@ -42,18 +36,4 @@ func main() {
 		swag.Bundle(),
 		greeter.Bundle(),
 	))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code, err := app.Execute(ctx, os.Args[1:])
-	stop()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-	}
-	if code != 0 {
-		os.Exit(code)
-	}
 }
