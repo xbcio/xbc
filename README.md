@@ -67,7 +67,7 @@ go run ./examples/quickstart doctor --config examples/quickstart/application.yml
 go run ./examples/quickstart --config examples/quickstart/application.yml
 ```
 
-See [Quickstart](docs/quickstart.md) for the full composition walkthrough, configuration entry points, and verification requests. The Web runtime contract is documented at [Web package documentation](https://pkg.go.dev/github.com/xbcio/xbc/transport/web), and authentication, persistence, messaging, and multi-replica deployment examples are in [Deployment recipes](docs/recipes.md).
+See [Quickstart](docs/quickstart.md) for the full composition walkthrough, configuration entry points, and verification requests. A service with no transport selected follows the same shape and is runnable as `go run ./examples/worker --config examples/worker/application.yml`; see [Background-only service](docs/recipes.md#background-only-service). The Web runtime contract is documented at [Web package documentation](https://pkg.go.dev/github.com/xbcio/xbc/transport/web), and authentication, persistence, messaging, and multi-replica deployment examples are in [Deployment recipes](docs/recipes.md).
 
 ## Development and validation
 

@@ -1,0 +1,40 @@
+# A background-only service. There is no `web:` section here, and adding one
+# would fail startup by name: every section must be owned by a selected plugin
+# or by the framework, and this composition selects no transport.
+#
+# Configuration resolution is identical to a Web service. XBC searches
+# application.yml and configs/application.yml in that order, or accepts
+# --config explicitly, and the environment is a full layer above this file, so
+# XBC_PLUGINS_SWEEPER_INTERVAL overrides the value below.
+#
+# Run `go run ./examples/worker doctor --config <path>` to see the resolved
+# plugin graph, configuration sources, and disable reasons without starting
+# anything.
+
+xbc:
+  # One budget covers cancellation, managed-task join, and reverse-order Stop.
+  shutdown_timeout: 15s
+  # Reporting only: while startup is unfinished, name the phase and the plugin
+  # still holding it every 30s. It never aborts a startup.
+  slow_startup_after: 30s
+
+log:
+  level: info
+  console:
+    enabled: true
+    format: console
+
+plugins:
+  # The protocol-neutral health capability, with no adapter selected. Nothing
+  # serves /readyz here; healthlog reads the same aggregate programmatically.
+  health:
+    timeout: 2s
+
+  sweeper:
+    interval: 5s
+
+  healthlog:
+    # Readiness reports "down" until the first sweep lands, so keeping this
+    # longer than sweeper's interval shows the transition rather than the
+    # warm-up.
+    interval: 10s

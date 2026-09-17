@@ -172,6 +172,7 @@ Selecting a Bundle makes the implementation available; its activation policy and
 
 ## Next steps
 
+- A service with no transport at all follows the same shape: see [Background-only service](recipes.md#background-only-service) and the runnable `examples/worker`.
 - [Deployment recipes](recipes.md) show explicit compositions for authentication, persistence, messaging, scheduling, and multi-replica services.
 - [Package `web`](https://pkg.go.dev/github.com/xbcio/xbc/transport/web) documents routing, middleware, request binding, errors, limits, and trusted proxies.
 - [Package `config`](https://pkg.go.dev/github.com/xbcio/xbc/config) documents the programmatic loader and schema contract.

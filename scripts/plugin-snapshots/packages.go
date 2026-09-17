@@ -50,9 +50,10 @@ import (
 //
 // run from the repository root after excluding aggregate Bundles (such as
 // transport/web/prelude, whose entries belong to the implementation packages
-// below), scripts/plugin-migration-inventory test fixtures, and
-// examples/quickstart/internal/greeter demo code. Regenerate this list by
-// re-running that grep whenever a plugin package is added or removed.
+// below), scripts/plugin-migration-inventory test fixtures, and the demo
+// plugins under examples/ (quickstart's greeter, worker's sweeper and
+// healthlog). Regenerate this list by re-running that grep whenever a plugin
+// package is added or removed.
 var bundleProviders = []func() plugin.Bundle{
 	asynq.Bundle,
 	corehealth.Bundle,
