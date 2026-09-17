@@ -59,6 +59,57 @@ func runFakeExit(fn func()) {
 	fn()
 }
 
+// withConfinedForceQuit wraps the real forceQuit for the duration of a test so
+// that the faked exit panic cannot escape the signal watcher's goroutine: a
+// panic there would abort the whole test binary rather than fail one test. The
+// returned channel reports that the escalation ran, after the real body --
+// notice, logger flush, osExit -- has been executed.
+func withConfinedForceQuit(t *testing.T) <-chan struct{} {
+	t.Helper()
+	forced := make(chan struct{}, 1)
+	previous := forceQuit
+	forceQuit = func() {
+		runFakeExit(previous)
+		select {
+		case forced <- struct{}{}:
+		default:
+		}
+	}
+	t.Cleanup(func() { forceQuit = previous })
+	return forced
+}
+
+// withCapturedStderr redirects the process adapter's stderr stream for the
+// duration of a test and returns an accessor for the text written to it. The
+// buffer is guarded because the forced-termination notice is written from the
+// signal watcher's goroutine.
+func withCapturedStderr(t *testing.T) func() string {
+	t.Helper()
+	captured := &fakeStderr{}
+	previous := stderr
+	stderr = captured
+	t.Cleanup(func() { stderr = previous })
+	return captured.String
+}
+
+type fakeStderr struct {
+	mu       sync.Mutex
+	contents []byte
+}
+
+func (f *fakeStderr) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.contents = append(f.contents, p...)
+	return len(p), nil
+}
+
+func (f *fakeStderr) String() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return string(f.contents)
+}
+
 // signalSelf sends sig to the test binary's own process. It never touches
 // *testing.T because it is called from goroutines other than the one running
 // the test.
@@ -174,18 +225,114 @@ func TestSignalDuringRunTriggersACleanShutdown(t *testing.T) {
 	}
 }
 
-func TestSignalWatcherKeepsDrainingAfterTheFirstSignal(t *testing.T) {
-	var calls atomic.Int32
-	stop := watchProcessSignals(func() { calls.Add(1) })
+// TestSignalWatcherEscalatesRepeatedRequestsInsteadOfDroppingThem is the
+// routing half of the repeat-signal contract: the first signal must reach the
+// graceful path and every later one the escalation path. It deliberately
+// passes plain counters rather than the real forceQuit, so a routing
+// regression shows up as a counter, not as a dead test binary.
+func TestSignalWatcherEscalatesRepeatedRequestsInsteadOfDroppingThem(t *testing.T) {
+	var stopRequests, forced atomic.Int32
+	stop := watchProcessSignals(func() { stopRequests.Add(1) }, func() { forced.Add(1) })
 	defer stop()
 
 	require.NoError(t, signalSelf(syscall.SIGTERM))
-	require.True(t, signalWaitUntil(func() bool { return calls.Load() >= 1 }, runtimeTestTimeout),
+	require.True(t, signalWaitUntil(func() bool { return stopRequests.Load() >= 1 }, runtimeTestTimeout),
 		"the first signal was never consumed")
+	assert.Zero(t, forced.Load(), "the first signal asks for a graceful shutdown, it must never force termination")
 
 	require.NoError(t, signalSelf(syscall.SIGINT))
-	require.True(t, signalWaitUntil(func() bool { return calls.Load() >= 2 }, runtimeTestTimeout),
+	require.True(t, signalWaitUntil(func() bool { return forced.Load() >= 1 }, runtimeTestTimeout),
 		"the watcher abandoned its channel after the first callback, losing the operator's second request")
+
+	require.NoError(t, signalSelf(syscall.SIGINT))
+	require.True(t, signalWaitUntil(func() bool { return forced.Load() >= 2 }, runtimeTestTimeout),
+		"every repeat after the first must escalate, not just the second one")
+	assert.Equal(t, int32(1), stopRequests.Load(),
+		"a repeat must not re-enter the graceful path, which is exactly the path that is already stuck")
+}
+
+// TestForcedTerminationExplainsItselfBeforeExitingOne pins the process tail of
+// the escalation path. It calls forceQuit directly on the test's own
+// goroutine, so the faked exit panic stays inside runFakeExit.
+func TestForcedTerminationExplainsItselfBeforeExitingOne(t *testing.T) {
+	notice := withCapturedStderr(t)
+	exitCode := withFakeExit(t)
+
+	runFakeExit(forceQuit)
+
+	code, called := exitCode()
+	require.True(t, called, "forced termination must actually terminate the process")
+	assert.Equal(t, 1, code, "an abandoned shutdown did not complete, so it is a failure, not a clean exit")
+	assert.Equal(t, "xbc: repeated stop signal, abandoning graceful shutdown and terminating now\n", notice(),
+		"a process that vanishes without a word on the second Ctrl-C is its own mystery")
+}
+
+// TestRepeatedSignalEndsAnApplicationStuckInAPluginHook is the case the
+// escalation exists for: a plugin hook that never returns keeps App.execute
+// from ever handing control back to the runtime, so no amount of stop
+// requesting can unwind the application. The first signal must still only
+// request a stop; the second must end the process.
+//
+// forceQuit is replaced with a wrapper that confines the faked exit panic --
+// escalation runs on the signal watcher's goroutine, where an escaping panic
+// would take the whole test binary down instead of failing this test. The
+// stuck hook is released and the execute goroutine joined before the test
+// returns, so no watcher survives into the next test with a live signal
+// registration.
+func TestRepeatedSignalEndsAnApplicationStuckInAPluginHook(t *testing.T) {
+	notice := withCapturedStderr(t)
+	exitCode := withFakeExit(t)
+	forced := withConfinedForceQuit(t)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	definition := plugin.Define("stuck-start", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Start: func(*runtimeTestValue, *plugin.Context) error {
+			close(entered)
+			<-release
+			return nil
+		},
+		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
+	}})
+
+	app := newRuntimeTestApp(definition)
+	args := runtimeTestConfig(t, time.Second)
+	result := make(chan runtimeTestResult, 1)
+	go func() {
+		code, err := executeWithSignals(app, args)
+		result <- runtimeTestResult{code: code, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the plugin hook that is supposed to block was never entered")
+	}
+
+	require.NoError(t, signalSelf(syscall.SIGINT))
+	require.True(t, signalWaitUntil(app.stopRequested, runtimeTestTimeout),
+		"the first signal did not even request a stop")
+	assert.Equal(t, stopReasonSignal, app.currentStopReason())
+	_, called := exitCode()
+	require.False(t, called,
+		"the first signal must give the graceful shutdown a chance, not terminate the process")
+
+	require.NoError(t, signalSelf(syscall.SIGINT))
+	select {
+	case <-forced:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the repeated signal never terminated a process no stop request could unwind")
+	}
+	code, called := exitCode()
+	require.True(t, called)
+	assert.Equal(t, 1, code)
+	assert.Contains(t, notice(), "xbc: repeated stop signal")
+
+	close(release)
+	completed := awaitRuntimeTestResult(t, result)
+	assert.Equal(t, 1, completed.code, "the stop request that arrived during startup still aborts the run")
+	require.Error(t, completed.err)
 }
 
 // TestShutdownUnregistersTheSignalHandlerWhenStopReturns compares two watchers rather
@@ -195,11 +342,11 @@ func TestSignalWatcherKeepsDrainingAfterTheFirstSignal(t *testing.T) {
 // that the live one does.
 func TestShutdownUnregistersTheSignalHandlerWhenStopReturns(t *testing.T) {
 	var observedStopped, observedLive atomic.Bool
-	stopStopped := watchProcessSignals(func() { observedStopped.Store(true) })
+	stopStopped := watchProcessSignals(func() { observedStopped.Store(true) }, func() {})
 	stopStopped()
 	stopStopped()
 
-	stopLive := watchProcessSignals(func() { observedLive.Store(true) })
+	stopLive := watchProcessSignals(func() { observedLive.Store(true) }, func() {})
 	defer stopLive()
 
 	require.NoError(t, signalSelf(syscall.SIGTERM))
