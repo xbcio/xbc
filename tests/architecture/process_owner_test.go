@@ -162,3 +162,83 @@ func TestArchProcessConcernsRemainInProcessAdapter(t *testing.T) {
 		assert.True(t, seenInOwner[label], "%s must continue to actually hold %s, otherwise the owner guard may run empty", owner, label)
 	}
 }
+
+// TestArchQuickstartExampleOwnsNoProcessFacility keeps the reference
+// composition root a composition root. examples/quickstart must reach the
+// process through xbc.Run and therefore must not import os/signal or call
+// os.Exit itself.
+//
+// The scope is deliberately the example alone, not every application. An
+// embedded caller that uses New and App.Execute owns its process legitimately:
+// supplying its own parent context, handling signals, and choosing an exit code
+// is precisely what that pair exists for, and the framework has no business
+// forbidding it. The example is different because it is reference material. Its
+// job is to show what the framework already provides -- argument handling,
+// SIGINT/SIGTERM graceful shutdown, escalation on a repeated signal, error
+// reporting, logger flushing, the exit code -- and a hand-written signal.Notify
+// beside xbc.Run would teach the opposite while quietly re-losing whatever the
+// entry point later learns to do. The buffered-log loss on a nonzero exit that
+// this example previously shipped is what that drift costs in practice.
+//
+// examples is its own module, so no go list invocation from this module would
+// reach it. The scan reads the directory and parses the files directly, which
+// is unaffected by module boundaries.
+func TestArchQuickstartExampleOwnsNoProcessFacility(t *testing.T) {
+	root := archRepositoryRoot(t)
+	exampleDir := filepath.Join(root, "examples", "quickstart")
+
+	var sourcePaths []string
+	for _, name := range archProductionGoFilesInDir(t, exampleDir) {
+		sourcePaths = append(sourcePaths, filepath.Join(exampleDir, name))
+	}
+	require.NotEmpty(t, sourcePaths,
+		"examples/quickstart has no production Go files scanned, the example composition-root guard is not effective")
+
+	fset := token.NewFileSet()
+	for _, filePath := range sourcePaths {
+		relative, err := filepath.Rel(root, filePath)
+		require.NoError(t, err, "failed to calculate relative path of repository for %s", filePath)
+		name := filepath.ToSlash(relative)
+
+		file, err := parser.ParseFile(fset, filePath, nil, parser.SkipObjectResolution)
+		require.NoError(t, err, "failed to parse %s", name)
+
+		aliases := make(map[string]string, len(file.Imports))
+		for _, spec := range file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			require.NoError(t, err, "failed to parse import path of %s", name)
+			if importPath == "os/signal" {
+				assert.Fail(t, "the example must not own process signals",
+					"%s imported os/signal; the reference composition root reaches signal handling through xbc.Run", name)
+			}
+			alias := path.Base(importPath)
+			if spec.Name != nil {
+				alias = spec.Name.Name
+			}
+			if alias == "_" {
+				continue
+			}
+			if alias == "." {
+				assert.NotEqual(t, "os", importPath,
+					"%s dot-imported os, the example process-facility guard cannot inspect Exit reliably", name)
+				continue
+			}
+			aliases[alias] = importPath
+		}
+
+		ast.Inspect(file, func(node ast.Node) bool {
+			sel, ok := node.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Exit" {
+				return true
+			}
+			ident, ok := sel.X.(*ast.Ident)
+			if !ok || aliases[ident.Name] != "os" {
+				return true
+			}
+			assert.Fail(t, "the example must not own the process exit code",
+				"%s line %d calls os.Exit; xbc.Run already carries the command's exit code out of the process",
+				name, fset.Position(sel.Pos()).Line)
+			return true
+		})
+	}
+}

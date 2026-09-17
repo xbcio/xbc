@@ -29,15 +29,21 @@ The process listens on `localhost:8080` and serves routes below `/api/v1`.
 [`examples/quickstart/main.go`](../examples/quickstart/main.go) selects every capability explicitly:
 
 ```go
-app, err := xbc.New(xbc.WithBundles(
-    prelude.Bundle(),
-    ginengine.Bundle(),
-    biz.Bundle(),
-    cors.Bundle(),
-    swag.Bundle(),
-    greeter.Bundle(),
-))
+func main() {
+    xbc.Run(xbc.WithBundles(
+        prelude.Bundle(),
+        ginengine.Bundle(),
+        biz.Bundle(),
+        cors.Bundle(),
+        swag.Bundle(),
+        greeter.Bundle(),
+    ))
+}
 ```
+
+`xbc.Run` owns the process on the application's behalf: it reads the command line, subscribes to `SIGINT` and `SIGTERM` to start a graceful shutdown, abandons that shutdown and terminates when a stop signal repeats, reports a failure, flushes buffered log records, and exits with the command's code. It does not return, so `main` needs nothing else.
+
+Use `xbc.New` and `App.Execute` instead when the process is not XBC's to own -- when the application must supply its own parent context, or when XBC is embedded in a larger process that already handles signals and decides the exit code. That pair touches none of the facilities listed above, which then belong to the caller.
 
 `prelude.Bundle()` provides the production Web baseline: the Web server, recovery, request IDs, access logging, security headers, compression, cooperative timeouts, and health probes. The Web runtime is engine-neutral, so the HTTP engine is a separate choice: `ginengine.Bundle()` from `github.com/xbcio/xbc/transport/web/engines/gin` supplies it, and exactly one engine Bundle must be selected. The response envelope, CORS policy, generated Swagger UI, and application-owned Greeter remain explicit choices.
 
@@ -144,7 +150,7 @@ Malformed JSON, unknown fields, validation failures, routing errors, authenticat
 To add Redis, import its package, select its Bundle, and configure a named instance:
 
 ```go
-app, err := xbc.New(xbc.WithBundles(
+xbc.Run(xbc.WithBundles(
     prelude.Bundle(),
     ginengine.Bundle(),
     biz.Bundle(),

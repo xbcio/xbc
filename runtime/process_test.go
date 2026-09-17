@@ -85,26 +85,39 @@ func withConfinedForceQuit(t *testing.T) <-chan struct{} {
 // signal watcher's goroutine.
 func withCapturedStderr(t *testing.T) func() string {
 	t.Helper()
-	captured := &fakeStderr{}
+	captured := &capturedStream{}
 	previous := stderr
 	stderr = captured
 	t.Cleanup(func() { stderr = previous })
 	return captured.String
 }
 
-type fakeStderr struct {
+// withCapturedStdout does the same for the process adapter's stdout stream,
+// which is where a read-only command's report goes when no App-level writer was
+// injected -- the only way to observe what an entry point that owns the process
+// and never returns actually planned.
+func withCapturedStdout(t *testing.T) func() string {
+	t.Helper()
+	captured := &capturedStream{}
+	previous := stdout
+	stdout = captured
+	t.Cleanup(func() { stdout = previous })
+	return captured.String
+}
+
+type capturedStream struct {
 	mu       sync.Mutex
 	contents []byte
 }
 
-func (f *fakeStderr) Write(p []byte) (int, error) {
+func (f *capturedStream) Write(p []byte) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.contents = append(f.contents, p...)
 	return len(p), nil
 }
 
-func (f *fakeStderr) String() string {
+func (f *capturedStream) String() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return string(f.contents)
@@ -176,20 +189,72 @@ func TestRunProcessTakesItsArgumentsFromTheProcess(t *testing.T) {
 // applications actually call: it must terminate the process rather than return
 // to main, and it must carry the command's exit code out with it.
 //
-// The other half of Run -- that New() with no Bundles composes the frozen
-// process catalog -- is not observable from here, because Run returns no App.
-// It is asserted by TestNewWithoutBundlesFreezesTheProcessCatalog, which
-// inspects the resulting plan against a sentinel declared into that catalog.
+// The other half of Run without Options -- that New() with no Bundles composes
+// the frozen process catalog -- is not observable from here, because Run
+// returns no App. It is asserted by
+// TestNewWithoutBundlesFreezesTheProcessCatalog, which inspects the resulting
+// plan against a sentinel declared into that catalog. The explicitly composed
+// case is covered by TestRunPlansTheBundlesItWasGiven below.
 func TestRunExitsThroughTheProcessAdapter(t *testing.T) {
 	previous := os.Args
 	t.Cleanup(func() { os.Args = previous })
 	os.Args = append([]string{"xbc-test", "doctor"}, runtimeTestConfig(t, time.Second)...)
 
 	exitCode := withFakeExit(t)
-	runFakeExit(Run)
+	runFakeExit(func() { Run() })
 	code, called := exitCode()
 	require.True(t, called, "Run terminates the process instead of returning to main")
 	assert.Equal(t, 0, code)
+}
+
+// TestRunPlansTheBundlesItWasGiven is why Run takes Options at all: an
+// application that composes explicitly must be able to reach the process
+// facilities Run owns -- signal-driven shutdown, forced termination on a
+// repeated signal, logger flushing, the exit code -- without hand-writing them
+// in main.
+//
+// Run returns no App, so the composition is observed through doctor's report on
+// the process stdout stream. The sentinel assertion is the discriminating half:
+// silently falling back to the frozen autoload catalog, or merging it in, would
+// still produce a successful doctor run and an exit code of 0.
+func TestRunPlansTheBundlesItWasGiven(t *testing.T) {
+	previous := os.Args
+	t.Cleanup(func() { os.Args = previous })
+	os.Args = append([]string{"xbc-test", "doctor"}, runtimeTestConfig(t, time.Second)...)
+
+	definition := plugin.Define("run-composed", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+
+	report := withCapturedStdout(t)
+	exitCode := withFakeExit(t)
+	runFakeExit(func() { Run(WithBundles(plugin.BundleOf(definition))) })
+
+	code, called := exitCode()
+	require.True(t, called, "Run still terminates the process when it was given Options")
+	require.Equal(t, 0, code)
+
+	out := report()
+	assert.Contains(t, out, "run-composed", "the Bundle passed to Run must be the one that gets planned")
+	assert.Contains(t, out, "declared 1, enabled instances 1, disabled 0",
+		"an explicitly composed Run sees exactly its own Bundles")
+	assert.NotContains(t, out, string(processCatalogSentinel),
+		"an explicit composition must not be merged with, or replaced by, the frozen autoload catalog")
+}
+
+// TestRunReportsAFailingOptionAndExitsOne pins the pre-App failure path Run
+// only now has anything to reach: a refused Option must arrive at the process
+// as a diagnosed exit 1, not as a nil App handed to the process adapter.
+func TestRunReportsAFailingOptionAndExitsOne(t *testing.T) {
+	notice := withCapturedStderr(t)
+	exitCode := withFakeExit(t)
+
+	runFakeExit(func() { Run(nil) })
+
+	code, called := exitCode()
+	require.True(t, called)
+	assert.Equal(t, 1, code)
+	assert.Contains(t, notice(), "xbc: option 0 is nil")
 }
 
 func TestSignalDuringRunTriggersACleanShutdown(t *testing.T) {

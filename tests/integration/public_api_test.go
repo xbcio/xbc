@@ -59,6 +59,21 @@ func TestPublicAPIExecutesPrivateBundle(t *testing.T) {
 	assert.Contains(t, err.Error(), "can only be called once")
 }
 
+// TestPublicRunAcceptsExplicitComposition pins Run's signature from the
+// position an external importer occupies. It is the entry point the facade's
+// documentation and every example point at, and it is the only one that owns
+// process facilities on the application's behalf, so it must keep accepting the
+// same Options as New: a Run that took no Option would force every explicitly
+// composed application back to hand-written signal handling and os.Exit.
+//
+// Run is deliberately not called here -- it terminates the process. Only its
+// type is asserted, exactly as TestPublicAppSurface asserts Execute's.
+func TestPublicRunAcceptsExplicitComposition(t *testing.T) {
+	want := reflect.TypeOf((func(...xbc.Option))(nil))
+	assert.Equal(t, want, reflect.TypeOf(xbc.Run),
+		"Run must accept a variadic Option list and return nothing")
+}
+
 // TestPublicAppSurface pins App's exported method set to exactly Execute, with
 // exactly that signature.
 //
