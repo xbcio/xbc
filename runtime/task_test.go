@@ -42,7 +42,14 @@ func TestTasksAreAdmittedOnlyBetweenOpenStartAndCloseStart(t *testing.T) {
 
 	assert.False(t, tasks.submit(owner, func(context.Context) {}, false),
 		"admission closes when the owning Start returns")
-	assert.Equal(t, 1, tasks.spawnedCount(), "spawnedCount counts every admitted task, not the running ones")
+	assert.Zero(t, tasks.criticalTaskCount(), "a non-critical task is no long-lived capability")
+
+	require.True(t, tasks.openStart(owner))
+	for range 2 {
+		require.True(t, tasks.submit(owner, func(ctx context.Context) { <-ctx.Done() }, true))
+	}
+	tasks.closeStart(owner)
+	assert.Equal(t, 2, tasks.criticalTaskCount(), "every admitted critical task is counted")
 	require.NoError(t, tasks.drainRemaining(context.Background()))
 }
 
@@ -55,7 +62,7 @@ func TestClosedAdmissionRejectsEveryFurtherSubmission(t *testing.T) {
 
 	assert.False(t, tasks.openStart(owner), "a shutting-down runtime never reopens admission")
 	assert.False(t, tasks.submit(owner, func(context.Context) {}, false))
-	assert.Zero(t, tasks.spawnedCount())
+	assert.Zero(t, tasks.criticalTaskCount())
 }
 
 func TestConcurrentSubmitCloseAndShutdownStayConsistent(t *testing.T) {
@@ -234,7 +241,6 @@ func TestShutdownDrainReapsEveryScopeNoLifecycleStageClaimed(t *testing.T) {
 
 	require.NoError(t, tasks.drainRemaining(context.Background()))
 	assert.Len(t, canceled, 2, "every leftover scope is canceled and joined")
-	assert.Equal(t, 2, tasks.spawnedCount())
 	require.NoError(t, tasks.drainRemaining(context.Background()), "draining twice is a no-op")
 }
 

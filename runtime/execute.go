@@ -257,8 +257,12 @@ func (a *App) wait() (int, error) {
 	return 0, nil
 }
 
+// assertLiveness refuses to hand a process to wait() when nothing will keep it
+// busy. Only two contributions qualify: opening traffic, or a critical managed
+// task. A non-critical task is contractually allowed to return, so it cannot
+// justify a process that would then block until a signal with no work left.
 func (a *App) assertLiveness(instances []*assembly.Instance) error {
-	if a.tasks != nil && a.tasks.spawnedCount() > 0 {
+	if a.tasks != nil && a.tasks.criticalTaskCount() > 0 {
 		return nil
 	}
 	for _, instance := range instances {
@@ -270,7 +274,7 @@ func (a *App) assertLiveness(instances []*assembly.Instance) error {
 	for index, instance := range instances {
 		labels[index] = instance.Identity().String()
 	}
-	return fmt.Errorf("xbc: no plugin provides a long-lived capability; enabled plugins: %s", strings.Join(labels, ", "))
+	return fmt.Errorf("xbc: no plugin provides a long-lived capability; open traffic or submit a critical managed task from Start; enabled plugins: %s", strings.Join(labels, ", "))
 }
 
 func (a *App) errNothingEnabled(plan *assembly.Plan) error {
