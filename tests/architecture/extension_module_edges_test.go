@@ -91,6 +91,22 @@ func (e archExtensionEdge) String() string {
 // extension compiling in another extension: both endpoints are protocol-neutral
 // and both closures stay clean, while the module is no longer independently
 // selectable or independently publishable.
+//
+// Test files are deliberately out of scope, and coordination/placement's tests
+// are the case that makes the exclusion a decision rather than an oversight:
+// they drive the real Redis locker, so they hold the one sibling import this
+// guard would otherwise catch. Of the two reasons the rule exists, only one
+// reaches a test file. Nothing is smuggled into an application -- a test binary
+// builds no deployment, so no Definition anyone declined can arrive through it,
+// and that is the reason the rule is mainly about. The publishability reason does
+// reach it: the manifest cannot require the sibling either, so `go test` on the
+// published module would not resolve. That is a real debt, and it cannot be paid
+// by widening this guard: the fix is a require line, which no manifest here may
+// carry until core has a release tag, and the alternative -- swapping the real
+// store for a double -- would delete the coverage of the Lua owner comparison
+// that the placement design names as the thing that must not regress. Coverage
+// of a real backend is worth more than uniformity here, so the edge stays and is
+// revisited when a require line becomes possible.
 func TestArchExtensionModulesDependOnlyOnSharedVocabulary(t *testing.T) {
 	repositoryRoot := archRepositoryRoot(t)
 	moduleRoots := archExtensionModulePaths(t)
