@@ -70,11 +70,11 @@ func TestShimForwardsTheStatusToTheWriterBeneath(t *testing.T) {
 
 	s.WriteHeader(http.StatusTeapot)
 
-	require.Equal(t, http.StatusTeapot, base.Status(), "记录的状态码必须落到下层写入器上")
-	require.Equal(t, http.StatusTeapot, s.Status(), "shim 报告的状态码应来自下层写入器")
+	require.Equal(t, http.StatusTeapot, base.Status(), "the recorded status must land on the writer beneath")
+	require.Equal(t, http.StatusTeapot, s.Status(), "the status the shim reports must come from the writer beneath")
 
 	s.WriteHeaderNow()
-	require.True(t, base.Written(), "WriteHeaderNow 之后响应必须已提交")
+	require.True(t, base.Written(), "the response must be committed once WriteHeaderNow has run")
 	require.Equal(t, http.StatusTeapot, recorder.Code)
 }
 
@@ -88,7 +88,7 @@ func TestShimWriteHeaderNowCommitsWithoutAStatusOfItsOwn(t *testing.T) {
 
 	s.WriteHeaderNow()
 
-	require.True(t, base.Written(), "WriteHeaderNow 必须真正提交")
+	require.True(t, base.Written(), "WriteHeaderNow must actually commit")
 	require.Equal(t, http.StatusOK, recorder.Code)
 }
 
@@ -100,7 +100,7 @@ func TestShimWriteCommitsBeforeBody(t *testing.T) {
 	s.WriteHeader(http.StatusCreated)
 	_, err := s.Write([]byte("body"))
 	require.NoError(t, err)
-	require.True(t, base.Written(), "写 body 必须顺带提交 header")
+	require.True(t, base.Written(), "writing the body must commit the header along with it")
 	require.Equal(t, http.StatusCreated, recorder.Code)
 	require.Equal(t, "body", recorder.Body.String())
 }
@@ -112,11 +112,11 @@ func TestShimSecondWriteHeaderAfterCommitIsIgnored(t *testing.T) {
 
 	s.WriteHeader(http.StatusOK)
 	s.WriteHeaderNow()
-	require.True(t, base.Written(), "WriteHeaderNow 必须真正提交，否则以下断言即使全绿也没有区分力")
+	require.True(t, base.Written(), "WriteHeaderNow must actually commit -- otherwise the assertion below has no discriminating power even when it passes")
 	s.WriteHeader(http.StatusInternalServerError)
 	s.WriteHeaderNow()
 
-	require.Equal(t, http.StatusOK, recorder.Code, "提交后的状态码不得被覆盖")
+	require.Equal(t, http.StatusOK, recorder.Code, "the status must not be overwritten once the response has been committed")
 }
 
 // bufferingWriter records a status without sending it and commits only when
@@ -198,11 +198,11 @@ func TestShimWriteStringReportsBytesAndCommitsBeforeTheBody(t *testing.T) {
 	n, err := s.WriteString("héllo")
 
 	require.NoError(t, err)
-	require.Equal(t, 6, n, "WriteString 必须返回写入的字节数，而不是字符数")
-	require.Equal(t, []string{"commit", "body"}, base.calls, "body 必须在 header 提交之后才写出")
-	require.Equal(t, http.StatusAccepted, base.Status(), "提交必须带上此前记录的状态码")
+	require.Equal(t, 6, n, "WriteString must return the number of bytes written, not the number of characters")
+	require.Equal(t, []string{"commit", "body"}, base.calls, "the body must not go out until the header has been committed")
+	require.Equal(t, http.StatusAccepted, base.Status(), "the commit must carry the status recorded before it")
 	require.Equal(t, "héllo", string(base.body))
-	require.Equal(t, 6, base.Size(), "写入的字节数必须记到下层写入器上")
+	require.Equal(t, 6, base.Size(), "the number of bytes written must be credited to the writer beneath")
 }
 
 // TestGinResponseWriterSatisfiesContract is why the adapter can hand gin's own
@@ -215,5 +215,5 @@ func TestGinResponseWriterSatisfiesContract(t *testing.T) {
 	neutralType := reflect.TypeOf((*web.ResponseWriter)(nil)).Elem()
 
 	require.True(t, ginWriterType.Implements(neutralType),
-		"gin.ResponseWriter 必须满足 web.ResponseWriter")
+		"gin.ResponseWriter must satisfy web.ResponseWriter")
 }

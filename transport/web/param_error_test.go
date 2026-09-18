@@ -110,16 +110,16 @@ func TestParamErrorCollectsEveryElementOfAnAggregateFailure(t *testing.T) {
 	// independently, then joined with errors.Join -- exactly how an engine
 	// adapter is expected to normalize a per-element binding failure.
 	firstElement := validate.Struct(paramErrorArrayElement{Email: "alice@example.com"})
-	require.Error(t, firstElement, "第一个元素必须因缺少 name 而校验失败")
+	require.Error(t, firstElement, "the first element must fail validation because its name is missing")
 
 	secondElement := validate.Struct(paramErrorArrayElement{Name: "Bob", Email: "not-an-email"})
-	require.Error(t, secondElement, "第二个元素必须因 email 格式不合法而校验失败")
+	require.Error(t, secondElement, "the second element must fail validation because its email is malformed")
 
 	var firstAsValidationErrors, secondAsValidationErrors validator.ValidationErrors
 	require.True(t, errors.As(firstElement, &firstAsValidationErrors))
 	require.True(t, errors.As(secondElement, &secondAsValidationErrors))
-	require.Len(t, firstAsValidationErrors, 1, "第一个元素只应因 name 一个字段失败")
-	require.Len(t, secondAsValidationErrors, 1, "第二个元素只应因 email 一个字段失败")
+	require.Len(t, firstAsValidationErrors, 1, "the first element must fail on the name field alone")
+	require.Len(t, secondAsValidationErrors, 1, "the second element must fail on the email field alone")
 
 	engine := enginetest.New()
 	engine.POST("/requests", func(_ context.Context, _ *web.Ctx) error {
@@ -141,13 +141,13 @@ func TestParamErrorCollectsEveryElementOfAnAggregateFailure(t *testing.T) {
 	var fieldErrors []web.FieldError
 	require.NoError(t, json.Unmarshal(data, &fieldErrors))
 
-	assert.Len(t, fieldErrors, 2, "聚合失败的每个元素都必须贡献字段错误，不能只取第一个")
+	assert.Len(t, fieldErrors, 2, "every element of an aggregate failure must contribute its field errors, not just the first one")
 	var fields []string
 	for _, fieldError := range fieldErrors {
 		fields = append(fields, fieldError.Field+":"+fieldError.Code)
 	}
-	assert.Contains(t, fields, "name:required", "第一个元素的字段错误必须出现")
-	assert.Contains(t, fields, "email:email", "第二个元素的字段错误必须出现，不能被第一个元素吞掉")
+	assert.Contains(t, fields, "name:required", "the first element's field error must be reported")
+	assert.Contains(t, fields, "email:email", "the second element's field error must be reported too -- it must not be swallowed by the first element")
 }
 
 // paramErrorOpaqueAggregate is a multi-error that does not implement
@@ -173,11 +173,11 @@ func TestParamErrorTreatsAnUnnormalizedAggregateAsASafeBadRequest(t *testing.T) 
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/requests", nil))
 
-	assert.Equal(t, http.StatusBadRequest, response.Code, "未归一化的聚合失败也必须落到安全的 400，不能变成 500")
+	assert.Equal(t, http.StatusBadRequest, response.Code, "an unnormalized aggregate failure must still land on a safe 400 rather than becoming a 500")
 	assert.Equal(
 		t,
 		"invalid_request",
 		decodeProblem(t, response).Properties["code"],
-		"未实现 Unwrap() []error 的聚合不能被误判为逐字段校验失败",
+		"an aggregate that does not implement Unwrap() []error must not be mistaken for a per-field validation failure",
 	)
 }

@@ -131,7 +131,7 @@ func TestTrustedProxiesAreOptIn(t *testing.T) {
 			require.NoError(t, server.Start(ctx))
 
 			assert.Equal(t, test.proxies, options.TrustedProxies,
-				"未显式配置时不得替应用信任任何代理；显式配置时必须原样交给引擎")
+				"with nothing configured, no proxy may be trusted on the application's behalf; what is configured must reach the engine verbatim")
 		})
 	}
 }
@@ -488,11 +488,11 @@ func TestGlobalMiddlewareRunsOnUnmatchedRequests(t *testing.T) {
 	} {
 		response := httptest.NewRecorder()
 		testEngineOf(t, server).ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
-		assert.Equal(t, test.status, response.Code, "%s 的状态码不符", test.name)
+		assert.Equal(t, test.status, response.Code, "unexpected status for %s", test.name)
 	}
 
 	assert.Equal(t, []string{"GET /ping", "GET /missing", "POST /ping"}, observed,
-		"全局中间件必须覆盖 404 与 405，未匹配的请求同样是客户端发出的请求")
+		"the global chain must cover 404 and 405 as well -- an unmatched request is still a request a client made")
 }
 
 func TestOpenTrafficPropagatesRouteCatalogListenerErrorWithoutReleasingGate(t *testing.T) {

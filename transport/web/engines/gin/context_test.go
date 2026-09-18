@@ -37,9 +37,9 @@ func TestStatusRecordsWithoutCommitting(t *testing.T) {
 
 	rc.Status(http.StatusTeapot)
 
-	assert.False(t, rc.Writer().Written(), "Status 只应记录状态码，不得提交响应")
-	assert.Equal(t, http.StatusTeapot, rc.Writer().Status(), "Status 应已记录状态码")
-	assert.Equal(t, http.StatusOK, recorder.Code, "底层 recorder 不应收到任何已提交的状态行")
+	assert.False(t, rc.Writer().Written(), "Status must only record the status, never commit the response")
+	assert.Equal(t, http.StatusTeapot, rc.Writer().Status(), "Status must have recorded the status")
+	assert.Equal(t, http.StatusOK, recorder.Code, "the recorder beneath must not have received a committed status line")
 }
 
 // TestSetWriterRoundTripsThroughTheShim pins that a neutral writer installed
@@ -53,15 +53,15 @@ func TestSetWriterRoundTripsThroughTheShim(t *testing.T) {
 
 	rc.SetWriter(base)
 
-	require.False(t, base.Written(), "安装时不应提交任何内容")
+	require.False(t, base.Written(), "installing a writer must not commit anything")
 	require.NoError(t, rc.JSON(http.StatusCreated, map[string]string{"name": "xbc"}))
 
-	assert.True(t, base.Written(), "gin 的渲染必须落到 SetWriter 安装的中立写入器上")
-	assert.Equal(t, http.StatusCreated, base.Status(), "状态码应经 shim 到达中立写入器")
-	assert.JSONEq(t, `{"name":"xbc"}`, base.recorder.Body.String(), "响应体应写入中立写入器")
-	assert.Equal(t, http.StatusOK, recorder.Code, "原写入器不应再收到任何内容")
+	assert.True(t, base.Written(), "gin's rendering must land on the neutral writer SetWriter installed")
+	assert.Equal(t, http.StatusCreated, base.Status(), "the status must reach the neutral writer through the shim")
+	assert.JSONEq(t, `{"name":"xbc"}`, base.recorder.Body.String(), "the body must be written into the neutral writer")
+	assert.Equal(t, http.StatusOK, recorder.Code, "the writer that was replaced must receive nothing further")
 
-	assert.Same(t, rc.Writer(), rc.c.Writer, "Writer 必须返回 gin 当前持有的写入器")
+	assert.Same(t, rc.Writer(), rc.c.Writer, "Writer must return the writer gin currently holds")
 }
 
 // TestStatusRecordedThroughAReplacedWriterSurvivesTheRestore pins that the
@@ -79,14 +79,14 @@ func TestStatusRecordedThroughAReplacedWriterSurvivesTheRestore(t *testing.T) {
 	rc.SetWriter(wrapper)
 	rc.Status(http.StatusAccepted)
 
-	assert.False(t, wrapper.Written(), "Status 仍只应记录，不得提交响应")
+	assert.False(t, wrapper.Written(), "Status must still only record, never commit the response")
 	assert.Equal(t, http.StatusAccepted, wrapper.Status(),
-		"包装器读到的状态码应是处理器记录的那个，而不是默认值")
+		"the status the wrapper reads must be the one the handler recorded, not the default")
 
 	rc.SetWriter(original)
 	rc.c.Writer.WriteHeaderNow()
 
-	assert.Equal(t, http.StatusAccepted, recorder.Code, "恢复原写入器后，记录的状态码仍应被提交")
+	assert.Equal(t, http.StatusAccepted, recorder.Code, "the recorded status must still be committed after the original writer is restored")
 }
 
 // passthroughWriter is the minimal shape the buffering middleware share: it
@@ -112,9 +112,9 @@ func TestJSONReportsRenderFailure(t *testing.T) {
 
 	err := rc.JSON(http.StatusOK, make(chan int))
 
-	require.Error(t, err, "渲染失败必须报告给调用方")
+	require.Error(t, err, "a render failure must be reported to the caller")
 	var unsupported *json.UnsupportedTypeError
-	assert.ErrorAs(t, err, &unsupported, "应原样报告引擎的渲染错误")
+	assert.ErrorAs(t, err, &unsupported, "the engine's render error must be reported as it is")
 }
 
 // TestJSONIgnoresErrorsRecordedBeforeTheRender pins that JSON reports on its
@@ -131,8 +131,8 @@ func TestJSONIgnoresErrorsRecordedBeforeTheRender(t *testing.T) {
 	rc.c.Error(errors.New("recorded by earlier middleware"))
 
 	require.NoError(t, rc.JSON(http.StatusOK, map[string]string{"name": "xbc"}),
-		"渲染成功时不得因链上已有的错误而误报失败")
-	assert.JSONEq(t, `{"name":"xbc"}`, recorder.Body.String(), "响应体应正常写出")
+		"a successful render must not be reported as a failure because the chain already carried an error")
+	assert.JSONEq(t, `{"name":"xbc"}`, recorder.Body.String(), "the body must be written out as usual")
 }
 
 // TestBindNegotiatesTheContentType pins that Bind forwards to the engine's
@@ -149,8 +149,8 @@ func TestBindNegotiatesTheContentType(t *testing.T) {
 	var payload struct {
 		Name string `form:"name"`
 	}
-	require.NoError(t, rc.Bind(&payload), "表单编码的请求体必须能绑定：Bind 应交给引擎自己的内容协商")
-	assert.Equal(t, "xbc", payload.Name, "Bind 应按 Content-Type 选择表单绑定器")
+	require.NoError(t, rc.Bind(&payload), "a form-encoded body must bind: Bind has to delegate to the engine's own content negotiation")
+	assert.Equal(t, "xbc", payload.Name, "Bind must pick the form binder based on the Content-Type")
 }
 
 // TestBindReturnsTheEngineErrorUnwrapped pins that binding policy stays in
@@ -169,9 +169,9 @@ func TestBindReturnsTheEngineErrorUnwrapped(t *testing.T) {
 	}
 	err := rc.Bind(&payload)
 
-	require.Error(t, err, "类型不匹配的请求体应绑定失败")
+	require.Error(t, err, "a body whose types do not match must fail to bind")
 	_, native := err.(*json.UnmarshalTypeError)
-	assert.True(t, native, "Bind 必须原样返回引擎的绑定错误，包装成 ParamError 是 web 的职责")
+	assert.True(t, native, "Bind must return the engine's binding error as it is -- wrapping it in ParamError is web's job")
 }
 
 // TestBindURIReadsRouteParameters pins that URI binding runs against the
@@ -193,9 +193,9 @@ func TestBindURIReadsRouteParameters(t *testing.T) {
 
 	engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/items/42", nil))
 
-	require.NoError(t, bindErr, "BindURI 不应返回错误")
-	assert.Equal(t, "42", param, "Param 应读到路由通配段")
-	assert.Equal(t, "42", bound.ID, "BindURI 应填充 uri 标签字段")
+	require.NoError(t, bindErr, "BindURI must not return an error")
+	assert.Equal(t, "42", param, "Param must read the route's wildcard segment")
+	assert.Equal(t, "42", bound.ID, "BindURI must populate the uri-tagged field")
 }
 
 // TestClientIPForwardsToTheEngine pins the doc comment's claim that ClientIP
@@ -206,7 +206,7 @@ func TestBindURIReadsRouteParameters(t *testing.T) {
 func TestClientIPForwardsToTheEngine(t *testing.T) {
 	ginlib.SetMode(ginlib.TestMode)
 	engine := ginlib.New()
-	require.NoError(t, engine.SetTrustedProxies(nil), "SetTrustedProxies(nil) 不应失败")
+	require.NoError(t, engine.SetTrustedProxies(nil), "SetTrustedProxies(nil) must not fail")
 
 	var got string
 	engine.GET("/ip", func(c *ginlib.Context) { got = newRequestContext(c).ClientIP() })
@@ -217,7 +217,7 @@ func TestClientIPForwardsToTheEngine(t *testing.T) {
 	engine.ServeHTTP(httptest.NewRecorder(), request)
 
 	assert.Equal(t, "203.0.113.7", got,
-		"无受信代理时 ClientIP 必须给出引擎自己的答案，忽略 X-Forwarded-For")
+		"with no trusted proxy ClientIP must give the engine's own answer and ignore X-Forwarded-For")
 }
 
 // TestClientIPHonoursTrustedProxies is the discriminating half of the ClientIP
@@ -251,9 +251,9 @@ func TestClientIPHonoursTrustedProxies(t *testing.T) {
 	}
 
 	assert.Equal(t, "9.9.9.9", call("127.0.0.1:51234"),
-		"请求来自受信代理时必须采信 X-Forwarded-For，这是只有真正转发给引擎才能得到的答案")
+		"a request from a trusted proxy must take X-Forwarded-For at its word -- an answer only a real forward to the engine can produce")
 	assert.Equal(t, "203.0.113.7", call("203.0.113.7:51234"),
-		"请求来自非受信代理时必须忽略 X-Forwarded-For，与引擎自身的判断一致")
+		"a request from an untrusted proxy must ignore X-Forwarded-For, in agreement with the engine's own judgement")
 }
 
 // TestAbortStopsLaterHandlers pins that Abort moves the engine's own handler
@@ -275,7 +275,7 @@ func TestAbortStopsLaterHandlers(t *testing.T) {
 
 	engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/abort", nil))
 
-	assert.Equal(t, []string{"first"}, ran, "Abort 之后的处理器不得再运行")
+	assert.Equal(t, []string{"first"}, ran, "no handler after Abort may still run")
 }
 
 // TestNextSuspendsUntilTheRestOfTheChainHasRun pins the suspend-and-resume
@@ -299,7 +299,7 @@ func TestNextSuspendsUntilTheRestOfTheChainHasRun(t *testing.T) {
 	engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/next", nil))
 
 	assert.Equal(t, []string{"before", "inner", "after"}, ran,
-		"Next 必须在链的其余部分跑完后才返回")
+		"Next must not return until the rest of the chain has run")
 }
 
 // TestSetRequestIsVisibleThroughRequest pins the pairing the rest of the
@@ -312,6 +312,6 @@ func TestSetRequestIsVisibleThroughRequest(t *testing.T) {
 	replacement := httptest.NewRequest(http.MethodPut, "/replaced", nil)
 	rc.SetRequest(replacement)
 
-	assert.Same(t, replacement, rc.Request(), "Request 必须返回 SetRequest 安装的请求")
-	assert.Same(t, replacement, rc.c.Request, "SetRequest 必须改写引擎持有的请求")
+	assert.Same(t, replacement, rc.Request(), "Request must return the request SetRequest installed")
+	assert.Same(t, replacement, rc.c.Request, "SetRequest must rewrite the request the engine holds")
 }

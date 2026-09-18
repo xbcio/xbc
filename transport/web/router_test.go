@@ -397,11 +397,11 @@ func TestGroupPermDefaultAppliesToEveryRouteInGroup(t *testing.T) {
 
 	list, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/list")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE", list.Perm, "组级默认必须落进该组下第一条路由")
+	assert.Equal(t, "FP_ROLE", list.Perm, "A group-level default must reach the first route registered under the group")
 
 	detail, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/detail")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE", detail.Perm, "组级默认必须落进该组下每一条路由，而不仅仅是第一条")
+	assert.Equal(t, "FP_ROLE", detail.Perm, "A group-level default must reach every route registered under the group, not only the first one")
 }
 
 // TestRoutePermOverridesGroupDefaultForSingleRoute pins that Route.Perm, run
@@ -418,11 +418,11 @@ func TestRoutePermOverridesGroupDefaultForSingleRoute(t *testing.T) {
 
 	list, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/list")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE", list.Perm, "未显式覆盖的路由必须保留组级默认")
+	assert.Equal(t, "FP_ROLE", list.Perm, "A route that does not override it explicitly must keep the group-level default")
 
 	fix, ok := catalog.Lookup(http.MethodPost, "/api/sys_role/fix")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE_ADMIN", fix.Perm, "单条 .Perm 必须覆盖组级默认")
+	assert.Equal(t, "FP_ROLE_ADMIN", fix.Perm, "a per-route .Perm must override the group-level default")
 }
 
 // TestNestedGroupInheritsParentPermDefault pins inheritance across Group
@@ -439,7 +439,7 @@ func TestNestedGroupInheritsParentPermDefault(t *testing.T) {
 
 	entries, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/audit/entries")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE", entries.Perm, "嵌套子组必须继承父组的组级默认")
+	assert.Equal(t, "FP_ROLE", entries.Perm, "A nested sub-group must inherit its parent group's group-level default")
 }
 
 // TestChildGroupPermOverrideDoesNotAffectParentOrSiblings is the
@@ -462,11 +462,11 @@ func TestChildGroupPermOverrideDoesNotAffectParentOrSiblings(t *testing.T) {
 
 	panel, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/admin/panel")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE_ADMIN", panel.Perm, "子组的覆盖必须对自己的路由生效")
+	assert.Equal(t, "FP_ROLE_ADMIN", panel.Perm, "a child group's own override must take effect on its own routes")
 
 	list, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/list")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE", list.Perm, "子组覆盖默认绝不能泄漏回父组或兄弟路由")
+	assert.Equal(t, "FP_ROLE", list.Perm, "A child group's override must never leak back into the parent group or a sibling route")
 }
 
 // TestPermDefaultSnapshotExcludesRoutesRegisteredBeforeCall pins the
@@ -485,11 +485,11 @@ func TestPermDefaultSnapshotExcludesRoutesRegisteredBeforeCall(t *testing.T) {
 
 	list, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/list")
 	require.True(t, ok)
-	assert.Empty(t, list.Perm, "在 .Perm 调用之前注册的路由不应带上之后才声明的默认值")
+	assert.Empty(t, list.Perm, "a route registered before the .Perm call must not pick up a default that was only declared afterwards")
 
 	detail, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/detail")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE", detail.Perm, "在 .Perm 调用之后注册的路由必须带上默认值")
+	assert.Equal(t, "FP_ROLE", detail.Perm, "A route registered after the .Perm call must carry the default")
 }
 
 // TestGroupDerivedBeforePermDoesNotInheritLaterDefault is the Group-boundary
@@ -511,11 +511,11 @@ func TestGroupDerivedBeforePermDoesNotInheritLaterDefault(t *testing.T) {
 
 	x, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/before/x")
 	require.True(t, ok)
-	assert.Empty(t, x.Perm, "在 .Perm 调用之前派生的子组不应继承之后声明的默认值")
+	assert.Empty(t, x.Perm, "a sub-group derived before the .Perm call must not inherit a default that was only declared afterwards")
 
 	y, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/after/y")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE", y.Perm, "在 .Perm 调用之后派生的子组必须继承默认值")
+	assert.Equal(t, "FP_ROLE", y.Perm, "a sub-group derived after the .Perm call must inherit the default")
 }
 
 // TestGroupMiddlewareRunsBeforeTheHandler pins the ordering an authorization
@@ -557,10 +557,10 @@ func TestCascadedRegistrationRecordsBothRoutesUnderGroupPrefix(t *testing.T) {
 	require.NoError(t, err)
 
 	_, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/a")
-	assert.True(t, ok, "级联注册的第一条路由必须真的进入路由表")
+	assert.True(t, ok, "the first route of a cascaded registration must really enter the route table")
 
 	_, ok = catalog.Lookup(http.MethodPost, "/api/sys_role/b")
-	assert.True(t, ok, "级联注册的第二条路由必须真的进入路由表，且带有正确的组路径前缀")
+	assert.True(t, ok, "the second route of a cascaded registration must really enter the route table too, under the group's own path prefix")
 }
 
 // TestCascadedRegistrationStaysOnSameGroupNotRoot proves the cascaded second
@@ -581,7 +581,7 @@ func TestCascadedRegistrationStaysOnSameGroupNotRoot(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/admin/b", nil))
 	assert.Equal(t, http.StatusNoContent, recorder.Code)
-	assert.True(t, ran, "级联注册的第二条路由必须落在同一个组上，而不是根路由器，否则组中间件不会运行")
+	assert.True(t, ran, "the cascaded second route must be registered on the same group, not on the root router -- registered on the root, the group's middleware never runs")
 }
 
 // TestCascadedPermOnlyAffectsLastRegisteredRoute is the load-bearing case:
@@ -600,11 +600,11 @@ func TestCascadedPermOnlyAffectsLastRegisteredRoute(t *testing.T) {
 
 	a, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/a")
 	require.True(t, ok)
-	assert.Empty(t, a.Perm, "级联链上 .Perm 只应作用于返回它的那个 *Route（/b），/a 绝不能受影响")
+	assert.Empty(t, a.Perm, "On a cascaded chain, .Perm must reach only the *Route that returned it (/b) -- /a must never be affected")
 
 	b, ok := catalog.Lookup(http.MethodPost, "/api/sys_role/b")
 	require.True(t, ok)
-	assert.Equal(t, "Y", b.Perm, ".POST 返回的新 *Route 上调用 .Perm 必须落在 /b 上")
+	assert.Equal(t, "Y", b.Perm, ".Perm called on the new *Route that .POST returned must land on /b")
 }
 
 // TestCascadedRegistrationInheritsGroupDefaults pins that routes created
@@ -621,15 +621,15 @@ func TestCascadedRegistrationInheritsGroupDefaults(t *testing.T) {
 
 	a, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/a")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE", a.Perm, "级联注册的第一条路由必须继承组级 Perm 默认")
-	require.NotNil(t, a.Auth, "级联注册的第一条路由必须继承组级 Auth 默认")
-	assert.True(t, a.Auth.IsPublic(), "级联注册的第一条路由必须继承组级 Auth 默认")
+	assert.Equal(t, "FP_ROLE", a.Perm, "the first route of a cascaded registration must inherit the group-level Perm default")
+	require.NotNil(t, a.Auth, "the first route of a cascaded registration must inherit the group-level Auth default")
+	assert.True(t, a.Auth.IsPublic(), "the first route of a cascaded registration must inherit the group-level Auth default")
 
 	b, ok := catalog.Lookup(http.MethodPost, "/api/sys_role/b")
 	require.True(t, ok)
-	assert.Equal(t, "FP_ROLE", b.Perm, "级联注册出来的第二条路由同样必须继承组级 Perm 默认")
-	require.NotNil(t, b.Auth, "级联注册出来的第二条路由同样必须继承组级 Auth 默认")
-	assert.True(t, b.Auth.IsPublic(), "级联注册出来的第二条路由同样必须继承组级 Auth 默认")
+	assert.Equal(t, "FP_ROLE", b.Perm, "a route created by cascading must inherit the group-level Perm default just the same")
+	require.NotNil(t, b.Auth, "a route created by cascading must inherit the group-level Auth default just the same")
+	assert.True(t, b.Auth.IsPublic(), "a route created by cascading must inherit the group-level Auth default just the same")
 }
 
 // TestRoutePermShadowsRouterPermForGroupVsRouteScope contrasts the two .Perm
@@ -651,15 +651,15 @@ func TestRoutePermShadowsRouterPermForGroupVsRouteScope(t *testing.T) {
 
 	first, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/first")
 	require.True(t, ok)
-	assert.Empty(t, first.Perm, "组级 .Perm 调用之前注册的路由不应受影响")
+	assert.Empty(t, first.Perm, "a route registered before the group-level .Perm call must not be affected by it")
 
 	second, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/second")
 	require.True(t, ok)
-	assert.Equal(t, "GROUP_DEFAULT", second.Perm, "*Router 上的 .Perm 是组级默认，必须影响其后注册的路由")
+	assert.Equal(t, "GROUP_DEFAULT", second.Perm, ".Perm on a *Router is the group-level default, so it must reach every route registered after it")
 
 	third, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/third")
 	require.True(t, ok)
-	assert.Equal(t, "ROUTE_ONLY", third.Perm, "*Route 上的 .Perm 遮蔽了 *Router 的同名方法，只作用于这一条路由，覆盖组级默认而不是与其合并")
+	assert.Equal(t, "ROUTE_ONLY", third.Perm, ".Perm on a *Route shadows the *Router method of the same name: it applies to this one route only, and it replaces the group-level default rather than merging with it")
 }
 
 // TestPromotedRegistrationMethodPanicsAfterFreeze pins that freezing the
@@ -676,7 +676,7 @@ func TestPromotedRegistrationMethodPanicsAfterFreeze(t *testing.T) {
 	assert.PanicsWithValue(t,
 		"xbc: route table is frozen, RouteCatalogListener phase cannot add routes",
 		func() { route.POST("/b", func(context.Context, *web.Ctx) error { return nil }) },
-		"通过级联句柄提升出来的注册方法在冻结之后调用同样必须 panic，不能因为换了调用路径就绕过 freeze 检查",
+		"a registration method reached through a promoted cascaded handle must panic after freeze just the same -- a different call path must not bypass the freeze check",
 	)
 }
 
@@ -695,13 +695,13 @@ func TestCascadeAfterAnyOrMatchOwnsOnlyItsOwnIndexes(t *testing.T) {
 
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		info, ok := catalog.Lookup(method, "/api/report")
-		require.Truef(t, ok, "%s /api/report 必须仍然注册成功", method)
-		assert.Emptyf(t, info.Perm, "Match 创建的路由不应被后续级联出来的 .Perm 影响：%s", method)
+		require.Truef(t, ok, "%s /api/report must still be registered", method)
+		assert.Emptyf(t, info.Perm, "a route created by Match must not be touched by a .Perm cascaded off its handle afterwards: %s", method)
 	}
 
 	create, ok := catalog.Lookup(http.MethodPost, "/api/create")
 	require.True(t, ok)
-	assert.Equal(t, "CREATE_ONLY", create.Perm, "Match 句柄级联出的 .POST 必须携带自己独立的 indexes，.Perm 只落在它自己创建的那一行上")
+	assert.Equal(t, "CREATE_ONLY", create.Perm, "A .POST cascaded off a Match handle must carry indexes of its own, so .Perm lands only on the row that call itself created")
 }
 
 // TestSiblingGroupsDoNotShareMiddlewareChain pins what sibling groups must
@@ -754,8 +754,8 @@ func TestSiblingGroupsDoNotShareMiddlewareChain(t *testing.T) {
 			calls = nil
 			recorder := httptest.NewRecorder()
 			engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, tt.path, nil))
-			require.Equal(t, http.StatusNoContent, recorder.Code, "路由本身必须仍然可达")
-			assert.Equal(t, tt.want, calls, "兄弟分组不得共享或覆盖彼此的中间件链")
+			require.Equal(t, http.StatusNoContent, recorder.Code, "the route itself must still be reachable")
+			assert.Equal(t, tt.want, calls, "sibling groups must not share or overwrite each other's middleware chain")
 		})
 	}
 }

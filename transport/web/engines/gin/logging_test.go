@@ -43,10 +43,10 @@ func TestProcessGlobalsFollowLoggerCapability(t *testing.T) {
 	restoreProcessGlobals(t)
 
 	applyProcessGlobals(&capturingLogger{Logger: log.Nop(), debug: true})
-	assert.Equal(t, ginlib.DebugMode, ginlib.Mode(), "logger 接受 debug 时 gin 必须进 debug 模式")
+	assert.Equal(t, ginlib.DebugMode, ginlib.Mode(), "gin must enter debug mode when the logger accepts debug")
 
 	applyProcessGlobals(&capturingLogger{Logger: log.Nop()})
-	assert.Equal(t, ginlib.ReleaseMode, ginlib.Mode(), "logger 不接受 debug 时 gin 必须进 release 模式")
+	assert.Equal(t, ginlib.ReleaseMode, ginlib.Mode(), "gin must enter release mode when the logger does not accept debug")
 }
 
 // TestProcessGlobalsRouteGinOutputIntoTheLogger is the half the old internal
@@ -65,8 +65,8 @@ func TestProcessGlobalsRouteGinOutputIntoTheLogger(t *testing.T) {
 	_, err = ginlib.DefaultWriter.Write([]byte("\n"))
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"routine notice"}, logger.info, "gin 的常规输出必须落到 Info，且去掉结尾换行")
-	assert.Equal(t, []string{"failure notice"}, logger.errors, "gin 的错误输出必须落到 Error")
+	assert.Equal(t, []string{"routine notice"}, logger.info, "gin's routine output must land on Info, with the trailing newline stripped")
+	assert.Equal(t, []string{"failure notice"}, logger.errors, "gin's error output must land on Error")
 }
 
 // TestProcessGlobalsToleratesAnAbsentLogger pins the nil branch: web.Options is
@@ -75,5 +75,5 @@ func TestProcessGlobalsRouteGinOutputIntoTheLogger(t *testing.T) {
 func TestProcessGlobalsToleratesAnAbsentLogger(t *testing.T) {
 	restoreProcessGlobals(t)
 	require.NotPanics(t, func() { applyProcessGlobals(nil) })
-	assert.Equal(t, ginlib.ReleaseMode, ginlib.Mode(), "无 logger 时必须取安静的 release 模式")
+	assert.Equal(t, ginlib.ReleaseMode, ginlib.Mode(), "the quiet release mode must be taken when there is no logger")
 }

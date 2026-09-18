@@ -59,10 +59,10 @@ func TestGroupAuthDefaultAppliesAndIsPerRouteDeepCopy(t *testing.T) {
 	require.NotNil(t, detail.Auth)
 	assert.Equal(t, []authentication.Scheme{"jwt", "session"}, list.Auth.Schemes())
 	assert.Equal(t, []authentication.Scheme{"jwt", "session"}, detail.Auth.Schemes())
-	assert.NotSame(t, list.Auth, detail.Auth, "组级 Auth 必须逐路由深拷贝，不能让多条路由共享同一个 *AuthPolicy")
+	assert.NotSame(t, list.Auth, detail.Auth, "a group-level Auth default must be deep-copied per route -- several routes must not share one *AuthPolicy")
 
 	list.Auth.schemes[0] = "mutated"
-	assert.Equal(t, authentication.Scheme("jwt"), detail.Auth.schemes[0], "修改一条路由的 Auth 方案切片不能影响另一条路由")
+	assert.Equal(t, authentication.Scheme("jwt"), detail.Auth.schemes[0], "Mutating one route's Auth scheme slice must not affect another route")
 }
 
 // TestGroupAuthDefaultIsTierTwoOutrankedByApplicationRule pins that a
@@ -81,7 +81,7 @@ func TestGroupAuthDefaultIsTierTwoOutrankedByApplicationRule(t *testing.T) {
 	route, ok := catalog.Lookup(http.MethodGet, "/api/sys_role/list")
 	require.True(t, ok)
 	require.NotNil(t, route.Auth)
-	assert.True(t, route.Auth.IsPublic(), "组级 Auth 必须确实写入路由，作为 tier-2 判定的前提")
+	assert.True(t, route.Auth.IsPublic(), "the group-level Auth default must really be written onto the route -- that is the premise of the tier-2 verdict below")
 
 	set := mustPolicySet(t, SecurityConfig{
 		Policies: []PolicyRule{{
@@ -91,8 +91,8 @@ func TestGroupAuthDefaultIsTierTwoOutrankedByApplicationRule(t *testing.T) {
 	})
 
 	got := set.resolve(route)
-	assert.False(t, got.permit, "tier-1 应用规则必须能收紧组级 Auth 声明为 public 的路由")
-	assert.Equal(t, tierApplicationRule, got.tier, "命中 tier-1 规则时必须报告 tierApplicationRule，而不是组级继承来的 tierRoute")
+	assert.False(t, got.permit, "a tier-1 application rule must be able to tighten a route whose group-level Auth declared it public")
+	assert.Equal(t, tierApplicationRule, got.tier, "a route matched by a tier-1 rule must be reported as tierApplicationRule, not as the tierRoute it inherited from the group")
 }
 
 // TestRouteUpdatePanicsWithDiagnosticMessageForMalformedHandle guards the
@@ -109,7 +109,7 @@ func TestRouteUpdatePanicsWithDiagnosticMessageForMalformedHandle(t *testing.T) 
 	assert.PanicsWithValue(t,
 		"xbc: invalid route metadata handle",
 		func() { broken.Perm("whatever") },
-		"嵌入 *Router 之后，格式错误的句柄仍必须给出明确诊断信息，而不是裸露的 nil 指针解引用 panic",
+		"Now that *Router is embedded, a malformed handle must still produce the explicit diagnostic rather than a bare nil-pointer-dereference panic",
 	)
 }
 
@@ -142,9 +142,9 @@ func TestAppendChainNeverWritesIntoParentSpareCapacity(t *testing.T) {
 	first := appendChain(parent, mark("first"))
 	second := appendChain(parent, mark("second"))
 
-	require.Len(t, parent, 1, "appendChain 不得改变父链的长度")
-	require.Len(t, first, 2, "派生链必须是父链加上追加的处理器")
-	require.Len(t, second, 2, "派生链必须是父链加上追加的处理器")
+	require.Len(t, parent, 1, "appendChain must not change the parent chain's length")
+	require.Len(t, first, 2, "a derived chain must be the parent chain plus the appended handler")
+	require.Len(t, second, 2, "a derived chain must be the parent chain plus the appended handler")
 
 	// Invoking the handlers is what tells a copy apart from an alias: the
 	// slice values themselves are functions and compare as neither equal nor
@@ -155,5 +155,5 @@ func TestAppendChainNeverWritesIntoParentSpareCapacity(t *testing.T) {
 		require.NoError(t, handler(context.Background(), nil))
 	}
 	assert.Equal(t, []string{"parent", "first", "second"}, calls,
-		"派生链不得复用父链的富余容量：第一条链的尾部被第二条链覆盖了")
+		"a derived chain must not reuse the parent chain's spare capacity: the first chain's tail was overwritten by the second chain")
 }

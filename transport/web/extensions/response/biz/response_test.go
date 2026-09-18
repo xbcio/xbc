@@ -100,7 +100,8 @@ func TestWriteRejectsStatusesThatCannotCarrySuccessEnvelope(t *testing.T) {
 
 func TestWriteRejectsCommittedResponse(t *testing.T) {
 	c := enginetest.NewCtx(httptest.NewRecorder(), nil)
-	// 写出一个字节才算提交；仅记录状态码不算，Write 之后 Written 必须为真。
+	// Only writing a byte counts as committing; recording a status alone does
+	// not, so Written must report true after Write.
 	_, err := c.Writer().Write([]byte("committed"))
 	require.NoError(t, err)
 	require.True(t, c.Writer().Written())
@@ -108,7 +109,8 @@ func TestWriteRejectsCommittedResponse(t *testing.T) {
 }
 
 func TestPaginatedClampsNegativeTotal(t *testing.T) {
-	// total 为负是调用方的 bug，没有可发布的渲染形式，钳到 0 而不是发出去。
+	// A negative total is a caller bug with no publishable rendering, so it is
+	// clamped to 0 instead of being sent out.
 	page := Paginated([]responseItem{}, -1)
 	assert.EqualValues(t, 0, page.Total)
 	assert.NotNil(t, page.List)
