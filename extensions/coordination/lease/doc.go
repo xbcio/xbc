@@ -17,6 +17,17 @@
 // atomically, so a lease that has already expired or been superseded cannot
 // extend or delete its successor's claim.
 //
+// # Who holds a key
+//
+// TryAcquire takes a claimant: the name of the process asking. An
+// implementation publishes it inside the owner token, so reading the stored
+// value answers which process holds the key rather than only that someone does.
+// It is never what ownership is decided by -- the token also carries a value
+// unique to the one acquisition, because a claimant repeats across restarts and
+// a token that were only the claimant would make a dead process's lease compare
+// equal to its successor's. A caller with no identity to publish passes the
+// empty string and gets a token that is unique and nothing more.
+//
 // # What the contract deliberately does not promise
 //
 // There is no enumeration: a Locker cannot list the keys it holds, because
@@ -39,7 +50,8 @@
 //
 //	type redisLocker struct{ client *redis.Client }
 //
-//	func (l *redisLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
+//	func (l *redisLocker) TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
+//		token := ownerToken(claimant) // "<claimant>/<random>", or just the random half
 //		acquired, err := l.client.SetNX(ctx, key, token, ttl).Result()
 //		if err != nil || !acquired {
 //			return nil, false, err

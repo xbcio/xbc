@@ -46,7 +46,7 @@ func newStopWindowLocker() *stopWindowLocker {
 	return &stopWindowLocker{inner: newMemoryLocker(), entered: make(chan struct{}, 1)}
 }
 
-func (l *stopWindowLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
+func (l *stopWindowLocker) TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
 	l.mu.Lock()
 	gate := l.gate
 	l.mu.Unlock()
@@ -59,7 +59,7 @@ func (l *stopWindowLocker) TryAcquire(ctx context.Context, key string, ttl time.
 		// grants a slot to a caller whose run has already been cancelled.
 		<-gate
 	}
-	won, acquired, err := l.inner.TryAcquire(ctx, key, ttl)
+	won, acquired, err := l.inner.TryAcquire(ctx, key, claimant, ttl)
 	if err != nil || !acquired {
 		return nil, false, err
 	}

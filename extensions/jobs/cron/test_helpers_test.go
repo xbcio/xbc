@@ -200,6 +200,17 @@ type fakeLocker struct {
 	attempts chan struct{}
 	renewed  chan struct{}
 	released chan struct{}
+	// claimants records the claimant of every acquisition, so a test can pin
+	// what the scheduler publishes about itself rather than only that it locked.
+	claimants []string
+}
+
+// recordedClaimants copies what every acquisition published about the process
+// asking, under the lock the scheduler's own goroutines acquire through.
+func (l *fakeLocker) recordedClaimants() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.claimants...)
 }
 
 func newFakeLocker() *fakeLocker {
@@ -211,7 +222,7 @@ func newFakeLocker() *fakeLocker {
 	}
 }
 
-func (l *fakeLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
+func (l *fakeLocker) TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
 	select {
 	case <-ctx.Done():
 		return nil, false, ctx.Err()
@@ -223,6 +234,7 @@ func (l *fakeLocker) TryAcquire(ctx context.Context, key string, ttl time.Durati
 	l.attempts <- struct{}{}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.claimants = append(l.claimants, claimant)
 	if _, occupied := l.held[key]; occupied {
 		return nil, false, nil
 	}

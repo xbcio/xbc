@@ -58,6 +58,51 @@ func TestDistributedTwoReplicasExecuteOnlyOnce(t *testing.T) {
 	stopTestPlugin(t, pluginB, hostB)
 }
 
+// TestTheSchedulerLockNamesNoClaimant pins a decision that is otherwise only a
+// comment at the call site.
+//
+// lease.Locker lets an acquirer publish who it is, and placement uses that to
+// make a held slot traceable to a process. cron deliberately does not: a cron
+// replica has no process identity to offer -- plugin.Context.Instance is this
+// Plugin's instance name, identical in every replica -- and publishing a name
+// every replica shares would fill the stored value with a word that
+// distinguishes nobody, while looking exactly like an answer. The lock is still
+// owner-safe, because the token is unique whether or not a claimant was named;
+// the only thing given up is reading the holder back out of the store.
+//
+// If cron is ever given a real process identity, this test is the one to change,
+// and changing it is meant to be a decision rather than an accident.
+func TestTheSchedulerLockNamesNoClaimant(t *testing.T) {
+	locker := newFakeLocker()
+	ran := make(chan struct{}, 1)
+	job := &funcJob{name: "nightly", spec: "@hourly", run: func(context.Context) error {
+		select {
+		case ran <- struct{}{}:
+		default:
+		}
+		return nil
+	}}
+
+	host := newTestHost()
+	p, runtimeContext := initTestPlugin(t, host, distributedConfig, locker, job)
+	if err := p.start(runtimeContext); err != nil {
+		t.Fatal(err)
+	}
+	host.openTraffic()
+	awaitSignal(t, ran, "the distributed job to run")
+	stopTestPlugin(t, p, host)
+
+	claimants := locker.recordedClaimants()
+	if len(claimants) == 0 {
+		t.Fatal("no acquisition was recorded, so this test proves nothing")
+	}
+	for index, claimant := range claimants {
+		if claimant != "" {
+			t.Fatalf("acquisition %d named claimant %q; the scheduler has no process identity to publish", index, claimant)
+		}
+	}
+}
+
 func TestLongDistributedJobRenewsLease(t *testing.T) {
 	locker := newFakeLocker()
 	started := make(chan struct{})
@@ -192,13 +237,13 @@ type blockingAcquireLocker struct {
 	proceed   chan struct{}
 }
 
-func (l *blockingAcquireLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
+func (l *blockingAcquireLocker) TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
 	l.entered <- struct{}{}
 	<-ctx.Done()
 	l.cancelled <- struct{}{}
 	<-l.proceed
 	// A remote SET NX may commit concurrently with local cancellation.
-	return l.inner.TryAcquire(context.Background(), key, ttl)
+	return l.inner.TryAcquire(context.Background(), key, claimant, ttl)
 }
 
 func TestDistributedPartialAdmissionCancelsAcceptedRenewalManager(t *testing.T) {

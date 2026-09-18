@@ -1,7 +1,10 @@
 package placement
 
 import (
+	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,4 +78,64 @@ func TestAStandbyNamesNoClaimantEvenWhenItHasAnIdentity(t *testing.T) {
 	assert.True(t, stats.Standby)
 	assert.Equal(t, "scanner-2", stats.Instance,
 		"the identity is a property of the process, so a standby still reports it")
+}
+
+// TestTheIdentityReachesTheStoreAndNotOnlyTheReport is the other half of the
+// claimant: a slot found held in the store has to name its holder there, not
+// only in this process's own Stats. A wedged holder is diagnosed by reading the
+// store precisely when the process is not answering, so an identity that lived
+// only in a report would be unavailable exactly when it is needed.
+func TestTheIdentityReachesTheStoreAndNotOnlyTheReport(t *testing.T) {
+	locker := newMemoryLocker()
+	value := mustNew(t, locker)
+
+	_, err := value.Resolve(instanceRequest("scanner-2", ordinary("sast", 2)))
+	require.NoError(t, err)
+
+	stats := value.Stats()
+	require.Len(t, stats.Held, 1)
+	assert.True(t, strings.HasPrefix(locker.ownerOf(stats.Held[0].Key), "scanner-2/"),
+		"the value under the slot key names the process: %q", locker.ownerOf(stats.Held[0].Key))
+	assert.Equal(t, []string{"scanner-2"}, locker.recordedClaimants(),
+		"the identity is what the acquisition published, rather than something added afterwards")
+}
+
+// TestASlotWonOnARetryNamesTheSameProcess covers the acquisition path that does
+// not run inside Resolve.
+//
+// The standby loop competes again on every tick, long after the resolving round
+// returned, and it has to publish the identity that round was given. Resolving
+// the two separately -- the admission order from the decision, the identity from
+// somewhere else -- is how a retry ends up publishing nothing while the first
+// round published a name, which is the confusing half-answer an operator would
+// then find in the store.
+func TestASlotWonOnARetryNamesTheSameProcess(t *testing.T) {
+	locker := newMemoryLocker()
+	locker.deny = true
+	value := mustNew(t, locker, WithStandbyRetry(10*time.Millisecond))
+
+	decision, err := value.Resolve(instanceRequest("scanner-2", ordinary("sast", 1)))
+	require.NoError(t, err)
+	require.Empty(t, decision.Hosted, "every slot is held elsewhere, so this process starts as a standby")
+
+	host := newTestHost()
+	host.openGate()
+	require.NoError(t, value.start(host.context()))
+
+	locker.mu.Lock()
+	locker.deny = false
+	locker.mu.Unlock()
+
+	// The retry wins and asks to be restarted, which is how a standby takes a
+	// role over. Waiting for that is what proves a retry acquisition happened.
+	assert.Contains(t, host.shutdownReason(t), "xbc:workload:sast:0")
+	require.NoError(t, value.stop(context.Background()))
+	host.awaitTasks(t)
+
+	claimants := locker.recordedClaimants()
+	require.Greater(t, len(claimants), 1, "the standby loop must have attempted at least one acquisition of its own")
+	for attempt, claimant := range claimants {
+		assert.Equal(t, "scanner-2", claimant,
+			"acquisition %d published %q; every round of one process names that process", attempt, claimant)
+	}
 }

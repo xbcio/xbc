@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -179,15 +180,20 @@ func TestALeaseHolderHostsTheDeclaredWorkloadAndGivesItBackOnStop(t *testing.T) 
 	require.Len(t, stats.Held, 1)
 	assert.Equal(t, e2eWorkloadKey, stats.Held[0].Workload)
 	assert.False(t, stats.Standby)
-	// The identity travels runtime → request → source through the real boot, and
-	// this is the only test that runs that whole path: nothing here configures
-	// xbc.instance_id, so a non-empty value means the runtime derived one and
-	// handed it over. The token stays the store's own.
+	// The identity travels runtime → request → source → store through the real
+	// boot, and this is the only test that runs that whole path: nothing here
+	// configures xbc.instance_id, so a non-empty value means the runtime derived
+	// one and handed it over.
 	assert.NotEmpty(t, stats.Instance, "a real boot hands the process identity to its placement source")
 	assert.NotEqual(t, stats.Instance, stats.Held[0].Owner,
-		"the store's owner token is not the process identity")
+		"the owner token is not the process identity; it also carries the part unique to this acquisition")
 	assert.Equal(t, stats.Held[0].Owner, miniredisGet(t, server, e2eSlotKey),
-		"the slot key still holds the backend's own token")
+		"the slot key holds exactly the token this process's lease reports")
+	// This is the whole point of publishing a claimant: an operator who finds
+	// this slot held reads the key and gets the process to go and look at, rather
+	// than sixteen bytes that say only that somebody holds it.
+	assert.True(t, strings.HasPrefix(miniredisGet(t, server, e2eSlotKey), stats.Instance+"/"),
+		"the stored slot value names the process holding it: %q", miniredisGet(t, server, e2eSlotKey))
 
 	cancel()
 	run.await(t)

@@ -121,7 +121,7 @@ import (
 )
 
 type Locker interface {
-	TryAcquire(ctx context.Context, key string, ttl time.Duration) (Lease, bool, error)
+	TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (Lease, bool, error)
 }
 
 type Lease interface{ Key() string }
