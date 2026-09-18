@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"runtime/pprof"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -634,4 +635,111 @@ func TestWorkloadBudgetWithoutAPlanBoundsNothing(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	require.True(t, tasks.submit(owner, blockingTask(release), false))
+}
+
+// TestAManagedTaskCarriesItsWorkloadAsAProfilerLabel pins the attribution a CPU
+// profile is read by.
+//
+// The label is the only thing that can answer "which workload is burning this
+// CPU". Stack frames answer which Plugin, but workload membership is decided at
+// composition and appears in no frame, so two processes running the same binary
+// attribute the same function to different workloads. A profile taken on a busy
+// host is exactly where that question is asked, and it cannot be reconstructed
+// afterwards.
+func TestAManagedTaskCarriesItsWorkloadAsAProfilerLabel(t *testing.T) {
+	t.Parallel()
+
+	const scanner plugin.Key = "sast-worker"
+	tasks := workloadTestRuntime(nil, nil, map[plugin.Key]plugin.WorkloadKey{scanner: "sast"})
+	owner := taskIdentity(scanner)
+	require.True(t, tasks.openStart(owner))
+
+	labelled := make(chan string, 1)
+	require.True(t, tasks.submit(owner, func(ctx context.Context) {
+		value, _ := pprof.Label(ctx, "workload")
+		labelled <- value
+	}, false))
+
+	select {
+	case got := <-labelled:
+		assert.Equal(t, "sast", got, "a managed task runs under its workload's profiler label")
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the managed task did not run")
+	}
+
+	// No budget was configured, which is the ordinary case: attribution must not
+	// depend on a workload having declared max_goroutines, because the two
+	// answer unrelated questions.
+	assert.Nil(t, tasks.workloadBudgets(), "this process bounds nothing, and is still attributed")
+}
+
+// TestAnUnownedPluginsTaskIsLeftUnlabelled is the other half, and it is a
+// correctness rule rather than a preference.
+//
+// Profiler labels are inherited by every goroutine started under them, and the
+// plugins that belong to no workload are the shared ones -- the Web server's
+// accept loop above all -- whose children serve every workload's routes.
+// Labelling that loop as unowned would file each of those requests under a name
+// that denies the workload actually being served, which is worse than leaving
+// the shared work untagged.
+func TestAnUnownedPluginsTaskIsLeftUnlabelled(t *testing.T) {
+	t.Parallel()
+
+	const shared plugin.Key = "web"
+	tasks := workloadTestRuntime(nil, map[plugin.WorkloadKey]int{"sast": 4}, nil)
+	owner := taskIdentity(shared)
+	require.True(t, tasks.openStart(owner))
+
+	labelled := make(chan bool, 1)
+	require.True(t, tasks.submit(owner, func(ctx context.Context) {
+		_, present := pprof.Label(ctx, "workload")
+		labelled <- present
+	}, false))
+
+	select {
+	case present := <-labelled:
+		assert.False(t, present,
+			"a Plugin belonging to no workload carries no workload label, so its children are not misattributed")
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the managed task did not run")
+	}
+}
+
+// TestALabelledTaskStillChargesAndReleasesItsBudgetSlot keeps the two features
+// that read the same attribution from drifting apart. The label is derived from
+// attribution and the budget slot from attribution plus a configured limit, and
+// a submission has to get both right at once: a task that ran labelled but
+// uncharged would silently unbound the workload it names.
+func TestALabelledTaskStillChargesAndReleasesItsBudgetSlot(t *testing.T) {
+	t.Parallel()
+
+	const scanner plugin.Key = "sast-worker"
+	tasks := workloadTestRuntime(nil,
+		map[plugin.WorkloadKey]int{"sast": 1},
+		map[plugin.Key]plugin.WorkloadKey{scanner: "sast"})
+	owner := taskIdentity(scanner)
+	require.True(t, tasks.openStart(owner))
+
+	release := make(chan struct{})
+	running := make(chan string, 1)
+	require.True(t, tasks.submit(owner, func(ctx context.Context) {
+		value, _ := pprof.Label(ctx, "workload")
+		running <- value
+		<-release
+	}, false))
+
+	select {
+	case got := <-running:
+		require.Equal(t, "sast", got)
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the managed task did not run")
+	}
+	assert.False(t, tasks.submit(owner, func(context.Context) {}, false),
+		"the labelled task took the workload's only slot")
+
+	close(release)
+	require.Eventually(t, func() bool {
+		reports := tasks.workloadBudgets()
+		return len(reports) == 1 && reports[0].Running == 0
+	}, runtimeTestTimeout, time.Millisecond, "the slot is given back when the labelled task returns")
 }
