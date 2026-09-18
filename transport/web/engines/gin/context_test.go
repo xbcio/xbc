@@ -96,6 +96,12 @@ type passthroughWriter struct {
 	web.ResponseWriter
 }
 
+// Unwrap is what every real buffering wrapper carries, and it is part of the
+// shape rather than an extra: http.ResponseController walks it to reach the
+// connection, so a stand-in without it would model a wrapper no middleware in
+// this repository actually is.
+func (w *passthroughWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // TestJSONReportsRenderFailure pins the return value the neutral signature
 // adds. gin's own JSON returns nothing and buries a render failure in
 // Context.Errors, so a forward that always returned nil would compile, pass a

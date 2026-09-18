@@ -616,6 +616,34 @@ These boundaries are deliberate, and knowing them prevents several wrong deploym
 - **No per-workload HTTP in-flight budget.** `web.max_in_flight` is process-wide; a request over the limit is answered `503` with `Retry-After` before any handler runs.
 - **No per-workload CPU accounting.** Process-level runtime knobs (`xbc.runtime`) are what keep a container sized to its quota.
 
+## Streaming a response past the write timeout
+
+`web.write_timeout` defaults to 30s and covers a whole response, not a single write. That is the right bound for request/response traffic and the wrong one for a response with no known length: server-sent events, a progress feed, a long export. A stream that outlives the budget is severed mid-body, so the client sees a truncated response rather than a status it can interpret.
+
+Raising the key for the whole server is not the fix, because that removes the bound from every ordinary route as well. The route that streams lifts the deadline for its own connection:
+
+```go
+router.GET("/events", func(ctx context.Context, c *web.Ctx) error {
+	if err := http.NewResponseController(c.Writer()).SetWriteDeadline(time.Time{}); err != nil {
+		return err
+	}
+	c.Writer().Header().Set("Content-Type", "text/event-stream")
+	for event := range events {
+		if _, err := fmt.Fprintf(c.Writer(), "data: %s\n\n", event); err != nil {
+			return err
+		}
+		c.Writer().Flush()
+	}
+	return nil
+})
+```
+
+The zero time removes the deadline rather than extending it, which is what a stream of unknown length needs. `http.ResponseController` reaches the connection through the framework's whole writer stack, so this keeps working under the gzip, request-timeout and idempotency middleware; those wrappers forward it rather than absorbing it.
+
+Two bounds still apply and should not be worked around. `read_timeout` and `idle_timeout` are untouched by the call above, and `web.max_in_flight` counts a streaming request for as long as it is open -- a process serving many long-lived streams needs the ceiling raised deliberately, because each open stream is one admission slot that no other request can use.
+
+WebSocket needs none of this: hijacking the connection clears the server's deadlines with it.
+
 ## Operational endpoints and secrets
 
 Health endpoints return aggregate status by default. Use `detail_policy: never` to prevent unauthenticated probes from receiving dependency errors. When XBC begins graceful shutdown, readiness changes to 503 immediately while liveness remains Up. `web.shutdown.pre_drain_delay` defaults to `0s`, which begins HTTP draining immediately; configure a nonzero, deployment-specific interval when probes or load balancers need time to observe the readiness transition:
