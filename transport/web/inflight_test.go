@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -346,7 +348,6 @@ func TestStartReportsTheInFlightGateAndRejections(t *testing.T) {
 	require.Len(t, warns, 1,
 		"a saturated process must report the episode once, not once per refused request")
 	assert.Contains(t, warns[0], "limit=2", "the warn line must name the ceiling that refused the request")
-	assert.Contains(t, warns[0], "rejections=1", "the warn line must name the refusals it reports")
 
 	// runBlockedRequests releases every parked handler, so the process drains and
 	// the episode ends within the run.
@@ -354,7 +355,36 @@ func TestStartReportsTheInFlightGateAndRejections(t *testing.T) {
 	require.Len(t, cleared, 1, "the end of an episode must be reported once")
 	assert.Contains(t, cleared[0], fmt.Sprintf("rejections_total=%d", pressure.refused),
 		"the closing line must account for every refusal of the episode")
+
+	// The episode's two lines partition its refusals, and that is the whole
+	// promise: each reports the refusals claimed since the previous line, so
+	// together they account for every one and count none twice.
+	//
+	// The opening line's own share is deliberately not pinned to a number. The
+	// refusals are concurrent, so more than one can land before the goroutine
+	// that won the right to report claims the counter, and demanding exactly one
+	// there would be asserting a scheduling order the gate never promises -- it
+	// promises that nothing is lost and nothing is double-counted.
+	opened := rejectionsReported(t, warns[0])
+	closed := rejectionsReported(t, cleared[0])
+	assert.GreaterOrEqual(t, opened, 1, "the line that opens an episode reports the refusal that opened it")
+	assert.Equal(t, pressure.refused, opened+closed,
+		"the refusals the two lines report must add up to the episode's refusals, with none counted twice")
 }
+
+// rejectionsReported reads the "rejections=" field off one log line. It matches
+// the field rather than splitting on spaces so "rejections_total=" cannot be
+// mistaken for it.
+func rejectionsReported(t *testing.T, line string) int {
+	t.Helper()
+	match := rejectionsField.FindStringSubmatch(line)
+	require.Len(t, match, 2, "no rejections field in %q", line)
+	value, err := strconv.Atoi(match[1])
+	require.NoError(t, err)
+	return value
+}
+
+var rejectionsField = regexp.MustCompile(`rejections=(\d+)`)
 
 // The two messages the gate reports an episode with. A test matches on them
 // rather than on "the last warn" so an unrelated warn cannot pass for the
