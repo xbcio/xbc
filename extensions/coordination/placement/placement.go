@@ -203,6 +203,10 @@ type Placement struct {
 	decision plugin.Placement
 	admitted []plugin.Workload
 	held     []*heldSlot
+	// instance is the process identity the resolving request carried, kept so
+	// Stats can label this process's slots with it. It is written once, by the
+	// round that resolves, under mu.
+	instance string
 	started  bool
 	stopping bool
 	// handback is every slot this process won but never hosted: a standby's win
@@ -325,7 +329,20 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 		Notes:  notes,
 	}
 	if len(held) > 0 {
-		decision.Holder = held[0].lease.Owner()
+		decision.Holder = claimant(request.Instance, held[0].lease.Owner())
+		// This is the one line that binds the two names a slot has: the process
+		// the operator can go and look at, and the token the store has in the
+		// key. Nothing else prints them together -- Holder carries one, the
+		// store holds the other -- so a wedged holder found by reading the store
+		// directly is traceable to a process only from here.
+		for _, slot := range held {
+			p.logger.Info("placement: slot won",
+				"workload", slot.workload.String(),
+				"slot", slot.index,
+				"key", slot.key,
+				"instance", request.Instance,
+				"owner", slot.lease.Owner())
+		}
 	} else {
 		decision.Notes = append(decision.Notes,
 			"this process won no slot and starts as a standby; it hosts only the plugins that belong to no workload and retries until it wins one")
@@ -333,9 +350,24 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 
 	p.admitted = admitted
 	p.held = held
+	p.instance = request.Instance
 	p.decision = decision
 	p.resolved = true
 	return decision, nil
+}
+
+// claimant names who holds a slot, preferring the process over the token.
+//
+// The instance is the answer to the question an operator is actually asking --
+// which process do I go and look at -- and the token answers only "some claim
+// exists". The token is still what is reported when no instance was offered,
+// because a process that holds slots and names no claimant at all would read in
+// a diagnostic exactly like a static decision that claims nothing.
+func claimant(instance, token string) string {
+	if instance != "" {
+		return instance
+	}
+	return token
 }
 
 // admissionOrder filters the declared workloads by configuration and fixes the

@@ -132,6 +132,16 @@ func newMiniredis(t *testing.T) (*miniredis.Miniredis, *goredis.Client) {
 	return server, client
 }
 
+// miniredisGet reads a slot key's value straight out of the backend, which is
+// how a test asks what an operator reading the store would see rather than what
+// this process reports about itself.
+func miniredisGet(t *testing.T, server *miniredis.Miniredis, key string) string {
+	t.Helper()
+	value, err := server.Get(key)
+	require.NoError(t, err)
+	return value
+}
+
 func newLocker(t *testing.T, client *goredis.Client) lease.Locker {
 	t.Helper()
 	locker, err := redisstore.NewLocker(client)
@@ -169,6 +179,15 @@ func TestALeaseHolderHostsTheDeclaredWorkloadAndGivesItBackOnStop(t *testing.T) 
 	require.Len(t, stats.Held, 1)
 	assert.Equal(t, e2eWorkloadKey, stats.Held[0].Workload)
 	assert.False(t, stats.Standby)
+	// The identity travels runtime → request → source through the real boot, and
+	// this is the only test that runs that whole path: nothing here configures
+	// xbc.instance_id, so a non-empty value means the runtime derived one and
+	// handed it over. The token stays the store's own.
+	assert.NotEmpty(t, stats.Instance, "a real boot hands the process identity to its placement source")
+	assert.NotEqual(t, stats.Instance, stats.Held[0].Owner,
+		"the store's owner token is not the process identity")
+	assert.Equal(t, stats.Held[0].Owner, miniredisGet(t, server, e2eSlotKey),
+		"the slot key still holds the backend's own token")
 
 	cancel()
 	run.await(t)

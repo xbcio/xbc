@@ -2,6 +2,7 @@ package placement
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -379,7 +380,7 @@ func TestConcurrentProcessesConvergeOnExactlyTheDeclaredReplicas(t *testing.T) {
 				outcomes[index] = outcome{err: err}
 				return
 			}
-			decision, err := value.Resolve(workloadRequest(ordinary("sast", replicas)))
+			decision, err := value.Resolve(instanceRequest(fmt.Sprintf("host-a-1758091200-%02d", index), ordinary("sast", replicas)))
 			if err != nil {
 				outcomes[index] = outcome{err: err}
 				return
@@ -404,8 +405,10 @@ func TestConcurrentProcessesConvergeOnExactlyTheDeclaredReplicas(t *testing.T) {
 		require.Len(t, result.stats.Held, 1)
 		assert.False(t, slots[result.stats.Held[0].Slot], "two processes won slot %d", result.stats.Held[0].Slot)
 		slots[result.stats.Held[0].Slot] = true
-		assert.False(t, owners[result.decision.Holder], "two processes claim the same owner token")
+		assert.False(t, owners[result.decision.Holder], "two processes claim the same identity")
 		owners[result.decision.Holder] = true
+		assert.Equal(t, result.decision.Holder, result.stats.Instance,
+			"the claimant a decision reports and the identity its stats carry are the same process")
 	}
 
 	assert.Equal(t, replicas, holders, "exactly the declared number of replicas may win")

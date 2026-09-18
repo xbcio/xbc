@@ -13,8 +13,15 @@ type Placement struct {
 	// Source names the PlacementSource that produced this decision, for
 	// diagnostics only ("static", "lease", or a source's own label).
 	Source string
-	// Holder identifies the claimant: empty for a static decision, the lease
-	// owner token for a lease decision.
+	// Holder identifies the claimant, and is empty when nothing was claimed --
+	// a static decision claims nothing, and neither does a process that won no
+	// slot.
+	//
+	// A source that was given PlacementRequest.Instance reports that, because
+	// the identity an operator can act on is the process, not the token some
+	// store happens to associate with the claim. A source given no instance
+	// reports whatever it can name instead, which for a lease source is the
+	// owner token. Diagnostics only: nothing derives behaviour from it.
 	Holder string
 	// Hosted lists the workloads this process carries, sorted by key.
 	Hosted []WorkloadKey
@@ -44,6 +51,21 @@ func (p Placement) Hosts(key WorkloadKey) bool {
 type PlacementRequest struct {
 	// Workloads are the workloads the composition declares, sorted by key.
 	Workloads []Workload
+	// Instance is this process's identity -- xbc.instance_id, derived when the
+	// deployment did not set one.
+	//
+	// It is here because a source that claims something on this process's
+	// behalf is the only party that can record which process claimed it, and it
+	// cannot work that out for itself: the identity is settled while
+	// configuration binds, and a source is built by the composition root before
+	// that happens. Without it a claim is attributable only to whatever token
+	// the underlying store invented, which names nothing an operator can go and
+	// look at.
+	//
+	// Empty means the caller had no identity to offer, which is what a direct
+	// caller outside a run has. A source must still work, and reports whatever
+	// it can name as Placement.Holder instead.
+	Instance string
 	// Enabled reports whether configuration admits a workload at all. A
 	// workload with Enabled false is a hard veto no source may override: a
 	// deployment uses it to exclude a process from a role outright.

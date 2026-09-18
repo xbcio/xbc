@@ -114,7 +114,12 @@ func (a *App) resolvePlacement() (plugin.Placement, error) {
 	source := a.placement()
 	placement, err := source.Resolve(plugin.PlacementRequest{
 		Workloads: workloads,
-		Enabled:   func(key plugin.WorkloadKey) bool { return enabled[key] },
+		// The identity travels with the request rather than being read by the
+		// source, because a source is built at the composition root, before any
+		// configuration is bound: this is the first point at which the process
+		// knows what to call itself.
+		Instance: a.settings.Instance(),
+		Enabled:  func(key plugin.WorkloadKey) bool { return enabled[key] },
 	})
 	if err != nil {
 		return plugin.Placement{}, err

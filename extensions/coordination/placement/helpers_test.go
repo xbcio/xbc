@@ -138,6 +138,15 @@ func (l *memoryLocker) holds(key string) bool {
 	return exists
 }
 
+// ownerOf is the token the store has in key, or "" when nothing holds it. It
+// exists so a test can compare what a slot reports as its owner against what the
+// store actually recorded, rather than against a value the test made up.
+func (l *memoryLocker) ownerOf(key string) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.held[key]
+}
+
 // heldKeys returns the keys this store currently has an owner for.
 func (l *memoryLocker) heldKeys() []string {
 	l.mu.Lock()
@@ -387,8 +396,17 @@ func await(t *testing.T, description string, condition func() bool) {
 
 // ── shared requests ────────────────────────────────────────────────────────
 
+// workloadRequest is a request from a caller with no process identity to offer,
+// which is what a direct caller outside a run has. Tests about the claimant use
+// instanceRequest instead, so the two cases stay visibly different.
 func workloadRequest(workloads ...plugin.Workload) plugin.PlacementRequest {
 	return plugin.PlacementRequest{Workloads: workloads}
+}
+
+// instanceRequest is a request as the runtime makes it: carrying the identity
+// this process settled on while binding configuration.
+func instanceRequest(instance string, workloads ...plugin.Workload) plugin.PlacementRequest {
+	return plugin.PlacementRequest{Workloads: workloads, Instance: instance}
 }
 
 func ordinary(key plugin.WorkloadKey, replicas int) plugin.Workload {
