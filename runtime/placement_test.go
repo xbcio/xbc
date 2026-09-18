@@ -113,6 +113,54 @@ func TestWithPlacementReplacesTheDefaultDecision(t *testing.T) {
 	assert.True(t, source.requests[0].Admits("sca"))
 }
 
+// TestAPlacementSourceIsToldWhichProcessIsAsking covers the identity half of the
+// request. A source that claims capacity on this process's behalf is the only
+// party that can record which process claimed it, and it cannot derive that: it
+// is built at the composition root, before any configuration is bound.
+//
+// The derived default is asserted rather than a configured one, because that is
+// the case with no deployment input behind it -- an empty Instance here would
+// leave every claim attributable only to whatever token the store invented.
+func TestAPlacementSourceIsToldWhichProcessIsAsking(t *testing.T) {
+	source := &recordingPlacement{placement: plugin.Placement{Source: "lease"}}
+	app, err := New(WithBundles(placementTestBundles()...), WithPlacement(source))
+	require.NoError(t, err)
+	app.ready = make(chan struct{})
+
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	require.NoError(t, err)
+	require.NoError(t, app.bootstrap(cmd))
+
+	_, err = app.resolvePlacement()
+	require.NoError(t, err)
+
+	require.Len(t, source.requests, 1)
+	assert.NotEmpty(t, source.requests[0].Instance,
+		"a process always has an identity; the runtime derives one when the deployment names none")
+	assert.Equal(t, app.settings.Instance(), source.requests[0].Instance,
+		"the source is told the same identity every log line, metric and doctor report uses")
+}
+
+// TestAConfiguredInstanceIdentityReachesThePlacementSource is the deployment
+// case: a supervisor that already knows which slot this process is takes the
+// naming over, and the name it chose is what a claim is recorded under.
+func TestAConfiguredInstanceIdentityReachesThePlacementSource(t *testing.T) {
+	source := &recordingPlacement{placement: plugin.Placement{Source: "lease"}}
+	app, err := New(WithBundles(placementTestBundles()...), WithPlacement(source))
+	require.NoError(t, err)
+	app.ready = make(chan struct{})
+
+	cmd, err := parseArgs(placementTestConfig(t, "  instance_id: scanner-2\n"), config.DefaultEnvPrefix)
+	require.NoError(t, err)
+	require.NoError(t, app.bootstrap(cmd))
+
+	_, err = app.resolvePlacement()
+	require.NoError(t, err)
+
+	require.Len(t, source.requests, 1)
+	assert.Equal(t, "scanner-2", source.requests[0].Instance)
+}
+
 // TestWithPlacementOmittedIsStaticPlacement keeps the two spellings of the
 // default from drifting.
 //

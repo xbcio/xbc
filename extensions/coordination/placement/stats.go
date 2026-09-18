@@ -13,16 +13,22 @@ import (
 //
 //	xbc_workload_held{workload="sast"} 1
 //	xbc_workload_lease_age_seconds{workload="sast"} <Age>
+//
+// Stats.Instance belongs beside those as a second label, but it is a property
+// of the process rather than of a slot, so it is reported once there instead of
+// being repeated on every row.
 type Held struct {
-	// Workload is the slot's workload. It is the only label the metrics use,
-	// because a slot index is a placement detail rather than a dimension a
-	// dashboard should aggregate over.
+	// Workload is the slot's workload. It is the only per-slot label the
+	// metrics use, because a slot index is a placement detail rather than a
+	// dimension a dashboard should aggregate over.
 	Workload plugin.WorkloadKey
 	// Slot is the index within the workload's replica set, and Key is the full
 	// lease key. Both are diagnostics.
 	Slot int
 	Key  string
-	// Owner is the token the store associates with this claim.
+	// Owner is the token the store associates with this claim. It is what a
+	// slot key's value holds, so it is the field that turns a claim found by
+	// reading the store into this process's claim.
 	Owner string
 	// Age is how long the slot has been held, and Renewed is when it was last
 	// confirmed.
@@ -45,6 +51,10 @@ type Held struct {
 type Stats struct {
 	// Source names the placement source, and is "lease" for this package.
 	Source string
+	// Instance is the process identity the resolving request carried, and is
+	// the label a metrics bridge joins these slots to a process by. It is empty
+	// when the caller offered none.
+	Instance string
 	// Standby reports that this process won no slot and is hosting only the
 	// plugins that belong to no workload.
 	Standby bool
@@ -70,11 +80,13 @@ func (p *Placement) Stats() Stats {
 	p.mu.Lock()
 	decision := p.decision
 	resolved := p.resolved
+	instance := p.instance
 	held := append([]*heldSlot(nil), p.held...)
 	p.mu.Unlock()
 
 	stats := Stats{
 		Source:        decision.Source,
+		Instance:      instance,
 		Standby:       resolved && len(held) == 0,
 		RenewFailures: p.renewFailures.Load(),
 	}
