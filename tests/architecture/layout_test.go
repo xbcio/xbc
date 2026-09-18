@@ -67,12 +67,21 @@ var archProtocolNeutralExtensionGroups = []string{
 }
 
 // archProtocolNeutralContractModules is the intentional set of contract-only
-// modules that sit directly beneath extensions rather than inside a capability
-// group. A contract module owns no Definition, Config, or Bundle: it publishes
-// the protocol-neutral vocabulary that transports and their plugins implement.
-// It cannot live in core, because core's dependency closure must exclude
+// modules that sit directly beneath the extensions namespace rather than inside
+// one of its capability groups. Membership is asserted against the direct
+// children below, so it names only that shape.
+//
+// A contract module owns no Definition, Config, or Bundle: it publishes the
+// protocol-neutral vocabulary that transports and their plugins implement. It
+// cannot live in core, because core's dependency closure must exclude
 // everything beneath extensions, and it cannot be a capability group leaf,
 // because it is not a plugin. Adding one is an architecture decision.
+//
+// The category has a second member, extensions/coordination/lease, which sits
+// inside the coordination capability group instead. archContractModules in
+// contract_modules_test.go is the complete list and is what the rest of the
+// architecture suite excludes by; a consistency test there keeps the two from
+// drifting apart.
 var archProtocolNeutralContractModules = []string{
 	"authentication",
 }
@@ -328,13 +337,23 @@ func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expecte
 
 // TestArchRootPublicAPIIsFrozen keeps the application-facing facade narrow.
 // Runtime and assembly implementation stay behind the application-facing
-// facade; importing the root package must expose only the six entry-point symbols
-// below.
+// facade; importing the root package must expose only the nine entry-point
+// symbols below.
 //
 // The set below is deliberately tiny and should stay that way: an application
-// calls Run, an embedding host calls New and App.Execute, and a test supplies
-// its own explicit composition through WithBundles. Adding to it is a real API decision
-// and must be a deliberate edit to this list, not a side effect of a rename.
+// calls Run, an embedding host calls New and App.Execute, a test supplies its
+// own explicit composition through WithBundles, and a deployment whose roles
+// are assigned by placement names its source through WithPlacement -- with
+// StaticPlacement as the default it may also write down explicitly. Adding to
+// it is a real API decision and must be a deliberate edit to this list, not a
+// side effect of a rename.
+//
+// A lease-backed PlacementSource is deliberately NOT among these. Constructing
+// one needs the lease contract, which lives beneath extensions, and core's
+// dependency closure excludes that whole subtree: the extension that owns the
+// constructor exports it, and the application passes its result to
+// WithPlacement. That is exactly why the source is a value here and not a
+// function of this package.
 //
 // Scope note: this collects exported top-level declarations plus exported
 // methods on exported types. An exported method on an unexported type is not
@@ -346,8 +365,11 @@ func TestArchRootPublicAPIIsFrozen(t *testing.T) {
 		"App.Execute",
 		"New",
 		"Option",
+		"PlacementSource",
 		"Run",
+		"StaticPlacement",
 		"WithBundles",
+		"WithPlacement",
 	}
 
 	root := archRepositoryRoot(t)

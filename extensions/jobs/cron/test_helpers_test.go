@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xbcio/xbc/extensions/coordination/lease"
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -117,7 +118,7 @@ func contributorEntry(instance string, jobs ...Job) plugin.Entry[JobContributor]
 func newTestPlugin(
 	t *testing.T,
 	configure func(*Config),
-	locker Locker,
+	locker lease.Locker,
 	jobs ...Job,
 ) *Plugin {
 	t.Helper()
@@ -136,7 +137,7 @@ func newTestPlugin(
 	return p
 }
 
-func initTestPlugin(t *testing.T, host *testHost, configure func(*Config), locker Locker, jobs ...Job) (*Plugin, *plugin.Context) {
+func initTestPlugin(t *testing.T, host *testHost, configure func(*Config), locker lease.Locker, jobs ...Job) (*Plugin, *plugin.Context) {
 	t.Helper()
 	p := newTestPlugin(t, configure, locker, jobs...)
 	ctx := testContext(host)
@@ -210,7 +211,7 @@ func newFakeLocker() *fakeLocker {
 	}
 }
 
-func (l *fakeLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (Lease, bool, error) {
+func (l *fakeLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
 	select {
 	case <-ctx.Done():
 		return nil, false, ctx.Err()

@@ -87,10 +87,25 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 
 	a.progress.enterPhase(phasePlanning)
 	planningStarted := time.Now()
+	// The hosted set is settled before the plan is built, not while it is
+	// being built: a workload this process does not carry must contribute no
+	// Definition at all, so the decision has to exist before planning starts.
+	// A source that cannot answer fails the run rather than defaulting, because
+	// every downstream decision -- what is constructed, what doctor reports,
+	// which exclusive constraints apply -- is derived from this one.
+	placement, err := a.resolvePlacement()
+	if err != nil {
+		return 1, err
+	}
+	a.placementDecision = placement
+	a.logger.Info("xbc: placement resolved by "+placement.Source,
+		"instance", a.settings.Instance(),
+		"hosted", workloadLabels(placement.Hosted))
 	plan, err := assembly.BuildPlan(assembly.PlanOptions{
-		Bundles: a.bundles,
-		Env:     a.env,
-		Logger:  a.logger,
+		Bundles:   a.bundles,
+		Env:       a.env,
+		Logger:    a.logger,
+		Placement: placement,
 	})
 	if err != nil {
 		return 1, err

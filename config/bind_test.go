@@ -2,11 +2,13 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -141,9 +143,70 @@ func TestLeavesWalksNestedStruct(t *testing.T) {
 	require.Contains(t, paths, "server.tls.enabled")
 }
 
+// TestEnvName pins the environment-variable spelling of a rooted configuration
+// path, including the one root that collapses.
+//
+// The framework's own section is spelled "xbc" and the process prefix is
+// "XBC_", so deriving the name by concatenating the two would produce
+// XBC_XBC_SHUTDOWN_TIMEOUT -- a name no operator writes, and the reason
+// XBC_SHUTDOWN_TIMEOUT used to be rejected as naming no section at all. Every
+// other root keeps its complete spelling.
+//
+// The near-miss case is the guard against "fix" this with a bare string
+// prefix test: "xbcx" merely begins with the same three characters as "xbc"
+// and is a different section, so it keeps the doubled spelling.
 func TestEnvName(t *testing.T) {
-	require.Equal(t, "XBC_PLUGINS_GORM_DEFAULT_MAX_OPEN_CONN",
-		envName("XBC_", "plugins.gorm.default.max_open_conn"))
+	t.Parallel()
+	cases := map[string]string{
+		"plugins.gorm.default.max_open_conn": "XBC_PLUGINS_GORM_DEFAULT_MAX_OPEN_CONN",
+		"xbc.shutdown_timeout":               "XBC_SHUTDOWN_TIMEOUT",
+		"xbc.runtime.max_procs":              "XBC_RUNTIME_MAX_PROCS",
+		"xbc.instance_id":                    "XBC_INSTANCE_ID",
+		"web.addr":                           "XBC_WEB_ADDR",
+		"plugins.redis.cache.password":       "XBC_PLUGINS_REDIS_CACHE_PASSWORD",
+		"workloads.sast.enabled":             "XBC_WORKLOADS_SAST_ENABLED",
+		"xbcx.foo":                           "XBC_XBCX_FOO",
+	}
+	for path, want := range cases {
+		assert.Equal(t, want, envName("XBC_", path), "path %s", path)
+	}
+}
+
+// TestEnvNameAgreesWithEnvSectionPrefix is the anti-drift guard between the two
+// halves of the environment layer. bind reads a variable name straight off the
+// process environment, while Universe resolves one by stripping a section's
+// prefix and matching the remainder against that section's schema. If the two
+// derivations disagree about a name, the overlay accepts a variable that bind
+// never reads -- or rejects the one bind does -- and neither side can see the
+// other's mistake.
+//
+// The remainder is taken from the leaf path rather than listed, so a case added
+// here can only pass by the two derivations actually agreeing. A nested leaf
+// such as xbc.runtime.max_procs belongs to its section with "runtime" still in
+// the remainder, which is exactly how a nested sub-struct is addressed.
+func TestEnvNameAgreesWithEnvSectionPrefix(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		section string
+		leaf    string
+	}{
+		{section: "xbc", leaf: "xbc.shutdown_timeout"},
+		{section: "xbc", leaf: "xbc.runtime.max_procs"},
+		{section: "xbc", leaf: "xbc.instance_id"},
+		{section: "web", leaf: "web.addr"},
+		{section: "plugins.gorm", leaf: "plugins.gorm.default.dsn"},
+		{section: "plugins.redis.cache", leaf: "plugins.redis.cache.password"},
+		{section: "workloads.sast", leaf: "workloads.sast.enabled"},
+		{section: "xbcx", leaf: "xbcx.addr"},
+	}
+	for _, testCase := range cases {
+		remainder := strings.TrimPrefix(testCase.leaf, testCase.section+".")
+		require.NotEqual(t, testCase.leaf, remainder, "case %s must live under its section", testCase.leaf)
+		assert.Equal(t,
+			envName("XBC_", testCase.leaf),
+			envSectionPrefix("XBC_", testCase.section)+envSegment(remainder),
+			"section %s and leaf %s must spell one variable", testCase.section, testCase.leaf)
+	}
 }
 
 func TestSetScalarParsesDurationNotAsInt(t *testing.T) {

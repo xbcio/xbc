@@ -77,6 +77,11 @@
 // Require(AuthenticationMiddlewareKey) or by sitting inside PhaseError, is the
 // supported use of those keys.
 //
+// Ahead of all of that, and outside the middleware chain entirely, sits the
+// in-flight admission gate described under Configuration. It is not a
+// Middleware and cannot be ordered against: an admission ceiling that an
+// application could leave out of the chain would not be a ceiling.
+//
 // ErrorMapper Plugins declare a separate ErrorOrder. The Server collects and
 // sorts all mapper entries into that boundary, which is pinned outermost in
 // PhaseError. The first mapper that recognizes an error wins; safe non-leaking
@@ -113,6 +118,7 @@
 //	web:
 //	  addr: ":8080"
 //	  base_path: "/api/v1"
+//	  max_in_flight: 0
 //	  shutdown:
 //	    pre_drain_delay: 0s
 //	  read_timeout: 10s
@@ -127,6 +133,13 @@
 // MaxRequestBodyBytes is a hard limit for the complete request body.
 // MaxMultipartMemory only controls how much memory multipart parsing may use
 // before spilling to temporary files; it does not replace the total body limit.
+//
+// MaxInFlight is the process-wide admission ceiling. A request beyond it is
+// refused with 503 and a Retry-After header before any handler or contributed
+// middleware runs, rather than being queued. It is a process property and never
+// a per-route or per-plugin one, because a per-plugin ceiling cannot bound the
+// sum an instance accepts. Zero, the default, derives the ceiling from
+// GOMAXPROCS, so it follows the processor count the runtime installed.
 //
 // TrustedProxies is empty by default, so forwarded headers such as
 // X-Forwarded-For cannot influence the engine's client address. Configure only

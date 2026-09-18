@@ -6,10 +6,16 @@ import (
 	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 
-// Entry retains the identity of the Plugin that exported Value.
+// Entry retains the identity of the Plugin that exported Value, together with
+// the workload that Plugin belongs to.
 type Entry[T any] struct {
 	Identity Identity
 	Value    T
+	// Workload is the workload the producer belongs to, or "" when it belongs
+	// to none. Resource accounting and per-workload budgets read it, so it
+	// describes the occurrence that actually produced Value rather than what
+	// the producer's own declaration says in isolation.
+	Workload WorkloadKey
 }
 
 // Input is the sealed common type accepted by Inputs. Tokens remain strongly
@@ -127,7 +133,11 @@ func readEntries[T any](context BuildContext, token pluginmodel.InputToken) []En
 		if !ok {
 			panic(fmt.Sprintf("xbc: internal invariant: input token %d bound %T, want %s", token.ID, entry.Value, typeOf[T]()))
 		}
-		entries[i] = Entry[T]{Identity: fromInternalIdentity(entry.Identity), Value: value}
+		entries[i] = Entry[T]{
+			Identity: fromInternalIdentity(entry.Identity),
+			Value:    value,
+			Workload: entry.Workload,
+		}
 	}
 	return entries
 }

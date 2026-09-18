@@ -29,6 +29,13 @@ const (
 // MaxRequestBodyBytes is a transport-wide hard ceiling. MaxMultipartMemory only
 // controls how much parsed multipart data remains in memory; the request-body
 // ceiling still limits the complete request.
+//
+// MaxInFlight is the process-wide admission ceiling: the number of requests the
+// Server serves at once. Zero -- the default -- derives it from GOMAXPROCS when
+// the Server starts, so a deployment that never mentions the key still gets a
+// finite ceiling. A positive value is the ceiling verbatim. The gate it feeds
+// is assembled by the Server rather than contributed, so the limit cannot be
+// removed by leaving a plugin out; see inflight.go.
 type Config struct {
 	Addr                string         `yaml:"addr"                   default:":8080"   validate:"required"`
 	BasePath            string         `yaml:"base_path"              default:"/"       validate:"required,startswith=/"`
@@ -39,6 +46,7 @@ type Config struct {
 	MaxHeaderBytes      int            `yaml:"max_header_bytes"       default:"1048576" validate:"gt=0"`
 	MaxRequestBodyBytes int64          `yaml:"max_request_body_bytes" default:"10485760" validate:"gt=0"`
 	MaxMultipartMemory  int64          `yaml:"max_multipart_memory"   default:"8388608" validate:"gt=0"`
+	MaxInFlight         int            `yaml:"max_in_flight"          default:"0"       validate:"gte=0"`
 	TrustedProxies      []string       `yaml:"trusted_proxies"                          validate:"dive,required"`
 	Shutdown            ShutdownConfig `yaml:"shutdown"`
 	Security            SecurityConfig `yaml:"security"`
@@ -87,6 +95,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxHeaderBytes <= 0 || c.MaxRequestBodyBytes <= 0 || c.MaxMultipartMemory <= 0 {
 		return fmt.Errorf("web: request size limits must be greater than zero")
+	}
+	if c.MaxInFlight < 0 {
+		return fmt.Errorf("web: max_in_flight must not be negative")
 	}
 	if c.Shutdown.PreDrainDelay < 0 {
 		return fmt.Errorf("web: shutdown.pre_drain_delay must not be negative")

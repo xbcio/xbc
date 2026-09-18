@@ -41,6 +41,13 @@ const (
 	StageStart Stage = "Start"
 	// StageOpenTraffic is the last startup stage before the gate opens.
 	StageOpenTraffic Stage = "OpenTraffic"
+	// StagePreStop runs during shutdown but before the reverse unwind, on its
+	// own goroutine and under the pre-stop budget. Its duration is reported
+	// per attempt in PreStopRecord rather than in Instance.Timings, for the
+	// same reason StageStop's is: an abandoned PreStop outlives the phase that
+	// started it, so a slice owned by the instance would be written from
+	// outside the walk that reads it.
+	StagePreStop Stage = "PreStop"
 	// StageStop runs during the reverse unwind, on its own goroutine and
 	// under a shared deadline. Its duration is reported per attempt in
 	// StopRecord rather than in Instance.Timings.
@@ -64,10 +71,11 @@ type ConstructOptions struct {
 	// invokes one startup stage on one instance: the factory and Init inside
 	// Construct, and Migrate, Start and OpenTraffic through the Invoke*
 	// methods. A hook the Definition never declared announces nothing,
-	// because nothing runs. StageStop announces nothing either: it is already
-	// bounded by the shutdown budget and reported per attempt in StopRecord,
-	// and it runs on its own goroutine, so it is the one stage a caller can
-	// already see while it is still in flight.
+	// because nothing runs. StageStop and StagePreStop announce nothing
+	// either: both are already bounded by the budget they run under and
+	// reported per attempt in StopRecord and PreStopRecord, and both run on
+	// their own goroutine, so they are the stages a caller can already see
+	// while they are still in flight.
 	//
 	// Only the beginning is reported, and that is enough to name the stage
 	// currently in flight: these stages are strictly serial, so the last one
@@ -88,6 +96,13 @@ type Instance struct {
 	value     any
 	context   *plugin.Context
 	lifecycle lifecycleDescriptor
+
+	// workload is the workload this instance's Definition belongs to, or ""
+	// when it belongs to none. It is carried here rather than looked up from
+	// the planned graph because materializeSlots publishes it into the
+	// ResolvedEntry a consumer reads, and that must describe the instance that
+	// was actually constructed.
+	workload pluginmodel.WorkloadKey
 
 	// timings is appended to only by the single goroutine that drives this
 	// instance's lifecycle: Construct, and then the Invoke* methods the
@@ -113,6 +128,9 @@ func (instance *Instance) HasTrafficPreparation() bool {
 	return instance.lifecycle.openTraffic != nil
 }
 func (instance *Instance) HasStop() bool { return instance.lifecycle.stop != nil }
+
+// HasPreStop reports whether this instance declares a PreStop hook.
+func (instance *Instance) HasPreStop() bool { return instance.lifecycle.preStop != nil }
 
 // Timings returns how long each stage took for this instance, in the order the
 // stages ran, including a stage that ended in an error or a recovered panic:
@@ -202,6 +220,7 @@ func Construct(plan *Plan, options ConstructOptions) (*Constructed, error) {
 			value:        value,
 			context:      lifecycleContext,
 			lifecycle:    planned.lifecycle,
+			workload:     planned.workload,
 			timings:      []StageTiming{{Stage: StageFactory, Duration: factoryElapsed}},
 			onStageBegin: options.OnStageBegin,
 		}
@@ -229,6 +248,12 @@ func materializeSlots(planned *plannedInstance, owned map[plugin.Identity]*Insta
 			entries[index] = pluginmodel.ResolvedEntry{
 				Identity: pluginmodel.Identity{Plugin: pluginmodel.Key(producer.Plugin), Instance: producer.Instance},
 				Value:    instance.value,
+				// The producer's own reconciled membership, taken from the
+				// instance that was actually constructed rather than from the
+				// consumer's view of the graph, so a resource budget charged
+				// through Entry[T].Workload is charged to the workload that
+				// really owns the value.
+				Workload: instance.workload,
 			}
 		}
 		slots[tokenID] = entries
@@ -483,6 +508,284 @@ func (constructed *Constructed) Unwind(deadline context.Context, budget time.Dur
 			}
 		}
 		report.Records = append(report.Records, record)
+	}
+	return report, errors.Join(errs...)
+}
+
+// PreStopOutcome classifies how one owned value's PreStop attempt ended.
+//
+// The vocabulary deliberately stops short of StopOutcome's: there is no
+// "skipped" and no "not-attempted" because the phase has no per-instance
+// omissions to report. An instance that declares no hook produces no record
+// at all -- the phase is entered for the instances that have one -- and a
+// wasted budget cannot deny a later instance its turn, because every hook is
+// already running by the time the budget can expire. See Constructed.PreStop.
+type PreStopOutcome string
+
+const (
+	// PreStopCompleted means PreStop returned nil inside the phase budget.
+	PreStopCompleted PreStopOutcome = "completed"
+	// PreStopFailed means PreStop returned an error inside the phase budget.
+	// The error is reported, and the shutdown proceeds: a release that failed
+	// has no better outcome left to offer.
+	PreStopFailed PreStopOutcome = "failed"
+	// PreStopPanicked means PreStop panicked; the panic was recovered and
+	// reported, and the shutdown proceeds.
+	PreStopPanicked PreStopOutcome = "panicked"
+	// PreStopAbandoned means PreStop ignored the phase budget and was left
+	// running. That is a plugin contract violation, not a runtime choice. The
+	// abandoned hook keeps running and is therefore concurrent with every Stop
+	// that follows, which is exactly why Stop must be safe without a
+	// successful PreStop.
+	//
+	// An abandoned hook is recorded once, with this outcome, and never again:
+	// if it later returns or fails, that answer is dropped, because the phase
+	// has already stopped waiting and its buffered result channel has no
+	// reader. So an operator sees that the hook overran, and not what it would
+	// eventually have said -- which is the honest report, since the phase is
+	// over by then.
+	PreStopAbandoned PreStopOutcome = "abandoned"
+)
+
+// PreStopRecord is one instance's entry in a PreStopReport.
+type PreStopRecord struct {
+	Identity plugin.Identity
+	Outcome  PreStopOutcome
+	Err      error
+	// Duration is how long the phase waited on this instance: until PreStop
+	// returned, or until the phase budget expired and it was abandoned.
+	Duration time.Duration
+}
+
+// PreStopReport is the observable result of one pre-stop phase. It records
+// only the instances that declared a hook, in graph order.
+type PreStopReport struct {
+	Records []PreStopRecord
+}
+
+// Identities returns the recorded identities with the given outcome, in graph
+// order.
+func (report PreStopReport) Identities(outcome PreStopOutcome) []plugin.Identity {
+	var found []plugin.Identity
+	for _, record := range report.Records {
+		if record.Outcome == outcome {
+			found = append(found, record.Identity)
+		}
+	}
+	return found
+}
+
+// Empty reports whether this phase ran no hook at all. A phase that started
+// nothing and a phase that started nothing successfully are the same thing to
+// every caller, so they share one answer.
+func (report PreStopReport) Empty() bool { return len(report.Records) == 0 }
+
+// Waited renders how long the phase waited on each instance it actually waited
+// for, in graph order. Abandoned instances are omitted: nothing was waited for
+// there, and their recorded duration is the phase budget rather than a
+// measurement of anything the plugin did.
+func (report PreStopReport) Waited() []string {
+	var labels []string
+	for _, record := range report.Records {
+		if record.Outcome == PreStopAbandoned {
+			continue
+		}
+		labels = append(labels, record.Identity.String()+" "+record.Duration.String())
+	}
+	return labels
+}
+
+// preStopResult is what one instance's PreStop goroutine reports back. The
+// channel it travels on is buffered, so an abandoned hook still returns
+// without blocking on a reader that has already moved on.
+type preStopResult struct {
+	outcome PreStopOutcome
+	err     error
+	elapsed time.Duration
+}
+
+// InvokePreStop starts one instance's PreStop hook on its own goroutine under
+// the phase budget and returns how the attempt ended.
+//
+// It is the PreStop counterpart of stopBounded, and it reuses that method's
+// abandon semantics on purpose: the hook runs detached, so a plugin that
+// ignores its deadline cannot hold the shutdown open. What it does not reuse
+// is the panic boundary's stage argument -- invokeClassified is called with
+// StagePreStop, so a recovered panic reads "plugin X PreStop panic", not
+// "plugin X Stop panic", and the two are never confused in a log.
+//
+// deadline is the phase's shared context, not a per-instance one. Every hook
+// started by one phase therefore observes the same instant, which is what
+// makes the budget whole-phase: N hooks that each block cost one budget, not
+// N. A nil hook is not an error and not an abandoned attempt; it is the
+// instance politely declining, which is why it reports PreStopCompleted in
+// zero time.
+//
+// It exists for a caller driving one instance on its own. The phase itself
+// does not go through it: Constructed.PreStop has to initiate every hook
+// before waiting on any of them, so it launches and awaits separately.
+func (instance *Instance) InvokePreStop(deadline context.Context, budget time.Duration) (PreStopOutcome, time.Duration, error) {
+	hook := instance.lifecycle.preStop
+	if hook == nil {
+		return PreStopCompleted, 0, nil
+	}
+	var waiting sync.WaitGroup
+	waiting.Add(1)
+	done, started := instance.startPreStop(hook, deadline, &waiting)
+	return instance.awaitPreStop(done, started, deadline, budget)
+}
+
+// startPreStop launches the hook and returns the channel its outcome will
+// arrive on, together with the instant it was launched. Splitting the launch
+// from the wait is what lets Constructed.PreStop initiate every hook before it
+// waits on any of them.
+//
+// The channel is buffered and is the only channel the goroutine ever writes,
+// so an abandoned hook still returns rather than blocking on a reader that has
+// already moved on. waiting is decremented by the same goroutine, which is how
+// a caller learns that every channel now holds its value without consuming any
+// of them.
+func (instance *Instance) startPreStop(hook func(any, context.Context) error, deadline context.Context, waiting *sync.WaitGroup) (chan preStopResult, time.Time) {
+	done := make(chan preStopResult, 1)
+	started := time.Now()
+	go func() {
+		defer waiting.Done()
+		panicked, err := instance.invokeClassified(StagePreStop, func() error {
+			return hook(instance.value, deadline)
+		})
+		result := preStopResult{err: err, elapsed: time.Since(started)}
+		switch {
+		case panicked:
+			result.outcome = PreStopPanicked
+		case err != nil:
+			result.outcome = PreStopFailed
+		default:
+			result.outcome = PreStopCompleted
+		}
+		done <- result
+	}()
+	return done, started
+}
+
+// awaitPreStop reads one launched hook's outcome under the shared deadline.
+//
+// The two-step read mirrors stopBounded's for the same reason: a select whose
+// cases are both ready picks one at random, so a hook that returned in the
+// same instant the budget expired must be classified by what it did rather
+// than by the scheduler. The second read is what makes an already-completed
+// hook report its real duration instead of the budget.
+func (instance *Instance) awaitPreStop(done chan preStopResult, started time.Time, deadline context.Context, budget time.Duration) (PreStopOutcome, time.Duration, error) {
+	if result, ok := readPreStopResult(done); ok {
+		return result.outcome, result.elapsed, result.err
+	}
+	select {
+	case result := <-done:
+		return result.outcome, result.elapsed, result.err
+	case <-deadline.Done():
+	}
+	if result, ok := readPreStopResult(done); ok {
+		return result.outcome, result.elapsed, result.err
+	}
+	return PreStopAbandoned, time.Since(started), fmt.Errorf(
+		"xbc: plugin %s PreStop did not return within pre-stop budget %s; abandoning it",
+		instance.identity, budget)
+}
+
+// readPreStopResult takes an outcome that is already waiting, without blocking.
+func readPreStopResult(done chan preStopResult) (preStopResult, bool) {
+	select {
+	case result := <-done:
+		return result, true
+	default:
+		return preStopResult{}, false
+	}
+}
+
+// PreStop runs one pre-stop phase: it initiates every declared PreStop hook
+// and then waits for all of them under a single shared budget.
+//
+// # Why the hooks run concurrently
+//
+// Unwind walks Stop hooks one at a time and treats reverse order as a
+// contract, because each Stop releases something the next one still needs.
+// PreStop has the opposite shape. It retracts a value's externally visible
+// participation -- a lease, a published address, a registration -- and those
+// are independent of each other, so there is no order for the phase to
+// preserve and no first hook that any other hook depends on.
+//
+// Running them concurrently is therefore not a convenience, it is the property
+// that makes the phase safe to rely on: hook A blocking must not cost hook B
+// its chance to release. A sequential walk would let one stuck hook eat the
+// whole budget and leave every later instance abandoned, which would turn a
+// single plugin's bug into a cluster-wide failure to hand over. Starting all
+// of them first also gives the strictest reading of the phase's own contract,
+// that every PreStop is initiated before any Stop begins.
+//
+// # What the budget bounds
+//
+// budget bounds the phase, not one hook: every hook observes the same
+// deadline, so N hooks that each block for longer than the budget still cost
+// one budget. When it expires, the hooks still running are reported abandoned
+// and left running, and this method returns. They are then concurrent with the
+// Stops that follow, which is a contract Stop already has to satisfy: Stop
+// must be correct whether or not its PreStop succeeded.
+//
+// It returns the records it gathered together with the collected errors. A
+// non-nil error never means the phase failed to run; it means at least one
+// hook failed, panicked, or was abandoned, and the caller is expected to log
+// it and shut down anyway. The phase is entered only for instances that
+// declare a hook, so an application that declares none produces an empty
+// report and no error.
+func (constructed *Constructed) PreStop(deadline context.Context, budget time.Duration) (PreStopReport, error) {
+	var report PreStopReport
+	if constructed == nil {
+		return report, nil
+	}
+	type launched struct {
+		instance *Instance
+		done     chan preStopResult
+		started  time.Time
+	}
+	var pending []launched
+	var waiting sync.WaitGroup
+	for _, instance := range constructed.instances {
+		if !instance.HasPreStop() {
+			continue
+		}
+		waiting.Add(1)
+		done, started := instance.startPreStop(instance.lifecycle.preStop, deadline, &waiting)
+		pending = append(pending, launched{instance: instance, done: done, started: started})
+	}
+	if len(pending) == 0 {
+		return report, nil
+	}
+
+	// Wait for every hook, or for the shared deadline, whichever comes first.
+	// The join runs on its own goroutine because the hooks are foreign code:
+	// the phase must not depend on any of them observing anything, and waiting
+	// on the WaitGroup inline would have no deadline to interleave with.
+	all := make(chan struct{})
+	go func() {
+		waiting.Wait()
+		close(all)
+	}()
+	select {
+	case <-all:
+	case <-deadline.Done():
+	}
+
+	var errs []error
+	for _, item := range pending {
+		outcome, elapsed, err := item.instance.awaitPreStop(item.done, item.started, deadline, budget)
+		report.Records = append(report.Records, PreStopRecord{
+			Identity: item.instance.identity,
+			Outcome:  outcome,
+			Err:      err,
+			Duration: elapsed,
+		})
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return report, errors.Join(errs...)
 }

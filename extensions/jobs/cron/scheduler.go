@@ -8,6 +8,7 @@ import (
 
 	robfigcron "github.com/robfig/cron/v3"
 
+	"github.com/xbcio/xbc/extensions/coordination/lease"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -21,7 +22,7 @@ type scheduledJob struct {
 }
 
 type leaseSession struct {
-	lease       Lease
+	lease       lease.Lease
 	cancel      context.CancelFunc
 	finished    chan struct{}
 	renewalDone chan struct{}
@@ -220,7 +221,7 @@ func (p *Plugin) runInvocation(ctx context.Context, logger log.Logger, entry *sc
 		return
 	}
 
-	lease, acquired, err := p.locker.TryAcquire(ctx, entry.lockKey, p.config.Distributed.TTL)
+	held, acquired, err := p.locker.TryAcquire(ctx, entry.lockKey, p.config.Distributed.TTL)
 	if err != nil {
 		if ctx.Err() == nil {
 			logger.Error("cron: distributed lease acquisition failed", "job", entry.label, "error", err)
@@ -231,18 +232,18 @@ func (p *Plugin) runInvocation(ctx context.Context, logger log.Logger, entry *sc
 		logger.Debug("cron: distributed invocation skipped; lease held by another replica", "job", entry.label)
 		return
 	}
-	if isNilInterface(lease) {
+	if isNilInterface(held) {
 		logger.Error("cron: lock backend returned an acquired nil lease", "job", entry.label)
 		return
 	}
-	defer p.releaseLease(logger, lease, entry.label)
+	defer p.releaseLease(logger, held, entry.label)
 
-	if ctx.Err() != nil || !p.confirmLease(ctx, logger, lease, entry.label) {
+	if ctx.Err() != nil || !p.confirmLease(ctx, logger, held, entry.label) {
 		return
 	}
 	jobContext, jobCancel := context.WithCancel(ctx)
 	session := &leaseSession{
-		lease:       lease,
+		lease:       held,
 		cancel:      jobCancel,
 		finished:    make(chan struct{}),
 		renewalDone: make(chan struct{}),
@@ -309,9 +310,9 @@ func (p *Plugin) renewSession(ctx context.Context, logger log.Logger, label stri
 	}
 }
 
-func (p *Plugin) confirmLease(ctx context.Context, logger log.Logger, lease Lease, label string) bool {
+func (p *Plugin) confirmLease(ctx context.Context, logger log.Logger, held lease.Lease, label string) bool {
 	confirmContext, cancel := context.WithTimeout(ctx, p.renewTimeout())
-	owned, err := lease.Renew(confirmContext, p.config.Distributed.TTL)
+	owned, err := held.Renew(confirmContext, p.config.Distributed.TTL)
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil {
@@ -334,14 +335,14 @@ func (p *Plugin) renewTimeout() time.Duration {
 	return timeout
 }
 
-func (p *Plugin) releaseLease(logger log.Logger, lease Lease, label string) {
+func (p *Plugin) releaseLease(logger log.Logger, held lease.Lease, label string) {
 	timeout := p.config.Distributed.TTL / 2
 	if timeout <= 0 || timeout > 5*time.Second {
 		timeout = 5 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if _, err := lease.Release(ctx); err != nil {
+	if _, err := held.Release(ctx); err != nil {
 		logger.Error("cron: lease release failed", "job", label, "error", err)
 	}
 }

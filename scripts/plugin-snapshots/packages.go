@@ -4,6 +4,7 @@ import (
 	"github.com/xbcio/xbc/extensions/authorization/rbac"
 	"github.com/xbcio/xbc/plugin"
 
+	"github.com/xbcio/xbc/extensions/coordination/placement"
 	"github.com/xbcio/xbc/extensions/coordination/raft"
 	"github.com/xbcio/xbc/extensions/jobs/asynq"
 	"github.com/xbcio/xbc/extensions/jobs/cron"
@@ -48,12 +49,23 @@ import (
 //
 //	grep -rl '^func Bundle() plugin.Bundle' --include='*.go' .
 //
-// run from the repository root after excluding aggregate Bundles (such as
-// transport/web/prelude, whose entries belong to the implementation packages
-// below), scripts/plugin-migration-inventory test fixtures, and the demo
-// plugins under examples/ (quickstart's greeter, worker's sweeper and
-// healthlog). Regenerate this list by re-running that grep whenever a plugin
-// package is added or removed.
+// run from the repository root after excluding three categories:
+//
+//   - aggregate Bundles (such as transport/web/prelude, whose entries belong to
+//     the implementation packages below);
+//   - the demo plugins under examples/ (quickstart's greeter, worker's sweeper
+//     and healthlog, and the workloads example's heartbeat, ingest and
+//     transcode), which exist to be read rather than reused;
+//   - scripts/plugin-migration-inventory test fixtures;
+//   - engine adapters under transport/web/engines/, which are deliberately not
+//     Web plugins: each implements the neutral web.Engine port rather than a Web
+//     capability, so it is a distinct category from the plugins this list
+//     freezes. Adding one here would freeze an adapter's identity alongside a
+//     capability's, which is not the comparison this snapshot is meant to
+//     support.
+//
+// Regenerate this list by re-running that grep whenever a plugin package is
+// added or removed.
 var bundleProviders = []func() plugin.Bundle{
 	asynq.Bundle,
 	corehealth.Bundle,
@@ -63,6 +75,7 @@ var bundleProviders = []func() plugin.Bundle{
 	kafka.Bundle,
 	objectstorage.Bundle,
 	outbox.Bundle,
+	placement.Bundle,
 	raft.Bundle,
 	redis.Bundle,
 	webhook.Bundle,

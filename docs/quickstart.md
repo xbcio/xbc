@@ -91,6 +91,32 @@ The example sets `web.shutdown.pre_drain_delay: 2s` so `/readyz` can return 503 
 
 `xbc.slow_startup_after` (default `30s`) covers the opposite end: while startup has not finished, the runtime repeats a warning naming the phase it is in and the plugin and lifecycle stage still holding it, for example `phase=start plugin=gorm[primary] stage=Start`. The `plugin` field is the one to act on — it names the hook that has not returned. This is a report and not a timeout: nothing is cancelled or aborted, and startup keeps waiting for the plugin however long it takes. Reports repeat so consecutive lines can be compared: an unchanged phase and plugin mean stuck, a moving one means slow but progressing. Set it to `0s` to switch the report off, or raise it, when migrations legitimately run for minutes.
 
+`xbc.runtime` holds the process-level resource knobs, and `web.max_in_flight` holds the transport's admission ceiling:
+
+```yaml
+xbc:
+  runtime:
+    max_procs: auto      # auto | a positive processor count | 0 (leave GOMAXPROCS alone)
+    memory_limit: 0      # bytes | a percentage such as "75%" | 0 (no limit)
+    gc_percent: 0        # 0 leaves the Go default of 100 alone
+
+web:
+  max_in_flight: 0       # 0 derives the ceiling from the effective GOMAXPROCS
+```
+
+They live there rather than in a plugin because each is process-global: a plugin that set one would be tuning the whole process from inside one component, and an architecture guard fails the build for one that tries. The resolved values and their sources are logged once per boot and printed by `doctor` as `max_procs=4 (cgroup) memory_limit=1GiB (cgroup, 75%) gc_percent=default (unset)`. `max_procs: auto` reads the container's cgroup CPU quota, so a container limited to two cores runs with `GOMAXPROCS=2` rather than with the host's core count; where no quota is derivable it leaves the Go default in place and says so on that line. `memory_limit` written as a percentage needs a derivable container limit, and fails startup rather than silently doing nothing without one. A request past `web.max_in_flight` is refused with `503` and `Retry-After` before any handler runs, rather than queued.
+
+`xbc.pre_stop_timeout` budgets the pre-stop phase, which runs before shutdown proper and is accounted separately from `xbc.shutdown_timeout`, so the worst case for one stop is the two added together. It exists as its own knob because pre-stop retracts a value's externally visible participation while the process is still fully alive — a lease release is a real remote call — whereas Stop runs against an already-cancelled execution context.
+
+`xbc.instance_id` names this process. It is the token the runtime prints on the placement line at startup (`instance=…`), and the one an operator correlates a log line with when several processes run from one configuration file. Left empty it is derived — the hostname, the boot second, and a short random suffix, as in `host-7-1758091200-9f3c1a2b` — so two processes on one host are distinguishable with no deployment input at all, and a restart is visibly a different process. Because YAML does not expand `${VAR}`, a per-process value comes from the environment as `XBC_INSTANCE_ID`:
+
+```bash
+XBC_INSTANCE_ID=orders-3 \
+  go run ./examples/quickstart --config examples/quickstart/application.yml
+```
+
+An explicitly set value is used exactly as written and is not made unique per boot: naming a process means that name to survive a restart. Whitespace in it fails startup, because it is presented as one token wherever it is printed.
+
 ### Files and profiles
 
 Without `--config`, XBC uses the first file found in the current working directory:
@@ -115,18 +141,24 @@ Environment variables use the complete configuration path with the `XBC_` prefix
 
 | Configuration path | Environment variable |
 | --- | --- |
+| `xbc.shutdown_timeout` | `XBC_SHUTDOWN_TIMEOUT` |
+| `xbc.instance_id` | `XBC_INSTANCE_ID` |
+| `xbc.runtime.max_procs` | `XBC_RUNTIME_MAX_PROCS` |
 | `web.addr` | `XBC_WEB_ADDR` |
 | `plugins.jwt.secret` | `XBC_PLUGINS_JWT_SECRET` |
 | `plugins.redis.cache.password` | `XBC_PLUGINS_REDIS_CACHE_PASSWORD` |
+
+A section whose root already spells the `XBC_` prefix does not repeat it. The framework's own section is rooted at `xbc`, so `xbc.shutdown_timeout` is `XBC_SHUTDOWN_TIMEOUT` — never `XBC_XBC_SHUTDOWN_TIMEOUT`. The rule matches a whole path segment, so an unrelated section named `xbcx` would keep its complete spelling.
 
 For example:
 
 ```bash
 XBC_WEB_ADDR=:9090 \
+XBC_SHUTDOWN_TIMEOUT=20s \
   go run ./examples/quickstart --config examples/quickstart/application.yml
 ```
 
-Environment variables are a complete configuration layer. They can activate a selected plugin whose section is absent from YAML and can declare named instances such as `redis.cache`. They cannot activate code whose Bundle was not selected.
+Environment variables are a complete configuration layer. They can activate a selected plugin whose section is absent from YAML and can declare named instances such as `redis.cache`. They cannot activate code whose Bundle was not selected. A variable that names no declared section, or no field of the section it names, fails startup rather than being ignored. `XBC_PROFILE` is reserved for the loader itself and never names a section.
 
 ## Exercise the API
 
@@ -170,9 +202,44 @@ plugins:
 
 Selecting a Bundle makes the implementation available; its activation policy and configuration determine whether XBC constructs an instance.
 
+## Run one binary as several roles
+
+A single binary does not have to serve the whole application. The application declares its heavier parts as **workloads** — named groups of Definitions a process carries as a unit or not at all — and placement decides which of them a given process hosts. Roles then become a deployment question rather than a second `main`, a build tag, or a flag.
+
+[`examples/workloads`](../examples/workloads) is the runnable example of the whole surface: one binary, two workloads, and one unowned plugin. The exclusive workload needs a process of its own; the co-resident one may share. The unowned plugin belongs to no workload, so every role carries it — which is what makes the difference between roles visible rather than merely stated:
+
+```bash
+# Co-resident role: serves ingest and heartbeat; the transcode route is 404.
+go run ./examples/workloads --config examples/workloads/application.yml
+
+# Exclusive role: the same binary, the same config file, a different role.
+XBC_WORKLOADS_TRANSCODE_ENABLED=true XBC_WORKLOADS_INGEST_ENABLED=false \
+  go run ./examples/workloads --config examples/workloads/application.yml
+
+# Standby: carries neither workload, ready to be handed one.
+XBC_WORKLOADS_TRANSCODE_ENABLED=false XBC_WORKLOADS_INGEST_ENABLED=false \
+  go run ./examples/workloads --config examples/workloads/application.yml
+```
+
+`doctor` prints the decision instead of performing it — the placement source, each declared workload with whether this process carries it, and the Definitions belonging to none of them. Its `workload` rows are the quickest way to answer "what is this process actually for":
+
+```
+workload ingest     hosted  replicas=4  plugins=1  max_goroutines=8
+workload transcode  not held  exclusive  replicas=2  plugins=0  max_goroutines=4
+unowned             plugins=11
+```
+
+Two properties are worth knowing before reaching for this:
+
+- A workload this process does not host is not a disabled plugin. Its Definitions never enter the plan, so no instance is constructed, no connection pool is opened, no queue handler is registered, and no route exists. A request for one of its routes is answered `404` and is never forwarded to a process that does carry it.
+- Which roles exist is a cluster decision, so `replicas` and exclusivity are declared in Go beside the Definitions, not in YAML. Only what one process may decide about itself — `enabled` and `max_goroutines` — lives under the `workloads` root, one section per declared workload. A deployment that declares no workload, like the quickstart itself, must not have a `workloads:` block at all: the root is declared only when a workload is, so an empty one fails startup as an unowned key.
+
+The operator arithmetic this guide deliberately leaves out — how many processes to start for a given replica count, how a standby takes over after a holder dies, how long a rollout grace period has to be, and what placement does not do — is in [Slots, standbys, and how many processes to start](recipes.md#slots-standbys-and-how-many-processes-to-start) and the sections after it.
+
 ## Next steps
 
 - A service with no transport at all follows the same shape: see [Background-only service](recipes.md#background-only-service) and the runnable `examples/worker`.
+- One binary hosting several roles is the runnable `examples/workloads`, with the operator side in [Hosting a subset of workloads](recipes.md#hosting-a-subset-of-workloads).
 - [Deployment recipes](recipes.md) show explicit compositions for authentication, persistence, messaging, scheduling, and multi-replica services.
 - [Package `web`](https://pkg.go.dev/github.com/xbcio/xbc/transport/web) documents routing, middleware, request binding, errors, limits, and trusted proxies.
 - [Package `config`](https://pkg.go.dev/github.com/xbcio/xbc/config) documents the programmatic loader and schema contract.

@@ -488,6 +488,13 @@
       }
     },
     {
+      "key": "redis-lease",
+      "config_type": "github.com/xbcio/xbc/extensions/storage/redis.LeaseConfig",
+      "defaults": {
+        "Instance": "default"
+      }
+    },
+    {
       "key": "requestid",
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/requestid.Config",
       "defaults": {
@@ -622,6 +629,7 @@
         "MaxHeaderBytes": 1048576,
         "MaxRequestBodyBytes": 10485760,
         "MaxMultipartMemory": 8388608,
+        "MaxInFlight": 0,
         "TrustedProxies": null,
         "Shutdown": {
           "PreDrainDelay": 0

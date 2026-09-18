@@ -30,7 +30,7 @@ type Config struct {
 // DistributedConfig enables one-execution-across-replicas scheduling.
 // Exactly one lock backend must be selected when Enabled is true: either a
 // named Redis Definition instance, a Redis.Addr from which cron creates an
-// owned client, or one Locker exported by another Definition.
+// owned client, or one lease.Locker exported by another Definition.
 type DistributedConfig struct {
 	Enabled   bool   `yaml:"enabled"        default:"false"`
 	KeyPrefix string `yaml:"key_prefix"     default:"xbc:cron"`

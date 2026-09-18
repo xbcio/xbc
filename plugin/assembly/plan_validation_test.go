@@ -143,6 +143,7 @@ func (dualLifecycleValue) Migrate(*plugin.Context) error     { return nil }
 func (dualLifecycleValue) Start(*plugin.Context) error       { return nil }
 func (dualLifecycleValue) OpenTraffic(*plugin.Context) error { return nil }
 func (dualLifecycleValue) Stop(ctx context.Context) error    { return nil }
+func (dualLifecycleValue) PreStop(ctx context.Context) error { return nil }
 func (dualLifecycleValue) Number() int                       { return 0 }
 
 func TestFreezeRejectsAStageDeclaredByBothTheTypeAndAnAdapter(t *testing.T) {
@@ -153,6 +154,7 @@ func TestFreezeRejectsAStageDeclaredByBothTheTypeAndAnAdapter(t *testing.T) {
 		"Start":       {Start: func(dualLifecycleValue, *plugin.Context) error { return nil }},
 		"OpenTraffic": {OpenTraffic: func(dualLifecycleValue, *plugin.Context) error { return nil }},
 		"Stop":        {Stop: func(dualLifecycleValue, context.Context) error { return nil }},
+		"PreStop":     {PreStop: func(dualLifecycleValue, context.Context) error { return nil }},
 	} {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
