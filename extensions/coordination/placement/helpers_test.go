@@ -52,6 +52,11 @@ type memoryLocker struct {
 	failOnAttempt int
 	// acquisitions counts TryAcquire calls, so failOnAttempt can be positioned.
 	acquisitions int
+	// claimants records what each acquisition published about the process
+	// asking, so a test can pin the identity that reached the store and not only
+	// the slot that was won. It records refused attempts too: what a process
+	// calls itself does not depend on whether it wins.
+	claimants []string
 	// renewErr makes renewals fail.
 	renewErr error
 	// releaseErr makes releases fail, which is how a store that refuses the
@@ -68,11 +73,12 @@ func newMemoryLocker() *memoryLocker {
 	return &memoryLocker{held: make(map[string]string)}
 }
 
-func (l *memoryLocker) TryAcquire(_ context.Context, key string, _ time.Duration) (lease.Lease, bool, error) {
+func (l *memoryLocker) TryAcquire(_ context.Context, key, claimant string, _ time.Duration) (lease.Lease, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.events = append(l.events, leaseEvent{kind: "acquire", key: key})
 	l.acquisitions++
+	l.claimants = append(l.claimants, claimant)
 	if l.failAcquire != nil {
 		return nil, false, l.failAcquire
 	}
@@ -86,7 +92,15 @@ func (l *memoryLocker) TryAcquire(_ context.Context, key string, _ time.Duration
 		return nil, false, nil
 	}
 	l.seq++
+	// The token is composed the way the contract requires of a real backend: a
+	// claimant prefix, when one was named, over a part no other acquisition
+	// shares. Spelling it faithfully here is what lets the tests in this package
+	// tell the published name apart from the value ownership is compared by,
+	// without reaching for a real store to do it.
 	owner := fmt.Sprintf("owner-%d", l.seq)
+	if claimant != "" {
+		owner = claimant + "/" + owner
+	}
 	l.held[key] = owner
 	return &memoryLease{store: l, key: key, owner: owner}, true, nil
 }
@@ -147,6 +161,13 @@ func (l *memoryLocker) ownerOf(key string) string {
 	return l.held[key]
 }
 
+// recordedClaimants copies the identity every acquisition published, in order.
+func (l *memoryLocker) recordedClaimants() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.claimants...)
+}
+
 // heldKeys returns the keys this store currently has an owner for.
 func (l *memoryLocker) heldKeys() []string {
 	l.mu.Lock()
@@ -187,8 +208,8 @@ func newRecordingLocker(inner lease.Locker) *recordingLocker {
 	return &recordingLocker{inner: inner}
 }
 
-func (l *recordingLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
-	won, acquired, err := l.inner.TryAcquire(ctx, key, ttl)
+func (l *recordingLocker) TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
+	won, acquired, err := l.inner.TryAcquire(ctx, key, claimant, ttl)
 	l.record("acquire", key)
 	if err != nil || !acquired {
 		return nil, false, err

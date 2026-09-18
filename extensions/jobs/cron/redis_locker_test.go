@@ -33,18 +33,18 @@ func TestRedisLockerRejectsNilClient(t *testing.T) {
 func TestRedisLockerContentionAndOwnerSafeRelease(t *testing.T) {
 	server, client, locker := newRedisLockerTest(t)
 	ctx := context.Background()
-	first, acquired, err := locker.TryAcquire(ctx, "locks:job", time.Second)
+	first, acquired, err := locker.TryAcquire(ctx, "locks:job", "", time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("first TryAcquire() = (%v, %v), error = %v", first, acquired, err)
 	}
-	if _, acquired, err := locker.TryAcquire(ctx, "locks:job", time.Second); err != nil || acquired {
+	if _, acquired, err := locker.TryAcquire(ctx, "locks:job", "", time.Second); err != nil || acquired {
 		t.Fatalf("contending TryAcquire() acquired = %v, error = %v", acquired, err)
 	}
 
 	// Simulate expiry and takeover. The stale lease must neither renew nor
 	// delete the successor's token.
 	server.FastForward(2 * time.Second)
-	second, acquired, err := locker.TryAcquire(ctx, "locks:job", time.Second)
+	second, acquired, err := locker.TryAcquire(ctx, "locks:job", "", time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("takeover TryAcquire() acquired = %v, error = %v", acquired, err)
 	}
@@ -74,7 +74,7 @@ func TestRedisLockerContentionAndOwnerSafeRelease(t *testing.T) {
 func TestRedisLockerRenewExtendsTTLAndExpiredLockIsTakenOver(t *testing.T) {
 	server, _, locker := newRedisLockerTest(t)
 	ctx := context.Background()
-	held, acquired, err := locker.TryAcquire(ctx, "locks:long", 100*time.Millisecond)
+	held, acquired, err := locker.TryAcquire(ctx, "locks:long", "", 100*time.Millisecond)
 	if err != nil || !acquired {
 		t.Fatalf("TryAcquire() acquired = %v, error = %v", acquired, err)
 	}
@@ -90,7 +90,7 @@ func TestRedisLockerRenewExtendsTTLAndExpiredLockIsTakenOver(t *testing.T) {
 	if server.Exists("locks:long") {
 		t.Fatal("lease did not expire after renewed TTL")
 	}
-	successor, acquired, err := locker.TryAcquire(ctx, "locks:long", time.Second)
+	successor, acquired, err := locker.TryAcquire(ctx, "locks:long", "", time.Second)
 	if err != nil || !acquired || successor == nil {
 		t.Fatalf("post-expiry takeover acquired = %v, lease = %v, error = %v", acquired, successor, err)
 	}
@@ -106,13 +106,13 @@ func TestRedisLockerRenewExtendsTTLAndExpiredLockIsTakenOver(t *testing.T) {
 func TestRedisLockerRejectsUnusableArguments(t *testing.T) {
 	_, _, locker := newRedisLockerTest(t)
 	ctx := context.Background()
-	if _, acquired, err := locker.TryAcquire(ctx, "", time.Second); err == nil || acquired {
+	if _, acquired, err := locker.TryAcquire(ctx, "", "", time.Second); err == nil || acquired {
 		t.Fatalf("TryAcquire() with an empty key = (%v, %v), want an error", acquired, err)
 	}
-	if _, acquired, err := locker.TryAcquire(ctx, "locks:short", 999*time.Microsecond); err == nil || acquired {
+	if _, acquired, err := locker.TryAcquire(ctx, "locks:short", "", 999*time.Microsecond); err == nil || acquired {
 		t.Fatalf("TryAcquire() with a sub-millisecond TTL = (%v, %v), want an error", acquired, err)
 	}
-	held, acquired, err := locker.TryAcquire(ctx, "locks:short", time.Second)
+	held, acquired, err := locker.TryAcquire(ctx, "locks:short", "", time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("TryAcquire() acquired = %v, error = %v", acquired, err)
 	}
@@ -202,7 +202,7 @@ func TestRedisLockerBacksTheDistributedRedisAddrPath(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	held, acquired, err := p.locker.TryAcquire(ctx, p.jobs[0].lockKey, p.config.Distributed.TTL)
+	held, acquired, err := p.locker.TryAcquire(ctx, p.jobs[0].lockKey, "", p.config.Distributed.TTL)
 	if err != nil || !acquired {
 		t.Fatalf("TryAcquire() over the owned client acquired = %v, error = %v", acquired, err)
 	}

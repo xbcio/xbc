@@ -300,7 +300,7 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 	if err != nil {
 		return plugin.Placement{}, err
 	}
-	held, heldNotes, err := p.acquireAll(context.Background(), admitted)
+	held, heldNotes, err := p.acquireAll(context.Background(), admitted, request.Instance)
 	if err != nil {
 		// The slots won before the failure come back with the error instead of
 		// being disposed of inside acquireAll -- see there for why the disposal
@@ -330,11 +330,13 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 	}
 	if len(held) > 0 {
 		decision.Holder = claimant(request.Instance, held[0].lease.Owner())
-		// This is the one line that binds the two names a slot has: the process
-		// the operator can go and look at, and the token the store has in the
-		// key. Nothing else prints them together -- Holder carries one, the
-		// store holds the other -- so a wedged holder found by reading the store
-		// directly is traceable to a process only from here.
+		// This line binds the two names a slot has: the process the operator can
+		// go and look at, and the token the store has in the key. The token
+		// contains the first inside the second, so the store is readable on its
+		// own, and this line is still what makes the pair unambiguous -- it is
+		// the only place the exact token is printed next to the exact identity
+		// it was minted for, which is what a claim whose identity is itself in
+		// doubt has to be traced through.
 		for _, slot := range held {
 			p.logger.Info("placement: slot won",
 				"workload", slot.workload.String(),
@@ -359,10 +361,13 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 // claimant names who holds a slot, preferring the process over the token.
 //
 // The instance is the answer to the question an operator is actually asking --
-// which process do I go and look at -- and the token answers only "some claim
-// exists". The token is still what is reported when no instance was offered,
-// because a process that holds slots and names no claimant at all would read in
-// a diagnostic exactly like a static decision that claims nothing.
+// which process do I go and look at -- and it is reported bare because that is
+// the form that can be acted on: the token that reaches the store carries the
+// same name plus a part unique to the acquisition, which is noise to a person
+// and load-bearing to the store. The token is still what is reported when no
+// instance was offered, because a process that holds slots and names no claimant
+// at all would read in a diagnostic exactly like a static decision that claims
+// nothing.
 func claimant(instance, token string) string {
 	if instance != "" {
 		return instance
@@ -434,11 +439,11 @@ func admissionOrder(request plugin.PlacementRequest) ([]plugin.Workload, []strin
 // existing nesting and a slot never reaches back into Placement, so releasing
 // under p.mu adds no order that was not already there -- Resolve is in any case
 // already holding p.mu across store calls.
-func (p *Placement) acquireAll(ctx context.Context, admitted []plugin.Workload) ([]*heldSlot, []string, error) {
+func (p *Placement) acquireAll(ctx context.Context, admitted []plugin.Workload, instance string) ([]*heldSlot, []string, error) {
 	var held []*heldSlot
 	var notes []string
 	for _, workload := range admitted {
-		slot, won, err := p.acquire(ctx, workload)
+		slot, won, err := p.acquire(ctx, workload, instance)
 		if err != nil {
 			// A partial win is not a decision anyone can act on, so it is owed
 			// back before the error is acted on: leaving the slots held would
@@ -468,12 +473,17 @@ func (p *Placement) acquireAll(ctx context.Context, admitted []plugin.Workload) 
 // every candidate try the same slot first and lose the same way on every
 // attempt, so a freed slot would be found by whichever process happened to be
 // scheduled next rather than by the search spreading over the set.
-func (p *Placement) acquire(ctx context.Context, workload plugin.Workload) (*heldSlot, bool, error) {
+//
+// instance is published into the slot's stored token, so a key found held in the
+// store names the process to go and look at. It is a claim's label and never its
+// proof: the store still decides the race, and the token the backend returns is
+// what every later renewal and release is compared against.
+func (p *Placement) acquire(ctx context.Context, workload plugin.Workload, instance string) (*heldSlot, bool, error) {
 	offset := p.randomOffset(workload.Replicas)
 	for attempt := 0; attempt < workload.Replicas; attempt++ {
 		index := (offset + attempt) % workload.Replicas
 		key := p.slotKey(workload.Key, index)
-		won, acquired, err := p.locker.TryAcquire(ctx, key, p.ttl)
+		won, acquired, err := p.locker.TryAcquire(ctx, key, instance, p.ttl)
 		if err != nil {
 			return nil, false, fmt.Errorf(
 				"placement: cannot reach the lease store to win a slot for workload %q at %q: %w\n  → the hosted set has to be decided before the graph is built, so a process that cannot read the store must not guess and host everything instead; check the lease backend, or drop WithPlacement",

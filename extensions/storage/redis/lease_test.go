@@ -77,18 +77,18 @@ func TestPrepareLeaseConfigDefaultsToTheUnnamedInstanceAndRejectsBadNames(t *tes
 func TestLockerContentionAndOwnerSafeRelease(t *testing.T) {
 	server, client, locker := newLockerTest(t)
 	ctx := context.Background()
-	first, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", time.Second)
+	first, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("first TryAcquire() = (%v, %v), error = %v", first, acquired, err)
 	}
-	if _, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", time.Second); err != nil || acquired {
+	if _, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second); err != nil || acquired {
 		t.Fatalf("contending TryAcquire() acquired = %v, error = %v", acquired, err)
 	}
 
 	// Simulate expiry and takeover. The stale lease must neither renew nor
 	// delete the successor's token.
 	server.FastForward(2 * time.Second)
-	second, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", time.Second)
+	second, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("takeover TryAcquire() acquired = %v, error = %v", acquired, err)
 	}
@@ -112,10 +112,84 @@ func TestLockerContentionAndOwnerSafeRelease(t *testing.T) {
 	}
 }
 
+// TestTheStoredValueNamesTheProcessHoldingTheKey is why TryAcquire takes a
+// claimant at all. Without it the value under a held key is sixteen random
+// bytes, so an operator who finds a slot occupied learns that someone holds it
+// and has no way to find out who -- the one question worth asking when a slot
+// is held by a process that should have given it up.
+//
+// The uniqueness half is checked from the same place because the two are a pair:
+// the claimant is what makes the value readable, and the random half is what
+// keeps it from being reusable. See lease.Locker for why a value that were only
+// the claimant would let a restarted process's stale lease renew a successor's
+// lock.
+func TestTheStoredValueNamesTheProcessHoldingTheKey(t *testing.T) {
+	_, client, locker := newLockerTest(t)
+	ctx := context.Background()
+
+	held, acquired, err := locker.TryAcquire(ctx, "placement:workload:sast:0", "scanner-2", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("TryAcquire() acquired = %v, error = %v", acquired, err)
+	}
+	stored, err := client.Get(ctx, "placement:workload:sast:0").Result()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if stored != held.Owner() {
+		t.Fatalf("stored value = %q, want the lease's own token %q", stored, held.Owner())
+	}
+	if !strings.HasPrefix(stored, "scanner-2/") {
+		t.Fatalf("stored value = %q, want it to name the claiming process", stored)
+	}
+	if strings.TrimPrefix(stored, "scanner-2/") == "" {
+		t.Fatalf("stored value = %q, want a part unique to this acquisition after the claimant", stored)
+	}
+
+	// The same process, restarted, claims the same key under the same name. A
+	// token that were only the claimant would be identical here.
+	if released, err := held.Release(ctx); err != nil || !released {
+		t.Fatalf("Release() released = %v, error = %v", released, err)
+	}
+	successor, acquired, err := locker.TryAcquire(ctx, "placement:workload:sast:0", "scanner-2", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("second TryAcquire() acquired = %v, error = %v", acquired, err)
+	}
+	if successor.Owner() == held.Owner() {
+		t.Fatalf("both acquisitions under claimant %q minted the token %q", "scanner-2", held.Owner())
+	}
+	if owned, err := held.Renew(ctx, time.Minute); err != nil || owned {
+		t.Fatalf("the released lease renewed its successor's lock: owned = %v, error = %v", owned, err)
+	}
+}
+
+// TestAnAnonymousClaimIsStillServed pins the empty claimant: a caller with no
+// identity worth publishing -- cron's scheduler lock, where every replica would
+// publish the same name -- gets an ordinary unique token and gives up only the
+// ability to read the holder back out of the store.
+func TestAnAnonymousClaimIsStillServed(t *testing.T) {
+	_, client, locker := newLockerTest(t)
+	ctx := context.Background()
+
+	held, acquired, err := locker.TryAcquire(ctx, "locks:nightly", "", time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("TryAcquire() acquired = %v, error = %v", acquired, err)
+	}
+	stored, err := client.Get(ctx, "locks:nightly").Result()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if stored != held.Owner() {
+		t.Fatalf("stored value = %q, want the lease's own token %q", stored, held.Owner())
+	}
+	if strings.Contains(stored, "/") {
+		t.Fatalf("stored value = %q, want no claimant prefix when none was named", stored)
+	}
+}
+
 func TestLockerRenewExtendsTTLAndExpiredLockIsTakenOver(t *testing.T) {
 	server, _, locker := newLockerTest(t)
 	ctx := context.Background()
-	held, acquired, err := locker.TryAcquire(ctx, "placement:webscan:0", 100*time.Millisecond)
+	held, acquired, err := locker.TryAcquire(ctx, "placement:webscan:0", "scanner-1", 100*time.Millisecond)
 	if err != nil || !acquired {
 		t.Fatalf("TryAcquire() acquired = %v, error = %v", acquired, err)
 	}
@@ -131,7 +205,7 @@ func TestLockerRenewExtendsTTLAndExpiredLockIsTakenOver(t *testing.T) {
 	if server.Exists("placement:webscan:0") {
 		t.Fatal("lease did not expire after renewed TTL")
 	}
-	successor, acquired, err := locker.TryAcquire(ctx, "placement:webscan:0", time.Second)
+	successor, acquired, err := locker.TryAcquire(ctx, "placement:webscan:0", "scanner-2", time.Second)
 	if err != nil || !acquired || successor == nil {
 		t.Fatalf("post-expiry takeover acquired = %v, lease = %v, error = %v", acquired, successor, err)
 	}
@@ -189,7 +263,7 @@ func TestAssembledLeasePluginExportsALockerOverTheNamedInstance(t *testing.T) {
 		t.Fatalf("lease primary is %T, want a lease.Locker", instance.Primary())
 	}
 
-	held, acquired, err := exported.TryAcquire(context.Background(), "placement:sca:0", time.Minute)
+	held, acquired, err := exported.TryAcquire(context.Background(), "placement:sca:0", "scanner-1", time.Minute)
 	if err != nil || !acquired || held == nil {
 		t.Fatalf("TryAcquire() = (%v, %v), error = %v", held, acquired, err)
 	}

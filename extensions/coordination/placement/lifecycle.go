@@ -217,7 +217,8 @@ func (p *Placement) runStandby(runCtx context.Context, cancelRun context.CancelF
 		if p.stopRequested(runCtx) {
 			return
 		}
-		won, _, err := p.acquireAll(runCtx, p.admittedWorkloads())
+		admitted, instance := p.admission()
+		won, _, err := p.acquireAll(runCtx, admitted, instance)
 		if err != nil {
 			// A round that failed part-way still won the slots that came before
 			// the failure, and this is the call site that can record them:
@@ -398,10 +399,14 @@ func (p *Placement) markLoopDone() {
 	p.loopDoneOnce.Do(func() { close(p.loopDone) })
 }
 
-// admittedWorkloads copies the admission order Resolve fixed, so the standby
-// loop keeps attempting the same set in the same order.
-func (p *Placement) admittedWorkloads() []plugin.Workload {
+// admission copies what Resolve fixed for the rounds that come after it: the
+// admission order, so the standby loop keeps attempting the same set in the same
+// order, and the claimant to publish, so a slot won on a retry names the same
+// process the first round would have. Both are written once by the resolving
+// round under mu, and read together here so a retry can never pair one round's
+// workloads with another's identity.
+func (p *Placement) admission() ([]plugin.Workload, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return append([]plugin.Workload(nil), p.admitted...)
+	return append([]plugin.Workload(nil), p.admitted...), p.instance
 }

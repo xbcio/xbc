@@ -29,6 +29,12 @@ type Held struct {
 	// Owner is the token the store associates with this claim. It is what a
 	// slot key's value holds, so it is the field that turns a claim found by
 	// reading the store into this process's claim.
+	//
+	// It is not the bare process identity: the backend composes Stats.Instance
+	// with a part unique to the one acquisition, so the value read out of the
+	// store names the holder while remaining safe to compare against. Instance
+	// is the field to report to a person; this is the field to compare with a
+	// store.
 	Owner string
 	// Age is how long the slot has been held, and Renewed is when it was last
 	// confirmed.

@@ -2,6 +2,7 @@ package lease_test
 
 import (
 	"context"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
@@ -123,7 +124,8 @@ func isStdlib(path string) bool {
 // consumer outside this module, with no unexported helper and no backend
 // assumption leaking through the vocabulary.
 type memoryLocker struct {
-	held map[string]*memoryLease
+	held         map[string]*memoryLease
+	acquisitions int
 }
 
 type memoryLease struct {
@@ -137,7 +139,7 @@ var (
 	_ lease.Lease  = (*memoryLease)(nil)
 )
 
-func (l *memoryLocker) TryAcquire(_ context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
+func (l *memoryLocker) TryAcquire(_ context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
 	if ttl < time.Millisecond {
 		return nil, false, nil
 	}
@@ -147,7 +149,15 @@ func (l *memoryLocker) TryAcquire(_ context.Context, key string, ttl time.Durati
 	if _, occupied := l.held[key]; occupied {
 		return nil, false, nil
 	}
-	held := &memoryLease{locker: l, key: key, owner: key + ":owner"}
+	l.acquisitions++
+	// The token is composed the way the contract requires: the claimant, when
+	// one was named, over a part unique to this acquisition. The counter is that
+	// unique part, which is all a single-process implementation needs.
+	owner := fmt.Sprintf("%s:owner-%d", key, l.acquisitions)
+	if claimant != "" {
+		owner = claimant + "/" + owner
+	}
+	held := &memoryLease{locker: l, key: key, owner: owner}
 	l.held[key] = held
 	return held, true, nil
 }
@@ -155,12 +165,17 @@ func (l *memoryLocker) TryAcquire(_ context.Context, key string, ttl time.Durati
 func (l *memoryLease) Key() string   { return l.key }
 func (l *memoryLease) Owner() string { return l.owner }
 
+// Renew and Release compare the stored token rather than this value's identity,
+// which is what the contract requires of a real backend and what makes a token
+// that repeated across acquisitions genuinely unsafe here too.
 func (l *memoryLease) Renew(_ context.Context, _ time.Duration) (bool, error) {
-	return l.locker.held[l.key] == l, nil
+	held, exists := l.locker.held[l.key]
+	return exists && held.owner == l.owner, nil
 }
 
 func (l *memoryLease) Release(_ context.Context) (bool, error) {
-	if l.locker.held[l.key] != l {
+	held, exists := l.locker.held[l.key]
+	if !exists || held.owner != l.owner {
 		return false, nil
 	}
 	delete(l.locker.held, l.key)
@@ -174,12 +189,12 @@ func TestContractIsImplementableWithoutABackend(t *testing.T) {
 	ctx := context.Background()
 	var locker lease.Locker = &memoryLocker{}
 
-	first, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", time.Second)
+	first, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
 	require.NoError(t, err)
 	require.True(t, acquired)
 	require.NotNil(t, first)
 
-	second, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", time.Second)
+	second, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
 	assert.NoError(t, err, "contention is expected control flow, not an error")
 	assert.False(t, acquired)
 	assert.Nil(t, second)
@@ -191,4 +206,50 @@ func TestContractIsImplementableWithoutABackend(t *testing.T) {
 	released, err = first.Release(ctx)
 	assert.NoError(t, err, "a lease that no longer owns its key is not an operational failure")
 	assert.False(t, released)
+}
+
+// TestAClaimantIsPublishedWithoutBecomingTheToken pins the rule that makes a
+// held key readable without making it forgeable.
+//
+// Both halves are load-bearing and pull in opposite directions. Publishing the
+// claimant is what turns "someone holds this slot" into "this process holds this
+// slot", which is the only way an operator reading the store finds the process
+// to go and look at. Composing it with something unique to the one acquisition
+// is what keeps the token from repeating: a claimant is a chosen name that
+// survives a restart, so a token that were only the claimant would make a dead
+// process's lease compare equal to its successor's and renew a lock it no longer
+// holds. An implementation that satisfies one half and not the other passes
+// nothing here.
+func TestAClaimantIsPublishedWithoutBecomingTheToken(t *testing.T) {
+	ctx := context.Background()
+	var locker lease.Locker = &memoryLocker{}
+
+	first, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	assert.True(t, strings.HasPrefix(first.Owner(), "scanner-1/"),
+		"the token names the claimant, so reading the store answers which process holds the key: %q", first.Owner())
+
+	released, err := first.Release(ctx)
+	require.NoError(t, err)
+	require.True(t, released)
+
+	// The same process, having restarted, claims the same key under the same
+	// name. This is the case the unique half exists for.
+	second, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	assert.NotEqual(t, first.Owner(), second.Owner(),
+		"two acquisitions under one claimant must not share a token, or the earlier lease could renew the later one's lock")
+
+	owned, err := first.Renew(ctx, time.Second)
+	require.NoError(t, err)
+	assert.False(t, owned, "the superseded lease must not renew its successor's lock")
+
+	// An anonymous caller is still served; it gives up only readability.
+	anonymous, acquired, err := locker.TryAcquire(ctx, "placement:sast:1", "", time.Second)
+	require.NoError(t, err)
+	require.True(t, acquired)
+	assert.NotEmpty(t, anonymous.Owner(), "a token is still minted when no claimant was named")
+	assert.NotContains(t, anonymous.Owner(), "/", "with no claimant there is no prefix to separate")
 }

@@ -122,8 +122,11 @@ func newLocker(client *goredis.Client) (*locker, error) {
 	return &locker{client: client}, nil
 }
 
-// TryAcquire atomically creates key with a random owner token and a TTL.
-func (l *locker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
+// TryAcquire atomically creates key with a fresh owner token and a TTL. The
+// token is "<claimant>/<random>" when a claimant was named and the random half
+// alone when none was, so reading the key answers which process holds it while
+// the stored value stays unique to this one acquisition.
+func (l *locker) TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
 	if l == nil || l.client == nil {
 		return nil, false, fmt.Errorf("redis: lease locker is not initialized")
 	}
@@ -133,7 +136,7 @@ func (l *locker) TryAcquire(ctx context.Context, key string, ttl time.Duration) 
 	if ttl < time.Millisecond {
 		return nil, false, fmt.Errorf("redis: lease TTL must be at least 1ms, got %s", ttl)
 	}
-	token, err := leaseOwnerToken()
+	token, err := leaseOwnerToken(claimant)
 	if err != nil {
 		return nil, false, err
 	}
@@ -181,10 +184,23 @@ func (l *redisLease) Release(ctx context.Context) (bool, error) {
 	return result == 1, nil
 }
 
-func leaseOwnerToken() (string, error) {
+// leaseOwnerToken mints one acquisition's owner token: the claimant, when one
+// was named, over sixteen bytes of entropy that no other acquisition shares.
+//
+// The unique half is never optional. A claimant is a configured name that
+// survives a restart, so a token that were only the claimant would make a dead
+// process's lease compare equal to its successor's -- the stale renewal that
+// lease.Lease exists to forbid. The two halves are joined with "/" and the
+// unique half contains none, so a reader of the stored value takes everything
+// before the last one as the process to go and look at.
+func leaseOwnerToken(claimant string) (string, error) {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", fmt.Errorf("redis: generate lease owner token: %w", err)
 	}
-	return hex.EncodeToString(raw[:]), nil
+	unique := hex.EncodeToString(raw[:])
+	if claimant == "" {
+		return unique, nil
+	}
+	return claimant + "/" + unique, nil
 }

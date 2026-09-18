@@ -37,8 +37,8 @@ func newGatedRenewLocker() *gatedRenewLocker {
 	}
 }
 
-func (l *gatedRenewLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
-	won, acquired, err := l.inner.TryAcquire(ctx, key, ttl)
+func (l *gatedRenewLocker) TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
+	won, acquired, err := l.inner.TryAcquire(ctx, key, claimant, ttl)
 	if err != nil || !acquired {
 		return nil, false, err
 	}

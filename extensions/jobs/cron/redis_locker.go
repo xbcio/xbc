@@ -87,8 +87,10 @@ func newRedisLocker(client *redis.Client) (*redisLocker, error) {
 	return &redisLocker{client: client}, nil
 }
 
-// TryAcquire atomically creates key with a random owner token and a TTL.
-func (l *redisLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
+// TryAcquire atomically creates key with a fresh owner token and a TTL. The
+// token carries claimant when one was named, exactly as the Redis extension's
+// copy does; cron's own scheduler names none, and see the call site for why.
+func (l *redisLocker) TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
 	if l == nil || l.client == nil {
 		return nil, false, fmt.Errorf("cron: Redis locker is not initialized")
 	}
@@ -98,7 +100,7 @@ func (l *redisLocker) TryAcquire(ctx context.Context, key string, ttl time.Durat
 	if ttl < time.Millisecond {
 		return nil, false, fmt.Errorf("cron: Redis lock TTL must be at least 1ms, got %s", ttl)
 	}
-	token, err := ownerToken()
+	token, err := ownerToken(claimant)
 	if err != nil {
 		return nil, false, err
 	}
@@ -146,10 +148,18 @@ func (l *redisLease) Release(ctx context.Context) (bool, error) {
 	return result == 1, nil
 }
 
-func ownerToken() (string, error) {
+// ownerToken mints one acquisition's owner token: the claimant, when one was
+// named, over sixteen bytes of entropy no other acquisition shares. The unique
+// half is never optional -- see lease.Locker for why a token that were only the
+// claimant would let a stale lease renew its successor's lock.
+func ownerToken(claimant string) (string, error) {
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", fmt.Errorf("cron: generate lease owner token: %w", err)
 	}
-	return hex.EncodeToString(raw[:]), nil
+	unique := hex.EncodeToString(raw[:])
+	if claimant == "" {
+		return unique, nil
+	}
+	return claimant + "/" + unique, nil
 }
