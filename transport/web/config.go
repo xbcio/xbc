@@ -36,6 +36,19 @@ const (
 // finite ceiling. A positive value is the ceiling verbatim. The gate it feeds
 // is assembled by the Server rather than contributed, so the limit cannot be
 // removed by leaving a plugin out; see inflight.go.
+//
+// WriteTimeout is one deadline for a whole response, which is the right shape
+// for request/response traffic and the wrong shape for a response with no known
+// length. A route that streams -- server-sent events, a progress feed, a chunked
+// export -- is severed mid-body when it outlives the budget, and it lifts the
+// deadline for its own connection rather than the deployment raising it for
+// every route:
+//
+//	http.NewResponseController(c.Writer()).SetWriteDeadline(time.Time{})
+//
+// That reaches the connection through the writer stack, wrappers included, so it
+// works under gzip, request timeout and idempotency as well as on its own. It is
+// per response, so nothing else loses its bound.
 type Config struct {
 	Addr                string         `yaml:"addr"                   default:":8080"   validate:"required"`
 	BasePath            string         `yaml:"base_path"              default:"/"       validate:"required,startswith=/"`
