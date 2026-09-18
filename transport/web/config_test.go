@@ -35,6 +35,23 @@ func TestConfigUsesProductionHTTPAndPayloadDefaults(t *testing.T) {
 	assert.Equal(t, int64(8<<20), cfg.MaxMultipartMemory)
 	assert.Empty(t, cfg.TrustedProxies)
 	assert.Zero(t, cfg.Shutdown.PreDrainDelay, "pre-drain is explicit opt-in")
+	assert.Zero(t, cfg.MaxInFlight, "the admission ceiling is derived from GOMAXPROCS unless a deployment sets one")
+}
+
+// TestMaxInFlightBindsFromTheWebSection pins the configuration key itself. The
+// field is the only thing the ceiling can be read from, so a rename that
+// silently stops binding would leave every deployment that sets it running at
+// the derived limit instead -- a behaviour change with no error attached.
+func TestMaxInFlightBindsFromTheWebSection(t *testing.T) {
+	environment, err := config.NewEnvironment(map[string]any{
+		"web": map[string]any{"max_in_flight": 64},
+	}, "XBC_WEB_MAX_IN_FLIGHT_TEST_")
+	require.NoError(t, err)
+
+	var bound Config
+	require.NoError(t, environment.Bind(ConfigPath, &bound))
+	require.NoError(t, config.Validate(&bound, ConfigPath))
+	assert.Equal(t, 64, bound.MaxInFlight)
 }
 
 func TestConfigRejectsMalformedSecuritySettings(t *testing.T) {
@@ -46,6 +63,7 @@ func TestConfigRejectsMalformedSecuritySettings(t *testing.T) {
 		{"base path query", func(c *Config) { c.BasePath = "/api?admin=true" }},
 		{"zero timeout", func(c *Config) { c.ReadHeaderTimeout = 0 }},
 		{"negative body limit", func(c *Config) { c.MaxRequestBodyBytes = -1 }},
+		{"negative in-flight limit", func(c *Config) { c.MaxInFlight = -1 }},
 		{"negative pre-drain delay", func(c *Config) { c.Shutdown.PreDrainDelay = -time.Second }},
 		{"invalid proxy", func(c *Config) { c.TrustedProxies = []string{"proxy.example.com"} }},
 		{"invalid cidr", func(c *Config) { c.TrustedProxies = []string{"10.0.0.0/99"} }},
@@ -62,5 +80,6 @@ func TestConfigRejectsMalformedSecuritySettings(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.TrustedProxies = []string{"127.0.0.1", "10.0.0.0/8", "2001:db8::/32"}
 	cfg.Shutdown.PreDrainDelay = 250 * time.Millisecond
+	cfg.MaxInFlight = 64
 	assert.NoError(t, cfg.Validate())
 }

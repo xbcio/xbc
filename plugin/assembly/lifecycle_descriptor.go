@@ -15,6 +15,7 @@ var (
 	runnerType        = reflect.TypeOf((*plugin.Runner)(nil)).Elem()
 	trafficOpenerType = reflect.TypeOf((*plugin.TrafficOpener)(nil)).Elem()
 	closerType        = reflect.TypeOf((*plugin.Closer)(nil)).Elem()
+	preStopperType    = reflect.TypeOf((*plugin.PreStopper)(nil)).Elem()
 )
 
 func compileLifecycle(definition pluginmodel.DefinitionDescriptor) (lifecycleDescriptor, error) {
@@ -79,6 +80,23 @@ func compileLifecycle(definition pluginmodel.DefinitionDescriptor) (lifecycleDes
 		}
 	} else if adapters.Stop != nil {
 		descriptor.stop = adapters.Stop
+	}
+	// PreStop is compiled last because it was added last, not because it runs
+	// last: it is the first hook the runtime invokes during a shutdown. What
+	// this branch has to get right is the same thing every branch above does --
+	// the adapter and the method are mutually exclusive, so neither can shadow
+	// the other -- and the order of the branches only decides which of two
+	// ambiguity errors a Definition with several duplicated stages is told
+	// about first.
+	if primary.Implements(preStopperType) {
+		if adapters.PreStop != nil {
+			return lifecycleDescriptor{}, duplicateLifecycle(definition, "PreStop")
+		}
+		descriptor.preStop = func(value any, context context.Context) error {
+			return value.(plugin.PreStopper).PreStop(context)
+		}
+	} else if adapters.PreStop != nil {
+		descriptor.preStop = adapters.PreStop
 	}
 	return descriptor, nil
 }

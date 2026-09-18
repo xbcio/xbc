@@ -34,16 +34,24 @@
 // DefaultEnvPrefix is XBC_. A variable name is derived from the complete
 // configuration path by replacing dots and hyphens with underscores and
 // converting it to uppercase. For example, web.addr maps to XBC_WEB_ADDR and
-// plugins.redis.cache.password maps to
-// XBC_PLUGINS_REDIS_CACHE_PASSWORD. Instanced sections discover the instance
-// name between their section prefix and field suffix.
+// plugins.redis.cache.password maps to XBC_PLUGINS_REDIS_CACHE_PASSWORD.
+//
+// A section whose root already spells the process prefix does not repeat it.
+// The framework's own section is rooted at "xbc", so xbc.shutdown_timeout maps
+// to XBC_SHUTDOWN_TIMEOUT and xbc.runtime.max_procs maps to
+// XBC_RUNTIME_MAX_PROCS, never to the doubled XBC_XBC_* form. The test is on a
+// whole path segment rather than on a string prefix, so an unrelated section
+// such as xbcx keeps its complete spelling, XBC_XBCX_*. Instanced sections
+// discover the instance name between their section prefix and field suffix.
 //
 // Resolution is schema-aware rather than a blind split on underscores, so
 // names such as base_path remain unambiguous. Scalars, durations, values that
 // implement encoding.TextUnmarshaler, and string slices can be supplied by one
 // variable. Shapes that cannot be represented by one variable fail explicitly.
 // Environment variables form the highest-precedence layer and may create a
-// selected section or named instance even when it is absent from YAML.
+// selected section or named instance even when it is absent from YAML. A
+// variable that names no declared section, or no field of the section it names,
+// is an error rather than a silent no-op.
 //
 // # Sensitive fields
 //

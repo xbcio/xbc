@@ -229,6 +229,10 @@ func TestEraseLifecycleAdaptsEveryStageToTheOwningPrimaryType(t *testing.T) {
 			stages = append(stages, "stop")
 			return ctx.Err()
 		},
+		PreStop: func(value *definitionValue, ctx context.Context) error {
+			stages = append(stages, "prestop")
+			return ctx.Err()
+		},
 	}})
 
 	adapters := descriptorOf(t, definition).Lifecycle
@@ -239,12 +243,22 @@ func TestEraseLifecycleAdaptsEveryStageToTheOwningPrimaryType(t *testing.T) {
 	require.NoError(t, adapters.Start(value, ctx))
 	require.NoError(t, adapters.OpenTraffic(value, ctx))
 	require.NoError(t, adapters.Stop(value, context.Background()))
-	assert.Equal(t, []string{"init:staged", "migrate:staged", "start:staged", "open:staged", "stop"}, stages)
-	assert.Equal(t, 4, value.value)
+	// PreStop is handed an already-cancelled context on purpose. This layer is
+	// a verbatim pass-through of whatever the runtime derived, so getting
+	// context.Canceled back is the proof that the hook saw the context it was
+	// handed rather than one invented here. Which context the runtime derives
+	// -- Background with the phase budget, never the cancelled execution
+	// context -- is pinned in runtime, where the derivation lives.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.Equal(t, context.Canceled, adapters.PreStop(value, cancelled))
+	assert.Equal(t, []string{"init:staged", "migrate:staged", "start:staged", "open:staged", "stop", "prestop"}, stages)
+	assert.Equal(t, 4, value.value, "PreStop takes no *Context, so it cannot record the Context name")
 
 	bare := descriptorOf(t, Define("bare", func(BuildContext) (*definitionValue, error) {
 		return &definitionValue{}, nil
 	})).Lifecycle
 	assert.Nil(t, bare.Init)
 	assert.Nil(t, bare.Stop)
+	assert.Nil(t, bare.PreStop)
 }

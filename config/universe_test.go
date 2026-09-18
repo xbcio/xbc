@@ -6,8 +6,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// frameworkSection is the shape of the framework's own "xbc" root: a typed
+// section whose path begins by spelling the process prefix. It is declared
+// separately from serverSection because that collision is the whole subject of
+// the tests below.
+type frameworkSection struct {
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" default:"30s"`
+	InstanceID      string        `yaml:"instance_id"`
+}
+
+// xbcRootUniverse declares the framework's root beside an ordinary one, so a
+// test can show that only the root spelling the process prefix collapses.
+func xbcRootUniverse(t *testing.T) *Universe {
+	t.Helper()
+	universe, err := NewUniverse(
+		Section{Path: "xbc", Owner: "the xbc runtime", Kind: SectionTyped, Schema: reflect.TypeOf(frameworkSection{})},
+		Section{Path: "web", Owner: "the web transport", Kind: SectionTyped, Schema: reflect.TypeOf(serverSection{})},
+		Section{Path: "xbcx", Owner: "a different section", Kind: SectionTyped, Schema: reflect.TypeOf(serverSection{})},
+	)
+	require.NoError(t, err)
+	return universe
+}
 
 // serverSection is the typed schema the environment-layer tests resolve
 // against. It deliberately contains a key that itself holds an underscore
@@ -441,4 +464,143 @@ func TestEnvironmentProvenanceNamesSourcesNotValues(t *testing.T) {
 	require.Equal(t, []string{"env"}, env.OriginsUnder("plugins.greeter"))
 	require.Empty(t, env.OriginsUnder("app"), "A section nobody configured has no origin")
 	require.Equal(t, []string{"app", "plugins", "server"}, env.Roots())
+}
+
+// TestEnvironmentLayerResolvesARootThatSpellsTheProcessPrefix pins the overlay
+// half of the collapsed-root rule, which is the half that used to reject the
+// name outright.
+//
+// A section whose root already spells the process prefix does not repeat it, so
+// xbc.shutdown_timeout is XBC_SHUTDOWN_TIMEOUT. Deriving the name by
+// concatenating the prefix with the complete path produced
+// XBC_XBC_SHUTDOWN_TIMEOUT instead, and the overlay -- which stripped the
+// prefix and then looked for a section called XBC_ -- matched neither spelling
+// the way an operator would write it: the bare one failed as an unknown
+// section, and only the doubled one resolved.
+func TestEnvironmentLayerResolvesARootThatSpellsTheProcessPrefix(t *testing.T) {
+	universe := xbcRootUniverse(t)
+
+	cases := []struct {
+		name    string
+		env     string
+		value   string
+		path    string
+		want    any
+		comment string
+	}{
+		{
+			name:    "framework root collapses",
+			env:     "XBC_SHUTDOWN_TIMEOUT",
+			value:   "11s",
+			path:    "xbc.shutdown_timeout",
+			want:    11 * time.Second,
+			comment: "The spelling every operator reaches for is the one that must work",
+		},
+		{
+			name:    "framework root leaf",
+			env:     "XBC_INSTANCE_ID",
+			value:   "host-7",
+			path:    "xbc.instance_id",
+			want:    "host-7",
+			comment: "Every leaf of the root collapses, not just the first",
+		},
+		{
+			name:    "ordinary root does not collapse",
+			env:     "XBC_WEB_ADDR",
+			value:   ":9090",
+			path:    "web.addr",
+			want:    ":9090",
+			comment: "A root that does not spell the prefix keeps its complete spelling",
+		},
+		{
+			name:    "near-miss root keeps its doubled spelling",
+			env:     "XBC_XBCX_ADDR",
+			value:   ":9091",
+			path:    "xbcx.addr",
+			want:    ":9091",
+			comment: "xbcx merely begins with xbc; a bare string prefix test would collapse it too",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			values, err := universe.envOverlay(DefaultEnvPrefix, []string{testCase.env + "=" + testCase.value}, nil)
+			require.NoError(t, err, testCase.comment)
+			require.Equal(t, testCase.want, values[testCase.path], testCase.comment)
+			require.Len(t, values, 1, "A variable must set exactly the path it names")
+		})
+	}
+}
+
+// TestEnvironmentLayerRejectsTheDoubledSpellingOfTheFrameworkRoot is the other
+// direction: the name nobody writes must not keep working. Leaving
+// XBC_XBC_SHUTDOWN_TIMEOUT accepted would preserve the very spelling the
+// correction exists to remove, and would leave two names for one leaf.
+//
+// It fails as an unknown top-level name rather than as a missing field, which is
+// the accurate diagnosis: after the collapse, XBC_XBC_ names no section either.
+func TestEnvironmentLayerRejectsTheDoubledSpellingOfTheFrameworkRoot(t *testing.T) {
+	universe := xbcRootUniverse(t)
+
+	_, err := universe.envOverlay(DefaultEnvPrefix, []string{"XBC_XBC_SHUTDOWN_TIMEOUT=11s"}, nil)
+	require.Error(t, err, "The doubled spelling is not the name of any configuration field")
+	require.Contains(t, err.Error(), "XBC_XBC_SHUTDOWN_TIMEOUT")
+	require.Contains(t, err.Error(), "uses the reserved XBC_ prefix but names no declared configuration section")
+}
+
+// TestEnvironmentLayerStillReportsAnUnknownRootByItsOwnMessage keeps the
+// collapse from swallowing the most useful diagnostic in the layer.
+//
+// Because the framework's root collapses into the process prefix, every
+// XBC_-prefixed variable now lands on that section's doorstep. If a collapsed
+// root claimed a variable merely by carrying the prefix, a typo such as
+// XBC_ADDR would be reported as a missing field of the framework's own section
+// and the "names no declared configuration section" message -- the one that
+// lists the roots an operator could have meant -- would become unreachable for
+// every variable. A collapsed root therefore claims one only by matching it.
+func TestEnvironmentLayerStillReportsAnUnknownRootByItsOwnMessage(t *testing.T) {
+	universe := xbcRootUniverse(t)
+
+	_, err := universe.envOverlay(DefaultEnvPrefix, []string{"XBC_ADDR=:1"}, nil)
+	require.Error(t, err, "A top-level name nobody declares must fail rather than be silently ignored")
+	require.Contains(t, err.Error(), "XBC_ADDR")
+	require.Contains(t, err.Error(), "uses the reserved XBC_ prefix but names no declared configuration section")
+	require.Contains(t, err.Error(), "web, xbc, xbcx",
+		"The diagnostic must list the roots an operator could have meant")
+}
+
+// TestEnvironmentLayerKeepsClaimingForAnOrdinaryNamespace is the control that
+// stops the rule above from being over-applied. A namespace whose root does not
+// spell the process prefix still claims its whole prefix, so a typo inside it is
+// reported as the missing field it is rather than as an unknown top-level name.
+func TestEnvironmentLayerKeepsClaimingForAnOrdinaryNamespace(t *testing.T) {
+	universe := testUniverse(t)
+
+	_, err := universe.envOverlay(DefaultEnvPrefix, []string{"XBC_SERVER_NO_SUCH_FIELD=x"}, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "names no configuration field")
+	require.NotContains(t, err.Error(), "uses the reserved")
+}
+
+// TestLoadAndBindAgreeOnTheFrameworkRootName is the end-to-end pin: the
+// environment layer must inject the value under xbc.shutdown_timeout and Bind
+// must read that same variable off the process environment. Those are two
+// independent derivations of one name, and a disagreement between them is
+// invisible from either side alone -- the overlay would merge a value that Bind
+// never picks up, leaving the struct at its default with no error anywhere.
+func TestLoadAndBindAgreeOnTheFrameworkRootName(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeYAML(t, filepath.Join(dir, "application.yml"), "xbc:\n  shutdown_timeout: 5s\n")
+	t.Setenv("XBC_SHUTDOWN_TIMEOUT", "11s")
+
+	env, err := Load(Options{Universe: xbcRootUniverse(t)})
+	require.NoError(t, err)
+	require.Equal(t, 11*time.Second, env.Get("xbc.shutdown_timeout"),
+		"The environment layer is the highest-precedence layer and must resolve the collapsed name")
+
+	var bound frameworkSection
+	require.NoError(t, env.Bind("xbc", &bound))
+	assert.Equal(t, 11*time.Second, bound.ShutdownTimeout,
+		"Bind reads the process environment directly; it must derive the same name as the overlay")
 }

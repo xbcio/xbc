@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,6 +38,15 @@ type archPackageJSON struct {
 	Imports      []string
 	TestImports  []string
 	XTestImports []string
+	// DepOnly is set by `go list -deps -json`. It is true for a package that
+	// entered the listing only as a dependency of the packages named on the
+	// command line, and false for a package the pattern actually matched.
+	//
+	// archModuleClosure reads it to tell a module's own packages apart from
+	// the closure those packages pull in. That distinction is what lets the
+	// per-module guards below ask "what does this module compile in" without
+	// also needing the module's path as a second, separately-sourced fact.
+	DepOnly bool
 }
 
 // archGoCommand runs every Go command from the repository root. Test binaries
@@ -44,8 +54,23 @@ type archPackageJSON struct {
 // cwd, so relative package patterns must never inherit process cwd.
 func archGoCommand(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
+	return archGoCommandIn(t, archRepositoryRoot(t), args...)
+}
+
+// archGoCommandIn runs a Go command from a specific module directory, so a
+// guard can ask a question about a module other than the root one.
+//
+// This exists because every other helper in this file is rooted at the
+// repository root, and `./...` from there resolves only within the root
+// module. A guard that asked "does this module's closure pull in the Web
+// stack" from the root would therefore be asking it about the wrong module
+// and, for a module added later, about nothing at all -- it would pass
+// without ever having read the module it claims to protect. Callers pass the
+// module's own directory so `./...` means that module.
+func archGoCommandIn(t *testing.T, dir string, args ...string) *exec.Cmd {
+	t.Helper()
 	cmd := exec.Command("go", args...)
-	cmd.Dir = archRepositoryRoot(t)
+	cmd.Dir = dir
 	return cmd
 }
 
@@ -323,6 +348,238 @@ func TestArchCoreDependencyClosureExcludesOptionalStacks(t *testing.T) {
 			}
 		}
 	}
+}
+
+// ── guard 11: each workspace module answers for its own closure ───────────
+//
+// Every guard above runs from the repository root, so all of them together
+// still describe exactly one module. That was adequate while core was the only
+// thing with a dependency-purity rule, and it is not adequate now: the
+// repository has grown a protocol-neutral extension namespace whose whole
+// point is that a capability module can be depended on without inheriting a
+// transport, and `scripts/plugin-snapshots` shows how easily a module that is
+// not a plugin accumulates a wide closure without anyone asking about it.
+//
+// The guards below therefore re-ask the closure question from inside each
+// module joined by go.work, where `./...` means that module.
+
+const (
+	// archTransportNamespace is the parent namespace every transport --
+	// including the Web transport and its engine adapters -- lives under.
+	// Guarding the parent rather than one implementation name means a future
+	// transport/grpc module is covered as soon as it appears.
+	archTransportNamespace = archRootPackage + "/transport"
+	// archWebModulePath is the Web transport module itself. A module is
+	// treated as composing the Web stack only by importing this (or a package
+	// beneath it), which is the Go declaration of that dependency.
+	archWebModulePath = archRootPackage + "/transport/web"
+	// archGinModulePath is the HTTP engine the Web stack is built on. It is
+	// named separately from archTransportNamespace because it is third-party:
+	// a module can pull Gin in through an intermediate dependency without ever
+	// naming an XBC transport, which is precisely what a closure guard exists
+	// to catch.
+	archGinModulePath = "github.com/gin-gonic/gin"
+	// archExtensionsNamespace is the protocol-neutral extension namespace: the
+	// capability modules a service selects for infrastructure, messaging, and
+	// jobs. Nothing here is a transport, and nothing here may drag one in.
+	archExtensionsNamespace = archRootPackage + "/extensions"
+)
+
+// archWorkspaceModuleDirs returns every non-root module joined by go.work, as
+// an absolute module root directory. Discovery is delegated to
+// archWorkspaceModuleFiles so that this guard and the release-boundary guard
+// can never disagree about which modules exist.
+func archWorkspaceModuleDirs(t *testing.T) []string {
+	t.Helper()
+	manifests := archWorkspaceModuleFiles(t)
+	dirs := make([]string, 0, len(manifests))
+	for _, manifest := range manifests {
+		dirs = append(dirs, filepath.Dir(manifest))
+	}
+	require.NotEmpty(t, dirs, "go.work lists no independent sub module, the per-module closure guards are inactive")
+	return dirs
+}
+
+// archModuleClosure runs `go list -deps -json ./...` from one module's own
+// directory and returns every package in that module's production build
+// closure, including the module's own packages.
+//
+// Like archGoList it calls t.Fatal rather than t.Skip when the listing comes
+// back empty. An empty listing is the failure mode this whole guard exists
+// for: a `go list` that ran in the wrong directory, or against a module that
+// stopped compiling, would otherwise report a clean closure because it read
+// no closure at all.
+func archModuleClosure(t *testing.T, dir string) []archPackageJSON {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go command unavailable, skipping per-module dependency closure check")
+	}
+
+	out, err := archGoCommandIn(t, dir, "list", "-deps", "-json", "./...").Output()
+	require.NoError(t, err, "go list -deps -json ./... failed in module %s", dir)
+
+	dec := json.NewDecoder(strings.NewReader(string(out)))
+	var pkgs []archPackageJSON
+	for dec.More() {
+		var pkg archPackageJSON
+		require.NoError(t, dec.Decode(&pkg), "Parsing go list -deps -json ./... output for %s failed", dir)
+		pkgs = append(pkgs, pkg)
+	}
+	if len(pkgs) == 0 {
+		t.Fatalf("go list -deps -json ./... in module %s returned no packages, the guard built on it actually did not take effect", dir)
+	}
+	return pkgs
+}
+
+// archModuleComposesWebStack reports whether any of this module's own packages
+// directly imports the Web transport.
+//
+// The signal is the import statement rather than a name on a list, because an
+// import is how Go records the declaration. A manifest cannot carry it: no
+// XBC module may require another before there is a real release tag, so
+// `require` is empty in every manifest here and `go.work` is what resolves the
+// edge. Reading the import keeps the exemption derived from the module itself
+// instead of from a list this file would have to keep in step with go.work.
+func archModuleComposesWebStack(pkgs []archPackageJSON) bool {
+	for _, pkg := range pkgs {
+		if pkg.DepOnly {
+			continue
+		}
+		for _, dep := range pkg.Imports {
+			if archPathAtOrBelow(dep, archWebModulePath) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// archModuleForeignDependencies returns the distinct import paths a module
+// pulls in from outside itself, in canonical order.
+//
+// A module's own packages are excluded deliberately. `go list -deps ./...`
+// names them alongside everything they depend on, and a module that lives
+// under transport/ would otherwise be reported as violating its own rule for
+// no reason other than existing. The question these guards ask is what a
+// module *brings in*, and a module is not a dependency of itself.
+func archModuleForeignDependencies(pkgs []archPackageJSON) []string {
+	seen := make(map[string]bool, len(pkgs))
+	deps := make([]string, 0, len(pkgs))
+	for _, pkg := range pkgs {
+		if !pkg.DepOnly || seen[pkg.ImportPath] {
+			continue
+		}
+		seen[pkg.ImportPath] = true
+		deps = append(deps, pkg.ImportPath)
+	}
+	sort.Strings(deps)
+	return deps
+}
+
+// archRepositoryRelative renders dir as a slash-separated path relative to the
+// repository root, for diagnostics and for the one position-derived rule
+// below.
+func archRepositoryRelative(t *testing.T, dir string) string {
+	t.Helper()
+	relative, err := filepath.Rel(archRepositoryRoot(t), dir)
+	require.NoError(t, err, "locating module %s within the repository failed", dir)
+	return filepath.ToSlash(relative)
+}
+
+// TestArchModulesThatDoNotComposeWebDoNotCompileItIn is the per-module
+// companion to TestArchCoreDependencyClosureExcludesOptionalStacks. That guard
+// answers the question for core; this one answers it for every module go.work
+// joins, from that module's own directory.
+//
+// A module is exempt only when it declares the Web dependency by importing the
+// Web module. `examples` and `scripts/plugin-snapshots` are exempt on that
+// basis and only on that basis: both are composition aggregates that select
+// Web Bundles deliberately, neither sits beneath transport/web, and a rule
+// built on directory position alone would either flag them or need a
+// hand-maintained exception list that go.work would immediately outdate.
+// Everything else -- every capability module, every contract module -- must
+// reach the Web stack through nothing at all.
+func TestArchModulesThatDoNotComposeWebDoNotCompileItIn(t *testing.T) {
+	dirs := archWorkspaceModuleDirs(t)
+
+	var (
+		composing     int
+		notComposing  int
+		foreignNonStd int
+	)
+	for _, dir := range dirs {
+		relative := archRepositoryRelative(t, dir)
+		closure := archModuleClosure(t, dir)
+		if archModuleComposesWebStack(closure) {
+			composing++
+			continue
+		}
+		notComposing++
+		for _, dep := range archModuleForeignDependencies(closure) {
+			if archIsStdlib(dep) {
+				continue
+			}
+			foreignNonStd++
+			for _, forbidden := range []string{archTransportNamespace, archGinModulePath} {
+				if archPathAtOrBelow(dep, forbidden) {
+					t.Errorf("module %s does not import the Web transport, yet its production closure contains %q; the Web stack and its engine may only be compiled in by a module that declares that dependency",
+						relative, dep)
+				}
+			}
+		}
+	}
+
+	// Non-vacuity in both directions. A run where every module composed the
+	// Web stack would never evaluate the rule; a run where none did would
+	// never exercise the exemption. The dependency count is the third leg: the
+	// rule above is an absence, so it is only evidence if real closures were
+	// read first.
+	assert.GreaterOrEqual(t, len(dirs), 20,
+		"go.work should join every publishable module; a short list means the per-module closure guards cover less than they claim")
+	assert.NotZero(t, notComposing,
+		"every workspace module composed the Web stack, so the rule under test was never applied to anything")
+	assert.NotZero(t, composing,
+		"no workspace module composed the Web stack, so the exemption was never taken and cannot be distinguished from a rule that always fires")
+	assert.Greater(t, foreignNonStd, 100,
+		"the per-module closures contributed almost no non-standard-library dependencies, so the scan read far less than the modules it claims to cover")
+}
+
+// TestArchProtocolNeutralExtensionsNeverComposeTheWebStack states the same
+// invariant for the extension namespace without the exemption above.
+//
+// This is not redundant with the previous guard, it is the half that guard
+// cannot provide. There, a module that imports the Web transport exempts
+// itself, which is correct for an aggregate that means to compose it and is
+// exactly the wrong answer for a capability module that does not: an
+// `extensions/*` module that started importing the Web transport would go
+// quiet rather than red. The extension namespace is where the plan's original
+// property lives -- a protocol-neutral capability must be selectable without
+// inheriting a transport -- so it is asserted unconditionally.
+func TestArchProtocolNeutralExtensionsNeverComposeTheWebStack(t *testing.T) {
+	checked := 0
+	for _, dir := range archWorkspaceModuleDirs(t) {
+		relative := archRepositoryRelative(t, dir)
+		if !strings.HasPrefix(relative, "extensions/") {
+			continue
+		}
+		checked++
+		closure := archModuleClosure(t, dir)
+		assert.Falsef(t, archModuleComposesWebStack(closure),
+			"module %s is part of the protocol-neutral extension namespace but imports the Web transport; a capability module must be selectable by a non-Web service", relative)
+		for _, dep := range archModuleForeignDependencies(closure) {
+			if archIsStdlib(dep) {
+				continue
+			}
+			for _, forbidden := range []string{archTransportNamespace, archGinModulePath} {
+				if archPathAtOrBelow(dep, forbidden) {
+					t.Errorf("module %s is part of the protocol-neutral extension namespace, yet its production closure contains %q; protocol-neutral capabilities must compile without a transport",
+						relative, dep)
+				}
+			}
+		}
+	}
+	require.NotZero(t, checked,
+		"no workspace module sits in the extensions namespace, so this guard read nothing; the namespace was renamed or go.work stopped listing it")
 }
 
 // ── guard 7: designated leaf packages are stdlib-only ──────────────────

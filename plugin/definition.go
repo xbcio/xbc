@@ -47,20 +47,35 @@ type Options[P any] struct {
 	Instances  Cardinality
 	Activation Activation
 	ConfigPath string
-	Inputs     InputSet
-	Exports    ContractSet[P]
-	Lifecycle  Lifecycle[P]
+	// Workload names the workload this Definition is a member of, for a member
+	// whose Definition lives in another module and therefore cannot be
+	// gathered by WorkloadOf at its own declaration site. It is "" by default,
+	// which means the Definition belongs to no workload.
+	//
+	// It is an escape hatch, not the ordinary spelling: a workload package
+	// gathers its own members with WorkloadOf and tags them together, so this
+	// field exists for the member that cannot be gathered there.
+	Workload  WorkloadKey
+	Inputs    InputSet
+	Exports   ContractSet[P]
+	Lifecycle Lifecycle[P]
 }
 
 // Lifecycle supplies explicit adapters for a primary value that cannot
 // implement XBC's lifecycle interfaces itself. A stage must not be supplied
 // both here and on P; catalog freeze rejects that ambiguity.
+//
+// The field order is declaration order, not execution order: PreStop is
+// appended so that adding it moved nothing, and it runs before Stop. See
+// PreStopper for why it takes a plain context.Context while Init, Migrate,
+// Start and OpenTraffic take a *Context.
 type Lifecycle[P any] struct {
 	Init        func(P, *Context) error
 	Migrate     func(P, *Context) error
 	Start       func(P, *Context) error
 	OpenTraffic func(P, *Context) error
 	Stop        func(P, context.Context) error
+	PreStop     func(P, context.Context) error
 }
 
 // Contract is one additional interface export tied to primary type P.
@@ -188,6 +203,7 @@ func finishDefinition[P any](key Key, configDescriptor *pluginmodel.ConfigDescri
 			Path: options.Activation.path,
 		},
 		ConfigPath: options.ConfigPath,
+		Workload:   pluginmodel.WorkloadKey(options.Workload),
 		Contracts:  append([]pluginmodel.Contract(nil), options.Exports.contracts...),
 		Config:     configDescriptor,
 		Lifecycle:  eraseLifecycle(options.Lifecycle),
@@ -228,6 +244,9 @@ func eraseLifecycle[P any](lifecycle Lifecycle[P]) pluginmodel.LifecycleAdapters
 	}
 	if lifecycle.Stop != nil {
 		erased.Stop = func(value any, context context.Context) error { return lifecycle.Stop(value.(P), context) }
+	}
+	if lifecycle.PreStop != nil {
+		erased.PreStop = func(value any, context context.Context) error { return lifecycle.PreStop(value.(P), context) }
 	}
 	return erased
 }

@@ -376,6 +376,7 @@ func (value *stagedValue) Migrate(*plugin.Context) error     { return value.reco
 func (value *stagedValue) Start(*plugin.Context) error       { return value.record("start") }
 func (value *stagedValue) OpenTraffic(*plugin.Context) error { return value.record("open") }
 func (value *stagedValue) Stop(context.Context) error        { return value.record("stop") }
+func (value *stagedValue) PreStop(context.Context) error     { return value.record("prestop") }
 
 func stagedInstance(t *testing.T, stages *[]string, fail, panics string) *Instance {
 	t.Helper()
@@ -411,15 +412,18 @@ func TestLifecycleStagesAreInvokedThroughTheCompiledDescriptor(t *testing.T) {
 	assert.True(t, instance.HasStart())
 	assert.True(t, instance.HasTrafficPreparation())
 	assert.True(t, instance.HasStop())
+	assert.True(t, instance.HasPreStop())
 
 	require.NoError(t, instance.InvokeMigration())
 	require.NoError(t, instance.InvokeStart())
 	require.NoError(t, instance.InvokeTrafficPreparation())
+	outcome, _, err := instance.InvokePreStop(context.Background(), time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, PreStopCompleted, outcome)
 	require.NoError(t, instance.StopBounded(context.Background(), time.Second))
-	assert.Equal(t, []string{"init", "migrate", "start", "open", "stop"}, stages)
 
 	require.NoError(t, instance.StopBounded(context.Background(), time.Second))
-	assert.Equal(t, []string{"init", "migrate", "start", "open", "stop"}, stages, "Stop runs at most once")
+	assert.Equal(t, []string{"init", "migrate", "start", "open", "prestop", "stop"}, stages, "Stop runs at most once")
 }
 
 func TestAbsentLifecycleStagesAreReportedAndSkipped(t *testing.T) {
@@ -438,6 +442,7 @@ func TestAbsentLifecycleStagesAreReportedAndSkipped(t *testing.T) {
 	assert.False(t, instance.HasStart())
 	assert.False(t, instance.HasTrafficPreparation())
 	assert.False(t, instance.HasStop())
+	assert.False(t, instance.HasPreStop(), "an instance that declares no PreStop must not be handed to the phase")
 	assert.Nil(t, instance.Context(), "no ContextFactory means no lifecycle Context")
 	require.NoError(t, instance.InvokeMigration())
 	require.NoError(t, instance.InvokeStart())

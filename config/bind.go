@@ -14,14 +14,6 @@ import (
 	"github.com/knadh/koanf/v2"
 )
 
-// envName maps a config path to its environment variable name:
-// "plugins.gorm.default.dsn" -> "XBC_PLUGINS_GORM_DEFAULT_DSN". Dashes become
-// underscores too, so that a hyphenated plugin key stays addressable and
-// agrees with the spelling Universe resolves against.
-func envName(prefix, path string) string {
-	return prefix + envSegment(path)
-}
-
 // bind performs the strict configuration-binding chain for one subtree:
 //  1. reject keys that are outside out's yaml-tag schema
 //  2. unmarshal the subtree into out
@@ -74,6 +66,11 @@ func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...str
 	items := schema.rootedLeaves(path)
 	envSet := make(map[string]bool, len(items))
 	for _, item := range items {
+		// This reads the process environment directly, while the environment
+		// overlay resolves the same variable through Universe. Both name it
+		// through envName/envSectionPrefix in universe.go, which is the one
+		// place the spelling rule lives: two derivations of one name that
+		// disagree would make the overlay merge a value bind never picks up.
 		name := envName(envPrefix, item.Path)
 		raw, ok := os.LookupEnv(name)
 		if !ok {

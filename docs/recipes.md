@@ -331,6 +331,283 @@ go run ./examples/worker --config examples/worker/application.yml
 go run ./examples/worker doctor --config examples/worker/application.yml
 ```
 
+## Hosting a subset of workloads
+
+A process does not have to carry every plugin the application declares. A workload is a named group of Definitions a process carries as a unit or not at all. It is declared once at the composition root and selected by placement:
+
+```go
+// Package sast is the application's static analysis workload.
+package sast
+
+// Key is this workload's stable placement and configuration identity.
+const Key plugin.WorkloadKey = "sast"
+
+var bundle = plugin.WorkloadOf(
+	Key,
+	plugin.BundleOf(dispatcherDefinition, workerDefinition, apiDefinition),
+	// A process carrying sast carries nothing else.
+	plugin.WithExclusiveProcess(),
+	// At most three processes may carry it.
+	plugin.WithReplicas(3),
+)
+
+// Bundle returns this workload's side-effect-free composition Bundle.
+func Bundle() plugin.Bundle { return bundle }
+```
+
+The composition root then selects it exactly like any other Bundle:
+
+```go
+app, err := xbc.New(xbc.WithBundles(
+	prelude.Bundle(),
+	ginengine.Bundle(),
+	sast.Bundle(),
+	coderanger.Bundle(),
+	webscan.Bundle(),
+))
+```
+
+`sast`, `coderanger`, and `webscan` are illustrative names. [`examples/workloads`](../examples/workloads) is the runnable version of the same two steps -- one binary, two workloads (one exclusive, one co-resident), and one unowned plugin every role carries -- where the same config file yields a different role per process:
+
+```sh
+# Co-resident role: serves ingest and heartbeat; the transcode route is 404.
+go run ./examples/workloads --config examples/workloads/application.yml
+
+# Exclusive role: the same binary and the same config file, a different role.
+XBC_WORKLOADS_TRANSCODE_ENABLED=true XBC_WORKLOADS_INGEST_ENABLED=false \
+  go run ./examples/workloads --config examples/workloads/application.yml
+
+# The decision without constructing anything.
+go run ./examples/workloads doctor --config examples/workloads/application.yml
+```
+
+`WithExclusiveProcess` is for a workload with process-wide side effects -- tuning a global GC target, setting a process-wide memory limit, sizing a pool every other plugin shares -- which nothing sharing its process can be protected from. The reason is not that the workload is heavy. A merely heavy workload is placed by its replica count and bounded by its own budget instead.
+
+`replicas` and `exclusive` are deliberately not configurable. They describe the cluster rather than one process, and making them per-process would let a single host reinterpret how many replicas may run, or whether it must run alone, silently invalidating the decision every other process derived from the same declaration.
+
+What one process may decide about itself lives under the `workloads` root, one section per declared workload:
+
+```yaml
+workloads:
+  sast:
+    enabled: true
+    max_goroutines: 64
+  coderanger:
+    enabled: false
+    max_goroutines: 256
+```
+
+- `enabled` defaults to `true` and is a hard veto. A workload disabled here is refused by every placement source, including a lease-backed one; this is how a deployment excludes a process from a role outright.
+- `max_goroutines` defaults to `0` (unbounded) and bounds how many managed tasks this process may run on behalf of that workload. A task submitted past the budget is rejected and counted instead of started, and other workloads are unaffected. Plugins with no workload -- transports, infrastructure, observability -- are not bounded by it.
+- Environment overrides use the full path: `XBC_WORKLOADS_SAST_ENABLED`, `XBC_WORKLOADS_CODERANGER_MAX_GOROUTINES`.
+
+A `workloads.<key>` section that names no declared workload fails startup as an unowned key, exactly like a misspelled plugin section.
+
+Placement decides the hosted set once, before the plugin graph is built. The default is static placement, which contacts nothing and hosts exactly what the configuration enables:
+
+```go
+app, err := xbc.New(
+	xbc.WithPlacement(placement), // omitted -> xbc.StaticPlacement()
+	xbc.WithBundles(prelude.Bundle(), ginengine.Bundle(), sast.Bundle()),
+)
+```
+
+A workload this process does not host is not disabled: its Definitions never enter the plan at all. No instance is constructed, no connection pool is opened, no queue handler is registered, and no timer is created. Its routes do not exist in this process either, so a request for one is answered `404` rather than forwarded.
+
+The process-level runtime knobs belong to the framework rather than to any plugin, so a plugin cannot change them for its own benefit:
+
+```yaml
+xbc:
+  runtime:
+    max_procs: auto      # derive from the container's CPU quota
+    memory_limit: "75%"  # bytes, or a percentage of the container memory limit
+    gc_percent: 0        # 0 leaves the Go default of 100 alone
+
+web:
+  max_in_flight: 0       # 0 derives from the effective GOMAXPROCS
+```
+
+`max_procs: auto` reads the container's cgroup CPU quota, so a container limited to two cores runs with `GOMAXPROCS=2` rather than the host's core count. `memory_limit` makes the runtime collect harder as the container approaches its limit instead of being killed. A build in which a plugin called `debug.SetGCPercent`, `debug.SetMemoryLimit`, or `runtime.GOMAXPROCS` outside the framework fails the repository's architecture guard, which is what makes the values `doctor` reports worth trusting.
+
+The two defaults are deliberately asymmetric, and this block is a recommendation rather than a description of them. `max_procs` defaults to `auto` because sizing the scheduler from the host's cores inside a quota is a factual error with no trade-off to weigh. `memory_limit` defaults to `0`, no limit, because a soft limit trades CPU for heap and only the deployment knows how much of each it wants -- and because a percentage needs a derivable container limit, so a framework default of `"75%"` would fail startup on bare metal for a deployment that configured nothing. `"75%"` is the value to write for a containerized process; outside a container write a byte count or leave it at `0`.
+
+`workloads`, `xbc.runtime`, `xbc.pre_stop_timeout`, and `web.max_in_flight` are introduced together with workload placement. A deployment that declares no workload keeps exactly its previous behaviour.
+
+`web.max_in_flight` reports itself as a pair of state transitions rather than per refused request. The refusal that finds the process newly saturated logs `web: in-flight limit reached, refusing requests until in-flight work drains` at warn with `limit`, `rejections`, `rejections_total`, and `retry_after_seconds`; the release that leaves nothing in flight logs `web: in-flight limit cleared, admitting requests again` at info with `limit`, `rejections`, and `rejections_total`. `rejections` counts only what was refused since the gate's previous line -- the part nobody has seen yet -- while `rejections_total` is the count since boot, so consecutive lines can be compared without double counting. One saturation episode therefore produces at most those two lines however long it lasts, and it ends only once in-flight work drains to zero rather than merely below the ceiling: the number of log lines is not a proxy for the number of refusals, and a process parked at its ceiling reports one episode where an operator might have counted several. Read `rejections_total` or `Server.InFlightStats()` for the quantity, and treat the warn line as the episode's start rather than as a per-request signal.
+
+## Slots, standbys, and how many processes to start
+
+A workload's `replicas` is its number of slots: `<prefix>:workload:<key>:<index>` for `index` in `[0, replicas)`. Each process competes for exactly one slot per workload, so `replicas` is the true maximum concurrency of that workload across the cluster.
+
+The arithmetic for the minimum process count follows from two rules. A process holding an exclusive workload holds nothing else, so exclusive workloads never share a process. Non-exclusive workloads do share, so the busiest one sets the count:
+
+```
+minimum processes = sum of replicas of the exclusive workloads
+                  + largest replicas among the non-exclusive workloads
+```
+
+Take this declaration:
+
+| workload | exclusive | replicas |
+| --- | --- | --- |
+| `sast` | yes | 3 |
+| `coderanger` | no | 6 |
+| `webscan` | no | 2 |
+
+- exclusive sum: 3
+- largest non-exclusive: 6
+- minimum: **9**
+
+Starting exactly nine processes fills every slot and leaves no takeover capacity at all. Losing a process then means a role stays unfilled until someone restarts it by hand.
+
+Every process beyond that minimum is a standby, and the surplus cannot be absorbed instead: the busiest non-exclusive workload has already taken its `replicas` generalists, and every lighter one is full by the time those have finished claiming. A standby starts normally, hosts only the plugins that belong to no workload -- the transport, health, observability -- reports readiness, and retries its claim on a timer. Starting `N + k` buys `k` concurrent takeovers, and the pool drains as it is used: a standby that wins a slot releases it and requests shutdown, and the process the supervisor brings back is a working replica rather than a standby again. Start eleven processes in the example above and two of them sit idle, absorbing two failures without a role going unfilled.
+
+To work out a deployment, take every declared workload with its `exclusive` flag and `replicas`, sum the exclusive ones, take the largest remaining one, add them, and then add the number of simultaneous failures you want to survive. One is the minimum useful answer: with zero spares there is no automatic takeover, only a role that stays empty until an operator intervenes.
+
+## Takeover latency and soft placement
+
+Roles claimed by lease are what make takeover possible. The composition root builds the locker itself, because placement is decided before the plugin graph exists and therefore cannot be provided by a plugin:
+
+```go
+// github.com/redis/go-redis/v9, github.com/xbcio/xbc/extensions/storage/redis
+// and github.com/xbcio/xbc/extensions/coordination/placement
+client := goredis.NewClient(&goredis.Options{Addr: "redis.internal:6379", DB: 1})
+locker, err := redis.NewLocker(client)
+if err != nil {
+	return err
+}
+hosting, err := placement.New(locker, placement.WithTTL(30*time.Second))
+if err != nil {
+	return err
+}
+
+app, err := xbc.New(
+	xbc.WithPlacement(hosting),
+	xbc.WithBundles(hosting.Bundle(), prelude.Bundle(), sast.Bundle()),
+)
+```
+
+The `*placement.Placement` is both the decision and the plugin that keeps it alive, so it is passed to `WithPlacement` and its `Bundle()` is selected alongside the workloads. There is no placement constructor on the `xbc` facade itself: core's dependency closure excludes everything beneath `extensions/`, so the lease contract cannot be named there.
+
+That is one extra connection to the store, and it is the price of deciding the hosted set before the graph is built rather than during construction.
+
+Takeover is a restart, not a live handover. When a holder is lost, its slot does not become available until its lease expires, then a standby has to notice, and the process the supervisor starts has to come back up before the role is really served again:
+
+```
+takeover latency = lease TTL + standby retry interval + process restart time
+```
+
+The lease TTL dominates, and it is three times the renew interval by default. With a 10s renew interval, a 30s TTL, a standby retrying every 5s, and a 2s restart, the worst case is `30 + 5 + 2 = 37s`.
+
+That is acceptable here because these workloads are queue-backed. A task in flight when the holder died is redelivered by the queue, and mutual exclusion between the failed holder and its successor is the queue's, the distributed lock's, and the database's job rather than the lease's.
+
+Renewal failing is treated differently from a cold start, and the asymmetry is deliberate:
+
+- **A running holder keeps its role.** A failed renewal is logged, counted, and otherwise ignored: the process does not release its slot and does not exit. The worst outcome is a workload briefly running more replicas than declared. That is a resource problem, not a correctness one, and the alternative -- dropping the role on a lease-store hiccup -- would reshuffle roles across the whole cluster.
+- **A cold start that cannot reach the lease store fails.** A process that cannot claim anything would have to guess, and the only guess available is "carry everything". That makes the process shape non-deterministic: `doctor` output, startup validation, snapshot diffing, and the exclusivity check all derive from the hosted set, and the capacity decision becomes fail-open. A holder has something to protect; a starter has nothing to guess with.
+
+Alert on the renewal-failure counter, where a sustained increase means the store is degraded and takeover is impaired, and on the lease age, where a holder's lease age growing without a matching renewal success means renewal is stalling. Aggregate the held gauge by workload across processes to see how many replicas each workload actually has; a value above `replicas` is the soft-placement case above, not a bug. A process restart on its own is expected rather than alarming -- that is what takeover looks like.
+
+Those three series are not published by the placement module itself. Core owns no metrics registry -- the Prometheus registry is a Web extension, and the placement module deliberately does not depend on a transport -- so it exposes a `placement.Stats()` snapshot instead and the three series are what a bridge over that snapshot should publish:
+
+| Series | Source field |
+| --- | --- |
+| `xbc_workload_held{workload}` | one series per `Stats().Held` entry |
+| `xbc_workload_lease_age_seconds{workload}` | `Stats().Held[].Age` |
+| `xbc_workload_lease_renew_failures_total` | `Stats().RenewFailures` |
+
+`Stats().Held[].Degraded` is the per-slot form of the same signal: it reports "still serving, but the claim is not being confirmed", which is the difference between a degraded store and a stopped process. A readiness probe already exported for the health aggregator (`placement-health`) carries the same verdict without any metrics stack, and it reads this process's own renewal state only -- never the store, and never other members.
+
+Two different identities appear when asking "who holds this slot", and they are worth keeping apart. `xbc.instance_id` names the process: it is printed on the placement line at startup (`instance=…`), derived from the hostname, the boot second and a random suffix when left empty, and settable per process as `XBC_INSTANCE_ID` -- see [`xbc.instance_id`](quickstart.md#configuration) for the derivation and the whitespace rule. The slot's *owner token* is separate: it is generated by the lease backend, stored under the slot key, and is what `doctor` reports on its `holder` line and what `Stats().Held[].Owner` returns. Nothing today prints both on one line, so joining a token back to a process is the application's own job -- a bridge over `Stats()` that also labels by the configured instance id is the shortest path, and setting `XBC_INSTANCE_ID` explicitly per process is what makes that label worth reading.
+
+The lease store itself needs no high availability. It carries resource placement, not correctness: mutual exclusion is already guaranteed downstream by the queue, a distributed lock, and a database compare-and-swap. Two processes briefly both holding a role is therefore a resource question, and the cost of preventing it is not worth paying. A single-node store is the intended deployment, and losing it does not corrupt anything -- holders keep running, and new processes refuse to start rather than guess. It needs no backup and no replica, and it can share the Redis the queues already use under its own key prefix.
+
+## The supervisor's stop grace period
+
+Shutdown now has two phases. `xbc.pre_stop_timeout` defaults to `2s` and runs `PreStop` on every started plugin before any `Stop` begins; that is where a placement plugin gives its slot back. `xbc.shutdown_timeout` defaults to `30s` and then covers cancellation, HTTP drain, and reverse-order `Stop`:
+
+```yaml
+xbc:
+  pre_stop_timeout: 2s
+  shutdown_timeout: 30s
+```
+
+The total budget is their sum, `2s + 30s = 32s`, and the supervisor must allow at least that much before it kills the process. A supervisor that kills earlier interrupts the release, and the slot then waits for its TTL instead of being freed immediately.
+
+systemd's `TimeoutStopSec` and Docker's `stop_grace_period` are the two settings that matter. Docker's default of `10s` is shorter than the default budget and is the one that bites in practice:
+
+```ini
+# systemd
+[Service]
+ExecStart=/usr/local/bin/orders --config /etc/orders/application.yml
+Restart=always
+RestartSec=1s
+KillSignal=SIGTERM
+# 2s pre_stop_timeout + 30s shutdown_timeout = 32s; 45s leaves scheduling headroom.
+TimeoutStopSec=45s
+```
+
+```yaml
+# docker compose
+services:
+  orders:
+    image: registry.internal/orders:1.2.3
+    restart: always
+    # Default is 10s, which is shorter than the 32s stop budget.
+    stop_grace_period: 45s
+```
+
+Setting `pre_stop_timeout: 0s` skips the phase and makes the total `shutdown_timeout` alone.
+
+The restart policy is not optional. Takeover works by a standby requesting shutdown on purpose once it has won a slot, and the supervisor is what brings that process back as the real holder. Without `Restart=always` or `restart: always`, the first takeover turns a standby into a stopped container.
+
+## Migrating a schema across workloads
+
+Migration runs only for the workloads this process hosts. A rolling restart therefore cannot be relied on to migrate everything, and adding a workload later is not migrated merely by deploying it.
+
+Run migration as a one-off job whose composition hosts every workload, with nothing else running. A workload declared `WithExclusiveProcess` cannot share a process with another workload, so "everything at once" is one run per exclusive workload plus one run hosting all the non-exclusive ones:
+
+```yaml
+# migrate-rest.yml -- every non-exclusive workload, for one run. `sast` is
+# exclusive, so it is migrated by a run of its own rather than by this one.
+workloads:
+  sast:
+    enabled: false
+  coderanger:
+    enabled: true
+  webscan:
+    enabled: true
+```
+
+```sh
+# One run per exclusive workload, then one for the rest.
+orders --migrate --config /etc/orders/migrate-sast.yml
+orders --migrate --config /etc/orders/migrate-rest.yml
+```
+
+The `migrate` subcommand (`orders migrate --config ...`) and the `--migrate` flag both run the migration stage, but they do not do the same thing: the flag migrates and then boots the application normally, while the subcommand migrates, unwinds, and exits without ever starting or serving anything. Every constructed plugin's `Stop` still runs on that path even though no `Start` did, so a plugin whose `Stop` assumes `Start` ran fails there. Reach for the flag when the job is a one-off invocation of an otherwise ordinary command line, and for the subcommand when the process should do nothing but migrate.
+
+With the default static placement each job hosts exactly the workloads its file enables, and nothing else. An application that selects a lease-backed placement must give this one-off job a way to run without it -- a separate composition root, or a switch `main` reads -- because otherwise "hosts everything" depends on winning every slot in a race, and a migration that wins only some of them silently migrates a subset.
+
+Verify before trusting the run. `doctor` resolves the hosted set without constructing anything, so every declared workload in that run must appear as hosted:
+
+```sh
+orders doctor --config /etc/orders/migrate-rest.yml
+```
+
+`xbc.auto_migrate` defaults to `false`, so the flag is a deliberate opt-in and an ordinary boot never mutates a schema.
+
+## What workload placement does not do
+
+These boundaries are deliberate, and knowing them prevents several wrong deployments:
+
+- **No runtime re-placement.** Roles are claimed once at startup and held for the life of the process. Changing a process's role means restarting it, because a workload's registration work -- queue handlers, timer callbacks, consumers -- happens once at construction and cannot be undone.
+- **No in-process request forwarding and no cluster routing table.** A request for a workload this process does not host is a `404` here. A management tool talks to the process that holds the role rather than to "the service" as a whole.
+- **No member enumeration and no service-discovery contract.** Each process reports only what it holds. Aggregating that into "how many replicas of `sast` are running" is the monitoring side's job, which is why the metrics above are per-process.
+- **No fencing tokens, split-brain detection, or lease generations.** Those are what hard mutual exclusion needs, and the lease is not that.
+- **No per-workload HTTP in-flight budget.** `web.max_in_flight` is process-wide; a request over the limit is answered `503` with `Retry-After` before any handler runs.
+- **No per-workload CPU accounting.** Process-level runtime knobs (`xbc.runtime`) are what keep a container sized to its quota.
+
 ## Operational endpoints and secrets
 
 Health endpoints return aggregate status by default. Use `detail_policy: never` to prevent unauthenticated probes from receiving dependency errors. When XBC begins graceful shutdown, readiness changes to 503 immediately while liveness remains Up. `web.shutdown.pre_drain_delay` defaults to `0s`, which begins HTTP draining immediately; configure a nonzero, deployment-specific interval when probes or load balancers need time to observe the readiness transition:
@@ -421,10 +698,10 @@ DEBUG xbc: startup timings, total 7.562ms
 
 Read the phase line first: it separates a slow configuration source or a slow plugin graph from a plugin that is slow to start. A stage the plugin never declared is absent rather than reported as `0s`, and a stage that ended in an error still reports what it spent.
 
-The reverse unwind is reported the same way. A shutdown that stayed inside its budget records the per-instance waits at debug, which is what attributes a slow rolling restart to a plugin:
+The reverse unwind is reported the same way. A shutdown that stayed inside its budget records the per-instance waits at debug, which is what attributes a slow rolling restart to a plugin. The line states the pre-stop phase beside the walk, because the two are one stop to a supervisor:
 
 ```
-DEBUG xbc: reverse unwind finished inside its budget  budget=15s reason=signal waited="[web 2.001s]"
+DEBUG xbc: reverse unwind finished inside its budget  budget=15s pre_stop=1.583µs reason=signal total_budget=17s waited="[web 2.00123775s transcode 126.5µs heartbeat 38.75µs]"
 ```
 
 A shutdown that ran out of budget warns instead, and the warning carries the same `waited` list alongside the plugins that were abandoned or never attempted -- the casualty list names who was cut off, the waits name who spent the budget.
@@ -434,13 +711,13 @@ These reports contain only identities, stage names, and durations; no configured
 
 ## Diagnosing why a plugin is in the graph
 
-`doctor` answers two questions the enabled-instances table cannot: who selected each plugin, and what is actually feeding it. Its `selection and inputs` section walks the same start order and prints, per instance, the composition site that introduced it and one line per declared input:
+`doctor` answers two questions the enabled-instances table cannot: who selected each plugin, and what is actually feeding it. It groups the graph the same way the workload rows do -- each declared workload, then `unowned` -- and walks that order, printing per instance the composition site that introduced it and one line per declared input:
 
 ```
-selection and inputs, in start order
+unowned             plugins=14
   health
     selected at /Users/dev/xbc/extensions/reliability/health/plugin.go:48
-    requires many      health.Contributor                     from greeter
+    requires    many      health.Contributor                     from greeter
   health-http
     selected at /Users/dev/xbc/transport/web/extensions/reliability/health/plugin.go:56
     requires ref       *health.Plugin                         from health

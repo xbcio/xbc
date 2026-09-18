@@ -69,7 +69,6 @@ type Universe struct {
 // resolvedSection is a Section with its environment-variable tables computed.
 type resolvedSection struct {
 	Section
-	prefix string // environment name prefix, without the process prefix
 	leaves []envLeaf
 }
 
@@ -171,7 +170,7 @@ func checkSectionParent(section Section, byPath map[string]Section) error {
 }
 
 func resolveSection(section Section) (resolvedSection, error) {
-	resolved := resolvedSection{Section: section, prefix: envSegment(section.Path) + "_"}
+	resolved := resolvedSection{Section: section}
 	if section.Schema == nil {
 		return resolved, nil
 	}
@@ -199,6 +198,61 @@ func resolveSection(section Section) (resolvedSection, error) {
 // hyphenated plugin key such as "plugins.request-id" addressable at all.
 func envSegment(path string) string {
 	return strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(path))
+}
+
+// envSpelling renders one rooted configuration path as the part of its
+// environment-variable name that follows the process prefix.
+//
+// A section whose root already spells the process prefix does not repeat it.
+// The framework's own section root is "xbc" and DefaultEnvPrefix is "XBC_", so
+// xbc.shutdown_timeout is XBC_SHUTDOWN_TIMEOUT and xbc.runtime.max_procs is
+// XBC_RUNTIME_MAX_PROCS -- not the doubled XBC_XBC_* spelling that falls out of
+// concatenating the prefix with a path that begins by spelling it again. Every
+// other root keeps its complete spelling, so web.addr stays XBC_WEB_ADDR and
+// plugins.redis.cache.password stays XBC_PLUGINS_REDIS_CACHE_PASSWORD.
+//
+// The comparison is on a whole dotted segment, never on a bare string prefix. A
+// root such as "xbcx" merely begins with the same characters as "xbc" and is a
+// different section, so xbcx.foo keeps its complete spelling XBC_XBCX_FOO.
+//
+// This function is the one place that rule lives. envName and
+// envSectionPrefix are both defined in terms of it, which is what stops the
+// environment overlay in Universe and the direct os.LookupEnv in bind from
+// disagreeing about the name of one variable.
+func envSpelling(processPrefix, path string) string {
+	root, rest, nested := strings.Cut(path, ".")
+	if envSegment(root) != strings.TrimSuffix(processPrefix, "_") {
+		return envSegment(path)
+	}
+	if !nested {
+		// The path is the root itself, so collapsing it leaves nothing behind:
+		// the process prefix is the entire spelling.
+		return ""
+	}
+	return envSegment(rest)
+}
+
+// envName maps a rooted configuration path to the complete environment variable
+// that addresses it: "plugins.gorm.default.dsn" maps to
+// "XBC_PLUGINS_GORM_DEFAULT_DSN".
+func envName(processPrefix, path string) string {
+	return processPrefix + envSpelling(processPrefix, path)
+}
+
+// envSectionPrefix returns the complete environment-variable prefix that
+// addresses the leaf keys of the section at sectionPath, and that a diagnostic
+// spells to show an operator where an instance name belongs.
+//
+// A collapsed root is why this is not simply "envName of the section path plus
+// a separator". The spelling of "xbc" is empty and the process prefix already
+// carries the separator, so the prefix of that section is "XBC_" and can never
+// become "XBC__".
+func envSectionPrefix(processPrefix, sectionPath string) string {
+	spelling := envSpelling(processPrefix, sectionPath)
+	if spelling == "" {
+		return processPrefix
+	}
+	return processPrefix + spelling + "_"
 }
 
 // envExpressible reports whether a single environment variable can carry a
@@ -366,7 +420,7 @@ func (u *Universe) envOverlay(prefix string, environ []string, existing *koanf.K
 			continue
 		}
 
-		candidates, claimed := u.resolve(prefix, rest)
+		candidates, claimed := u.resolve(prefix, name)
 		if !claimed {
 			failures = append(failures, fmt.Errorf(
 				"xbc: environment variable %s uses the reserved %s prefix but names no declared configuration section (%s)",
@@ -487,11 +541,20 @@ func interpret(name, raw string, candidates []envCandidate) (any, error) {
 	return target.Interface(), nil
 }
 
-// resolve maps a prefix-stripped variable name onto the configuration paths it
-// could name, and reports whether it fell inside any declared section at all.
-// prefix is the process-level environment prefix, carried only so that a
-// diagnostic can spell a variable the way an operator would actually set it.
-func (u *Universe) resolve(prefix, rest string) ([]envCandidate, bool) {
+// resolve maps a complete environment variable name onto the configuration
+// paths it could name, and reports whether it fell inside any declared section
+// at all. prefix is the process-level environment prefix, which is what makes
+// the name comparable with the prefix envSectionPrefix derives for each
+// section.
+//
+// A section whose root collapses into the process prefix owns no namespace of
+// its own: every variable carrying that prefix lands on its doorstep, so it may
+// claim one only by actually matching it. Without that, a typo such as
+// XBC_ADDR would be reported as a missing field of the framework's own section
+// instead of as the undeclared top-level name it is, and the "names no declared
+// configuration section" diagnostic -- the one that lists the roots an operator
+// could have meant -- would become unreachable for every variable.
+func (u *Universe) resolve(prefix, name string) ([]envCandidate, bool) {
 	var candidates []envCandidate
 	claimed := false
 	seen := make(map[string]bool)
@@ -504,45 +567,66 @@ func (u *Universe) resolve(prefix, rest string) ([]envCandidate, bool) {
 	}
 
 	for _, section := range u.sections {
-		if !strings.HasPrefix(rest, section.prefix) {
+		sectionPrefix := envSectionPrefix(prefix, section.Path)
+		if !strings.HasPrefix(name, sectionPrefix) {
 			continue
 		}
-		claimed = true
-		tail := rest[len(section.prefix):]
+		collapsed := sectionPrefix == prefix
+		tail := name[len(sectionPrefix):]
 		if tail == "" {
+			// A variable that stops at the prefix names the section rather than
+			// a leaf of it, which no schema can resolve.
+			claimed = claimed || !collapsed
 			continue
 		}
 		switch section.Kind {
 		case SectionNamespace:
-			// The namespace claims the prefix; its children answer for it.
+			// The namespace claims the prefix; its children answer for it. A
+			// collapsed namespace has no prefix of its own to claim, and its
+			// children carry the process prefix plus their own spelling.
+			claimed = claimed || !collapsed
 		case SectionFreeform:
+			claimed = true
 			add(envCandidate{
 				path: section.Path + "." + strings.ToLower(tail),
 				hint: "which is a freeform section the framework never interprets; configure it in a file instead",
 			})
 		case SectionTyped:
-			section.matchTyped(tail, add)
+			// matchTyped adds as it goes, so it must run unconditionally: a
+			// previous section having claimed the variable, or this one being
+			// uncollapsed, must not short-circuit the candidate collection.
+			matched := section.matchTyped(tail, add)
+			claimed = claimed || matched || !collapsed
 		case SectionInstanced:
-			section.matchInstanced(prefix, tail, add)
+			matched := section.matchInstanced(sectionPrefix, tail, add)
+			claimed = claimed || matched || !collapsed
 		}
 	}
 	return candidates, claimed
 }
 
-func (section resolvedSection) matchTyped(tail string, add func(envCandidate)) {
+// matchTyped reports whether tail names something the section owns, which is
+// what lets a collapsed root claim a variable only by matching it.
+func (section resolvedSection) matchTyped(tail string, add func(envCandidate)) bool {
+	matched := false
 	for _, item := range section.leaves {
 		if tail == item.suffix {
 			add(envCandidate{path: section.Path + "." + item.path, typ: item.typ, expressible: item.expressible})
+			matched = true
 		}
 	}
 	if section.Toggle && tail == "ENABLED" {
 		add(envCandidate{path: section.Path + "." + enabledKey, typ: boolType, expressible: true})
+		matched = true
 	}
+	return matched
 }
 
-func (section resolvedSection) matchInstanced(prefix, tail string, add func(envCandidate)) {
+func (section resolvedSection) matchInstanced(sectionPrefix, tail string, add func(envCandidate)) bool {
+	matched := false
 	if section.Toggle && tail == "ENABLED" {
 		add(envCandidate{path: section.Path + "." + enabledKey, typ: boolType, expressible: true})
+		matched = true
 	}
 	if section.Toggle {
 		if instance, ok := instanceOf(tail, "ENABLED"); ok {
@@ -553,6 +637,7 @@ func (section resolvedSection) matchInstanced(prefix, tail string, add func(envC
 				section:     section.Path,
 				instance:    instance,
 			})
+			matched = true
 		}
 	}
 	for _, item := range section.leaves {
@@ -561,9 +646,10 @@ func (section resolvedSection) matchInstanced(prefix, tail string, add func(envC
 				path: section.Path + "." + item.path,
 				typ:  item.typ,
 				hint: fmt.Sprintf(
-					"but %s holds one section per instance; insert the instance name, as in %s%s<INSTANCE>_%s",
-					section.Path, prefix, section.prefix, item.suffix),
+					"but %s holds one section per instance; insert the instance name, as in %s<INSTANCE>_%s",
+					section.Path, sectionPrefix, item.suffix),
 			})
+			matched = true
 			continue
 		}
 		if instance, ok := instanceOf(tail, item.suffix); ok {
@@ -574,8 +660,10 @@ func (section resolvedSection) matchInstanced(prefix, tail string, add func(envC
 				section:     section.Path,
 				instance:    instance,
 			})
+			matched = true
 		}
 	}
+	return matched
 }
 
 // instanceOf splits "PRIMARY_POOL_MAX_IDLE" into instance "primary" for the

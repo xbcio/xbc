@@ -1,4 +1,4 @@
-package cron
+package lease
 
 import (
 	"context"
@@ -12,6 +12,13 @@ import (
 // ctx, while allowing for the normal distributed-systems outcome where an
 // acquisition committed remotely just as ctx was cancelled; callers therefore
 // still release a lease returned with acquired=true after cancellation.
+//
+// Implementations must also bound their own calls. Placement runs on the
+// startup path before the assembly plan is built, where the framework applies no
+// deadline of its own, so a store that accepts a connection and then stops
+// answering would stall a process indefinitely; a client configured with its own
+// dial, read and write timeouts -- as the shipped Redis implementation is --
+// converts that into the startup failure it should be.
 type Locker interface {
 	TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease Lease, acquired bool, err error)
 }

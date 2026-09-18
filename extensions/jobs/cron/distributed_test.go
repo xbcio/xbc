@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/xbcio/xbc/extensions/coordination/lease"
 )
 
 func distributedConfig(config *Config) {
@@ -190,7 +192,7 @@ type blockingAcquireLocker struct {
 	proceed   chan struct{}
 }
 
-func (l *blockingAcquireLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (Lease, bool, error) {
+func (l *blockingAcquireLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
 	l.entered <- struct{}{}
 	<-ctx.Done()
 	l.cancelled <- struct{}{}

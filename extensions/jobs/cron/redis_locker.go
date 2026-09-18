@@ -8,8 +8,53 @@ import (
 	"time"
 
 	redis "github.com/redis/go-redis/v9"
+
+	"github.com/xbcio/xbc/extensions/coordination/lease"
 )
 
+// This file is cron's own Redis implementation of the lease contract, and it is
+// a deliberate second copy: the Redis extension beneath extensions/storage
+// carries an equivalent one behind its redis-lease Definition, down to the same
+// two Lua scripts.
+//
+// Sharing a single copy would mean importing that plugin module. Go's unit of
+// compilation is the package, and the exported constructor over there sits in
+// the same package as that plugin's Definitions and its readiness probe, so one
+// call would pull the whole Redis extension -- every Definition it declares,
+// its configuration sections, its health contributor -- into cron's production
+// closure. That would be the repository's only production edge from one
+// capability plugin module to another, and it would resolve through the
+// workspace alone: extensions/jobs/cron does not require its sibling, and an
+// unpublished sibling requirement is exactly what this repository's module
+// rules exist to prevent. A plugin that a downstream application can select on
+// its own cannot depend on a plugin that application did not select.
+//
+// The duplication costs nothing in dependencies. cron already requires go-redis
+// directly, because distributed.redis.addr lets it own a client, so this file
+// adds no third-party dependency and no import beyond the lease contract cron
+// already consumes.
+//
+// The two implementations are independent implementations of one contract
+// rather than a fork of a shared one, and they serve different callers:
+//
+//   - the redis-lease Definition exports lease.Locker into the plugin graph over
+//     a client that graph configured, and its package separately exports
+//     NewLocker for composition roots that need a lease before a graph exists,
+//     because workload placement is decided before the assembly plan is built.
+//   - the locker below is cron's internal convenience path, reached only from
+//     newConfiguredPlugin once distributed.redis_instance or
+//     distributed.redis.addr has named the backend. It stays unexported: the
+//     vocabulary belongs to extensions/coordination/lease, and cron publishes
+//     no locking vocabulary of its own. An application that wants one locker
+//     shared by several plugins configures plugins.redis-lease and lets cron
+//     take lease.Locker as an input, the path that keeps priority over both
+//     convenience keys.
+//
+// What has to stay in step between the two is the contract's ownership rule
+// rather than the code: the scripts below compare the stored owner token before
+// acting, so a lease whose key has already been taken over renews nothing and
+// deletes nothing. TestRedisLockerContentionAndOwnerSafeRelease drives that
+// property here, as its counterpart does in the Redis extension.
 var (
 	redisRenewScript = redis.NewScript(`
 if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -23,25 +68,27 @@ end
 return 0`)
 )
 
-// RedisLocker implements Locker with Redis SET NX PX and owner-checking Lua
-// scripts. It does not own client; the caller remains responsible for closing
-// it. Use NewRedisLocker to reject a nil client early.
-type RedisLocker struct {
+// redisLocker implements lease.Locker with Redis SET NX PX and owner-checking
+// Lua scripts. It does not own client; whoever created the client remains
+// responsible for closing it -- for the addr path that is the Plugin itself,
+// which closes the client it opened during finalization. Use newRedisLocker to
+// reject a nil client early.
+type redisLocker struct {
 	client *redis.Client
 }
 
-var _ Locker = (*RedisLocker)(nil)
+var _ lease.Locker = (*redisLocker)(nil)
 
-// NewRedisLocker constructs an owner-safe Redis-backed Locker.
-func NewRedisLocker(client *redis.Client) (*RedisLocker, error) {
+// newRedisLocker constructs an owner-safe Redis-backed lease.Locker.
+func newRedisLocker(client *redis.Client) (*redisLocker, error) {
 	if client == nil {
 		return nil, fmt.Errorf("cron: Redis locker requires a non-nil client")
 	}
-	return &RedisLocker{client: client}, nil
+	return &redisLocker{client: client}, nil
 }
 
 // TryAcquire atomically creates key with a random owner token and a TTL.
-func (l *RedisLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (Lease, bool, error) {
+func (l *redisLocker) TryAcquire(ctx context.Context, key string, ttl time.Duration) (lease.Lease, bool, error) {
 	if l == nil || l.client == nil {
 		return nil, false, fmt.Errorf("cron: Redis locker is not initialized")
 	}
@@ -71,7 +118,7 @@ type redisLease struct {
 	owner  string
 }
 
-var _ Lease = (*redisLease)(nil)
+var _ lease.Lease = (*redisLease)(nil)
 
 func (l *redisLease) Key() string   { return l.key }
 func (l *redisLease) Owner() string { return l.owner }

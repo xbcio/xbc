@@ -1,0 +1,238 @@
+# One binary, three shapes. This composition declares two workloads and one
+# unowned plugin; which of the two workloads a process actually carries is
+# decided here, not in Go.
+#
+#   workloads.transcode  exclusive: a process carrying it carries nothing else
+#   workloads.ingest     co-resident: a process carrying it may carry others
+#   heartbeat            unowned: every process shape carries it
+#
+# A workload's Definitions exist only in a process that carries it. Its
+# configuration section still exists everywhere -- plugins.transcode is a key
+# like any other -- but nothing reads it where the plugin is not constructed,
+# and its routes are absent from that process's table entirely. A request for
+# one is answered 404; it is never forwarded to a process that does carry it.
+#
+# ─── The three roles ─────────────────────────────────────────────────────────
+#
+# 1. Co-resident (this file's default). Serves ingest and heartbeat. The
+#    transcode route 404s:
+#
+#      go run ./examples/workloads --config examples/workloads/application.yml
+#      curl localhost:8080/api/v1/ingest/status     # 200
+#      curl localhost:8080/api/v1/transcode/status  # 404
+#
+# 2. Exclusive. Serves transcode and heartbeat. The ingest route 404s. Nothing
+#    in Go changes; only which workload this process is allowed to carry. The
+#    runtime knobs are the reason transcode asks for the whole process, so the
+#    role is shown with them set -- they are process-global and land on every
+#    process-mate, which is exactly what a process-mate cannot be protected
+#    from:
+#
+#      XBC_WORKLOADS_TRANSCODE_ENABLED=true \
+#      XBC_WORKLOADS_INGEST_ENABLED=false \
+#      XBC_RUNTIME_GC_PERCENT=20 \
+#        go run ./examples/workloads --config examples/workloads/application.yml
+#
+# 3. Standby. Carries neither workload and owns only the unowned plugins --
+#    the transport, the health capability, and heartbeat. Both workload routes
+#    404. A standby is a real shape rather than an idle accident: it holds a
+#    process open and ready. Under static placement it stays a standby until its
+#    configuration changes; a lease-backed placement source is what hands one a
+#    workload when the current holder goes away, and nothing in Go changes then
+#    either.
+#
+#      XBC_WORKLOADS_TRANSCODE_ENABLED=false \
+#      XBC_WORKLOADS_INGEST_ENABLED=false \
+#        go run ./examples/workloads --config examples/workloads/application.yml
+#
+# Run any of them with the doctor subcommand to see the decision printed rather
+# than performed -- it lists the placement source, each declared workload with
+# whether this process carries it, and the Definitions belonging to no workload:
+#
+#      go run ./examples/workloads doctor --config examples/workloads/application.yml
+#
+# ─── Try the exclusivity guard ───────────────────────────────────────────────
+#
+# Enabling both workloads in one process is refused at startup rather than
+# quietly honoured. That refusal is the reason the declaration exists: transcode
+# asks for the whole process, and a process that also hosts ingest cannot give
+# it. The message names the conflict and what to do about it:
+#
+#      XBC_WORKLOADS_TRANSCODE_ENABLED=true \
+#      XBC_WORKLOADS_INGEST_ENABLED=true \
+#        go run ./examples/workloads --config examples/workloads/application.yml
+
+xbc:
+  # This process's identity. Empty means "derive one" -- hostname, boot second,
+  # and a short random suffix, as in host-7-1758091200-9f3c1a2b. It matters more
+  # here than in a single-role deployment: every role below runs from this same
+  # file, so the identity is what tells two of them apart in a log. YAML does not
+  # expand ${VAR}, so a per-process value comes from the environment:
+  #
+  #      XBC_INSTANCE_ID=transcode-0 XBC_WORKLOADS_TRANSCODE_ENABLED=true \
+  #      XBC_WORKLOADS_INGEST_ENABLED=false \
+  #        go run ./examples/workloads --config examples/workloads/application.yml
+  #
+  # An explicitly set value is used verbatim and survives a restart, which is
+  # what makes it useful as a name rather than as a boot marker.
+  instance_id: ""
+  # One budget covers cancellation, managed-task join, and reverse-order Stop.
+  shutdown_timeout: 15s
+  # The pre-stop phase runs first and is accounted separately, so the worst case
+  # for one stop is this plus shutdown_timeout. It is separate because PreStop
+  # retracts a value's externally visible participation while the process is
+  # still fully alive -- a lease release is a real remote call -- whereas Stop
+  # runs against an already-cancelled execution context and mostly closes things
+  # locally.
+  pre_stop_timeout: 2s
+  # Reporting only: while startup is unfinished, name the phase and the plugin
+  # still holding it every 30s. It never aborts a startup.
+  slow_startup_after: 30s
+
+  # Process-level runtime knobs. They are the framework's to set: a plugin that
+  # tuned them would be tuning the whole process from inside one component, so
+  # an architecture guard fails the build for one that tries.
+  runtime:
+    # auto derives the processor count from this container's CPU quota rather
+    # than from the host's core count -- the distinction that stops a
+    # 4-core-quota container from starting 64 workers on a 64-core machine.
+    # Where no quota is derivable (a bare-metal host), auto leaves GOMAXPROCS at
+    # the Go default and says so on the startup line. A positive integer sets it
+    # outright; 0 leaves it alone.
+    max_procs: auto
+    # Bytes, or a percentage of this container's memory limit such as "75%".
+    # A percentage needs a derivable container limit: it is a startup error
+    # rather than a silent no-op when there is nothing to take a percentage of.
+    # 0, the default, sets no limit.
+    memory_limit: 0
+    # 0 leaves Go's own default of 100 in place. A lower value collects more
+    # often and trades CPU for a smaller heap, which is the trade a
+    # memory-constrained container usually wants.
+    gc_percent: 0
+
+log:
+  level: info
+  console:
+    enabled: true
+    format: console
+
+web:
+  addr: ":8080"
+  base_path: "/api/v1"
+  # Process-wide admission ceiling. Requests beyond it are refused with 503 and
+  # Retry-After before any handler runs, rather than queued. 0, the default,
+  # derives the ceiling from GOMAXPROCS.
+  max_in_flight: 0
+  shutdown:
+    # Default is 0s. Keep the listener up after cancellation so /readyz can
+    # return 503 before HTTP draining begins.
+    pre_drain_delay: 2s
+  security:
+    # Every route this example contributes declares Auth(web.Public()) at tier
+    # 2, so nothing is left to the default. There is no authenticator selected
+    # here, so a route that did fall through would fail startup rather than
+    # silently serve.
+    default: deny
+
+# Declared workloads, one section each. Two keys are accepted here:
+#
+#   enabled        this process may carry the workload (default true). It is a
+#                  hard veto: no placement source may override it, because
+#                  excluding a process from a role outright is a deployment
+#                  decision rather than a placement one.
+#   max_goroutines how many managed tasks this process may run on behalf of the
+#                  workload at once. 0 means unbounded.
+#
+# The workload's own placement constraints -- replicas and exclusivity -- are
+# deliberately not configurable here. They describe the cluster rather than one
+# process, so a host that could reinterpret "how many replicas may run" would
+# silently invalidate the placement every other process derived from the same
+# declaration. They live in Go, beside the Definitions they constrain.
+workloads:
+  transcode:
+    # Off by default so this one file starts the co-resident role. Turn it on
+    # and turn ingest off to run the exclusive role instead; see the header.
+    enabled: false
+    # The exclusive role is meant to be run with xbc.runtime.gc_percent and
+    # xbc.runtime.memory_limit tuned for throughput rather than latency. Those
+    # knobs are process-wide, which is precisely why the workload is declared
+    # exclusive: a process-mate could not opt out of them. This file leaves them
+    # at their defaults so that the same file can start every role.
+    max_goroutines: 4
+
+  ingest:
+    enabled: true
+    # Above this example's actual usage: it submits one task. The budget is here
+    # to show the unit, and to be the knob a real deployment tightens when a
+    # workload's fan-out stops being bounded by anything else.
+    max_goroutines: 8
+
+plugins:
+  # The lightweight Web baseline from prelude.Bundle(). These are WhenConfigured
+  # plugins: selecting the Bundle makes them available, and the section is what
+  # turns each one on. They are configured here rather than left off so that the
+  # only row that differs between this process's doctor output and another
+  # role's is the workload row -- which is the comparison the example is for.
+  recovery:
+    stack: true
+
+  requestid:
+    header: "X-Request-ID"
+    trust_incoming: false
+    max_length: 128
+
+  accesslog:
+    request_id_header: "X-Request-ID"
+    trust_proxy_headers: false
+    skip_paths:
+      - "/api/v1/healthz"
+    slow_request: 500ms
+
+  securityheaders:
+    content_type_nosniff: true
+    frame_options: "DENY"
+    hsts_enabled: true
+    # HSTS is emitted only for HTTPS by default; forwarded headers are not
+    # trusted, so running this local HTTP example cannot poison browser state.
+    hsts_only_https: true
+    hsts_trust_forwarded_proto: false
+
+  gzip:
+    min_length: 1024
+
+  timeout:
+    # Cooperative handler deadline; streaming and upgrade requests bypass it.
+    duration: 15s
+
+  # Per-check budget for every contributed probe. One probe is contributed by
+  # whichever workload this process carries, plus one by the unowned heartbeat.
+  # A workload probe reports down until its first unit of work lands, so a fresh
+  # process answers /readyz with 503 for one interval and then settles; /healthz
+  # is 200 from the start and is the anchor to look at if /readyz is flapping.
+  # The section must exist to make the capability active at all.
+  health:
+    timeout: 2s
+
+  health-http:
+    liveness_path: "/healthz"
+    # Returns 503 after shutdown begins; web.shutdown.pre_drain_delay above
+    # keeps it reachable before HTTP drain.
+    readiness_path: "/readyz"
+    # Do not expose dependency errors on public probes.
+    detail_policy: never
+
+  # Unowned plugin: the keys below are always read, in every role.
+  heartbeat:
+    interval: 3s
+
+  # Workload plugins. Their sections exist in every role because the composition
+  # root selects their Bundles unconditionally; a role that does not carry the
+  # workload simply never constructs the plugin, so these values go unread there.
+  transcode:
+    # One pass per second. The interval is also the warm-up window during which
+    # this workload's readiness probe reports down on a freshly started process.
+    interval: 1s
+
+  ingest:
+    interval: 500ms
+    batch_size: 100

@@ -55,6 +55,16 @@ func TestArchAssemblyPlanPublicAPIShape(t *testing.T) {
 		"InstanceSelectedAt": reflect.TypeOf((func(*assembly.Plan, plugin.Identity) string)(nil)),
 		"InstanceInputs":     reflect.TypeOf((func(*assembly.Plan, plugin.Identity) []assembly.InputEdge)(nil)),
 		"Contracts":          reflect.TypeOf((func(*assembly.Plan, reflect.Type) []plugin.Identity)(nil)),
+		// The workload accessors answer "what does this process carry, and
+		// why", which is a different question from every accessor above: those
+		// describe the graph that was built, while these also describe the
+		// workloads deliberately left out of it. Workloads is the whole
+		// declared set with the hosting decision, WorkloadOf attributes one
+		// identity for resource accounting, and Placement names the source
+		// that decided.
+		"Workloads":  reflect.TypeOf((func(*assembly.Plan) []assembly.PlanWorkload)(nil)),
+		"Placement":  reflect.TypeOf((func(*assembly.Plan) plugin.Placement)(nil)),
+		"WorkloadOf": reflect.TypeOf((func(*assembly.Plan, plugin.Identity) (plugin.WorkloadKey, bool))(nil)),
 	}
 	for name, signature := range want {
 		method, ok := planType.MethodByName(name)

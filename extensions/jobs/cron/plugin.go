@@ -13,6 +13,7 @@ import (
 	redis "github.com/redis/go-redis/v9"
 	robfigcron "github.com/robfig/cron/v3"
 
+	"github.com/xbcio/xbc/extensions/coordination/lease"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -74,11 +75,11 @@ func plan(config Config) (plugin.Plan[*Plugin], error) {
 		}), nil
 	}
 
-	lockerInput := plugin.OptionalOne[Locker]()
+	lockerInput := plugin.OptionalOne[lease.Locker]()
 	return plugin.PlanOf(plugin.Inputs(jobContributors, lockerInput), func(ctx plugin.BuildContext) (*Plugin, error) {
 		entry, ok := lockerInput.Get(ctx)
 		if !ok || isNilInterface(entry.Value) {
-			return nil, errors.New("cron: distributed mode requires a Locker, distributed.redis_instance, or distributed.redis.addr")
+			return nil, errors.New("cron: distributed mode requires a lease.Locker, distributed.redis_instance, or distributed.redis.addr")
 		}
 		return newConfiguredPlugin(config, jobContributors.Get(ctx), entry.Value, nil)
 	}), nil
@@ -92,7 +93,7 @@ type Plugin struct {
 	parser        robfigcron.Parser
 	location      *time.Location
 	renewInterval time.Duration
-	locker        Locker
+	locker        lease.Locker
 	ownedRedis    *redis.Client
 	jobs          []*scheduledJob
 
@@ -116,7 +117,7 @@ type Plugin struct {
 func newConfiguredPlugin(
 	config Config,
 	contributors []plugin.Entry[JobContributor],
-	selectedLocker Locker,
+	selectedLocker lease.Locker,
 	selectedRedis *redis.Client,
 ) (_ *Plugin, err error) {
 	location, err := time.LoadLocation(config.Timezone)
@@ -129,12 +130,12 @@ func newConfiguredPlugin(
 		return nil, err
 	}
 
-	var locker Locker
+	var locker lease.Locker
 	var owned *redis.Client
 	if config.Distributed.Enabled {
 		switch {
 		case selectedRedis != nil:
-			locker, err = NewRedisLocker(selectedRedis)
+			locker, err = newRedisLocker(selectedRedis)
 		case !isNilInterface(selectedLocker):
 			locker = selectedLocker
 		case config.Distributed.Redis.Addr != "":
@@ -152,7 +153,7 @@ func newConfiguredPlugin(
 				_ = owned.Close()
 				return nil, fmt.Errorf("cron: connect distributed Redis at %q: %w", redisConfig.Addr, pingErr)
 			}
-			locker, err = NewRedisLocker(owned)
+			locker, err = newRedisLocker(owned)
 		default:
 			err = errors.New("cron: distributed mode has no lock backend")
 		}

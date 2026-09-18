@@ -9,8 +9,9 @@ import (
 	"github.com/xbcio/xbc/plugin/assembly"
 )
 
-// bootstrap loads process-independent configuration and runtime settings.
-// It creates no Plugin-owned resources and invokes no Definition factory.
+// bootstrap loads process-independent configuration and runtime settings, and
+// installs the process-level resource knobs the configuration asks for. It
+// creates no Plugin-owned resources and invokes no Definition factory.
 //
 // The configuration Universe is built first, from the very Bundles this App
 // was composed from. That ordering is what lets environment variables enter
@@ -51,14 +52,38 @@ func (a *App) bootstrap(cmd command) error {
 	if err != nil {
 		return err
 	}
+	// The process-level knobs are resolved for every command, so an
+	// unsatisfiable xbc.runtime section fails the same way whether the process
+	// was about to start or was only being diagnosed, but they are installed
+	// only for a command that goes on to run an application: doctor exists to
+	// report a process configuration, and a diagnostic that changes the
+	// GOMAXPROCS and memory limits of the process it is diagnosing is not one.
+	knobs, err := resolveRuntimeKnobs(settings.Runtime, cgroupRoot)
+	if err != nil {
+		return err
+	}
+	if cmd.subcommand != doctorSubcommand {
+		applyRuntimeKnobs(knobs)
+	}
+	a.logger.Info("xbc: runtime knobs " + knobs.describe())
+	// The task budgets are configuration and are read here, where the
+	// configuration is; the identity-to-workload attribution they are charged
+	// against is a property of the frozen graph and cannot exist yet. The
+	// closure below resolves it per submission instead, which is why the two
+	// halves of one budget are assembled from two different moments.
+	limits, err := workloadTaskLimits(a.bundles, env)
+	if err != nil {
+		return err
+	}
 	a.env = env
 	a.settings = settings
 	a.tasks = newTaskRuntime(a.logger, a.onCritical)
+	a.tasks.configureWorkloadBudget(limits, a.workloadOf)
 	return nil
 }
 
 // configUniverse declares every top-level configuration owner: the framework's
-// own roots plus one section per selected Definition.
+// own roots plus one section per selected Definition and per declared workload.
 func (a *App) configUniverse() (*config.Universe, error) {
 	sections := []config.Section{
 		{
@@ -79,6 +104,12 @@ func (a *App) configUniverse() (*config.Universe, error) {
 			Kind:  config.SectionFreeform,
 		},
 	}
+	// The plugin and workload sections both come from assembly, which owns both
+	// roots. It emits the "workloads" namespace together with one typed child
+	// per declared workload, so a workload's "enabled" and its own settings bind
+	// through the same strict path a plugin section does -- and a key under
+	// "workloads" that no declared workload answers for is reported as unowned
+	// rather than silently ignored.
 	pluginSections, err := assembly.ConfigSections(a.bundles)
 	if err != nil {
 		return nil, err

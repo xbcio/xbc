@@ -20,6 +20,13 @@ import (
 type App struct {
 	bundles []plugin.Bundle
 
+	// placementSource is the source WithPlacement selected, or nil for
+	// StaticPlacement. It is consulted once per run, before the plan exists,
+	// and the answer is kept in placementDecision for every later reader
+	// (including the plan, which carries its own copy).
+	placementSource   PlacementSource
+	placementDecision plugin.Placement
+
 	env      *config.Environment
 	settings settings
 	logger   log.Logger
@@ -66,8 +73,10 @@ type App struct {
 type Option func(*appOptions) error
 
 type appOptions struct {
-	bundles    []plugin.Bundle
-	hasBundles bool
+	bundles      []plugin.Bundle
+	hasBundles   bool
+	placement    PlacementSource
+	hasPlacement bool
 }
 
 // WithBundles composes an App explicitly from side-effect-free Bundles.
@@ -98,7 +107,11 @@ func New(options ...Option) (*App, error) {
 	if !resolved.hasBundles {
 		bundles = []plugin.Bundle{autoload.Freeze()}
 	}
-	return newApp(bundles), nil
+	app := newApp(bundles)
+	if resolved.hasPlacement {
+		app.placementSource = resolved.placement
+	}
+	return app, nil
 }
 
 func optionError(index int, detail string) error {

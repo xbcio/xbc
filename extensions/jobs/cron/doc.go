@@ -43,9 +43,10 @@
 // Cron collects contributors as a typed input while constructing its primary
 // value. Jobs is called once, and the resulting snapshot cannot change after
 // construction. A custom distributed lock backend is composed the same way by
-// exporting Locker. Alternatively, distributed.redis_instance selects a named
-// Redis Definition instance and distributed.redis.addr lets cron own its
-// client.
+// exporting lease.Locker from another Definition, for example the one
+// redis.Bundle() selects through plugins.redis-lease. Alternatively,
+// distributed.redis_instance selects a named Redis Definition instance and
+// distributed.redis.addr lets cron own its client.
 //
 // Definition returns the canonical declaration and Bundle is side-effect free.
 // Executables that deliberately choose process-wide composition may import the

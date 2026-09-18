@@ -18,7 +18,9 @@ import (
 // Server is the HTTP server Plugin. Its Definition injects the complete
 // middleware, route-contributor, route-listener sets, and exactly one Engine
 // adapter before the value is constructed; no lifecycle hook scans
-// initialized Plugins.
+// initialized Plugins. Start also assembles the framework-owned stages a
+// composition root cannot leave out; the outermost of them is the process-level
+// in-flight gate that leads the whole chain (see inflight.go).
 type Server struct {
 	cfg Config
 
@@ -41,6 +43,7 @@ type Server struct {
 	misses         []MiddlewareOrderMiss
 	authentication *authenticationMiddleware
 	catalog        RouteCatalog
+	inflight       *inFlightGate
 	started        bool
 	prepared       bool
 	served         bool
@@ -86,7 +89,9 @@ func (s *Server) Addr() string {
 }
 
 // Start assembles the immutable request pipeline, binds the listener, and
-// submits the serving loop while managed-task admission is open. The task waits
+// submits the serving loop while managed-task admission is open. The pipeline is
+// led by the process-level in-flight gate, the one stage no contributed
+// middleware can displace, disable, or order itself outside of. The task waits
 // for the runtime-owned traffic gate (or task cancellation) before calling
 // Serve, so no ingress is exposed during fallible preparation.
 func (s *Server) Start(ctx *plugin.Context) error {
@@ -119,7 +124,15 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	}
 
 	routes, frozen, index := newRouteTable()
+	// The process-level admission gate is the first element of every chain this
+	// Server registers: it precedes capRequestBody, the error boundary, and
+	// every contributed middleware, so a request that is going to be refused is
+	// refused before any of them run. It is assembled here rather than
+	// contributed because an admission ceiling a composition root can leave out
+	// is not a ceiling; see inflight.go for the whole argument.
+	inflight := newInFlightGate(resolveMaxInFlight(cfg.MaxInFlight))
 	handlers := []Handler{
+		inflight.handler(logger),
 		capRequestBody(cfg.MaxRequestBodyBytes),
 		func(_ context.Context, c *Ctx) error {
 			newErrorResolver(logger).attach(c)
@@ -244,6 +257,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	s.ordered = ordered
 	s.misses = misses
 	s.authentication = authenticator
+	s.inflight = inflight
 	s.started = true
 	s.mu.Unlock()
 
@@ -270,6 +284,13 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		s.mu.Unlock()
 		return errors.New("xbc: web managed serving task was rejected outside Start admission")
 	}
+
+	// Reported once Start has committed the pipeline, and before ingress is
+	// exposed. Nothing has been served through the gate yet, so the rejection
+	// count is necessarily zero here: what an operator reads from this line is
+	// the ceiling, where it came from, and the Retry-After a refusal will carry.
+	// The live reading afterwards is Server.InFlightStats.
+	logger.Info(renderInFlightGate(inflight.stats(), cfg.MaxInFlight <= 0))
 	return nil
 }
 

@@ -44,4 +44,21 @@
 // Bundle; when it is selected, a configured instance appears in the aggregate
 // readiness report as "redis-health" or "redis-health/<instance>" with no change
 // at the composition root.
+//
+// # Leases
+//
+// Bundle also selects LeaseKey, a second Definition that exports lease.Locker
+// over exactly one configured instance:
+//
+//	plugins:
+//	  redis:
+//	    default: { addr: "127.0.0.1:6379" }
+//	  redis-lease:
+//	    instance: "default"
+//
+// The lease capability is inert unless plugins.redis-lease is configured, and
+// it names its instance rather than collecting every client, because a lease
+// belongs to one connection. NewLocker is the same implementation without the
+// plugin graph, for composition roots that must decide placement before a plan
+// exists.
 package redis

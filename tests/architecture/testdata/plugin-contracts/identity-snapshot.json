@@ -194,6 +194,20 @@
       ]
     },
     {
+      "key": "placement",
+      "config_path": "plugins.placement",
+      "cardinality": "single",
+      "contracts": []
+    },
+    {
+      "key": "placement-health",
+      "config_path": "plugins.placement-health",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
+      ]
+    },
+    {
       "key": "pprof",
       "config_path": "plugins.pprof",
       "cardinality": "single",
@@ -246,6 +260,14 @@
       "cardinality": "single",
       "contracts": [
         "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
+      ]
+    },
+    {
+      "key": "redis-lease",
+      "config_path": "plugins.redis-lease",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/extensions/coordination/lease.Locker"
       ]
     },
     {

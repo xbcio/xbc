@@ -278,6 +278,131 @@ func TestArchWebPreludeIsSideEffectFree(t *testing.T) {
 	assert.True(t, archIsSideEffectFreeBundleExpression(bundleAccessors[0].file, expression, topValues, make(map[string]bool)), "Prelude Bundle() may only combine explicit child Bundles")
 }
 
+// TestArchWorkloadBundlesAreSideEffectFreeComposition pins the workload branch
+// of the composition scanner against both directions.
+//
+// The scanner classifies a Bundle() accessor by reading its source, so a branch
+// nothing exercises protects nothing: a scanner that rejected every WorkloadOf
+// call and one that accepted every call shape would both pass a corpus that
+// contains no workload Bundle at all. The cases below therefore drive the real
+// scanner over real source, and the rejected ones are the shapes the branch
+// exists to catch -- a key that has to be computed, an unrecognized placement
+// option, and a member that is not a package-level Definition handle.
+func TestArchWorkloadBundlesAreSideEffectFreeComposition(t *testing.T) {
+	t.Parallel()
+
+	for name, testCase := range map[string]struct {
+		expression string
+		accepted   bool
+	}{
+		"package-level key constant": {
+			expression: `plugin.WorkloadOf(workloadKey, plugin.BundleOf(memberDefinition))`,
+			accepted:   true,
+		},
+		"string literal key and placement options": {
+			expression: `plugin.WorkloadOf("sast", plugin.BundleOf(memberDefinition), plugin.WithExclusiveProcess(), plugin.WithReplicas(3))`,
+			accepted:   true,
+		},
+		"key from another repository package": {
+			expression: `plugin.WorkloadOf(sibling.Key, plugin.BundleOf(memberDefinition))`,
+			accepted:   true,
+		},
+		"nested composition": {
+			expression: `plugin.WorkloadOf(workloadKey, plugin.CombineBundles(plugin.BundleOf(memberDefinition), canonicalWorkload))`,
+			accepted:   true,
+		},
+		"package-level composition variable": {
+			expression: `canonicalWorkload`,
+			accepted:   true,
+		},
+		"empty workload": {
+			expression: `plugin.WorkloadOf(workloadKey, plugin.BundleOf())`,
+			accepted:   true,
+		},
+		"computed key": {
+			expression: `plugin.WorkloadOf(workloadKeyFor("sast"), plugin.BundleOf(memberDefinition))`,
+			accepted:   false,
+		},
+		"unknown placement option": {
+			expression: `plugin.WorkloadOf(workloadKey, plugin.BundleOf(memberDefinition), plugin.WithSomethingElse())`,
+			accepted:   false,
+		},
+		"bare option argument": {
+			expression: `plugin.WorkloadOf(workloadKey, plugin.BundleOf(memberDefinition), options...)`,
+			accepted:   false,
+		},
+		"member built at call time": {
+			expression: `plugin.WorkloadOf(workloadKey, plugin.BundleOf(newMemberDefinition()))`,
+			accepted:   false,
+		},
+		"local variable instead of a member": {
+			expression: `plugin.WorkloadOf(workloadKey, plugin.BundleOf(undeclaredDefinition))`,
+			accepted:   false,
+		},
+		"missing bundle argument": {
+			expression: `plugin.WorkloadOf(workloadKey)`,
+			accepted:   false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			file, topValues := archParseFixturePackage(t, "func Bundle() plugin.Bundle { return "+testCase.expression+" }")
+			expression, ok := archSingleReturnedExpression(archFindFunction(t, file, "Bundle"))
+			require.True(t, ok, "the fixture Bundle() must contain exactly one return statement")
+
+			assert.Equal(t, testCase.accepted,
+				archIsSideEffectFreeBundleExpression(file, expression, topValues, make(map[string]bool)),
+				"Bundle() returning %s", testCase.expression)
+		})
+	}
+}
+
+// archParseFixturePackage parses one synthetic package in memory and returns
+// its file together with its package-level values. It exists because the
+// scanner's workload branch has no production call site yet: the only way to
+// prove it classifies a WorkloadOf call correctly is to hand it one.
+func archParseFixturePackage(t *testing.T, declarations ...string) (*ast.File, map[string]archTopValue) {
+	t.Helper()
+	source := `package fixture
+
+import (
+	"github.com/xbcio/xbc/plugin"
+	sibling "github.com/xbcio/xbc/extensions/reliability/health"
+)
+
+const workloadKey plugin.WorkloadKey = "sast"
+
+var memberDefinition = plugin.Define("member", nil)
+
+var canonicalWorkload = plugin.WorkloadOf(workloadKey, plugin.BundleOf(memberDefinition))
+
+var options = []plugin.WorkloadOption{}
+
+func workloadKeyFor(name string) plugin.WorkloadKey { return plugin.WorkloadKey(name) }
+
+func newMemberDefinition() plugin.Definition { return memberDefinition }
+`
+	for _, declaration := range declarations {
+		source += "\n" + declaration + "\n"
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", source, parser.SkipObjectResolution)
+	require.NoError(t, err, "parsing the architecture fixture package failed")
+	return file, archCollectTopValues([]*ast.File{file})
+}
+
+// archFindFunction returns the named top-level function of file.
+func archFindFunction(t *testing.T, file *ast.File, name string) *ast.FuncDecl {
+	t.Helper()
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Recv == nil && function.Name.Name == name {
+			return function
+		}
+	}
+	require.FailNowf(t, "fixture function missing", "the fixture package declares no func %s", name)
+	return nil
+}
+
 // TestArchPluginImplementationsDocumentUsage keeps package documentation useful
 // as the Plugin ecosystem grows. Every reusable implementation must keep a
 // discoverable doc.go package comment with a Usage section and code block.
@@ -484,22 +609,25 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	t.Helper()
 	repositoryRoot := archRepositoryRoot(t)
 	webRoot := filepath.Join(repositoryRoot, "transport", "web")
-	roots := make([]string, 0, 36)
+	roots := make([]string, 0, 37)
 	for _, extensionPath := range archWebPackageExtensionPaths {
 		roots = append(roots, filepath.Join(webRoot, "extensions", filepath.FromSlash(extensionPath)))
 	}
 
-	// The authentication contract module lives beneath extensions but publishes
-	// a vocabulary rather than a plugin, so it owns no Definition or Bundle and
-	// must stay out of the plugin implementation roots.
-	authenticationContract := filepath.Join(repositoryRoot, "extensions", "authentication")
+	// A contract module lives beneath extensions but publishes a vocabulary
+	// rather than a plugin: it owns no Definition, Config, or Bundle, so it has
+	// nothing for the plugin-implementation guards below to inspect and must
+	// stay out of these roots. archContractModules declares the category once;
+	// TestArchContractModulesOwnNoDefinitionConfigOrBundle is what makes the
+	// exclusion safe to grant.
+	contractRoots := archContractModuleRoots(repositoryRoot)
 	var protocolNeutral []string
 	for _, moduleRoot := range archExtensionModuleRoots(t, filepath.Join(repositoryRoot, "extensions")) {
-		if moduleRoot != authenticationContract {
+		if !contractRoots[moduleRoot] {
 			protocolNeutral = append(protocolNeutral, moduleRoot)
 		}
 	}
-	require.Len(t, protocolNeutral, 12, "expected 12 protocol-neutral extension plugins plus the non-plugin authentication contract")
+	require.Len(t, protocolNeutral, 13, "expected 13 protocol-neutral extension plugins plus the non-plugin contract modules beneath extensions")
 	roots = append(roots, protocolNeutral...)
 
 	webAdapter := filepath.Join(webRoot, "extensions", "authorization", "rbac")
@@ -512,7 +640,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	require.Len(t, webPlugins, 9, "expected 9 Web extension plugins plus the non-plugin RBAC adapter")
 	roots = append(roots, webPlugins...)
 
-	require.Len(t, roots, 36, "expected 15 Web package extensions, 12 protocol-neutral extension plugins, and 9 independently versioned Web extension plugins")
+	require.Len(t, roots, 37, "expected 15 Web package extensions, 13 protocol-neutral extension plugins, and 9 independently versioned Web extension plugins; the two contract modules beneath extensions are not plugin implementations")
 	sort.Strings(roots)
 	return roots
 }
@@ -630,12 +758,7 @@ func archIsSideEffectFreeBundleExpression(file *ast.File, expression ast.Expr, t
 		seen[expression.Name] = true
 		return archIsSideEffectFreeBundleExpression(value.file, value.initializer, topValues, seen)
 	case *ast.CallExpr:
-		if archCallMatches(file, expression, archPluginImportPath, "BundleOf") || archCallMatches(file, expression, archPluginImportPath, "CombineBundles") {
-			for _, argument := range expression.Args {
-				if !archIsSideEffectFreeBundleArgument(file, argument, topValues, seen) {
-					return false
-				}
-			}
+		if archIsCompactBundleComposition(file, expression, topValues, seen) || archIsWorkloadOfCall(file, expression, topValues, seen) {
 			return true
 		}
 		// Prelude composes child package Bundle accessors directly.
@@ -661,17 +784,12 @@ func archIsSideEffectFreeBundleArgument(file *ast.File, expression ast.Expr, top
 		if archIsDefinitionConstructor(value.file, value.initializer) {
 			return true
 		}
-		if archCallMatchesExpression(value.file, value.initializer, archPluginImportPath, "BundleOf") || archCallMatchesExpression(value.file, value.initializer, archPluginImportPath, "CombineBundles") {
+		if archIsCompositionConstructorInitializer(value.file, value.initializer) {
 			return archIsSideEffectFreeBundleExpression(value.file, expression, topValues, seen)
 		}
 		return false
 	case *ast.CallExpr:
-		if archCallMatches(file, expression, archPluginImportPath, "BundleOf") || archCallMatches(file, expression, archPluginImportPath, "CombineBundles") {
-			for _, argument := range expression.Args {
-				if !archIsSideEffectFreeBundleArgument(file, argument, topValues, seen) {
-					return false
-				}
-			}
+		if archIsCompactBundleComposition(file, expression, topValues, seen) || archIsWorkloadOfCall(file, expression, topValues, seen) {
 			return true
 		}
 		if identifier, ok := archUnwrapExpression(expression.Fun).(*ast.Ident); ok && identifier.Name == "Definition" && len(expression.Args) == 0 {
@@ -686,6 +804,121 @@ func archIsSideEffectFreeBundleArgument(file *ast.File, expression ast.Expr, top
 	default:
 		return false
 	}
+}
+
+// archCompactCompositionConstructors are the plugin constructors whose every
+// argument is itself composition data, so one rule validates the whole call.
+var archCompactCompositionConstructors = []string{"BundleOf", "CombineBundles"}
+
+// archWorkloadOptionConstructors are the only placement option constructors
+// plugin.WorkloadOf accepts. The list is exhaustive rather than permissive on
+// purpose: an unrecognized call in option position is a value this scanner
+// cannot reason about, so it is rejected instead of waved through. Adding a
+// third placement option therefore requires the deliberate edit here that its
+// new side-effect surface deserves.
+var archWorkloadOptionConstructors = []string{"WithExclusiveProcess", "WithReplicas"}
+
+// archIsCompactBundleComposition reports whether call is a BundleOf or
+// CombineBundles invocation whose every argument is side-effect-free
+// composition data.
+func archIsCompactBundleComposition(file *ast.File, call *ast.CallExpr, topValues map[string]archTopValue, seen map[string]bool) bool {
+	for _, name := range archCompactCompositionConstructors {
+		if !archCallMatches(file, call, archPluginImportPath, name) {
+			continue
+		}
+		for _, argument := range call.Args {
+			if !archIsSideEffectFreeBundleArgument(file, argument, topValues, seen) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// archIsWorkloadOfCall reports whether call is a well-formed
+// plugin.WorkloadOf invocation: a statically resolvable workload key, one
+// side-effect-free Bundle, and nothing but the declared placement option
+// constructors after it.
+//
+// WorkloadOf cannot share the argument rule its two sibling constructors use,
+// because its first argument is a key and its trailing ones are options rather
+// than Definitions. Splitting the call open here rather than accepting it
+// wholesale is what keeps a workload Bundle composable by the same proof as
+// any other: every occurrence still has to trace back to a package-level
+// Definition handle, and every key still has to be readable without computing
+// anything.
+func archIsWorkloadOfCall(file *ast.File, call *ast.CallExpr, topValues map[string]archTopValue, seen map[string]bool) bool {
+	if !archCallMatches(file, call, archPluginImportPath, "WorkloadOf") {
+		return false
+	}
+	if len(call.Args) < 2 {
+		return false
+	}
+	if !archIsWorkloadKeyExpression(file, call.Args[0], topValues) {
+		return false
+	}
+	if !archIsSideEffectFreeBundleArgument(file, call.Args[1], topValues, seen) {
+		return false
+	}
+	for _, option := range call.Args[2:] {
+		if !archIsWorkloadOptionExpression(file, option) {
+			return false
+		}
+	}
+	return true
+}
+
+// archIsWorkloadKeyExpression accepts the forms a workload key can be written
+// in without computing it: a string literal, a package-level constant, or
+// another repository package's exported identifier. A key the scanner cannot
+// resolve is rejected rather than assumed harmless, because Bundle() has to be
+// readable as the same composition on every evaluation.
+func archIsWorkloadKeyExpression(file *ast.File, expression ast.Expr, topValues map[string]archTopValue) bool {
+	switch expression := archUnwrapExpression(expression).(type) {
+	case *ast.BasicLit:
+		return expression.Kind == token.STRING
+	case *ast.Ident:
+		value, ok := topValues[expression.Name]
+		return ok && value.kind == token.CONST && value.initializer != nil
+	case *ast.SelectorExpr:
+		identifier, ok := expression.X.(*ast.Ident)
+		return ok && archImportsRepositoryPackage(file, identifier.Name)
+	default:
+		return false
+	}
+}
+
+// archIsWorkloadOptionExpression reports whether expression is a call to one of
+// the declared placement option constructors.
+func archIsWorkloadOptionExpression(file *ast.File, expression ast.Expr) bool {
+	call, ok := archUnwrapExpression(expression).(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	for _, name := range archWorkloadOptionConstructors {
+		if archCallMatches(file, call, archPluginImportPath, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// archCompositionConstructors are every plugin package constructor that builds
+// composition data. A package-level var holding one of these is composition
+// data in the same sense a direct call is, so the scanners follow it rather
+// than rejecting it.
+var archCompositionConstructors = []string{"BundleOf", "CombineBundles", "WorkloadOf"}
+
+// archIsCompositionConstructorInitializer reports whether initializer builds
+// composition data through one of those constructors.
+func archIsCompositionConstructorInitializer(file *ast.File, initializer ast.Expr) bool {
+	for _, name := range archCompositionConstructors {
+		if archCallMatchesExpression(file, initializer, archPluginImportPath, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func archCallMatchesExpression(file *ast.File, expression ast.Expr, importPath, name string) bool {

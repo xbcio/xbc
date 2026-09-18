@@ -49,6 +49,37 @@ type Option = appruntime.Option
 // WithBundles explicitly composes the application's canonical Definitions.
 func WithBundles(bundles ...plugin.Bundle) Option { return appruntime.WithBundles(bundles...) }
 
+// PlacementSource decides which of an application's declared workloads this
+// process carries. It is re-exported so an application can name the interface
+// it passes to WithPlacement without importing the runtime package directly.
+//
+// The vocabulary lives in plugin for the same reason the interface is not
+// defined here: a source that reads a lease cannot live in core at all. Core's
+// dependency closure excludes everything beneath extensions, so the lease
+// contract is an extension module, and an extension module that imported this
+// package would invert the framework's dependency direction. A lease-backed
+// source is therefore constructed by the extension that owns it and passed
+// here as a value:
+//
+//	hosting, err := placement.New(locker, placement.WithTTL(30*time.Second))
+//	if err != nil {
+//		/* handle */
+//	}
+//	xbc.Run(
+//		xbc.WithPlacement(hosting),
+//		xbc.WithBundles(hosting.Bundle(), prelude.Bundle(), sast.Bundle()),
+//	)
+type PlacementSource = appruntime.PlacementSource
+
+// WithPlacement selects how this process decides which declared workloads it
+// hosts. Omitted, the decision is StaticPlacement.
+func WithPlacement(source PlacementSource) Option { return appruntime.WithPlacement(source) }
+
+// StaticPlacement is the default placement: the hosted set is exactly the
+// declared workloads configuration enables. It contacts nothing and never
+// fails.
+func StaticPlacement() PlacementSource { return appruntime.StaticPlacement() }
+
 // New creates an App the caller executes itself, without loading
 // configuration or constructing resources. It owns no process facility: use it
 // when the process is not XBC's, and prefer Run when it is.

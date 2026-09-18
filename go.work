@@ -18,6 +18,8 @@ use (
 	./examples
 	./extensions/authentication
 	./extensions/authorization/rbac
+	./extensions/coordination/lease
+	./extensions/coordination/placement
 	./extensions/coordination/raft
 	./extensions/reliability/health
 	./extensions/storage/elasticsearch

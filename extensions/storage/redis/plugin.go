@@ -28,13 +28,14 @@ var definition = plugin.DefineConfigured(
 	},
 )
 
-var bundle = plugin.BundleOf(definition, healthDefinition)
+var bundle = plugin.BundleOf(definition, healthDefinition, leaseDefinition)
 
 // Definition returns this integration's canonical Definition handle.
 func Definition() plugin.Definition { return definition }
 
 // Bundle returns this integration's side-effect-free composition bundle: the
-// client Definition and the readiness probe that reports on its instances.
+// client Definition, the readiness probe that reports on its instances, and the
+// lease Definition that exports a lease.Locker over one of them.
 func Bundle() plugin.Bundle { return bundle }
 
 // newClient constructs the one primary value owned by a configured Redis

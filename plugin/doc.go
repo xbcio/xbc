@@ -171,25 +171,32 @@
 //
 // # Lifecycle capabilities
 //
-// A primary value opts into up to five stages by implementing the matching
-// interface directly: Initializer, Migrator, Runner, TrafficOpener, and
-// Closer. None is required, and P inherits none of them from a base type —
-// a bare struct with no methods is a perfectly valid, lifecycle-free
+// A primary value opts into up to six stages by implementing the matching
+// interface directly: Initializer, Migrator, Runner, TrafficOpener, Closer,
+// and PreStopper. None is required, and P inherits none of them from a base
+// type — a bare struct with no methods is a perfectly valid, lifecycle-free
 // Plugin.
 //
 // When P should not implement a stage itself — a third-party type, or a
 // method you would rather keep unexported — supply a typed adapter on
 // Options[P].Lifecycle instead. An adapter's signature is func(P, *Context)
-// error (func(P, context.Context) error for Stop), so an unexported method
-// value satisfies it directly without ever implementing the exported
-// interface:
+// error (func(P, context.Context) error for Stop and PreStop), so an
+// unexported method value satisfies it directly without ever implementing the
+// exported interface:
 //
 //	plugin.Lifecycle[*Service]{
 //		Migrate:     (*Service).migrate,
 //		Start:       (*Service).start,
 //		OpenTraffic: (*Service).openTraffic,
+//		PreStop:     (*Service).preStop,
 //		Stop:        (*Service).stop,
 //	}
+//
+// PreStop runs before Stop and is the one hook whose context is not the
+// application's: it retracts external participation while the process is
+// still alive, so it needs a live context even though the stop request has
+// already cancelled the execution context. It is called only for an instance
+// that completed the start phase.
 //
 // A single stage can be adapted the same way, such as closing a client XBC
 // does not otherwise know how to stop:
@@ -249,6 +256,64 @@
 // identity; two different Definitions that happen to share a Key are a
 // source-aware collision that Plan rejects, not something a Bundle
 // silently resolves.
+//
+// # Workloads
+//
+// A workload is a named group of Definitions a process carries as a unit or
+// not at all. It is how one binary becomes several process shapes: the same
+// executable, composed from the same Bundles, constructs only the subservices
+// the deployment asked it to carry, and therefore opens only the connections,
+// registers only the routes, and starts only the workers those subservices
+// need.
+//
+// WorkloadOf declares one, and is pure composition data like BundleOf:
+//
+//	// Key is this workload's stable placement and configuration identity.
+//	const Key plugin.WorkloadKey = "sast"
+//
+//	var bundle = plugin.WorkloadOf(
+//		Key,
+//		plugin.BundleOf(dispatcherDefinition, workerDefinition),
+//		plugin.WithExclusiveProcess(),
+//		plugin.WithReplicas(3),
+//	)
+//
+//	func Bundle() plugin.Bundle { return bundle }
+//
+// The composition root selects that Bundle like any other, so nothing about
+// how an application composes changes. WorkloadOf tags every gathered
+// occurrence with the key, which is what lets assembly exclude the workload's
+// Definitions entirely from a process that does not carry it -- they are not
+// disabled, they are absent, and their configuration sections do not exist in
+// that process.
+//
+// Two placement constraints may accompany a workload, and both are enforced by
+// assembly rather than merely reported:
+//
+//   - WithReplicas(n) is how many processes may carry the workload at once.
+//     One is the default.
+//   - WithExclusiveProcess() says a process carrying this workload carries no
+//     other. It is for a workload with process-wide side effects -- a global GC
+//     target, a shared pool, a process-wide memory limit -- which nothing
+//     sharing its process can be protected from, rather than for one that is
+//     merely heavy.
+//
+// Neither is a per-process preference: both describe the cluster, so both
+// belong to the declaration and are deliberately not configurable per process.
+//
+// A workload owns Definitions, never another workload: applying WorkloadOf to a
+// Bundle that already belongs to a workload is rejected outright, because a
+// member Definition must be able to live in a process carrying this workload
+// and no other. A member whose Definition lives in another module and cannot be
+// gathered by WorkloadOf declares itself with Options[P].Workload instead.
+//
+// A Definition that belongs to no workload belongs to every process shape. That
+// asymmetry is the whole dependency rule: a workload may depend on an unowned
+// Definition freely, while an unowned Definition may only collect a workload's
+// exporters -- never require exactly one of them -- because requiring one would
+// let the hosted set decide whether the process starts at all. Reads of a
+// producer's Entry[T] expose its Workload so resource budgets can be attributed
+// per workload.
 //
 // # BuildContext and Context
 //

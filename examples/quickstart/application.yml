@@ -16,13 +16,54 @@
 # starting anything.
 
 xbc:
-  # One budget covers cancellation, HTTP drain, and reverse-order plugin Stop.
+  # This process's identity: the token that names it in the placement line at
+  # startup and in whatever an operator correlates a log, a metric and a doctor
+  # report by. Left empty, the runtime derives one -- hostname, boot second, and
+  # a short random suffix, as in host-7-1758091200-9f3c1a2b -- so two processes
+  # on one host are already distinguishable with no deployment input. Set it
+  # when the supervisor already knows which slot this process is, and the value
+  # is then used exactly as written and survives a restart. YAML does not expand
+  # ${VAR}, so a per-process value comes from the environment:
+  # XBC_INSTANCE_ID=orders-3. Whitespace in it is a startup error, because it is
+  # presented as one token wherever it is printed.
+  instance_id: ""
+  # One budget covers cancellation, managed-task join, and reverse-order plugin
+  # Stop. The pre-stop phase below runs before all of that and is accounted
+  # separately, so the worst case for one stop is the two added together.
   shutdown_timeout: 15s
+  # PreStop retracts a value's externally visible participation while the process
+  # is still fully alive -- releasing a placement lease is a real remote call --
+  # so it gets its own budget rather than a share of the one above. It is per
+  # phase, not per plugin. This composition releases nothing, so the value only
+  # demonstrates the key.
+  pre_stop_timeout: 2s
   # While startup is unfinished, report every 30s which phase it is in and which
   # plugin still holds it. Reporting only: it never aborts or times out a
   # startup. Raise it, or set 0s to switch it off, when migrations legitimately
   # run for minutes.
   slow_startup_after: 30s
+
+  # Process-level resource knobs. They live here rather than in a plugin because
+  # each one is process-global: a plugin that set them would be tuning the whole
+  # process from inside one component, and an architecture guard fails the build
+  # for one that tries. The effective values, and where each came from, are
+  # logged once at startup and printed by the doctor subcommand.
+  runtime:
+    # auto derives the processor count from this container's cgroup CPU quota
+    # rather than from the host's core count -- the difference between a
+    # 4-core-quota container starting 4 workers and starting 64. Where no quota
+    # is derivable, as on a bare-metal host, auto leaves GOMAXPROCS at the Go
+    # default and says so on the startup line. A positive integer sets it
+    # outright; 0 leaves it untouched.
+    max_procs: auto
+    # A byte count, or a percentage of this container's memory limit such as
+    # "75%". A percentage needs a derivable limit and is a startup error rather
+    # than a silent no-op without one. 0, the default, sets no limit.
+    memory_limit: 0
+    # 0 leaves Go's default of 100 in place. A lower value collects more often
+    # and trades CPU for a smaller heap, which is usually the right trade in a
+    # memory-constrained container and the wrong one on a latency budget.
+    gc_percent: 0
 
 log:
   level: info
@@ -36,6 +77,15 @@ web:
   # Plugin routes are relative to this prefix. Probe and documentation URLs
   # therefore become /api/v1/healthz, /api/v1/readyz, and /api/v1/docs.
   base_path: "/api/v1"
+  # Process-wide admission ceiling: how many requests this process serves at
+  # once. Beyond it a request is refused with 503 and Retry-After before any
+  # handler runs, rather than queued -- a queue in front of a saturated process
+  # only turns a fast refusal into a slow one. It is deliberately not
+  # configurable per route or per plugin: a per-plugin ceiling cannot bound the
+  # sum an instance accepts, which is the quantity that decides whether the
+  # instance survives its traffic. 0, the default, derives the ceiling from
+  # GOMAXPROCS, so it follows xbc.runtime.max_procs above.
+  max_in_flight: 0
   shutdown:
     # Default is 0s. Keep the listener up after cancellation so /readyz can
     # return 503 before HTTP draining begins. This consumes the shared shutdown
@@ -72,6 +122,48 @@ web:
       # appears as "application-rule" in the startup policy table.
       - match: "/api/v1/docs/**"
         permit: true
+
+# This composition declares no workload, and that is why there is no
+# `workloads:` block above. The workload root is declared only when at least one
+# workload is declared in Go, so an always-present root would claim a prefix
+# nothing beneath it answers for. Adding one here fails startup naming the
+# unowned key:
+#
+#   xbc: configuration contains a key that no plugin or framework section owns
+#     workloads
+#     declared top-level sections: app, log, plugins, web, xbc
+#
+# A workload is declared in Go, where its Definitions and its cluster-level
+# placement constraints live together:
+#
+#   var bundle = plugin.WorkloadOf(
+#       "sast",
+#       plugin.BundleOf(dispatcherDefinition, workerDefinition),
+#       plugin.WithExclusiveProcess(),
+#       plugin.WithReplicas(3),
+#   )
+#
+# Once one exists, its section owns exactly what one process may decide about
+# itself:
+#
+#   workloads:
+#     sast:
+#       # Hard veto. No placement source may override it, because excluding a
+#       # process from a role outright is a deployment decision rather than a
+#       # placement one.
+#       enabled: true
+#       # Managed tasks this process may run on behalf of the workload at once.
+#       # 0 is unbounded.
+#       max_goroutines: 0
+#
+# The workload's replicas and exclusivity are deliberately absent from YAML:
+# they describe the cluster rather than one process, so a host that could
+# reinterpret "how many replicas may run" would silently invalidate the
+# placement every other process derived from the same declaration.
+#
+# `examples/workloads` is the runnable example of the whole surface: one binary,
+# two workloads, one of them exclusive, and an unowned plugin that every role
+# carries.
 
 plugins:
   # The optional biz response plugin has no configuration section: selecting
