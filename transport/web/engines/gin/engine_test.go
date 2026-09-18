@@ -33,7 +33,7 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	restoreProcessGlobals(t)
 
 	engine, err := Factory{}.NewEngine(web.Options{})
-	require.NoError(t, err, "NewEngine() 不应返回错误")
+	require.NoError(t, err, "NewEngine() must not return an error")
 
 	handlerEntered := make(chan struct{})
 	releaseHandler := make(chan struct{})
@@ -50,7 +50,7 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	})
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err, "监听回环端口失败")
+	require.NoError(t, err, "failed to listen on a loopback port")
 
 	served := make(chan error, 1)
 	go func() { served <- engine.Serve(listener) }()
@@ -69,7 +69,7 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	select {
 	case <-handlerEntered:
 	case <-time.After(10 * time.Second):
-		t.Fatal("请求未能进入阻塞处理器，无法验证强制关闭")
+		t.Fatal("the request never entered the blocking handler, so the forced close cannot be verified")
 	}
 
 	// An already-expired deadline leaves draining no chance to succeed, which
@@ -77,22 +77,22 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
 	shutdownErr := engine.Shutdown(ctx)
-	require.Error(t, shutdownErr, "排空未能在 deadline 内完成时，Shutdown 必须如实报告该失败")
+	require.Error(t, shutdownErr, "Shutdown must report the failure faithfully when draining could not finish within the deadline")
 	assert.ErrorIs(t, shutdownErr, context.DeadlineExceeded)
 
 	select {
 	case requestErr := <-responded:
 		assert.Error(t, requestErr,
-			"排空失败后 Shutdown 必须强制关闭残留连接，客户端请求不得仍然正常完成")
+			"Shutdown must force the lingering connection closed once draining failed -- the client's request must not still complete normally")
 	case <-time.After(10 * time.Second):
-		t.Fatal("排空失败后仍有已建立的连接在服务，Shutdown 没有强制关闭它")
+		t.Fatal("an established connection is still being served after draining failed: Shutdown did not force it closed")
 	}
 
 	select {
 	case serveErr := <-served:
-		assert.ErrorIs(t, serveErr, http.ErrServerClosed, "Serve 应以 ErrServerClosed 结束")
+		assert.ErrorIs(t, serveErr, http.ErrServerClosed, "Serve must end with ErrServerClosed")
 	case <-time.After(10 * time.Second):
-		t.Fatal("Serve 未能返回，监听器没有被关闭")
+		t.Fatal("Serve never returned, so the listener was not closed")
 	}
 }
 
@@ -117,15 +117,15 @@ func TestNewEngineMapsOptionsOntoTheHTTPServer(t *testing.T) {
 		IdleTimeout:       14 * time.Second,
 		MaxHeaderBytes:    15000,
 	})
-	require.NoError(t, err, "NewEngine() 不应返回错误")
+	require.NoError(t, err, "NewEngine() must not return an error")
 	adapter, ok := built.(*engine)
-	require.True(t, ok, "NewEngine 应返回本包的 *engine")
+	require.True(t, ok, "NewEngine must return this package's *engine")
 
-	assert.Equal(t, 11*time.Second, adapter.srv.ReadTimeout, "ReadTimeout 必须落到 http.Server 上")
-	assert.Equal(t, 12*time.Second, adapter.srv.ReadHeaderTimeout, "ReadHeaderTimeout 必须落到 http.Server 上")
-	assert.Equal(t, 13*time.Second, adapter.srv.WriteTimeout, "WriteTimeout 必须落到 http.Server 上")
-	assert.Equal(t, 14*time.Second, adapter.srv.IdleTimeout, "IdleTimeout 必须落到 http.Server 上")
-	assert.Equal(t, 15000, adapter.srv.MaxHeaderBytes, "MaxHeaderBytes 必须落到 http.Server 上")
+	assert.Equal(t, 11*time.Second, adapter.srv.ReadTimeout, "ReadTimeout must land on the http.Server")
+	assert.Equal(t, 12*time.Second, adapter.srv.ReadHeaderTimeout, "ReadHeaderTimeout must land on the http.Server")
+	assert.Equal(t, 13*time.Second, adapter.srv.WriteTimeout, "WriteTimeout must land on the http.Server")
+	assert.Equal(t, 14*time.Second, adapter.srv.IdleTimeout, "IdleTimeout must land on the http.Server")
+	assert.Equal(t, 15000, adapter.srv.MaxHeaderBytes, "MaxHeaderBytes must land on the http.Server")
 }
 
 // TestNewEngineAppliesProcessGlobalsBeforeGinNew pins the ordering documented
@@ -142,12 +142,12 @@ func TestNewEngineAppliesProcessGlobalsBeforeGinNew(t *testing.T) {
 	logger := &capturingLogger{Logger: log.Nop(), debug: true}
 
 	_, err := Factory{}.NewEngine(web.Options{Logger: logger})
-	require.NoError(t, err, "NewEngine() 不应返回错误")
+	require.NoError(t, err, "NewEngine() must not return an error")
 
 	require.Len(t, logger.info, 1,
-		"applyProcessGlobals 必须先于 ginlib.New() 执行，New() 构造期打印的 debug 横幅才能落到 logger 而不是进程默认输出")
+		"applyProcessGlobals must run before ginlib.New() so that the debug banner New() prints at construction time lands on the logger rather than the process's default output")
 	assert.Contains(t, logger.info[0], `Running in "debug" mode`,
-		"捕获到的内容必须是 gin 构造期的 debug 横幅，而不是随便什么输出")
+		"what was captured must be gin's construction-time debug banner, not just any output")
 }
 
 // TestMethodNotAllowedSetsAllowHeader pins this adapter's half of the
@@ -164,9 +164,9 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	restoreProcessGlobals(t)
 
 	built, err := Factory{}.NewEngine(web.Options{})
-	require.NoError(t, err, "NewEngine() 不应返回错误")
+	require.NoError(t, err, "NewEngine() must not return an error")
 	adapter, ok := built.(*engine)
-	require.True(t, ok, "NewEngine 应返回本包的 *engine")
+	require.True(t, ok, "NewEngine must return this package's *engine")
 
 	ok200 := func(_ context.Context, c *web.Ctx) error { c.Status(http.StatusOK); return nil }
 	adapter.Handle(http.MethodGet, "/only-get", []web.Handler{ok200})
@@ -179,14 +179,19 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	adapter.e.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/only-get", nil))
 
-	require.Equal(t, http.StatusMethodNotAllowed, recorder.Code, "方法不匹配应交给 NoMethod 链")
-	// 逐字比较会把「列全了」和「顺序恰好如此」绑在一起，而端口只要求列全。
-	// 判据取 Result().Header 而非 recorder.Header()：后者是活 map，事后写入也读得到，
-	// 于是「Allow 设在状态行之后」——在真 socket 上等于没有 Allow——照样能骗过断言，
-	// 这条门禁本来要防的「依赖升级后静默失效」恰好就是这种形态。
+	require.Equal(t, http.StatusMethodNotAllowed, recorder.Code, "a method mismatch must be handed to the NoMethod chain")
+	// Comparing verbatim would tie "every method is listed" together with "the
+	// order happens to be exactly this one", while the port only asks for the
+	// former.
+	// The judgement is taken from Result().Header rather than recorder.Header():
+	// the latter is a live map that reads back writes made after the fact, so an
+	// Allow set after the status line -- which on a real socket is no Allow at
+	// all -- would still fool the assertion, and silent breakage after a
+	// dependency upgrade, the very thing this guard exists to catch, takes
+	// precisely that shape.
 	assert.ElementsMatch(t, []string{"GET", "DELETE"},
 		strings.Split(recorder.Result().Header.Get("Allow"), ", "),
-		"405 必须列出该路径其余全部已注册方法")
+		"the 405 must list every other method already registered for that path")
 }
 
 // replayingWriter is the wrapper a gzip-, timeout-, or envelope-style
@@ -287,9 +292,9 @@ func TestBodylessStatusCommitsThroughTheInstalledWriter(t *testing.T) {
 	committed := make(map[string]int, len(renderers))
 	for _, renderer := range renderers {
 		built, err := Factory{}.NewEngine(web.Options{})
-		require.NoError(t, err, "NewEngine() 不应返回错误")
+		require.NoError(t, err, "NewEngine() must not return an error")
 		adapter, ok := built.(*engine)
-		require.True(t, ok, "NewEngine 应返回本包的 *engine")
+		require.True(t, ok, "NewEngine must return this package's *engine")
 		adapter.Handle(http.MethodGet, "/bodyless", []web.Handler{bufferResponse, renderer.render})
 
 		recorder := httptest.NewRecorder()
@@ -303,10 +308,10 @@ func TestBodylessStatusCommitsThroughTheInstalledWriter(t *testing.T) {
 		committed[renderer.name] = result.StatusCode
 
 		assert.Equal(t, http.StatusNoContent, result.StatusCode,
-			"%s 在无 body 状态码上必须经当前安装的 writer 提交，包装器回放的状态码才能到达客户端", renderer.name)
-		assert.Empty(t, recorder.Body.String(), "%s 不得为无 body 状态码写出响应体", renderer.name)
+			"%s must commit through the writer currently installed on a bodyless status, so the status the wrapper replays reaches the client", renderer.name)
+		assert.Empty(t, recorder.Body.String(), "%s must not write a body for a bodyless status", renderer.name)
 	}
 
 	assert.Equal(t, committed["String"], committed["JSON"],
-		"JSON 与 String 的提交时机必须一致，任一侧回退都应在此暴露")
+		"JSON and String must commit at the same point -- a regression on either side must surface here")
 }

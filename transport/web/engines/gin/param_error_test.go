@@ -252,8 +252,8 @@ func TestParamErrorCollectsEveryElementOfAGinSliceBinding(t *testing.T) {
 	for _, fieldError := range decodeFieldErrors(t, problem) {
 		fields = append(fields, fieldError.Field+":"+fieldError.Code)
 	}
-	assert.Contains(t, fields, "email:email", "数组第一个元素（下标 0）的字段错误必须出现")
-	assert.Contains(t, fields, "name:min", "数组第二个元素（下标 1）的字段错误必须出现，不能被第一个元素吞掉")
+	assert.Contains(t, fields, "email:email", "the field error from the first array element (index 0) must be present")
+	assert.Contains(t, fields, "name:min", "the field error from the second array element (index 1) must be present too, not swallowed by the first element")
 }
 
 // TestParamErrorCollectsEveryElementOfANestedGinSliceBinding pins the
@@ -281,6 +281,6 @@ func TestParamErrorCollectsEveryElementOfANestedGinSliceBinding(t *testing.T) {
 	for _, fieldError := range decodeFieldErrors(t, problem) {
 		fields = append(fields, fieldError.Field+":"+fieldError.Code)
 	}
-	assert.Contains(t, fields, "email:email", "外层第一个元素内部的字段错误必须出现")
-	assert.Contains(t, fields, "name:min", "外层第二个元素内部的字段错误必须出现，嵌套的一层不能被漏掉")
+	assert.Contains(t, fields, "email:email", "the field error inside the first outer element must be present")
+	assert.Contains(t, fields, "name:min", "the field error inside the second outer element must be present too -- the nested level must not be missed")
 }

@@ -88,7 +88,7 @@ func TestWrapReportsErrorsTheMiddlewareRecordedDuringItsOwnCall(t *testing.T) {
 
 	ginEngine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/captured", nil))
 
-	assert.ErrorIs(t, reported, recorded, "中间件在自身调用期间记录的错误必须被报告出来")
+	assert.ErrorIs(t, reported, recorded, "an error the middleware recorded during its own call must be reported out")
 }
 
 // TestWrapReportedErrorsAreRenderedThroughTheErrorBoundary is the end-to-end
@@ -130,9 +130,9 @@ func TestWrapReportedErrorsAreRenderedThroughTheErrorBoundary(t *testing.T) {
 	ginEngine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/reported", nil))
 
 	require.Equal(t, http.StatusUnprocessableEntity, response.Code,
-		"gin 原生中间件报告的错误必须经错误边界映射后渲染出来")
+		"an error reported by a gin-native middleware must be mapped through the error boundary and rendered")
 	assert.Equal(t, "domain_failure", decodeProblem(t, response).Properties["code"],
-		"join 必须保住 errors.Is 可达性，否则只认得最后一个错误的实现也能全绿")
+		"the join must keep errors.Is reachable through every recorded entry -- otherwise an implementation that reports only the last error would pass too")
 }
 
 // TestWrapReportsErrorsEvenAfterTheResponseIsCommitted covers the half of the
@@ -179,11 +179,11 @@ func TestWrapReportsErrorsEvenAfterTheResponseIsCommitted(t *testing.T) {
 	response := httptest.NewRecorder()
 	ginEngine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/committed", nil))
 
-	require.True(t, committed, "前置条件不成立：响应必须确已提交，否则这个测试根本没走到那条分支")
-	assert.ErrorIs(t, reported, recorded, "响应已提交不是丢弃错误的理由，它仍须报告给错误边界")
-	assert.Equal(t, http.StatusOK, response.Code, "已提交的响应不得被改写")
+	require.True(t, committed, "precondition unmet: the response must really be committed, otherwise this test never reached the branch it is about")
+	assert.ErrorIs(t, reported, recorded, "a committed response is no reason to discard the error -- it must still be reported to the error boundary")
+	assert.Equal(t, http.StatusOK, response.Code, "a committed response must not be rewritten")
 	assert.Equal(t, "already sent", response.Body.String())
-	assert.NotContains(t, response.Body.String(), recorded.Error(), "内部错误细节只进日志，不得返回给调用方")
+	assert.NotContains(t, response.Body.String(), recorded.Error(), "the internal error detail belongs in the log only and must not be returned to the caller")
 }
 
 // TestWrapIgnoresErrorsRecordedBeforeItRan pins the before/after delta.
@@ -205,7 +205,7 @@ func TestWrapIgnoresErrorsRecordedBeforeItRan(t *testing.T) {
 
 	ginEngine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/earlier", nil))
 
-	assert.NoError(t, reported, "链上早先记录的错误不属于这个中间件，不得由它报告")
+	assert.NoError(t, reported, "an error recorded earlier in the chain does not belong to this middleware and must not be reported by it")
 }
 
 // TestWrapRefusesToRunOnAnotherEngine pins Ruling 26: a gin-native middleware
@@ -219,9 +219,9 @@ func TestWrapRefusesToRunOnAnotherEngine(t *testing.T) {
 	c := enginetest.NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 	err := mw.Handler()(context.Background(), c)
 
-	require.Error(t, err, "请求不由 gin 提供服务时必须报错，而不是静默跳过")
+	require.Error(t, err, "a request gin is not serving must raise an error rather than be skipped silently")
 	assert.ErrorIs(t, err, errNotGinEngine)
-	assert.False(t, thirdPartyRan, "被包装的 gin 中间件不得在其他引擎上运行")
+	assert.False(t, thirdPartyRan, "a wrapped gin middleware must not run on another engine")
 }
 
 func TestWrapPanicsOnNilHandler(t *testing.T) {

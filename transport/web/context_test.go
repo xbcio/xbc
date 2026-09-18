@@ -111,7 +111,7 @@ func TestCtxBindWrapsEngineBindingFailuresInParamError(t *testing.T) {
 			engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/items/42", nil))
 
 			assert.Equal(t, http.StatusBadRequest, response.Code,
-				"绑定失败必须经 ParamError 归类为客户端错误，未包装时会退化成 500")
+				"a binding failure must be classified as a client error through ParamError -- left unwrapped it degrades into a 500")
 			assert.Equal(t, "invalid_request", decodeProblem(t, response).Properties["code"])
 		})
 	}
@@ -158,11 +158,11 @@ func TestCtxQueryCacheFollowsTheRequestsRawQuery(t *testing.T) {
 	require.Equal(t, "active", c.Query("filter"))
 
 	repeated := testing.AllocsPerRun(100, func() { _ = c.Query("filter") })
-	assert.Zero(t, repeated, "重复读取同一 query 必须命中缓存，不得每次重新解析并分配")
+	assert.Zero(t, repeated, "reading the same query parameter again must hit the cache, not re-parse and allocate on every read")
 
 	rc.SetRequest(httptest.NewRequest(http.MethodGet, "/items?filter=archived", nil))
 	assert.Equal(t, "archived", c.Query("filter"),
-		"请求的 RawQuery 变了，缓存必须随之重建，否则会自信地返回上一个请求的参数")
+		"the request's RawQuery changed, so the cache must be rebuilt with it -- otherwise it confidently answers with the previous request's parameters")
 }
 
 func TestCtxResponseWritingMethods(t *testing.T) {

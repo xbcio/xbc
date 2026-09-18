@@ -50,19 +50,19 @@ func TestBundleSatisfiesRequireOneEngineFactoryConsumer(t *testing.T) {
 	built, err := assembly.BuildPlan(assembly.PlanOptions{
 		Bundles: []plugin.Bundle{Bundle(), plugin.BundleOf(probeDefinition)},
 	})
-	require.NoError(t, err, "BuildPlan() 应能规划 gin 引擎 Bundle 与探针消费者")
+	require.NoError(t, err, "BuildPlan() must be able to plan the gin engine Bundle together with the probe consumer")
 
 	constructed, err := assembly.Construct(built, assembly.ConstructOptions{})
-	require.NoError(t, err, "Construct() 应能构造 gin 引擎与探针消费者")
+	require.NoError(t, err, "Construct() must be able to construct both the gin engine and the probe consumer")
 
 	instance, found := constructed.Instance(plugin.Identity{Plugin: probeKey, Instance: plugin.DefaultInstance})
-	require.True(t, found, "未能构造出探针消费者实例")
+	require.True(t, found, "the probe consumer instance was never constructed")
 
 	consumer, ok := instance.Primary().(*probe)
-	require.True(t, ok, "primary = %T，探针消费者类型不符", instance.Primary())
-	require.NotNil(t, consumer.factory, "RequireOne[web.EngineFactory]() 未解析到 gin 引擎导出的契约")
+	require.True(t, ok, "primary = %T -- not the probe consumer type", instance.Primary())
+	require.NotNil(t, consumer.factory, "RequireOne[web.EngineFactory]() did not resolve to the contract the gin engine exports")
 
 	engine, err := consumer.factory.NewEngine(web.Options{})
-	require.NoError(t, err, "NewEngine() 不应返回错误")
-	require.NotNil(t, engine, "NewEngine() 不应返回 nil web.Engine")
+	require.NoError(t, err, "NewEngine() must not return an error")
+	require.NotNil(t, engine, "NewEngine() must not return a nil web.Engine")
 }

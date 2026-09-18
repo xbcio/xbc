@@ -291,14 +291,14 @@ func TestErrorAfterCommitIsLoggedAndNeverReachesTheClient(t *testing.T) {
 	})
 	engine.Use(web.OnError(mapper))
 	engine.GET("/committed", func(_ context.Context, c *web.Ctx) error {
-		c.String(http.StatusOK, "已发出的响应")
+		c.String(http.StatusOK, "response already sent")
 		return internal
 	})
 
 	response := performRequest(engine, http.MethodGet, "/committed")
 
-	assert.Equal(t, http.StatusOK, response.Result().StatusCode, "已提交的响应不得被改写")
-	assert.Equal(t, "已发出的响应", response.Body.String(), "内部错误细节不得泄漏给调用方")
-	require.Len(t, logger.entries, 1, "响应已提交后错误必须落日志，不能无声消失")
-	assert.Contains(t, fmt.Sprint(logger.entries[0]...), internal.Error(), "日志必须记录完整细节")
+	assert.Equal(t, http.StatusOK, response.Result().StatusCode, "an already committed response must not be rewritten")
+	assert.Equal(t, "response already sent", response.Body.String(), "Internal error detail must not leak to the caller")
+	require.Len(t, logger.entries, 1, "an error raised after the response was committed must still be logged, not disappear silently")
+	assert.Contains(t, fmt.Sprint(logger.entries[0]...), internal.Error(), "the log must record the failure in full detail")
 }

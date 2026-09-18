@@ -37,9 +37,9 @@ func TestChainRunsInRegistrationOrder(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/ordered", nil))
 
-	assert.Equal(t, http.StatusNoContent, recorder.Code, "路由处理器设置的状态码应写入响应")
+	assert.Equal(t, http.StatusNoContent, recorder.Code, "the status the route handler set must reach the response")
 	assert.Equal(t, []string{"global-before", "route", "global-after"}, order,
-		"全局链应先于路由链进入，并在其返回后恢复")
+		"the global chain must be entered ahead of the route chain and resumed once the route chain returns")
 }
 
 // TestAbortStopsRemainingHandlers pins that Abort ends the chain rather than
@@ -65,8 +65,8 @@ func TestAbortStopsRemainingHandlers(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/aborted", nil))
 
-	assert.False(t, downstreamRan, "Abort 之后的处理器不得运行")
-	assert.Equal(t, http.StatusForbidden, recorder.Code, "中止处理器写下的状态码应保留")
+	assert.False(t, downstreamRan, "no handler after the aborting one may run")
+	assert.Equal(t, http.StatusForbidden, recorder.Code, "the status the aborting handler wrote must survive")
 }
 
 // TestStatusRecordsWithoutCommitting pins the half of RequestContext.Status
@@ -79,9 +79,9 @@ func TestStatusRecordsWithoutCommitting(t *testing.T) {
 
 	engine.GET("/recorded", func(_ context.Context, c *web.Ctx) error {
 		c.Status(http.StatusTeapot)
-		assert.False(t, c.Writer().Written(), "Status 只应记录状态码，不得提交响应")
-		assert.Equal(t, http.StatusTeapot, c.Writer().Status(), "Status 记录的状态码应可读回")
-		assert.Equal(t, -1, c.Writer().Size(), "尚未写入正文时 Size 应为 -1")
+		assert.False(t, c.Writer().Written(), "Status must only record the code -- it must not commit the response")
+		assert.Equal(t, http.StatusTeapot, c.Writer().Status(), "the status Status recorded must be readable back")
+		assert.Equal(t, -1, c.Writer().Size(), "Size must be -1 while no body has been written yet")
 		return nil
 	})
 
@@ -89,7 +89,7 @@ func TestStatusRecordsWithoutCommitting(t *testing.T) {
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/recorded", nil))
 
 	assert.Equal(t, http.StatusTeapot, recorder.Code,
-		"链结束时记录的状态码应被提交，否则只调用 Status 的处理器不会产生响应")
+		"the recorded status must be committed when the chain ends -- otherwise a handler that only calls Status produces no response at all")
 }
 
 // TestStatusRecordedThroughAReplacedWriterSurvivesTheRestore pins that the
@@ -120,9 +120,9 @@ func TestStatusRecordedThroughAReplacedWriterSurvivesTheRestore(t *testing.T) {
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/wrapped", nil))
 
 	assert.Equal(t, http.StatusAccepted, observed,
-		"包装器读到的状态码应是处理器记录的那个，而不是默认值")
+		"the wrapper must read back the status the handler recorded, not the default one")
 	assert.Equal(t, http.StatusAccepted, recorder.Code,
-		"恢复原写入器后，记录的状态码仍应被提交")
+		"the recorded status must still be committed once the original writer has been restored")
 }
 
 // passthroughWriter is the minimal shape the buffering middleware share: it
@@ -146,8 +146,8 @@ func TestParamReadsServeMuxWildcards(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/items/42", nil))
 
-	assert.Equal(t, http.StatusOK, recorder.Code, "已注册的通配路由应匹配")
-	assert.Equal(t, "42", recorder.Body.String(), "Param 应返回 ServeMux 解析出的通配段")
+	assert.Equal(t, http.StatusOK, recorder.Code, "the registered wildcard route must match")
+	assert.Equal(t, "42", recorder.Body.String(), "Param must return the wildcard segment ServeMux parsed")
 }
 
 // TestNewEngineMapsOptionsOntoTheHTTPServer pins the Options this factory does
@@ -165,15 +165,15 @@ func TestNewEngineMapsOptionsOntoTheHTTPServer(t *testing.T) {
 		IdleTimeout:       14 * time.Second,
 		MaxHeaderBytes:    15000,
 	})
-	require.NoError(t, err, "NewEngine() 不应返回错误")
+	require.NoError(t, err, "NewEngine() must not fail")
 	engine, ok := built.(*Engine)
-	require.True(t, ok, "NewEngine 应返回本包的 *Engine")
+	require.True(t, ok, "NewEngine must return this package's *Engine")
 
-	assert.Equal(t, 11*time.Second, engine.srv.ReadTimeout, "ReadTimeout 必须落到 http.Server 上")
-	assert.Equal(t, 12*time.Second, engine.srv.ReadHeaderTimeout, "ReadHeaderTimeout 必须落到 http.Server 上")
-	assert.Equal(t, 13*time.Second, engine.srv.WriteTimeout, "WriteTimeout 必须落到 http.Server 上")
-	assert.Equal(t, 14*time.Second, engine.srv.IdleTimeout, "IdleTimeout 必须落到 http.Server 上")
-	assert.Equal(t, 15000, engine.srv.MaxHeaderBytes, "MaxHeaderBytes 必须落到 http.Server 上")
+	assert.Equal(t, 11*time.Second, engine.srv.ReadTimeout, "ReadTimeout must reach the http.Server")
+	assert.Equal(t, 12*time.Second, engine.srv.ReadHeaderTimeout, "ReadHeaderTimeout must reach the http.Server")
+	assert.Equal(t, 13*time.Second, engine.srv.WriteTimeout, "WriteTimeout must reach the http.Server")
+	assert.Equal(t, 14*time.Second, engine.srv.IdleTimeout, "IdleTimeout must reach the http.Server")
+	assert.Equal(t, 15000, engine.srv.MaxHeaderBytes, "MaxHeaderBytes must reach the http.Server")
 }
 
 // TestUnmatchedRequestsReachNoRouteAndNoMethod pins the classification behind
@@ -202,24 +202,27 @@ func TestUnmatchedRequestsReachNoRouteAndNoMethod(t *testing.T) {
 
 	missing := httptest.NewRecorder()
 	engine.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/absent", nil))
-	assert.Equal(t, http.StatusNotFound, missing.Code, "未注册的路径应交给 NoRoute 链")
-	assert.Equal(t, "no-route", missing.Body.String(), "NoRoute 链应实际运行")
-	assert.Empty(t, missing.Result().Header.Get("Allow"), "404 不是方法不匹配，不得带 Allow")
+	assert.Equal(t, http.StatusNotFound, missing.Code, "an unregistered path must be handed to the NoRoute chain")
+	assert.Equal(t, "no-route", missing.Body.String(), "The NoRoute chain must actually run")
+	assert.Empty(t, missing.Result().Header.Get("Allow"), "a 404 is not a method mismatch, so it must carry no Allow header")
 
 	mismatched := httptest.NewRecorder()
 	engine.ServeHTTP(mismatched, httptest.NewRequest(http.MethodPost, "/only-get", nil))
 	assert.Equal(t, http.StatusMethodNotAllowed, mismatched.Code,
-		"仅注册了其他方法的路径应交给 NoMethod 链，而不是 ServeMux 自带的 405")
-	assert.Equal(t, "no-method", mismatched.Body.String(), "NoMethod 链应实际运行")
-	// 两个方法而非一个：单方法时「全部已注册方法」与「随便挑一个」无法区分。
-	// HEAD 也在其中，因为 ServeMux 会用 GET 的处理器应答 HEAD——Allow 反映的是
-	// 匹配器真正会接受的方法，而不是注册调用的清单。
+		"a path registered only under other methods must be handed to the NoMethod chain, not answered by ServeMux's own 405")
+	assert.Equal(t, "no-method", mismatched.Body.String(), "The NoMethod chain must actually run")
+	// Two methods rather than one: with a single method, "every registered
+	// method" and "any one of them" are indistinguishable. HEAD is among them
+	// because ServeMux answers HEAD with the GET handler -- Allow reflects the
+	// methods the matcher will really accept, not the list of registration
+	// calls.
 	//
-	// 判据是 Result().Header 而非 recorder.Header()：后者是活 map，事后写入也读得到，
-	// 因此分不清「Allow 在状态行之前设置」与「之后设置」，而后者在真 socket 上
-	// 永远到不了客户端。
+	// The assertion reads Result().Header rather than recorder.Header(): the
+	// latter is a live map that also shows a write made afterwards, so it cannot
+	// tell "Allow set before the status line" from "set after it", and the
+	// latter never reaches the client over a real socket.
 	assert.Equal(t, "GET, HEAD, DELETE", mismatched.Result().Header.Get("Allow"),
-		"405 必须按 web.Engine 端口的要求列出该路径其余全部已注册方法")
+		"a 405 must list every other method registered for the path, as the web.Engine port requires")
 }
 
 // TestShutdownForceClosesConnectionsThatRefuseToDrain pins the half of
@@ -235,7 +238,7 @@ func TestUnmatchedRequestsReachNoRouteAndNoMethod(t *testing.T) {
 // fails the test, and nothing passes because a duration elapsed.
 func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	engine, err := Factory{}.NewEngine(web.Options{})
-	require.NoError(t, err, "NewEngine() 不应返回错误")
+	require.NoError(t, err, "NewEngine() must not fail")
 
 	handlerEntered := make(chan struct{})
 	releaseHandler := make(chan struct{})
@@ -252,7 +255,7 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	})
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err, "监听回环端口失败")
+	require.NoError(t, err, "failed to listen on a loopback port")
 
 	served := make(chan error, 1)
 	go func() { served <- engine.Serve(listener) }()
@@ -271,7 +274,7 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	select {
 	case <-handlerEntered:
 	case <-time.After(10 * time.Second):
-		t.Fatal("请求未能进入阻塞处理器，无法验证强制关闭")
+		t.Fatal("the request never entered the blocking handler, so the forced close cannot be observed")
 	}
 
 	// An already-expired deadline leaves draining no chance to succeed, which
@@ -279,22 +282,22 @@ func TestShutdownForceClosesConnectionsThatRefuseToDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
 	shutdownErr := engine.Shutdown(ctx)
-	require.Error(t, shutdownErr, "排空未能在 deadline 内完成时，Shutdown 必须如实报告该失败")
+	require.Error(t, shutdownErr, "Shutdown must report the failure honestly when draining could not finish within the deadline")
 	assert.ErrorIs(t, shutdownErr, context.DeadlineExceeded)
 
 	select {
 	case requestErr := <-responded:
 		assert.Error(t, requestErr,
-			"排空失败后 Shutdown 必须强制关闭残留连接，客户端请求不得仍然正常完成")
+			"Once draining has failed, Shutdown must force the remaining connection closed -- the client's request must not still complete normally")
 	case <-time.After(10 * time.Second):
-		t.Fatal("排空失败后仍有已建立的连接在服务，Shutdown 没有强制关闭它")
+		t.Fatal("an established connection was still being served after draining failed: Shutdown did not force it closed")
 	}
 
 	select {
 	case serveErr := <-served:
-		assert.ErrorIs(t, serveErr, http.ErrServerClosed, "Serve 应以 ErrServerClosed 结束")
+		assert.ErrorIs(t, serveErr, http.ErrServerClosed, "Serve must end with ErrServerClosed")
 	case <-time.After(10 * time.Second):
-		t.Fatal("Serve 未能返回，监听器没有被关闭")
+		t.Fatal("Serve never returned: the listener was not closed")
 	}
 }
 
@@ -409,10 +412,10 @@ func TestBodylessStatusCommitsThroughTheInstalledWriter(t *testing.T) {
 		committed[renderer.name] = result.StatusCode
 
 		assert.Equal(t, http.StatusNoContent, result.StatusCode,
-			"%s 在无 body 状态码上必须经当前安装的 writer 提交，包装器回放的状态码才能到达客户端", renderer.name)
-		assert.Empty(t, recorder.Body.String(), "%s 不得为无 body 状态码写出响应体", renderer.name)
+			"%s must commit a bodyless status through the writer currently installed, so the status the wrapper replays is the one that reaches the client", renderer.name)
+		assert.Empty(t, recorder.Body.String(), "%s must not write a response body for a bodyless status", renderer.name)
 	}
 
 	assert.Equal(t, committed["String"], committed["JSON"],
-		"JSON 与 String 的提交时机必须一致，任一侧回退都应在此暴露")
+		"JSON and String must commit at the same moment -- a regression on either side must surface here")
 }

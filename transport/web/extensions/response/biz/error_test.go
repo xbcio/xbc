@@ -125,18 +125,19 @@ func TestWithStatusAndWithCauseCopyInsteadOfMutating(t *testing.T) {
 
 	derived := template.WithStatus(http.StatusConflict).WithCause(cause)
 
-	// 派生值带上了两个维度。
+	// The derived value carries both dimensions -- the new status and the cause.
 	assert.Equal(t, http.StatusConflict, derived.Status())
 	assert.ErrorIs(t, derived, cause)
 	assert.Equal(t, "ORDER.CLOSED", derived.Code())
 	assert.Equal(t, "The order is closed.", derived.Detail())
 
-	// 模板不被写回，因此可以作为包级变量复用。
+	// The template is never written back, so it stays reusable as a
+	// package-level variable.
 	assert.Equal(t, http.StatusUnprocessableEntity, template.Status())
 	assert.NoError(t, template.Unwrap())
 	assert.NotContains(t, template.Error(), "row 42 locked")
 
-	// 同一模板可以派生出互不干扰的多个值。
+	// One template can derive several values that do not interfere with each other.
 	other := template.WithCause(errors.New("row 43 locked"))
 	assert.NotErrorIs(t, other, cause)
 	assert.Equal(t, http.StatusUnprocessableEntity, other.Status())
@@ -157,11 +158,12 @@ func TestWithDetailFillsTemplateWithoutMutatingIt(t *testing.T) {
 	assert.Equal(t, "QUOTA.EXHAUSTED", derived.Code())
 	assert.Equal(t, http.StatusUnprocessableEntity, derived.Status())
 
-	// 模板不被写回，同一个包级变量可以反复派生出互不干扰的值。
+	// The template is never written back, so one package-level variable can
+	// derive mutually independent values over and over.
 	assert.Equal(t, "Quota of %d is exhausted.", template.Detail())
 	assert.Equal(t, "Quota of 100 is exhausted.", template.WithDetail(100).Detail())
 
-	// 与另外两个维度可以任意组合，且顺序无关。
+	// Detail composes freely with the other two dimensions, in any order.
 	combined := template.WithDetail(7).WithStatus(http.StatusConflict)
 	assert.Equal(t, "Quota of 7 is exhausted.", combined.Detail())
 	assert.Equal(t, http.StatusConflict, combined.Status())
@@ -182,8 +184,9 @@ func TestPluginLogsCauseOfNon5xxBusinessFailure(t *testing.T) {
 	response := httptest.NewRecorder()
 	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/orders", nil))
 
-	// 409 不会走 Web 的 5xx 日志路径，cause 必须由 biz 自己记下来，
-	// 否则它既不进响应体也不进日志，等于凭空消失。
+	// A 409 never takes Web's 5xx logging path, so biz has to record the cause
+	// itself -- otherwise the cause reaches neither the response body nor the
+	// log and disappears without a trace.
 	assert.Equal(t, http.StatusConflict, response.Code)
 	assert.NotContains(t, response.Body.String(), "row 42 locked by txn 7")
 
@@ -202,7 +205,7 @@ func TestPluginDoesNotLogBusinessFailureWithoutCause(t *testing.T) {
 
 	require.True(t, ok)
 	assert.Equal(t, http.StatusUnprocessableEntity, problem.Status)
-	assert.Empty(t, logger.errorEntries(), "没有 cause 就没有可诊断的内容，不该产生日志噪声")
+	assert.Empty(t, logger.errorEntries(), "without a cause there is nothing to diagnose, so logging would only add noise")
 }
 
 type captureLogger struct {
