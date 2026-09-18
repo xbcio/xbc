@@ -618,6 +618,29 @@ orders doctor --config /etc/orders/migrate-rest.yml
 
 `xbc.auto_migrate` defaults to `false`, so the flag is a deliberate opt-in and an ordinary boot never mutates a schema.
 
+## Attributing CPU to a workload
+
+Every managed task -- anything submitted through `plugin.Context.Go` or `GoCritical` -- runs under a `workload` profiler label naming the workload its plugin belongs to. A CPU profile can therefore be read per role:
+
+```sh
+# CPU by role, for every labelled workload at once
+go tool pprof -tags http://127.0.0.1:8080/debug/pprof/profile?seconds=30
+
+# only one role's stacks
+go tool pprof -tagfocus=workload=ingest http://127.0.0.1:8080/debug/pprof/profile?seconds=30
+```
+
+`-tags` prints one line per workload with its share of the profile; `-tagfocus` narrows every later view to that workload's samples.
+
+The label exists because a stack cannot answer the question. Frames say which plugin is burning CPU; workload membership is decided at composition, so the same binary attributes the same function to different workloads depending on which slots each process won.
+
+Two limits are worth knowing before reading a profile this way:
+
+- **It covers background work, not request handling.** Labels are inherited by goroutines started under them, and the Web server belongs to no workload -- its accept loop serves every workload's routes. Labelling it would file each request under a name that denies the workload actually being served, so shared plugins are left unlabelled and request CPU is untagged.
+- **Untagged is not a workload.** Samples with no `workload` tag are the shared infrastructure plus the runtime itself. There is no `unowned` tag to focus on, deliberately: `unowned` is a legal workload key.
+
+Heap profiles carry no labels at all, so memory is not attributable this way. `xbc.runtime.memory_limit` bounds the process rather than a role.
+
 ## What workload placement does not do
 
 These boundaries are deliberate, and knowing them prevents several wrong deployments:
@@ -626,8 +649,8 @@ These boundaries are deliberate, and knowing them prevents several wrong deploym
 - **No in-process request forwarding and no cluster routing table.** A request for a workload this process does not host is a `404` here. A management tool talks to the process that holds the role rather than to "the service" as a whole.
 - **No member enumeration and no service-discovery contract.** Each process reports only what it holds. Aggregating that into "how many replicas of `sast` are running" is the monitoring side's job, which is why the metrics above are per-process.
 - **No fencing tokens, split-brain detection, or lease generations.** Those are what hard mutual exclusion needs, and the lease is not that.
-- **No per-workload HTTP in-flight budget.** `web.max_in_flight` is process-wide; a request over the limit is answered `503` with `Retry-After` before any handler runs.
-- **No per-workload CPU accounting.** Process-level runtime knobs (`xbc.runtime`) are what keep a container sized to its quota.
+- **No per-workload HTTP in-flight budget.** `web.max_in_flight` is process-wide; a request over the limit is answered `503` with `Retry-After` before any handler runs. A per-workload share would require resolving the route before admitting the request, which is exactly the work the gate exists to refuse before.
+- **No per-workload memory accounting.** CPU is attributable through the profiler label above; heap profiles carry no labels, so `xbc.runtime.memory_limit` bounds the process rather than a role.
 
 ## Streaming a response past the write timeout
 

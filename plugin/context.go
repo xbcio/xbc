@@ -79,6 +79,11 @@ func (c *Context) TrafficGate() <-chan struct{} {
 // closed. A non-critical task may return whenever its work is done, so it does
 // not count as the long-lived capability the runtime requires of a startable
 // application; use GoCritical for work that must last the process lifetime.
+//
+// A submitted task runs under a "workload" profiler label when this Plugin
+// belongs to one, so a CPU profile can be read per workload. Plugins that belong
+// to no workload are left unlabelled, because a label is inherited by every
+// goroutine started under it and shared infrastructure serves every workload.
 func (c *Context) Go(fn func(context.Context)) bool {
 	return c != nil && c.host != nil && c.host.SubmitTask(c.id, fn, false)
 }

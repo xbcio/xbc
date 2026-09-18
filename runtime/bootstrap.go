@@ -67,10 +67,11 @@ func (a *App) bootstrap(cmd command) error {
 	}
 	a.logger.Info("xbc: runtime knobs " + knobs.describe())
 	// The task budgets are configuration and are read here, where the
-	// configuration is; the identity-to-workload attribution they are charged
-	// against is a property of the frozen graph and cannot exist yet. The
-	// closure below resolves it per submission instead, which is why the two
-	// halves of one budget are assembled from two different moments.
+	// configuration is; the identity-to-workload attribution -- which the
+	// budgets are charged against and which every managed task's profiler label
+	// is taken from -- is a property of the frozen graph and cannot exist yet.
+	// The closure below resolves it per submission instead, which is why the two
+	// halves are assembled from two different moments.
 	limits, err := workloadTaskLimits(a.bundles, env)
 	if err != nil {
 		return err

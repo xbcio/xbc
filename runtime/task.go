@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"runtime/pprof"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,16 @@ type taskRuntime struct {
 	// zero value bounds nothing, which is what a process whose workloads
 	// declare no budget keeps.
 	budget workloadBudget
+
+	// attribute reports which workload owns a submitting Plugin: the plan's
+	// identity-to-workload table. Nil attributes nothing.
+	//
+	// It is not the budget's own field because it is not a budget concept. Two
+	// features read it -- the per-workload task budget and the profiler label
+	// every managed task runs under -- and they ask different questions of the
+	// same answer: a workload that declares no max_goroutines is attributed and
+	// charged nothing, so the budget's verdict cannot stand in for attribution.
+	attribute func(plugin.Identity) (plugin.WorkloadKey, bool)
 }
 
 type pluginTasks struct {
@@ -89,7 +100,8 @@ func (runtime *taskRuntime) submit(identity plugin.Identity, fn func(context.Con
 	// up the concurrency it was configured with -- and the two warn lines are
 	// where they stay distinguishable, because Go's bool return carries no
 	// reason and Context.Go has no error to return.
-	workload, refusal := runtime.budget.charge(identity)
+	workload := runtime.workloadOf(identity)
+	charged, refusal := runtime.budget.charge(workload)
 	if refusal != nil {
 		runtime.mu.Unlock()
 		runtime.log().Warn("xbc: managed task rejected over its workload goroutine budget",
@@ -113,11 +125,24 @@ func (runtime *taskRuntime) submit(identity plugin.Identity, fn func(context.Con
 	}
 	runtime.mu.Unlock()
 
-	go runtime.runTask(identity, group, fn, critical, workload)
+	go runtime.runTask(identity, group, fn, critical, charged, workload)
 	return true
 }
 
-func (runtime *taskRuntime) runTask(identity plugin.Identity, group *pluginTasks, fn func(context.Context), critical bool, workload plugin.WorkloadKey) {
+// runTask runs one managed task.
+//
+// charged is the workload whose budget slot this submission took, empty when it
+// took none; workload is the workload the submitting Plugin belongs to, empty
+// when it belongs to none. They differ: a workload that declares no
+// max_goroutines is attributed but charges nothing.
+func (runtime *taskRuntime) runTask(
+	identity plugin.Identity,
+	group *pluginTasks,
+	fn func(context.Context),
+	critical bool,
+	charged plugin.WorkloadKey,
+	workload plugin.WorkloadKey,
+) {
 	defer group.wg.Done()
 	var failure error
 	defer func() {
@@ -155,9 +180,40 @@ func (runtime *taskRuntime) runTask(identity plugin.Identity, group *pluginTasks
 	// the one branch on this path that calls back into the runtime, and it
 	// releases under the budget's own lock only, never taskRuntime.mu, so no
 	// lock this goroutine holds can be re-entered by that call.
-	defer runtime.budget.release(workload)
-	fn(group.ctx)
+	defer runtime.budget.release(charged)
+	runWithWorkloadLabel(group.ctx, workload, fn)
 }
+
+// runWithWorkloadLabel runs fn under a profiler label naming the workload the
+// submitting Plugin belongs to, so a CPU profile can be read per workload.
+//
+// The label is the only way to get that answer. A stack already says which
+// Plugin is burning the CPU, because the frames are that Plugin's own code, but
+// workload membership is a composition-time fact and appears in no frame: two
+// processes running the same binary attribute the same function to different
+// workloads depending on which slots they won.
+//
+// A Plugin that belongs to no workload is left unlabelled rather than labelled
+// as unowned, and that is a correctness matter rather than a preference. Labels
+// are inherited by every goroutine started under them, and the plugins that
+// belong to no workload are the shared ones -- the Web server's accept loop
+// above all -- whose children go on to serve every workload's routes. Labelling
+// that loop would file each of those requests under a name that denies the
+// workload actually being served. Untagged therefore means "not attributable to
+// one workload", which is the truth about shared infrastructure, and it is also
+// why the labels cover managed background work rather than request handling.
+func runWithWorkloadLabel(ctx context.Context, workload plugin.WorkloadKey, fn func(context.Context)) {
+	if workload == "" {
+		fn(ctx)
+		return
+	}
+	pprof.Do(ctx, pprof.Labels(workloadProfileLabel, workload.String()), fn)
+}
+
+// workloadProfileLabel is the profiler label key the runtime files managed tasks
+// under. It matches the configuration root the same workloads are declared in,
+// so one word means one thing across a profile, a doctor report and a YAML file.
+const workloadProfileLabel = "workload"
 
 func (group *pluginTasks) record(err error) {
 	group.mu.Lock()
@@ -243,8 +299,8 @@ func (runtime *taskRuntime) log() log.Logger {
 	return runtime.logger
 }
 
-// configureWorkloadBudget installs the per-workload task budgets and the
-// attribution they are charged against.
+// configureWorkloadBudget installs the per-workload task budgets together with
+// the attribution both the budgets and the managed tasks' profiler labels read.
 //
 // The two halves arrive separately because they become knowable at different
 // moments. The limits are configuration, so bootstrap reads them straight out
@@ -254,16 +310,35 @@ func (runtime *taskRuntime) log() log.Logger {
 // proven the two agree -- so it is supplied as a closure over that plan and
 // resolved per submission instead.
 //
+// A process that declares no budget still installs attribution, because the
+// labels do not depend on a limit: "which workload is this task" and "may this
+// workload run another task" are separate questions.
+//
 // Both are written here once and only read afterwards, which is why neither is
 // synchronized: this runs before any Plugin code can execute, and every read
 // happens after, either on the goroutine that wrote them or on a goroutine
 // created from it.
 func (runtime *taskRuntime) configureWorkloadBudget(limits map[plugin.WorkloadKey]int, attribute func(plugin.Identity) (plugin.WorkloadKey, bool)) {
+	runtime.attribute = attribute
 	runtime.budget.limits = limits
-	runtime.budget.attribute = attribute
 	runtime.budget.bounded = len(limits) > 0
 	runtime.budget.running = make(map[plugin.WorkloadKey]int, len(limits))
 	runtime.budget.rejected = make(map[plugin.WorkloadKey]uint64, len(limits))
+}
+
+// workloadOf reports the workload a submitting Plugin belongs to, or the empty
+// key when it belongs to none. A valid WorkloadKey is never empty -- the
+// validator rejects it -- so the empty key is an unambiguous "no workload" and
+// needs no second return value to say so.
+func (runtime *taskRuntime) workloadOf(identity plugin.Identity) plugin.WorkloadKey {
+	if runtime.attribute == nil {
+		return ""
+	}
+	workload, attributed := runtime.attribute(identity)
+	if !attributed {
+		return ""
+	}
+	return workload
 }
 
 // workloadBudget bounds how many managed tasks one workload may run at any one
@@ -304,9 +379,6 @@ type workloadBudget struct {
 	// because the question it answers is "is this workload being held back",
 	// which a snapshot of one moment cannot answer.
 	rejected map[plugin.WorkloadKey]uint64
-	// attribute reports which workload owns a submitting Plugin: the plan's
-	// identity-to-workload table. Nil attributes nothing.
-	attribute func(plugin.Identity) (plugin.WorkloadKey, bool)
 }
 
 // budgetRefusal is one submission the budget refused. It carries the numbers an
@@ -322,22 +394,19 @@ type budgetRefusal struct {
 
 // charge accounts one submission against its workload's budget.
 //
-// It returns the workload whose slot was taken, or a refusal when the
-// submission must not be admitted. A Plugin that belongs to no workload is
-// charged nothing: it has no budget to exceed, and there is deliberately no
-// process-wide budget, because one would ration the unowned plugins that a
-// standby process exists to run and would couple unrelated workloads to each
-// other through a single shared ceiling.
-func (budget *workloadBudget) charge(identity plugin.Identity) (plugin.WorkloadKey, *budgetRefusal) {
-	if !budget.bounded {
+// workload is the workload the submitting Plugin belongs to, empty when it
+// belongs to none. It returns the workload whose slot was taken -- empty when
+// nothing was charged -- or a refusal when the submission must not be admitted.
+// A Plugin that belongs to no workload is charged nothing: it has no budget to
+// exceed, and there is deliberately no process-wide budget, because one would
+// ration the unowned plugins that a standby process exists to run and would
+// couple unrelated workloads to each other through a single shared ceiling.
+func (budget *workloadBudget) charge(workload plugin.WorkloadKey) (plugin.WorkloadKey, *budgetRefusal) {
+	if !budget.bounded || workload == "" {
 		return "", nil
 	}
 	budget.mu.Lock()
 	defer budget.mu.Unlock()
-	workload, attributed := budget.workloadOf(identity)
-	if !attributed {
-		return "", nil
-	}
 	limit, limited := budget.limits[workload]
 	if !limited {
 		return "", nil
@@ -369,13 +438,6 @@ func (budget *workloadBudget) release(workload plugin.WorkloadKey) {
 		delete(budget.running, workload)
 	}
 	budget.mu.Unlock()
-}
-
-func (budget *workloadBudget) workloadOf(identity plugin.Identity) (plugin.WorkloadKey, bool) {
-	if budget.attribute == nil {
-		return "", false
-	}
-	return budget.attribute(identity)
 }
 
 // workloadBudgetReport is one bounded workload's budget state, for diagnostics.
