@@ -46,7 +46,10 @@ var definition = plugin.DefineConfigured(
 	Key,
 	plugin.ConfigSpec[Config]{Defaults: DefaultConfig},
 	func(_ plugin.BuildContext, cfg Config) (*Plugin, error) {
-		return &Plugin{cfg: cfg}, nil
+		// The logger is defaulted here as well as in Start, because the migrate
+		// subcommand unwinds the graph without ever running a Start hook, and a Stop
+		// hook that logged through a nil logger would panic on that path.
+		return &Plugin{cfg: cfg, logger: log.L()}, nil
 	},
 	plugin.Options[*Plugin]{
 		Exports: plugin.Contracts(

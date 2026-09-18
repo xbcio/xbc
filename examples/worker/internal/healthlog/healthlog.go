@@ -50,7 +50,9 @@ var definition = plugin.DefineConfigured(
 	Key,
 	plugin.ConfigSpec[Config]{Defaults: DefaultConfig},
 	func(ctx plugin.BuildContext, cfg Config) (*Plugin, error) {
-		return &Plugin{cfg: cfg, probe: probe.Get(ctx).Value}, nil
+		// The logger is defaulted here as well as in Start, for the same reason the
+		// other examples do it: migrate unwinds without ever running Start.
+		return &Plugin{cfg: cfg, probe: probe.Get(ctx).Value, logger: log.L()}, nil
 	},
 	plugin.Options[*Plugin]{
 		Inputs: plugin.Inputs(probe),
