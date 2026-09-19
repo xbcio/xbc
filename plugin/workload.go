@@ -35,18 +35,23 @@ func (option workloadOption) applyWorkload(workload *pluginmodel.Workload) { opt
 // It is for a workload with process-wide side effects -- tuning a global GC
 // target, setting a process-wide memory limit, sizing a shared pool -- which
 // nothing sharing its process can be protected from. The reason is not that
-// the workload is heavy: a merely heavy workload is placed by its replica
-// count and bounded by its own resource budget instead.
+// the workload is heavy: a heavy workload expresses that as a replica count and
+// a task budget instead, neither of which forces it into a process of its own.
 func WithExclusiveProcess() WorkloadOption {
 	return workloadOption(func(workload *pluginmodel.Workload) { workload.Exclusive = true })
 }
 
-// WithReplicas declares how many processes may hold this workload at once, and
-// therefore how many lease slots it has. At least one is required.
+// WithReplicas declares how many processes may hold this workload at once. At
+// least one is required.
 //
-// The number is enforced rather than observed: a process competes for exactly
-// one slot of each workload it carries, so "replicas" is the true maximum
-// concurrency of that workload across the cluster.
+// The count is a placement declaration rather than an enforcement this package
+// carries out: the PlacementSource is what decides which processes hold the
+// workload, so it is the source that reads the number. A source that manages
+// slots enforces it -- a process competes for exactly one slot of each workload
+// it carries, making replicas the true maximum concurrency of that workload
+// across the cluster. The default StaticPlacement assigns no slots and ignores
+// the count, hosting every workload the configuration enables; a deployment
+// that needs the bound met names a source that reads it.
 func WithReplicas(n int) WorkloadOption {
 	if n <= 0 {
 		panic(fmt.Sprintf("xbc: plugin.WithReplicas requires a positive replica count, got %d; a workload with no replica can never be carried", n))

@@ -29,11 +29,15 @@ const (
 // replicas may run or whether it must run alone, silently invalidating the
 // placement every other process derived from the same declaration. What is left
 // here is exactly what one process may decide about itself.
+//
+// Its bounds are checked by validateWorkloadConfig rather than by validation
+// tags: this section is bound directly, without the config.Validate pass the
+// plugin path runs, so a tag here would never execute.
 type WorkloadConfig struct {
 	// MaxGoroutines bounds how many managed tasks this process may run on
 	// behalf of this workload at once. 0 means unbounded, which is the
 	// behaviour of every workload that does not ask for a bound.
-	MaxGoroutines int `yaml:"max_goroutines" default:"0" validate:"gte=0"`
+	MaxGoroutines int `yaml:"max_goroutines" default:"0"`
 }
 
 // WorkloadSection is one declared workload together with the configuration its

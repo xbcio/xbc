@@ -23,7 +23,9 @@ type Placement struct {
 	// reports whatever it can name instead, which for a lease source is the
 	// owner token. Diagnostics only: nothing derives behaviour from it.
 	Holder string
-	// Hosted lists the workloads this process carries, sorted by key.
+	// Hosted lists the workloads this process carries. The runtime keeps the
+	// order sorted by key when it accepts a decision, so a source may answer in
+	// whatever order it discovered the set without a diagnostic depending on it.
 	Hosted []WorkloadKey
 	// Notes are free-form, one per line, diagnostic only -- an operator-facing
 	// explanation a source may attach (why a workload was declined, which slot

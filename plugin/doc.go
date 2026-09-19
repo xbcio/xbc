@@ -287,16 +287,20 @@
 // disabled, they are absent, and their configuration sections do not exist in
 // that process.
 //
-// Two placement constraints may accompany a workload, and both are enforced by
-// assembly rather than merely reported:
+// Two placement constraints may accompany a workload, and they are enforced at
+// different layers:
 //
 //   - WithReplicas(n) is how many processes may carry the workload at once.
-//     One is the default.
+//     One is the default. It is a declaration a PlacementSource reads: a
+//     source that hands out slots enforces it (one slot per process, so
+//     replicas is the cluster maximum), while the default StaticPlacement
+//     assigns no slots, ignores the count, and hosts every workload the
+//     configuration enables.
 //   - WithExclusiveProcess() says a process carrying this workload carries no
-//     other. It is for a workload with process-wide side effects -- a global GC
-//     target, a shared pool, a process-wide memory limit -- which nothing
-//     sharing its process can be protected from, rather than for one that is
-//     merely heavy.
+//     other. The runtime enforces it before the plan is built. It is for a
+//     workload with process-wide side effects -- a global GC target, a shared
+//     pool, a process-wide memory limit -- which nothing sharing its process
+//     can be protected from, rather than for one that is merely heavy.
 //
 // Neither is a per-process preference: both describe the cluster, so both
 // belong to the declaration and are deliberately not configurable per process.
@@ -309,11 +313,13 @@
 //
 // A Definition that belongs to no workload belongs to every process shape. That
 // asymmetry is the whole dependency rule: a workload may depend on an unowned
-// Definition freely, while an unowned Definition may only collect a workload's
-// exporters -- never require exactly one of them -- because requiring one would
-// let the hosted set decide whether the process starts at all. Reads of a
-// producer's Entry[T] expose its Workload so resource budgets can be attributed
-// per workload.
+// Definition freely, while an unowned Definition may only ask a workload's
+// exporters in a form that tolerates finding nothing -- collect, or optional --
+// never require one by type or by name, because requiring one would let the
+// hosted set decide whether the process starts at all. Reads of a
+// producer's Entry[T] expose its Workload so an application can account for a
+// value against the workload that owns it; the per-workload task budgets the
+// runtime enforces attribute a submission to the Plugin that made it instead.
 //
 // # BuildContext and Context
 //

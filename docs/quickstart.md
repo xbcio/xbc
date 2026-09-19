@@ -225,14 +225,14 @@ XBC_WORKLOADS_TRANSCODE_ENABLED=false XBC_WORKLOADS_INGEST_ENABLED=false \
 
 ```
 workload ingest     hosted  replicas=4  plugins=1  max_goroutines=8
-workload transcode  not held  exclusive  replicas=2  plugins=0  max_goroutines=4
+workload transcode  not held  exclusive  replicas=2  plugins=0
 unowned             plugins=11
 ```
 
 Two properties are worth knowing before reaching for this:
 
 - A workload this process does not host is not a disabled plugin. Its Definitions never enter the plan, so no instance is constructed, no connection pool is opened, no queue handler is registered, and no route exists. A request for one of its routes is answered `404` and is never forwarded to a process that does carry it.
-- Which roles exist is a cluster decision, so `replicas` and exclusivity are declared in Go beside the Definitions, not in YAML. Only what one process may decide about itself — `enabled` and `max_goroutines` — lives under the `workloads` root, one section per declared workload. A deployment that declares no workload, like the quickstart itself, must not have a `workloads:` block at all: the root is declared only when a workload is, so an empty one fails startup as an unowned key.
+- Which roles exist is a cluster decision, so `replicas` and exclusivity are declared in Go beside the Definitions, not in YAML. `StaticPlacement`, which this example uses, ignores `replicas`: the `replicas=` figures in the rows above are declarations, and only a source that hands out slots — the lease source — turns them into a limit on how many processes may carry the workload. Only what one process may decide about itself — `enabled` and `max_goroutines` — lives under the `workloads` root, one section per declared workload. A deployment that declares no workload, like the quickstart itself, must not have a `workloads:` block at all: the root is declared only when a workload is, so an empty one fails startup as an unowned key.
 
 The operator arithmetic this guide deliberately leaves out — how many processes to start for a given replica count, how a standby takes over after a holder dies, how long a rollout grace period has to be, and what placement does not do — is in [Slots, standbys, and how many processes to start](recipes.md#slots-standbys-and-how-many-processes-to-start) and the sections after it.
 

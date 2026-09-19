@@ -397,8 +397,10 @@ func TestWorkloadConfigurationRejectsAMisspelledOrNegativeKey(t *testing.T) {
 
 // TestConstructPublishesTheProducersWorkloadOnEveryEntry is the end-to-end half
 // of Entry[T].Workload: the value a consumer reads has to name the workload
-// that actually produced it, because that is what a per-workload resource
-// budget charges against.
+// that actually produced it, so an application can account for it against that
+// workload. The runtime's per-workload task budgets answer a different question
+// -- they charge a submission to the Plugin that made it, not to a producer's
+// Entry.
 func TestConstructPublishesTheProducersWorkloadOnEveryEntry(t *testing.T) {
 	t.Parallel()
 	producer := plugin.Define("producer", func(plugin.BuildContext) (*validationValue, error) {

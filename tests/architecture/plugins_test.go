@@ -359,8 +359,10 @@ func TestArchWorkloadBundlesAreSideEffectFreeComposition(t *testing.T) {
 
 // archParseFixturePackage parses one synthetic package in memory and returns
 // its file together with its package-level values. It exists because the
-// scanner's workload branch has no production call site yet: the only way to
-// prove it classifies a WorkloadOf call correctly is to hand it one.
+// scanner's workload branch has no call site in the packages these guards
+// scan -- archPluginImplementationRoots collects extensions/** and
+// transport/web/extensions/**, not examples/ -- so the only way to prove it
+// classifies a WorkloadOf call correctly is to hand it one.
 func archParseFixturePackage(t *testing.T, declarations ...string) (*ast.File, map[string]archTopValue) {
 	t.Helper()
 	source := `package fixture

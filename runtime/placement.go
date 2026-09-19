@@ -106,6 +106,9 @@ func (a *App) resolvePlacement() (plugin.Placement, error) {
 		return plugin.Placement{}, err
 	}
 	workloads := make([]plugin.Workload, len(sections))
+	// The map answers both questions validatePlacement asks: a key present here
+	// is declared, and its value is whether configuration admits it. A key
+	// absent from it was never declared at all.
 	enabled := make(map[plugin.WorkloadKey]bool, len(sections))
 	for index, section := range sections {
 		workloads[index] = section.Workload
@@ -130,6 +133,17 @@ func (a *App) resolvePlacement() (plugin.Placement, error) {
 	if err := validateExclusiveHosting(placement.Hosted, workloads); err != nil {
 		return plugin.Placement{}, err
 	}
+	// Hosted is documented as sorted by key. Two hosted-set consumers read it
+	// directly -- the startup line and doctor -- and a source is free to answer
+	// in whatever order it walked its store, so the order is settled here rather
+	// than left to each reader.
+	//
+	// The sort is on a copy, never on the slice the source handed back: a source
+	// may keep its own decision cached and return the same backing array on a
+	// later call, and reordering that array under it would be the runtime
+	// writing into application-provided state.
+	placement.Hosted = append([]plugin.WorkloadKey(nil), placement.Hosted...)
+	sort.Slice(placement.Hosted, func(i, j int) bool { return placement.Hosted[i] < placement.Hosted[j] })
 	return placement, nil
 }
 
@@ -142,6 +156,13 @@ func (a *App) resolvePlacement() (plugin.Placement, error) {
 // actually used. Both are rejected here rather than tolerated, because by the
 // time assembly could notice, the decision has already shaped the process.
 //
+// A declared key that configuration disabled is refused as its own case rather
+// than folded into "undeclared". The two are different operator mistakes with
+// different fixes: one is a source naming a key this composition never declared,
+// the other is a source overriding the deployment's own "not this process"
+// switch. Reporting the second as the first sends the operator looking for a
+// spelling error that does not exist.
+//
 // An unattributed answer is refused for the same reason, and it is the one that
 // fails open. Assembly reads a Placement with no Source and no hosted keys as
 // "nobody consulted a source", which hosts every workload the configuration
@@ -151,15 +172,22 @@ func (a *App) resolvePlacement() (plugin.Placement, error) {
 // into "carry everything", making the process shape non-deterministic and, in a
 // lease deployment, failing open on capacity. A source that hosts nothing says
 // so by naming itself and hosting no key, which is honoured exactly.
-func validatePlacement(placement plugin.Placement, declared map[plugin.WorkloadKey]bool) error {
+func validatePlacement(placement plugin.Placement, enabled map[plugin.WorkloadKey]bool) error {
 	if strings.TrimSpace(placement.Source) == "" {
 		return fmt.Errorf("xbc: placement source returned a decision with an empty Source, which cannot be told apart from the absence of a decision and would host every enabled workload; name whatever settled the set, and host no key to carry none")
 	}
 	seen := make(map[plugin.WorkloadKey]bool, len(placement.Hosted))
 	for _, key := range placement.Hosted {
+		// A key absent from the map was never declared; a key present with a
+		// false value was declared and disabled here. The distinction is the
+		// whole reason the two cases below are separate.
+		admitted, declared := enabled[key]
 		switch {
-		case !declared[key]:
+		case !declared:
 			return fmt.Errorf("xbc: placement source %q hosted workload %q, which this composition does not declare", placement.Source, key)
+		case !admitted:
+			return fmt.Errorf("xbc: placement source %q hosted workload %q, which configuration disabled here with workloads.%s.enabled: false\n  a placement source decides which of the declared workloads this process carries; it cannot overrule the deployment's own veto",
+				placement.Source, key, key)
 		case seen[key]:
 			return fmt.Errorf("xbc: placement source %q hosted workload %q twice; a process carries a workload or it does not", placement.Source, key)
 		}

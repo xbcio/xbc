@@ -21,11 +21,9 @@ type App struct {
 	bundles []plugin.Bundle
 
 	// placementSource is the source WithPlacement selected, or nil for
-	// StaticPlacement. It is consulted once per run, before the plan exists,
-	// and the answer is kept in placementDecision for every later reader
-	// (including the plan, which carries its own copy).
-	placementSource   PlacementSource
-	placementDecision plugin.Placement
+	// StaticPlacement. It is consulted once per run, before the plan exists; the
+	// decision it returns is carried by the plan, which every later reader asks.
+	placementSource PlacementSource
 
 	env      *config.Environment
 	settings settings
