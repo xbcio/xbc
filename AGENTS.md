@@ -17,7 +17,10 @@ The product is successful when:
 - Published modules work outside this repository without `go.work`, local replacements, placeholder versions, or unpublished sibling assumptions.
 - Microservice capabilities are added from concrete deployment requirements after the single-service Web and gRPC paths are reliable, rather than through speculative common SPIs.
 
-Local design artifacts stay outside version control: specifications and architecture designs belong in `.claude/specs/`, while implementation plans and task breakdowns belong in `.claude/plans/`. Committed source, module manifests, tests, and user documentation remain the shared source of truth.
+Local design artifacts stay outside version control: specifications and architecture designs belong in `.claude/specs/`, implementation plans and task breakdowns in `.claude/plans/`, and per-change SDD work products in `.claude/sdd/`. `CLAUDE.md` is a symlink to `AGENTS.md`; edit the latter. Committed source, module manifests, tests, and user documentation remain the shared source of truth.
+
+## Where Things Live
+The root module `github.com/xbcio/xbc` holds the facade and framework core: `xbc.go` is the recommended entry point; `plugin/` is the public plugin framework and lifecycle SPI (`assembly/` plans and binds, `model/` is the type-erased layer, `ordering/` is shared dependency ordering); `runtime/` owns execution and process lifecycle; `config/` and `log/` are facades. Transports and optional capabilities are separate publishable modules under `transport/web/` and `extensions/`; runnable consumers live in `examples/`. `tests/architecture/` and `tests/integration/` are the design guards. The full directory and module map, including why each module is separate, is in `README.md` under "Directories and boundaries".
 
 ## Decision Rules
 Define a change by the outcome it must achieve and the behavior it must not violate, not by the current implementation. Prescribe a specific implementation only when that implementation is itself a deliberate project constraint.
@@ -53,6 +56,10 @@ go run ./examples/quickstart --config examples/quickstart/application.yml
 ```
 
 Do not use root-level `go test ./...` as full-repository validation: it excludes nested modules. The Makefile uses `scripts/for-each-module` to cover every module listed in `go.work`.
+
+While iterating, test only the affected package. From the root, `go test ./plugin/...` covers core packages; a submodule is tested from its own directory, e.g. `cd transport/web && go test ./...`. Run the workspace-wide `make fmt`, `make check`, and `make test-race` once when the change is complete.
+
+`go run ./examples/quickstart doctor --config examples/quickstart/application.yml` validates and prints the full plan -- configuration, plugin activation, typed inputs, contracts, and start order -- without opening a listener.
 
 After changing Go code, run `make fmt` followed by `make check`. Also run `make test-race` for concurrent runtime, lifecycle, plugin, or server changes. Targeted package tests are useful during development but do not replace the final workspace-wide check. Documentation-only changes do not require tests unless they alter commands, configuration, or runnable examples.
 
