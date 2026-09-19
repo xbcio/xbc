@@ -486,6 +486,68 @@ func TestInstanceIDRejectsWhitespace(t *testing.T) {
 	assert.Contains(t, err.Error(), "xbc.instance_id")
 }
 
+// TestPlacementCannotOverrideADeploymentVeto is the diagnostic half of the
+// enabled:false rule. The veto itself already holds -- no source may host a
+// workload the deployment disabled -- but a source that tried was told its key
+// was undeclared, which names a spelling problem instead of the override it
+// actually attempted. The two are different operator mistakes with different
+// fixes, so the message has to say which one happened.
+func TestPlacementCannotOverrideADeploymentVeto(t *testing.T) {
+	source := &recordingPlacement{placement: plugin.Placement{
+		Source: "lease",
+		Hosted: []plugin.WorkloadKey{"sca"},
+	}}
+	app, err := New(WithBundles(placementTestBundles()...), WithPlacement(source))
+	require.NoError(t, err)
+	app.ready = make(chan struct{})
+
+	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sca:\n    enabled: false\n"), config.DefaultEnvPrefix)
+	require.NoError(t, err)
+	require.NoError(t, app.bootstrap(cmd))
+
+	_, err = app.resolvePlacement()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workloads.sca.enabled",
+		"the message names the key the deployment actually set")
+	assert.Contains(t, err.Error(), "veto",
+		"it says a source cannot overrule the deployment")
+	assert.NotContains(t, err.Error(), "does not declare",
+		"a declared-but-disabled key is not an undeclared one")
+}
+
+// TestResolvedPlacementSortsTheHostedSet pins the "sorted by key" contract on
+// Placement.Hosted. Two hosted-set readers -- the startup line and doctor --
+// print it directly, and a source is free to answer in whatever order it walked
+// its store, so the order is settled where the decision is accepted.
+func TestResolvedPlacementSortsTheHostedSet(t *testing.T) {
+	workload := func(key plugin.WorkloadKey, definition plugin.Key) plugin.Bundle {
+		return plugin.WorkloadOf(key, plugin.BundleOf(
+			plugin.Define(definition, func(plugin.BuildContext) (*runtimeTestValue, error) {
+				return &runtimeTestValue{}, nil
+			}),
+		), plugin.WithReplicas(2))
+	}
+	source := &recordingPlacement{placement: plugin.Placement{
+		Source: "lease",
+		Hosted: []plugin.WorkloadKey{"gamma", "alpha", "beta"},
+	}}
+	app, err := New(WithBundles(
+		workload("alpha", "alpha-worker"),
+		workload("beta", "beta-worker"),
+		workload("gamma", "gamma-worker"),
+	), WithPlacement(source))
+	require.NoError(t, err)
+
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	require.NoError(t, err)
+	require.NoError(t, app.bootstrap(cmd))
+
+	placement, err := app.resolvePlacement()
+	require.NoError(t, err)
+	assert.Equal(t, []plugin.WorkloadKey{"alpha", "beta", "gamma"}, placement.Hosted,
+		"the accepted hosted set is reported in key order whatever order the source produced")
+}
+
 // workloadKeys reduces a request's declarations to the part the assertion is
 // about, so it does not also pin the replica counts.
 func workloadKeys(workloads []plugin.Workload) []plugin.WorkloadKey {

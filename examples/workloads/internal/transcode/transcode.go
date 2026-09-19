@@ -10,9 +10,9 @@
 // process-level knobs -- a lower xbc.runtime.gc_percent, a different
 // xbc.runtime.memory_limit -- and a knob of that kind lands on every
 // process-mate whether or not it wants it. Nothing sharing this process could
-// opt out, so nothing shares it. A workload that were merely heavy would be
-// placed by its replica count and bounded by workloads.transcode.max_goroutines
-// instead.
+// opt out, so nothing shares it. A workload that were merely heavy would express
+// that as a replica count and a task budget instead, neither of which forces it
+// into a process of its own.
 package transcode
 
 import (
@@ -92,9 +92,12 @@ var definition = plugin.DefineConfigured(
 // what lets assembly leave these Definitions out of a process that does not
 // carry the workload.
 //
-// WithReplicas is enforced rather than advisory. The number is this workload's
-// slot count -- two processes may carry it at once, and a third has to wait for
-// one of them to go away.
+// WithReplicas is a declaration the placement source reads rather than one this
+// package enforces. A source that hands out slots makes it this workload's slot
+// count -- two processes may carry it at once, and a third waits for one of them
+// to go away -- which is what the lease source under
+// extensions/coordination/placement does. The static placement these examples
+// use assigns no slots and ignores the count.
 var bundle = plugin.WorkloadOf(
 	WorkloadKey,
 	plugin.BundleOf(definition),

@@ -524,17 +524,20 @@ func TestDoctorReportsTheRuntimeKnobsFromTheContainer(t *testing.T) {
 // TestDoctorReportsManagedTaskBudgetsOnBoundedWorkloadsOnly is the one place
 // workloads.<key>.max_goroutines becomes visible.
 //
-// The field is per workload and discriminating in both directions: a bounded
-// workload carries its limit, and an unbounded one carries no field at all
-// rather than a zero. Printing zero for the unbounded case would make the two
-// indistinguishable in exactly the report an operator reads to find out which
-// workload is rationed -- and since every workload is unbounded by default,
-// that would be the common case drowning the rare one.
+// The field is per workload and discriminating in three directions: a bounded
+// hosted workload carries its limit, an unbounded one carries no field at all
+// rather than a zero, and a workload this process does not carry carries no
+// limit either -- its budget can never be charged, because an unhosted workload
+// contributes no plugin to submit anything, so printing it would read as a
+// bound that is in force. Printing zero for the unbounded case would make the
+// two indistinguishable in exactly the report an operator reads to find out
+// which workload is rationed -- and since every workload is unbounded by
+// default, that would be the common case drowning the rare one.
 func TestDoctorReportsManagedTaskBudgetsOnBoundedWorkloadsOnly(t *testing.T) {
 	app := doctorApp(doctorWorkloadBundles())
 	out := runDoctor(t, app, runtimeTestConfigWith(t, time.Second,
 		"workloads:\n"+
-			"  sast:\n    enabled: false\n"+
+			"  sast:\n    enabled: false\n    max_goroutines: 5\n"+
 			"  coderanger:\n    max_goroutines: 4\n")...)
 	rows := doctorRows(out)
 
@@ -544,6 +547,8 @@ func TestDoctorReportsManagedTaskBudgetsOnBoundedWorkloadsOnly(t *testing.T) {
 		"an unbounded workload carries no budget field at all")
 	assert.NotContains(t, rows, "webscan hosted replicas=6 plugins=2 max_goroutines",
 		"unbounded must not be spelled as a limit of zero")
+	assert.NotContains(t, rows, "sast not held exclusive replicas=3 plugins=0 max_goroutines",
+		"a budget on a workload this process does not carry is never charged, so it is not printed")
 
 	// doctor reports the limit and not the refusal count. A diagnostic run
 	// admits no task, so a rejection counter here would read zero for a reason

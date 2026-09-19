@@ -27,9 +27,9 @@ func (k Key) Validate() error { return ValidateIdentifier("plugin key", string(k
 // workload keeps its identity across deployments that restructure the source
 // tree.
 //
-// It is the spelling that appears in configuration ("workloads.<key>") and in
-// the lease slots its replicas compete for, which is why it is validated with
-// the same rule as a plugin Key rather than accepting any string.
+// It is the spelling that appears in configuration ("workloads.<key>") and the
+// identity a placement source files a claim under, which is why it is validated
+// with the same rule as a plugin Key rather than accepting any string.
 type WorkloadKey string
 
 func (k WorkloadKey) String() string { return string(k) }
@@ -272,9 +272,9 @@ func SameDefinition(left, right Definition) bool {
 // and silently invalidate the placement every other process derived from the
 // same declaration.
 type Workload struct {
-	// Key is the workload's stable identity. It names the configuration
-	// section this workload is toggled by and the lease slots its replicas
-	// compete for.
+	// Key is the workload's stable identity. It names the configuration section
+	// this workload is toggled by, and it is the identity a placement source
+	// uses to name whatever it claims on the workload's behalf.
 	Key WorkloadKey
 
 	// Exclusive reports that a process holding this workload holds no other
@@ -282,8 +282,10 @@ type Workload struct {
 	// nothing sharing its process can be protected from.
 	Exclusive bool
 
-	// Replicas is how many processes may hold this workload at once, and
-	// therefore how many lease slots it has.
+	// Replicas is a declaration the PlacementSource reads: a source that hands
+	// out slots turns it into the number of processes that may hold this
+	// workload at once, while the default StaticPlacement assigns no slots and
+	// ignores it.
 	Replicas int
 }
 

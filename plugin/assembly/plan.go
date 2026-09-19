@@ -1202,6 +1202,17 @@ func checkDirection(
 			}
 			return unownedRequiresWorkloadError(consumer, token, producer, producerWorkload)
 		default:
+			// Every kind is refused here, including the two that tolerate
+			// finding no producers at all. That is deliberate but carries a
+			// residual worth naming: a QueryMany or QueryOptional edge between
+			// two workloads fails when both are carried, yet resolves to empty
+			// when the producer's workload is not -- resolveToken never routes
+			// an empty candidate set through unhostedProducerError for these
+			// kinds. Co-residence, a placement outcome, therefore decides
+			// whether the process starts. The rule stays as it is because the
+			// alternative -- admitting the edge and letting placement silently
+			// choose -- is what direction checking exists to prevent; this is
+			// recorded so such a failure is read as possibly placement-induced.
 			return crossWorkloadError(consumer, consumerWorkload, token, producer, producerWorkload)
 		}
 	}

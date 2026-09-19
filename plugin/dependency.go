@@ -12,9 +12,14 @@ type Entry[T any] struct {
 	Identity Identity
 	Value    T
 	// Workload is the workload the producer belongs to, or "" when it belongs
-	// to none. Resource accounting and per-workload budgets read it, so it
-	// describes the occurrence that actually produced Value rather than what
-	// the producer's own declaration says in isolation.
+	// to none. It describes the occurrence that actually produced Value rather
+	// than what the producer's own declaration says in isolation, so an
+	// application can account for a value against the workload that owns it.
+	//
+	// It is the producer's membership, not the submitter's. The per-workload
+	// task budgets the runtime enforces attribute a submission to the Plugin
+	// that made it, never to a producer's Entry, so reading this answers a
+	// different question than the budget does.
 	Workload WorkloadKey
 }
 

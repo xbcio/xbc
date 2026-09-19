@@ -381,7 +381,7 @@ XBC_WORKLOADS_TRANSCODE_ENABLED=true XBC_WORKLOADS_INGEST_ENABLED=false \
 go run ./examples/workloads doctor --config examples/workloads/application.yml
 ```
 
-`WithExclusiveProcess` is for a workload with process-wide side effects -- tuning a global GC target, setting a process-wide memory limit, sizing a pool every other plugin shares -- which nothing sharing its process can be protected from. The reason is not that the workload is heavy. A merely heavy workload is placed by its replica count and bounded by its own budget instead.
+`WithExclusiveProcess` is for a workload with process-wide side effects -- tuning a global GC target, setting a process-wide memory limit, sizing a pool every other plugin shares -- which nothing sharing its process can be protected from. The reason is not that the workload is heavy. A heavy workload expresses that as a replica count and a task budget instead, neither of which forces it into a process of its own.
 
 `replicas` and `exclusive` are deliberately not configurable. They describe the cluster rather than one process, and making them per-process would let a single host reinterpret how many replicas may run, or whether it must run alone, silently invalidating the decision every other process derived from the same declaration.
 
@@ -436,6 +436,8 @@ The two defaults are deliberately asymmetric, and this block is a recommendation
 `web.max_in_flight` reports itself as a pair of state transitions rather than per refused request. The refusal that finds the process newly saturated logs `web: in-flight limit reached, refusing requests until in-flight work drains` at warn with `limit`, `rejections`, `rejections_total`, and `retry_after_seconds`; the release that leaves nothing in flight logs `web: in-flight limit cleared, admitting requests again` at info with `limit`, `rejections`, and `rejections_total`. `rejections` counts only what was refused since the gate's previous line -- the part nobody has seen yet -- while `rejections_total` is the count since boot, so consecutive lines can be compared without double counting. One saturation episode therefore produces at most those two lines however long it lasts, and it ends only once in-flight work drains to zero rather than merely below the ceiling: the number of log lines is not a proxy for the number of refusals, and a process parked at its ceiling reports one episode where an operator might have counted several. Read `rejections_total` or `Server.InFlightStats()` for the quantity, and treat the warn line as the episode's start rather than as a per-request signal.
 
 ## Slots, standbys, and how many processes to start
+
+This section assumes a placement source that hands out slots by replica count — the lease source under `extensions/coordination/placement`. The default `StaticPlacement` does not: it ignores `replicas` entirely and hosts every workload the configuration enables in every process that enables it. Slots, standbys, takeover, and the arithmetic below therefore presuppose a source that reads `replicas`; under `StaticPlacement`, `replicas` is a declaration nothing enforces.
 
 A workload's `replicas` is its number of slots: `<prefix>:workload:<key>:<index>` for `index` in `[0, replicas)`. Each process competes for exactly one slot per workload, so `replicas` is the true maximum concurrency of that workload across the cluster.
 

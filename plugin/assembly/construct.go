@@ -250,9 +250,9 @@ func materializeSlots(planned *plannedInstance, owned map[plugin.Identity]*Insta
 				Value:    instance.value,
 				// The producer's own reconciled membership, taken from the
 				// instance that was actually constructed rather than from the
-				// consumer's view of the graph, so a resource budget charged
-				// through Entry[T].Workload is charged to the workload that
-				// really owns the value.
+				// consumer's view of the graph, so an application accounting
+				// through Entry[T].Workload attributes the value to the workload
+				// that really owns it.
 				Workload: instance.workload,
 			}
 		}

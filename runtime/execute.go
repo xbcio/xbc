@@ -97,7 +97,6 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	if err != nil {
 		return 1, err
 	}
-	a.placementDecision = placement
 	a.logger.Info("xbc: placement resolved by "+placement.Source,
 		"instance", a.settings.Instance(),
 		"hosted", workloadLabels(placement.Hosted))
@@ -293,7 +292,21 @@ func (a *App) assertLiveness(instances []*assembly.Instance) error {
 }
 
 func (a *App) errNothingEnabled(plan *assembly.Plan) error {
+	// DefinitionCount counts the graph that was built, and placement filters the
+	// graph before it is built. So a zero here has two causes that call for
+	// opposite fixes: nothing was declared at all, or nothing remained after
+	// placement removed every workload-scoped Definition. Telling the second as
+	// "nothing to do" sends the operator to edit Bundles when the thing to
+	// change is placement. The presence of an unhosted workload is what
+	// distinguishes the two -- it does not by itself prove placement removed
+	// anything, but it is the only sign that the composition declared more than
+	// the empty graph shows, and it is what an operator can act on.
 	if plan.DefinitionCount() == 0 {
+		if unhosted := unhostedWorkloads(plan.Workloads()); len(unhosted) > 0 {
+			return fmt.Errorf(
+				"xbc: no plugin entered the graph; workload(s) %s are not carried by this process, and no other plugin was declared here. Placement decides which workloads a process hosts -- set workloads.<key>.enabled: true, or check what the placement source decided",
+				strings.Join(unhosted, ", "))
+		}
 		return fmt.Errorf("xbc: no plugin was declared, nothing to do; compose Bundles explicitly or import an autoload leaf")
 	}
 	disabled := plan.Disabled()
@@ -301,7 +314,20 @@ func (a *App) errNothingEnabled(plan *assembly.Plan) error {
 	for index, key := range disabled {
 		labels[index] = key.String()
 	}
-	return fmt.Errorf("xbc: declared %d plugins, but none were enabled; disabled: %s", plan.DefinitionCount(), strings.Join(labels, ", "))
+	return fmt.Errorf("xbc: this process carries %d plugin(s), but none were enabled; disabled: %s", plan.DefinitionCount(), strings.Join(labels, ", "))
+}
+
+// unhostedWorkloads names the declared workloads this process does not carry,
+// sorted by key as the plan reports them. It is what tells a placement-shaped
+// empty graph apart from a composition that declared nothing.
+func unhostedWorkloads(workloads []assembly.PlanWorkload) []string {
+	keys := make([]string, 0, len(workloads))
+	for _, workload := range workloads {
+		if !workload.Hosted {
+			keys = append(keys, workload.Workload.Key.String())
+		}
+	}
+	return keys
 }
 
 func (a *App) log() log.Logger {

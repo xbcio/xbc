@@ -86,11 +86,15 @@ var definition = plugin.DefineConfigured(
 
 // bundle tags this package's Definitions with the ingest workload.
 //
-// WithReplicas is the slot count: four processes may carry this workload at
-// once. It is a cluster-level promise rather than a per-process preference, so
-// it is not configurable -- a host that could reinterpret "how many replicas may
-// run" would silently invalidate the placement every other process derived from
-// the same declaration.
+// WithReplicas is a declaration the placement source reads rather than one this
+// package enforces: a source that hands out slots makes it this workload's slot
+// count -- four processes may carry it at once -- which is what the lease source
+// under extensions/coordination/placement does. The static placement these
+// examples use assigns no slots and ignores the count. Either way it is a
+// cluster-level promise rather than a per-process preference, so it is not
+// configurable -- a host that could reinterpret "how many replicas may run"
+// would silently invalidate the placement every other process derived from the
+// same declaration.
 var bundle = plugin.WorkloadOf(
 	WorkloadKey,
 	plugin.BundleOf(definition),

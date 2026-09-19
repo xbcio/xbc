@@ -37,10 +37,11 @@ func TestWorkloadOfTagsEveryOccurrenceAndDeclaresItself(t *testing.T) {
 	assert.Contains(t, entries[0].Origin, "workload_test.go:", "tagging preserves the declaration origin")
 }
 
-// TestWorkloadOfDefaultsToASingleReplica pins the default the placement model
-// depends on: a declared workload is carried by exactly one process unless its
-// declaration says otherwise, so forgetting WithReplicas narrows placement
-// rather than widening it.
+// TestWorkloadOfDefaultsToASingleReplica pins the default a replica-aware
+// placement source reads: a declared workload has one slot unless its
+// declaration says otherwise. It is the declaration's default and not a bound
+// every source applies -- StaticPlacement assigns no slots and ignores the
+// count entirely.
 func TestWorkloadOfDefaultsToASingleReplica(t *testing.T) {
 	t.Parallel()
 	bundle := WorkloadOf(workloadKey, BundleOf(workloadFixture("solo")))

@@ -117,7 +117,28 @@ func TestEmptyCompositionAndFullyDisabledCompositionFailDifferently(t *testing.T
 	code, err = disabled.Execute(context.Background(), runtimeTestConfig(t, time.Second))
 	assert.Equal(t, 1, code)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "declared 1 plugins, but none were enabled; disabled: switched-off")
+	assert.Contains(t, err.Error(), "carries 1 plugin(s), but none were enabled; disabled: switched-off")
+}
+
+func TestFullyUnhostedCompositionIsReportedAsPlacement(t *testing.T) {
+	app := newApp([]plugin.Bundle{
+		plugin.WorkloadOf("sast", plugin.BundleOf(plugin.Define("sast-worker",
+			func(plugin.BuildContext) (*runtimeTestValue, error) { return &runtimeTestValue{}, nil })),
+			plugin.WithReplicas(3)),
+	})
+
+	code, err := app.Execute(context.Background(), runtimeTestConfigWith(t, time.Second,
+		"workloads:\n  sast:\n    enabled: false\n"))
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not carried by this process",
+		"declared-but-unhosted is told apart from nothing-declared")
+	assert.Contains(t, err.Error(), "sast",
+		"the message names the workload this process does not carry")
+	assert.Contains(t, err.Error(), "placement",
+		"the fix is a placement decision, not a composition edit")
+	assert.NotContains(t, err.Error(), "no plugin was declared",
+		"the composition did declare plugins; placement removed them")
 }
 
 func TestDoctorSucceedsEvenWhenNothingIsEnabled(t *testing.T) {

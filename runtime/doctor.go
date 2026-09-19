@@ -173,11 +173,17 @@ func (a *App) workloadBudgets() map[plugin.WorkloadKey]workloadBudgetReport {
 // and a workload absent from the list could not be told apart from one the
 // composition never declared.
 //
-// A workload that declares a managed-task budget carries it on its row. A
-// workload with no bound gets no such field rather than one reading zero:
-// "unbounded" and "bounded at zero" are different answers, only one of them is
-// configurable, and a report that printed the common case would make the rare
-// one unreadable.
+// A workload that declares a managed-task budget carries it on its row, but
+// only when this process actually hosts it. The budget is charged against
+// submissions from the workload's own plugins, and an unhosted workload
+// contributes no plugin to submit anything -- so printing its limit beside
+// "not held" would read as a bound that is in force when nothing can consume
+// it.
+//
+// A hosted workload with no bound gets no such field rather than one reading
+// zero: "unbounded" and "bounded at zero" are different answers, only one of
+// them is configurable, and a report that printed the common case would make
+// the rare one unreadable.
 func (a *App) reportDoctorWorkloads(out io.Writer, plan *assembly.Plan, order []plugin.Identity) {
 	workloads := plan.Workloads()
 	budgets := a.workloadBudgets()
@@ -209,8 +215,10 @@ func (a *App) reportDoctorWorkloads(out io.Writer, plan *assembly.Plan, order []
 		fields = append(fields,
 			fmt.Sprintf("replicas=%d", workload.Workload.Replicas),
 			fmt.Sprintf("plugins=%d", len(workload.Identities)))
-		if budget, bounded := budgets[workload.Workload.Key]; bounded {
-			fields = append(fields, fmt.Sprintf("max_goroutines=%d", budget.Limit))
+		if workload.Hosted {
+			if budget, bounded := budgets[workload.Workload.Key]; bounded {
+				fields = append(fields, fmt.Sprintf("max_goroutines=%d", budget.Limit))
+			}
 		}
 		fmt.Fprintf(out, "%-*s  %s\n", width, doctorWorkloadLabel(workload.Workload.Key), strings.Join(fields, "  "))
 		a.reportDoctorInstances(out, plan, workload.Identities)
