@@ -175,7 +175,7 @@ func TestMiddlewareRejectsAmbiguousAndMaliciousHeaders(t *testing.T) {
 		"trailing":   {"acme "},
 		"comma":      {"acme,beta"},
 		"path":       {"../admin"},
-		"unicode":    {"租户"},
+		"unicode":    {"tënänt"},
 		"too long":   {strings.Repeat("a", 129)},
 		"duplicates": {"acme", "beta"},
 	}
@@ -189,6 +189,23 @@ func TestMiddlewareRejectsAmbiguousAndMaliciousHeaders(t *testing.T) {
 			assertTenantError(t, response, http.StatusForbidden, "forbidden")
 		})
 	}
+}
+
+// TestMiddlewareRejectsMalformedIDEvenWhenPrincipalListsIt separates the
+// request-scoped ID-format guard from membership. The principal below lists the
+// malformed value as one of its own members, so membership cannot be what
+// rejects the request: only validTenantID on the requested header value can.
+// A middleware that skipped that guard -- or relaxed it to admit non-ASCII
+// bytes -- would resolve "tënänt" as a member and answer 204 instead of 403.
+// Without this case every rejection in the table above is over-determined by
+// both guards at once, so mutating either one alone would still pass.
+func TestMiddlewareRejectsMalformedIDEvenWhenPrincipalListsIt(t *testing.T) {
+	p := initializedTenantPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/private"}
+	principal := &web.Principal{Subject: "alice", Attributes: map[string]any{"tenant_ids": []string{"acme", "tënänt"}}}
+	headers := make(http.Header)
+	headers.Set(defaultHeader, "tënänt")
+	assertTenantError(t, serveTenantRequest(p, route, principal, headers, noContent), http.StatusForbidden, "forbidden")
 }
 
 // TestMiddlewareExemptRouteBypassesTenantResolution pins that
