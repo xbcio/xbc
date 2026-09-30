@@ -116,7 +116,7 @@ func TestDefinitionHandleIsOpaqueAndCopiesMutableMetadata(t *testing.T) {
 	contracts[0].Origin = "mutated"
 	config.Type = nil
 
-	descriptor, ok := DefinitionDescriptorOf(definition)
+	descriptor, ok := DescribeDefinition(definition)
 	require.True(t, ok)
 	assert.Equal(t, Key("web"), descriptor.Key)
 	require.Len(t, descriptor.Contracts, 1)
@@ -367,7 +367,7 @@ func TestBuildContextExposesIdentityAndCopiesSlots(t *testing.T) {
 	slots := map[uint64][]ResolvedEntry{
 		token.ID: {{Identity: Identity{Plugin: "producer"}, Value: 1}},
 	}
-	context := NewFactoryContext(Identity{Plugin: "consumer"}, nil, slots)
+	context := NewBuildContext(Identity{Plugin: "consumer"}, nil, slots)
 
 	assert.Equal(t, Identity{Plugin: "consumer", Instance: DefaultInstance}, context.Identity())
 	assert.NotNil(t, context.Log(), "a nil logger falls back to the process logger")

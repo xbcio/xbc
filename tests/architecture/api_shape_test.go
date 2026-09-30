@@ -163,3 +163,88 @@ func TestArchRuntimeHostPublicAPIShape(t *testing.T) {
 		assert.Falsef(t, exists, "plugin.RuntimeHost must not expose retired publication/lookup/enumeration method %s", retired)
 	}
 }
+
+// TestArchPluginModelPublicAPIShape locks plugin/model, which is the one public
+// layer the other shape guards do not cover. assembly.Plan and plugin.RuntimeHost
+// are locked by reflection; this package is reached through an AST walk of its
+// exported declarations.
+//
+// The package is worth locking precisely because its own documentation claims
+// application code should not use it -- "Application code should use the typed
+// facade in the parent plugin package" -- while every extension module's tests
+// import it to introspect a Bundle, a question the typed facade cannot answer.
+// A claim that consumers stay away is not a boundary; this list is. Adding an
+// export here is a deliberate public-surface change, not an implementation
+// detail.
+func TestArchPluginModelPublicAPIShape(t *testing.T) {
+	root := archRepositoryRoot(t)
+	names := archExportedNamesInDir(t, filepath.Join(root, "plugin", "model"))
+	want := []string{
+		"Activation",
+		"ActivationAlways",
+		"ActivationConfigured",
+		"ActivationKind",
+		"AssignWorkload",
+		"BuildContext",
+		"BuildContext.Identity",
+		"BuildContext.Log",
+		"Bundle",
+		"BundleEntries",
+		"BundleEntry",
+		"BundleWorkloads",
+		"Cardinality",
+		"Cardinality.String",
+		"CombineBundles",
+		"CompareIdentity",
+		"ConfigDescriptor",
+		"Contract",
+		"DefaultInstance",
+		"Definition",
+		"DefinitionDescriptor",
+		"DescribeDefinition",
+		"Identity",
+		"Identity.Normalized",
+		"Identity.String",
+		"InputToken",
+		"InstancePlan",
+		"InvalidateBuildContext",
+		"Key",
+		"Key.String",
+		"Key.Validate",
+		"LifecycleAdapters",
+		"MultipleInstances",
+		"NewBuildContext",
+		"NewBundle",
+		"NewDefinition",
+		"NewInputToken",
+		"NormalizeInstance",
+		"QueryKind",
+		"QueryMany",
+		"QueryOne",
+		"QueryOptional",
+		"QueryRef",
+		"ReadBuildSlot",
+		"ResolvedEntry",
+		"SameDefinition",
+		"SingleInstance",
+		"SortIdentities",
+		"ValidateIdentifier",
+		"ValidateInstanceName",
+		"ValidateWorkloads",
+		"Workload",
+		"WorkloadKey",
+		"WorkloadKey.String",
+		"WorkloadKey.Validate",
+	}
+	assert.Equal(t, want, names,
+		"plugin/model's public API has drifted; new exports must be explicit modifications to this manifest")
+
+	// Each of these was an uncalled alias or an unreferenced constraint kept
+	// beside the function it forwarded to. The forwarding indirection bought
+	// nothing and split one concept across two spellings, so a revived alias
+	// must fail here rather than blend back in as an ordinary export.
+	for _, retired := range []string{"DefinitionDescriptorOf", "NewFactoryContext", "PublicDefinition"} {
+		assert.NotContainsf(t, names, retired,
+			"plugin/model must not revive the retired forwarding alias %s; call the canonical function directly", retired)
+	}
+}
