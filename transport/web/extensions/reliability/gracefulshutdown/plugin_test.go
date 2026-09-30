@@ -114,7 +114,7 @@ func TestNewPluginPropagatesCustomEndpointPath(t *testing.T) {
 		cfg.HTTP.Path = "/ops/shutdown"
 	})
 	if p.endpoint.path != "/ops/shutdown" {
-		t.Fatalf("endpoint path = %q, want the configured plugins.gracefulshutdown.http.path", p.endpoint.path)
+		t.Fatalf("endpoint path = %q, want the configured plugins.gracefulshutdown-http.http.path", p.endpoint.path)
 	}
 }
 

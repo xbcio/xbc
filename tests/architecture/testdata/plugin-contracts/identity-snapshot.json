@@ -113,7 +113,7 @@
     },
     {
       "key": "gracefulshutdown-http",
-      "config_path": "plugins.gracefulshutdown",
+      "config_path": "plugins.gracefulshutdown-http",
       "cardinality": "single",
       "contracts": [
         "github.com/xbcio/xbc/transport/web.RouteContributor"

@@ -11,12 +11,25 @@ const (
 	// HTTPKey identifies the independently constructed HTTP route contributor.
 	HTTPKey plugin.Key = "gracefulshutdown-http"
 
-	configPath = "plugins.gracefulshutdown"
+	// controllerConfigPath and httpConfigPath name the configuration section
+	// each Definition owns, one apiece. They must differ: the configuration
+	// layer rejects a section claimed by two owners, so sharing one would not
+	// make the two Definitions ambiguous but unusable -- selecting Bundle()
+	// would fail before any plugin was constructed.
+	//
+	// Both are the conventional path of the Definition they belong to, which is
+	// exactly what the assembly layer derives from a key when ConfigPath is
+	// left unset. Spelling them out here changes nothing about where
+	// configuration is read from; it only lets each Activation name the section
+	// it watches.
+	controllerConfigPath = "plugins." + string(Key)
+	httpConfigPath       = "plugins." + string(HTTPKey)
 )
 
 // Plugin is the optional HTTP adapter for Controller. It has a separate
 // Definition because the route contributor and programmatic controller are
-// independently selected products.
+// independently selected products, and a separate configuration section
+// because each Definition owns exactly one: plugins.gracefulshutdown-http.
 type Plugin struct {
 	endpoint   endpointConfig
 	controller *Controller
@@ -30,7 +43,7 @@ var controllerDefinition = plugin.Define(
 	Key,
 	func(plugin.BuildContext) (*Controller, error) { return New(), nil },
 	plugin.Options[*Controller]{
-		Activation: plugin.WhenConfigured(configPath),
+		Activation: plugin.WhenConfigured(controllerConfigPath),
 	},
 )
 
@@ -44,8 +57,7 @@ var httpDefinition = plugin.DefineConfigured(
 		return newPlugin(cfg, controllerInput.Get(ctx).Value)
 	},
 	plugin.Options[*Plugin]{
-		Activation: plugin.WhenConfigured(configPath),
-		ConfigPath: configPath,
+		Activation: plugin.WhenConfigured(httpConfigPath),
 		Inputs:     plugin.Inputs(controllerInput),
 		Exports: plugin.Contracts(
 			plugin.ExportAs[web.RouteContributor](func(value *Plugin) web.RouteContributor { return value }),

@@ -741,10 +741,15 @@ plugins:
     path: "/debug/pprof"
 
   gracefulshutdown:
+    enabled: true
+
+  gracefulshutdown-http:
     http:
       enabled: true
       path: "/-/shutdown"
 ```
+
+The `plugins.gracefulshutdown` section activates the programmatic `Controller`, and `plugins.gracefulshutdown-http` activates the optional HTTP adapter, which is disabled unless its own `http.enabled` is true. They are two sections because each Definition owns exactly one: a section claimed by two owners is rejected before any plugin is constructed, the same way `plugins.health` and `plugins.health-http` are kept apart.
 
 Select the corresponding Bundles at the composition root before configuring these sections. Never commit JWT secrets, Redis or database passwords, API keys, or operations tokens to the repository. Environment variables are only a minimum deployment interface; production systems should inject them through a secret manager.
 

@@ -8,8 +8,8 @@ import (
 
 const defaultPath = "/-/shutdown"
 
-// Config is bound from plugins.gracefulshutdown. The HTTP endpoint is disabled
-// by default.
+// Config is bound from plugins.gracefulshutdown-http, the section the HTTP
+// adapter Definition owns. The HTTP endpoint is disabled by default.
 type Config struct {
 	HTTP HTTPConfig `yaml:"http"`
 }
