@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"fmt"
+	"strings"
 
 	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
@@ -66,7 +67,15 @@ type Many[T any] struct{ token pluginmodel.InputToken }
 func RefTo[T any](key Key) Ref[T] { return RefToInstance[T](key, DefaultInstance) }
 
 // RefToInstance creates an exact typed reference to one normalized instance.
+// The instance must be a name the configuration side would accept, so a typo is
+// rejected here rather than surfacing later as a missing exact producer. The
+// empty string stays valid and normalizes to the default instance.
 func RefToInstance[T any](key Key, instance string) Ref[T] {
+	if instance != "" {
+		if err := pluginmodel.ValidateInstanceName(instance); err != nil {
+			panic("xbc: plugin.RefToInstance " + strings.TrimPrefix(err.Error(), "xbc: "))
+		}
+	}
 	return Ref[T]{token: newInputToken[T](pluginmodel.QueryRef, key, instance)}
 }
 

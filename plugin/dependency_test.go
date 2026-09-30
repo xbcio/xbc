@@ -45,6 +45,21 @@ func TestTypedInputConstructorsCreateFinalDistinctQueries(t *testing.T) {
 	assert.Equal(t, pluginmodel.QueryMany, queries[4].Kind)
 }
 
+func TestRefToInstanceRejectsANameTheConfigurationSideWouldReject(t *testing.T) {
+	t.Parallel()
+	// The configuration side validates an instance name with the same rule, so a
+	// typo here must fail at the declaration rather than surface later as a
+	// missing exact producer.
+	assert.PanicsWithValue(t,
+		`xbc: plugin.RefToInstance instance name "Bad Name" contains invalid character 'B', only lowercase letters, digits, underscores, and hyphens are allowed`,
+		func() { RefToInstance[io.Reader]("source", "Bad Name") })
+}
+
+func TestRefToInstanceTreatsAnEmptyNameAsTheDefaultInstance(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, DefaultInstance, RefToInstance[io.Reader]("source", "").inputToken().Instance)
+}
+
 func TestInputsDefensivelyCopiesTokens(t *testing.T) {
 	input := Collect[io.Reader]()
 	set := Inputs(input)

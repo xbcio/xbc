@@ -94,4 +94,51 @@ func TestDefinitionHelpersRejectAmbiguousOptionShapes(t *testing.T) {
 	assert.PanicsWithValue(t, "xbc: plugin.ExportAs witness cannot be nil", func() {
 		ExportAs[definitionContract, *definitionValue](nil)
 	})
+	// A concrete contract would publish the implementation as the dependency,
+	// so it is rejected at the declaration that wrote it rather than at freeze.
+	assert.PanicsWithValue(t, "xbc: plugin.ExportAs requires an interface contract type, got plugin.definitionValue", func() {
+		ExportAs[definitionValue, *definitionValue](func(value *definitionValue) definitionValue { return *value })
+	})
+}
+
+func TestWhenConfiguredRejectsAnEmptyPathAtTheCallSite(t *testing.T) {
+	t.Parallel()
+	// An empty path names no section, so the Definition would stay disabled
+	// forever behind a reason that quotes nothing.
+	assert.PanicsWithValue(t, "xbc: plugin.WhenConfigured requires a non-empty configuration path", func() {
+		WhenConfigured("")
+	})
+}
+
+func TestDefinePlannedRejectsOptionsInputsRatherThanIgnoringThem(t *testing.T) {
+	t.Parallel()
+	// A planner owns the input set, so a token declared on Options would look
+	// declared while the factory's Get still failed on it.
+	assert.PanicsWithValue(t,
+		"xbc: plugin.DefinePlanned planned takes its input set from the Plan its planner returns; declare those tokens on that PlanOf instead of on Options",
+		func() {
+			DefinePlanned("planned", ConfigSpec[struct{}]{
+				Defaults: func() struct{} { return struct{}{} },
+			}, func(struct{}) (Plan[*definitionValue], error) {
+				return PlanOf(Inputs(), func(BuildContext) (*definitionValue, error) {
+					return &definitionValue{}, nil
+				}), nil
+			}, Options[*definitionValue]{
+				Inputs: Inputs(Collect[definitionContract]()),
+			})
+		})
+}
+
+func TestDefinePlannedStillAcceptsOptionsWithoutInputs(t *testing.T) {
+	t.Parallel()
+	definition := DefinePlanned("planned-ok", ConfigSpec[struct{}]{
+		Defaults: func() struct{} { return struct{}{} },
+	}, func(struct{}) (Plan[*definitionValue], error) {
+		return PlanOf(Inputs(), func(BuildContext) (*definitionValue, error) {
+			return &definitionValue{}, nil
+		}), nil
+	}, Options[*definitionValue]{
+		Activation: WhenConfigured("plugins.planned-ok"),
+	})
+	assert.Equal(t, pluginmodel.Key("planned-ok"), descriptorOf(t, definition).Key)
 }

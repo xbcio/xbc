@@ -29,8 +29,12 @@ type Activation struct {
 }
 
 // WhenConfigured enables a Definition only when path exists in the merged
-// environment.
+// environment. The path must be non-empty: an empty one names no section, so
+// the Definition would stay disabled forever with a reason that quotes nothing.
 func WhenConfigured(path string) Activation {
+	if path == "" {
+		panic("xbc: plugin.WhenConfigured requires a non-empty configuration path")
+	}
 	return Activation{kind: pluginmodel.ActivationConfigured, path: path}
 }
 
@@ -90,12 +94,21 @@ type ContractSet[P any] struct {
 
 // ExportAs declares interface I as an additional contract of primary type P.
 // The witness function makes the Go compiler prove P is assignable to I.
+//
+// I must be an interface: it names the capability a consumer resolves and asks
+// for, and a concrete type would instead publish that implementation as the
+// dependency. Rejecting it here rather than at freeze keeps the mistake at the
+// declaration that made it.
 func ExportAs[I any, P any](assign func(P) I) Contract[P] {
 	if assign == nil {
 		panic("xbc: plugin.ExportAs witness cannot be nil")
 	}
+	contract := typeOf[I]()
+	if contract.Kind() != reflect.Interface {
+		panic(fmt.Sprintf("xbc: plugin.ExportAs requires an interface contract type, got %s", contract))
+	}
 	return Contract[P]{contract: pluginmodel.Contract{
-		Type:   typeOf[I](),
+		Type:   contract,
 		Origin: callerOrigin(1),
 	}}
 }
@@ -145,8 +158,18 @@ func DefineConfigured[C any, P any](key Key, spec ConfigSpec[C], factory func(Bu
 // DefinePlanned declares a configured Plugin whose prepared configuration
 // selects its inputs. The planner runs once per enabled instance before graph
 // wiring and must not acquire resources.
+//
+// The planner owns the input set: it returns a Plan built with PlanOf, and that
+// Plan's InputSet is the one the graph wires. Options[P].Inputs is therefore
+// rejected here rather than ignored, because a token declared there would look
+// declared while the factory's Get still failed on it.
 func DefinePlanned[C any, P any](key Key, spec ConfigSpec[C], planner func(C) (Plan[P], error), optional ...Options[P]) Definition {
 	options := oneOptions(optional)
+	if len(options.Inputs.tokens) != 0 {
+		panic(fmt.Sprintf(
+			"xbc: plugin.DefinePlanned %s takes its input set from the Plan its planner returns; declare those tokens on that PlanOf instead of on Options",
+			key))
+	}
 	return newDefinition(key, &spec, func(raw any) (Plan[P], error) {
 		config, ok := raw.(C)
 		if !ok {

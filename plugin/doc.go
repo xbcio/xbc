@@ -132,10 +132,11 @@
 //		),
 //	}
 //
-// Plan still rejects a nil witness, a non-interface contract type, and the
-// same contract exported twice. ExportAs proves assignability; it does not
-// create an anonymous value, and every resolution keeps the producing
-// Identity alongside the exported value (see Entry[T] below).
+// ExportAs panics at the declaration site on a nil witness or a contract type
+// that is not an interface. Plan rejects the same contract exported twice.
+// ExportAs proves assignability; it does not create an anonymous value, and
+// every resolution keeps the producing Identity alongside the exported value
+// (see Entry[T] below).
 //
 // # Declaring and resolving dependencies
 //
@@ -169,6 +170,13 @@
 // for example as plugin.Collect[RouteContributor]() to gather every route
 // contributor a composition happens to include.
 //
+// Collect[T] keeps the collecting Plugin among its own candidates, and a
+// Plugin cannot depend on itself. A Definition that both exports T and writes
+// Collect[T] therefore fails the whole startup, naming that self-dependency —
+// which is deliberate: silently dropping the collector from the list it asked
+// for would make membership impossible to read off the declaration. Split such
+// a Plugin in two: one Definition exports T, another collects it.
+//
 // # Lifecycle capabilities
 //
 // A primary value opts into up to six stages by implementing the matching
@@ -195,8 +203,10 @@
 // PreStop runs before Stop and is the one hook whose context is not the
 // application's: it retracts external participation while the process is
 // still alive, so it needs a live context even though the stop request has
-// already cancelled the execution context. It is called only for an instance
-// that completed the start phase.
+// already cancelled the execution context. It is called only once the process
+// has opened its traffic gate, which is exactly the path where every Start
+// hook returned; a process that failed during construction, migration, Start,
+// or traffic preparation holds nothing and skips the phase.
 //
 // A single stage can be adapted the same way, such as closing a client XBC
 // does not otherwise know how to stop:
