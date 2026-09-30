@@ -4,14 +4,14 @@
 //
 // Definition returns one canonical declaration whose sole primary value is
 // *Plugin. The same value is exported under both the web.Middleware and
-// *Handle contracts. Bundle is side-effect free and can be composed
+// Handle contracts. Bundle is side-effect free and can be composed
 // explicitly alongside an application Definition that requires the exported
 // Handle:
 //
-//	var handleRef = plugin.RefTo[*tracing.Handle](tracing.Key)
+//	var handleRef = plugin.RefTo[tracing.Handle](tracing.Key)
 //
 //	type Publisher struct {
-//		handle *tracing.Handle
+//		handle tracing.Handle
 //		tracer trace.Tracer
 //	}
 //

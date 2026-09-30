@@ -326,8 +326,8 @@
       "config_path": "plugins.tracing",
       "cardinality": "single",
       "contracts": [
-        "*github.com/xbcio/xbc/transport/web/extensions/observability/tracing.Handle",
-        "github.com/xbcio/xbc/transport/web.Middleware"
+        "github.com/xbcio/xbc/transport/web.Middleware",
+        "github.com/xbcio/xbc/transport/web/extensions/observability/tracing.Handle"
       ]
     },
     {

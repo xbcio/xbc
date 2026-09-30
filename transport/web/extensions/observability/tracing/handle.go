@@ -10,9 +10,35 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Handle is the application-owned tracing contract exposed through
-// plugin.Provide. It intentionally hides SDK and OTLP exporter implementations.
-type Handle struct {
+// Handle is the application-owned tracing contract a consuming plugin receives
+// through plugin.RefTo, and the value this Definition exports as an additional
+// contract.
+//
+// It is an interface because every additional contract the framework wires must
+// be one, and because that is what actually hides the implementation: a caller
+// can name the contract but cannot reach the SDK TracerProvider, the OTLP
+// exporter, or the shutdown bookkeeping behind it.
+type Handle interface {
+	// Provider returns this plugin's private API-level TracerProvider. It is
+	// never installed as OpenTelemetry's global provider.
+	Provider() trace.TracerProvider
+	// Tracer creates an instrumentation tracer from the private provider.
+	Tracer(name string, options ...trace.TracerOption) trace.Tracer
+	// Extract reads configured W3C propagation fields without consulting the
+	// process-wide propagator.
+	Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context
+	// Inject writes configured W3C propagation fields without consulting the
+	// process-wide propagator.
+	Inject(ctx context.Context, carrier propagation.TextMapCarrier)
+	// ForceFlush exports all completed spans currently buffered by this handle.
+	ForceFlush(ctx context.Context) error
+	// Shutdown starts exactly one bounded background provider shutdown.
+	Shutdown(ctx context.Context) error
+}
+
+// handle is the private implementation of Handle. Its nil receiver is
+// meaningful: every method tolerates one, so a zero Plugin stays safe to use.
+type handle struct {
 	provider    trace.TracerProvider
 	propagator  propagation.TextMapPropagator
 	forceFlush  func(context.Context) error
@@ -25,40 +51,37 @@ type Handle struct {
 	stopErr  error
 }
 
+var _ Handle = (*handle)(nil)
+
 func newHandle(
 	provider trace.TracerProvider,
 	propagator propagation.TextMapPropagator,
 	forceFlush func(context.Context) error,
 	shutdown func(context.Context) error,
 	stopTimeout time.Duration,
-) *Handle {
-	return &Handle{
+) *handle {
+	return &handle{
 		provider: provider, propagator: propagator,
 		forceFlush: forceFlush, shutdown: shutdown, stopTimeout: stopTimeout,
 		stopDone: make(chan struct{}),
 	}
 }
 
-// Provider returns this plugin's private API-level TracerProvider. It is never
-// installed as OpenTelemetry's global provider.
-func (h *Handle) Provider() trace.TracerProvider {
+func (h *handle) Provider() trace.TracerProvider {
 	if h == nil {
 		return nil
 	}
 	return h.provider
 }
 
-// Tracer creates an instrumentation tracer from the private provider.
-func (h *Handle) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
+func (h *handle) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
 	if h == nil || h.provider == nil {
 		return nil
 	}
 	return h.provider.Tracer(name, options...)
 }
 
-// Extract reads configured W3C propagation fields without consulting the
-// process-wide propagator.
-func (h *Handle) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+func (h *handle) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -68,9 +91,7 @@ func (h *Handle) Extract(ctx context.Context, carrier propagation.TextMapCarrier
 	return h.propagator.Extract(ctx, carrier)
 }
 
-// Inject writes configured W3C propagation fields without consulting the
-// process-wide propagator.
-func (h *Handle) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+func (h *handle) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -80,8 +101,7 @@ func (h *Handle) Inject(ctx context.Context, carrier propagation.TextMapCarrier)
 	h.propagator.Inject(ctx, carrier)
 }
 
-// ForceFlush exports all completed spans currently buffered by this handle.
-func (h *Handle) ForceFlush(ctx context.Context) error {
+func (h *handle) ForceFlush(ctx context.Context) error {
 	if h == nil || h.forceFlush == nil {
 		return fmt.Errorf("tracing: handle is not initialized")
 	}
@@ -112,7 +132,7 @@ func (h *Handle) ForceFlush(ctx context.Context) error {
 // so calling ForceFlush first would only risk exhausting the one-shot shutdown
 // deadline. Caller contexts limit waiting but are never passed to the provider;
 // later callers can wait for and receive the shared cleanup result.
-func (h *Handle) Shutdown(ctx context.Context) error {
+func (h *handle) Shutdown(ctx context.Context) error {
 	if h == nil || h.shutdown == nil {
 		return nil
 	}
@@ -141,7 +161,7 @@ func (h *Handle) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (h *Handle) finishShutdown(done chan struct{}) {
+func (h *handle) finishShutdown(done chan struct{}) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), h.stopTimeout)
 	err := h.shutdown(cleanupCtx)
 	cancel()

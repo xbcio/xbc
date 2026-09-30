@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
@@ -31,10 +32,17 @@ const metricsKey plugin.Key = "metrics"
 // validated configuration when the Plugin is constructed.
 type Plugin struct {
 	config normalizedConfig
-	handle *Handle
+	handle *handle
 }
 
 var _ web.Middleware = (*Plugin)(nil)
+
+// Plugin is the primary value the Definition constructs, so it is also the
+// value the Handle contract is satisfied by: the framework requires a
+// contract's interface to be assignable from that primary type. The facade
+// methods below forward to the private handle, which keeps the SDK and OTLP
+// implementation unreachable even though the contract is exposed on Plugin.
+var _ Handle = (*Plugin)(nil)
 
 var definition = plugin.DefineConfigured(
 	Key,
@@ -49,11 +57,11 @@ var definition = plugin.DefineConfigured(
 		Activation: plugin.WhenConfigured("plugins." + Key.String()),
 		Exports: plugin.Contracts(
 			plugin.ExportAs[web.Middleware](func(value *Plugin) web.Middleware { return value }),
-			plugin.ExportAs(func(value *Plugin) *Handle { return value.Handle() }),
+			plugin.ExportAs[Handle](func(value *Plugin) Handle { return value }),
 		),
-		Lifecycle: plugin.Lifecycle[*Plugin]{
-			Stop: (*Plugin).Stop,
-		},
+		// No Lifecycle adapter for Stop: *Plugin satisfies plugin.Closer
+		// directly, and the framework rejects a Definition that declares an
+		// adapter for a stage its primary type already implements.
 	},
 )
 
@@ -134,13 +142,54 @@ func newPlugin(cfg Config, factory exporterFactory) (plug *Plugin, err error) {
 	return &Plugin{config: config, handle: handle}, nil
 }
 
-// Handle returns this plugin's private tracing contract.
-func (p *Plugin) Handle() *Handle {
+// contractHandle returns the private implementation behind the Handle facade,
+// tolerating a Plugin that newPlugin did not build. Every facade method goes
+// through it, so a zero Plugin degrades to the same no-op answers a nil
+// *handle already gives rather than panicking.
+func (p *Plugin) contractHandle() *handle {
 	if p == nil {
 		return nil
 	}
 	return p.handle
 }
+
+// Handle returns this plugin's private tracing contract.
+//
+// A Plugin built by newPlugin always has one. A zero Plugin does not, and this
+// returns a nil interface for it rather than an interface wrapping a nil
+// *handle, so a caller's nil test reports the absence truthfully.
+func (p *Plugin) Handle() Handle {
+	if p == nil || p.handle == nil {
+		return nil
+	}
+	return p.handle
+}
+
+// Provider implements Handle.
+func (p *Plugin) Provider() trace.TracerProvider { return p.contractHandle().Provider() }
+
+// Tracer implements Handle.
+func (p *Plugin) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
+	return p.contractHandle().Tracer(name, options...)
+}
+
+// Extract implements Handle.
+func (p *Plugin) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	return p.contractHandle().Extract(ctx, carrier)
+}
+
+// Inject implements Handle.
+func (p *Plugin) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+	p.contractHandle().Inject(ctx, carrier)
+}
+
+// ForceFlush implements Handle.
+func (p *Plugin) ForceFlush(ctx context.Context) error { return p.contractHandle().ForceFlush(ctx) }
+
+// Shutdown implements Handle. It is the same bounded flush-and-shutdown Stop
+// runs; expose it so a consumer holding the Handle contract can flush without
+// owning the lifecycle.
+func (p *Plugin) Shutdown(ctx context.Context) error { return p.contractHandle().Shutdown(ctx) }
 
 // Stop force-flushes and shuts down the private provider. It is safe to call
 // repeatedly and concurrently. Because tracing exports web.Middleware, a
@@ -148,7 +197,7 @@ func (p *Plugin) Handle() *Handle {
 // therefore stops after the web server during reverse lifecycle unwind, so
 // this bounded flush-and-shutdown runs only once dependent traffic drains.
 func (p *Plugin) Stop(ctx context.Context) error {
-	return p.Handle().Shutdown(ctx)
+	return p.contractHandle().Shutdown(ctx)
 }
 
 func buildResource(cfg normalizedConfig) *resource.Resource {
