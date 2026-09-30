@@ -29,6 +29,7 @@ application-local.yml
 # Tool working directories
 .superpowers/
 .worktrees/
+.omc/
 
 # Local design documents and implementation plans
 /.claude/specs/
