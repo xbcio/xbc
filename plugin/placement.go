@@ -35,9 +35,10 @@ type Placement struct {
 
 // Hosts reports whether key is in Hosted.
 //
-// It is read on the hosted-set path rather than by scanning Hosted at each call
-// site, so "is this workload carried" has exactly one spelling for the
-// assembly layer, the diagnostics and the tests.
+// It gives tests and callers a single spelling for "is this workload carried".
+// The assembly layer and the diagnostics do not read it: each keeps its own
+// shape of the hosted set (a lookup map and sorted diagnostic labels
+// respectively), because both need it indexed differently than a linear scan.
 func (p Placement) Hosts(key WorkloadKey) bool {
 	for _, hosted := range p.Hosted {
 		if hosted == key {

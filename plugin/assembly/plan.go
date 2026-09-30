@@ -186,7 +186,7 @@ func (plan *Plan) InstanceConfigPath(identity plugin.Identity) string {
 	if plan == nil {
 		return ""
 	}
-	instance, exists := plan.instances[identity]
+	instance, exists := plan.instances[identity.Normalized()]
 	if !exists {
 		return ""
 	}
@@ -206,7 +206,7 @@ func (plan *Plan) InstanceSelectedAt(identity plugin.Identity) string {
 	if plan == nil {
 		return ""
 	}
-	instance, exists := plan.instances[identity]
+	instance, exists := plan.instances[identity.Normalized()]
 	if !exists {
 		return ""
 	}
@@ -220,7 +220,7 @@ func (plan *Plan) InstanceInputs(identity plugin.Identity) []InputEdge {
 	if plan == nil {
 		return nil
 	}
-	instance, exists := plan.instances[identity]
+	instance, exists := plan.instances[identity.Normalized()]
 	if !exists {
 		return nil
 	}
@@ -442,6 +442,7 @@ type selectedDefinition struct {
 func freezeBundles(bundles []plugin.Bundle) ([]selectedDefinition, error) {
 	byHandle := make(map[pluginmodel.Definition]pluginmodel.BundleEntry)
 	byKey := make(map[pluginmodel.Key]pluginmodel.BundleEntry)
+	bySection := make(map[string]pluginmodel.DefinitionDescriptor)
 	for _, publicBundle := range bundles {
 		for _, entry := range pluginmodel.BundleEntries(pluginmodel.Bundle(publicBundle)) {
 			// Selecting the same Definition again is expected usage, not a
@@ -462,11 +463,27 @@ func freezeBundles(bundles []plugin.Bundle) ([]selectedDefinition, error) {
 					descriptor.Key, previousDescriptor.Origin, previous.Origin, descriptor.Origin, entry.Origin,
 				)
 			}
+			// One Definition owns exactly one configuration section, and two
+			// Definitions sharing one is rejected here rather than left to the
+			// configuration layer: that layer only sees section paths and would
+			// report the collision without naming the Definitions that caused
+			// it. Every instance of a multi-instance Definition still shares
+			// one definitionPath, which is why the key is the path and not the
+			// instance path -- and why this cannot false-positive on a plugin
+			// that legitimately declares several instances.
+			section := definitionPath(descriptor)
+			if previous, collision := bySection[section]; collision {
+				return nil, fmt.Errorf(
+					"xbc: configuration section %s is claimed by plugins %q and %q\n  first: %s\n  second: %s\n  each Definition owns one section; give one of them a distinct Options.ConfigPath",
+					section, previous.Key, descriptor.Key, previous.Origin, descriptor.Origin,
+				)
+			}
 			if err := validateDefinition(descriptor); err != nil {
 				return nil, err
 			}
 			byHandle[entry.Definition] = entry
 			byKey[descriptor.Key] = entry
+			bySection[section] = descriptor
 		}
 	}
 
@@ -508,6 +525,16 @@ func validateDefinition(definition pluginmodel.DefinitionDescriptor) error {
 	}
 	if err := validateConfigPath(definition.ConfigPath); err != nil {
 		return fmt.Errorf("xbc: plugin %q has invalid config path %q: %w", definition.Key, definition.ConfigPath, err)
+	}
+	// A misspelled workload key is otherwise reported by ValidateWorkloads as
+	// "belongs to workload %q, which nothing in the composition declares",
+	// which points at a missing declaration rather than at the typo that
+	// caused it. Catching the malformed key here keeps that diagnostic
+	// reserved for the case it describes.
+	if definition.Workload != "" {
+		if err := definition.Workload.Validate(); err != nil {
+			return fmt.Errorf("xbc: plugin %q has invalid workload %q: %w", definition.Key, definition.Workload, err)
+		}
 	}
 	if definition.Activation.Kind == pluginmodel.ActivationConfigured {
 		if err := validateConfigPath(definition.Activation.Path); err != nil {
@@ -885,7 +912,26 @@ func wireGraph(instances map[plugin.Identity]*plannedInstance, contracts map[ref
 			instance.bindings[token.ID] = append([]plugin.Identity(nil), matches...)
 			for _, producer := range matches {
 				if producer == consumer {
-					return nil, fmt.Errorf("xbc: plugin %s input token %d (%s) creates a self-dependency", consumer, token.ID, token.Type)
+					// The token is named because it is the precise cause: a
+					// Ref that resolves to its own exporter is a one-node
+					// loop, and reporting the cycle path instead would be less
+					// specific than the declaration that closed it.
+					//
+					// Collect needs the extra sentence because its cause is
+					// not obvious from the declaration. QueryMany keeps the
+					// consumer among its own candidates precisely so this edge
+					// can be seen and rejected rather than silently dropped,
+					// and the fix -- a second Definition -- is not the fix a
+					// self-referencing Ref would have.
+					detail := "it resolves to its own export"
+					if token.Kind == pluginmodel.QueryMany {
+						detail = fmt.Sprintf(
+							"it exports %s and also collects every exporter of it; split the aggregator and the exporter into two Definitions so the aggregator collects only its peers",
+							token.Type,
+						)
+					}
+					return nil, fmt.Errorf("xbc: plugin %s input token %d (%s) creates a self-dependency: %s",
+						consumer, token.ID, token.Type, detail)
 				}
 				if _, exists := outgoing[producer][consumer]; !exists {
 					outgoing[producer][consumer] = struct{}{}
