@@ -140,6 +140,31 @@ func TestSlowStartupWarningRepeatsWhileStartupIsUnfinished(t *testing.T) {
 	}
 }
 
+// TestSlowStartupWarningSpellsOutAPluginlessPhase pins the field an operator
+// reads to decide whether a stuck boot is inside one plugin or between them.
+//
+// Bootstrap and planning invoke no hook at all, and the phases that do invoke
+// hooks run stretches -- migration, traffic preparation -- with none in flight,
+// so those positions carry the zero Identity, whose String is the empty string.
+// A blank value there is indistinguishable from a broken report, which is the
+// one reading an operator must not be left with on the boot they cannot
+// reproduce: the field has to say "no plugin" out loud, exactly as an empty
+// hosted set is spelled "(none)" rather than left blank.
+func TestSlowStartupWarningSpellsOutAPluginlessPhase(t *testing.T) {
+	app := newRuntimeTestApp()
+	capture := &captureLogger{}
+	app.progress.enterPhase(phasePlanning)
+
+	app.reportSlowStartup(capture, time.Minute, time.Second)
+
+	require.Len(t, capture.entries, 1)
+	fields := capture.entries[0].fields()
+	assert.Equal(t, phasePlanning, fields["phase"])
+	assert.Equal(t, "(none)", fields["plugin"],
+		"a phase that hands control to no plugin names none rather than rendering an empty field")
+	assert.Equal(t, "", fields["stage"], "and there is no stage either")
+}
+
 // TestSlowStartupIsSilentWhenStartupFinishesInsideTheThreshold is the other half
 // of the same contract. A warning that fires on every boot is a warning
 // operators learn to skip, so the assertion is on level rather than on the

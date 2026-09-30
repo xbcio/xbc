@@ -178,8 +178,23 @@ func (a *App) reportSlowStartup(logger log.Logger, elapsed, threshold time.Durat
 		"elapsed", elapsed.String(),
 		"threshold", threshold.String(),
 		"phase", position.phase,
-		"plugin", position.identity.String(),
+		"plugin", startupPluginLabel(position.identity),
 		"stage", string(position.stage),
 		"waiting", time.Since(position.since).String(),
 	)
+}
+
+// startupPluginLabel renders the plugin a slow startup is stuck in, spelling out
+// the pluginless position rather than leaving the field blank.
+//
+// A phase that invokes no hook -- bootstrap, planning, and the parts of migrate
+// and traffic that run without a plugin -- carries the zero Identity, whose
+// String is the empty string. That blank would read as a field nobody filled in
+// rather than as the deliberate shape it is, the same reason workloadLabels
+// spells out an empty hosted set.
+func startupPluginLabel(identity plugin.Identity) string {
+	if identity.Plugin == "" {
+		return "(none)"
+	}
+	return identity.String()
 }

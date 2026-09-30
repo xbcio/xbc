@@ -236,7 +236,7 @@ func TestRunPlansTheBundlesItWasGiven(t *testing.T) {
 
 	out := report()
 	assert.Contains(t, out, "run-composed", "the Bundle passed to Run must be the one that gets planned")
-	assert.Contains(t, out, "declared 1, enabled instances 1, disabled 0",
+	assert.Contains(t, out, "planned 1, enabled instances 1, disabled 0",
 		"an explicitly composed Run sees exactly its own Bundles")
 	assert.NotContains(t, out, string(processCatalogSentinel),
 		"an explicit composition must not be merged with, or replaced by, the frozen autoload catalog")

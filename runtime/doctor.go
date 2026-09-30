@@ -55,7 +55,11 @@ func (a *App) reportDoctor(plan *assembly.Plan, migrate bool) {
 	order := plan.Order()
 	disabled := plan.DisabledDetail()
 	fmt.Fprintln(out, "plugins")
-	fmt.Fprintf(out, "  declared %d, enabled instances %d, disabled %d\n",
+	// The first count is labelled "planned" rather than "declared" because it is
+	// what the plan kept after placement filtered the selection: a process that
+	// hosts no part of a workload never saw those Definitions at all, so calling
+	// its total "declared" would understate the composition it was given.
+	fmt.Fprintf(out, "  planned %d, enabled instances %d, disabled %d\n",
 		plan.DefinitionCount(), len(order), len(disabled))
 	fmt.Fprintln(out)
 

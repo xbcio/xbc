@@ -150,8 +150,12 @@ func (plan *Plan) WorkloadOf(identity plugin.Identity) (plugin.WorkloadKey, bool
 	return workload, ok
 }
 
-// DefinitionCount returns the number of distinct canonical Definitions after
-// Bundle deduplication.
+// DefinitionCount returns the number of Definitions the built graph holds:
+// distinct canonical Definitions after Bundle deduplication, narrowed by the
+// placement decision that chose which workloads this process carries.
+//
+// A process that hosts only some workloads legitimately sees a smaller count
+// than it declared, so this is a count of the graph, not of the composition.
 func (plan *Plan) DefinitionCount() int {
 	if plan == nil {
 		return 0

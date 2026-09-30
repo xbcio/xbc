@@ -72,7 +72,7 @@ func TestDoctorReportsGraphInstancesSourcesAndDisableReasons(t *testing.T) {
 	out := runDoctor(t, app, runtimeTestConfigWith(t, time.Second,
 		"plugins:\n  switched-on:\n    enabled: true\n")...)
 
-	assert.Contains(t, out, "declared 2, enabled instances 1, disabled 1")
+	assert.Contains(t, out, "planned 2, enabled instances 1, disabled 1")
 	assert.Contains(t, out, "plugins.switched-on", "an enabled instance names the section it binds")
 	assert.Contains(t, out, "switched-off")
 	assert.Contains(t, out, "activation path plugins.switched-off is not configured",
@@ -168,13 +168,13 @@ func TestEnvironmentAloneActivatesAWhenConfiguredPlugin(t *testing.T) {
 
 	off := newRuntimeTestApp(definition)
 	require.Contains(t, runDoctor(t, off, runtimeTestConfig(t, time.Second)...),
-		"declared 1, enabled instances 0, disabled 1", "without the variable the plugin stays off")
+		"planned 1, enabled instances 0, disabled 1", "without the variable the plugin stays off")
 
 	t.Setenv("XBC_PLUGINS_ENV_ACTIVATED_ENABLED", "true")
 	on := newRuntimeTestApp(definition)
 	out := runDoctor(t, on, runtimeTestConfig(t, time.Second)...)
 
-	assert.Contains(t, out, "declared 1, enabled instances 1, disabled 0",
+	assert.Contains(t, out, "planned 1, enabled instances 1, disabled 0",
 		"an environment variable alone must be able to activate a WhenConfigured plugin")
 	assert.Contains(t, out, "from env", "doctor attributes the activation to the environment layer")
 }
@@ -290,7 +290,7 @@ func TestApplicationFreeformRootIsAcceptedWithoutASchema(t *testing.T) {
 		"app:\n  name: demo\n  anything:\n    nested: true\n")...)
 	assert.Contains(t, out, "roots    app, log, plugins",
 		"app must be named in the declared roots, which is precisely why the ownership walk does not reject it")
-	assert.Contains(t, out, "declared 1, enabled instances 1, disabled 0",
+	assert.Contains(t, out, "planned 1, enabled instances 1, disabled 0",
 		"a block the framework never interprets must not disturb the plugin graph")
 	assert.NotContains(t, out, "demo",
 		"a freeform section is still a section: doctor names it but never prints what is in it")
