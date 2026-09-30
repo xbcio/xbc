@@ -26,7 +26,8 @@ func newTestHost() *testHost {
 
 func (h *testHost) ExecutionContext() context.Context { return h.taskCtx }
 
-func (*testHost) Logger() corelog.Logger { return corelog.Nop() }
+func (*testHost) Logger() corelog.Logger  { return corelog.Nop() }
+func (*testHost) ProcessInstance() string { return "test-process" }
 
 func (h *testHost) TrafficGate() <-chan struct{} {
 	gate := make(chan struct{})

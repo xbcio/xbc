@@ -17,6 +17,7 @@ type fakeHost struct {
 
 func (*fakeHost) ExecutionContext() context.Context { return context.Background() }
 func (*fakeHost) Logger() log.Logger                { return log.Nop() }
+func (*fakeHost) ProcessInstance() string           { return "test-process" }
 func (*fakeHost) TrafficGate() <-chan struct{} {
 	ch := make(chan struct{})
 	close(ch)

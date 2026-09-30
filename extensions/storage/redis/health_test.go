@@ -158,6 +158,7 @@ type healthTestHost struct{}
 
 func (healthTestHost) ExecutionContext() context.Context { return context.Background() }
 func (healthTestHost) Logger() log.Logger                { return nil }
+func (healthTestHost) ProcessInstance() string           { return "test-process" }
 func (healthTestHost) TrafficGate() <-chan struct{}      { return nil }
 func (healthTestHost) SubmitTask(plugin.Identity, func(context.Context), bool) bool {
 	return false

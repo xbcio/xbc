@@ -31,6 +31,12 @@ func (host hostAdapter) Logger() log.Logger {
 	return host.app.log()
 }
 
+// ProcessInstance answers with the same string the runtime logs at startup and
+// hands to placement as the requesting instance, so a slot's recorded holder and
+// a lease claimant published by any plugin name one process identically. It
+// needs no lock: settings are bound once, before any Plugin is constructed.
+func (host hostAdapter) ProcessInstance() string { return host.app.settings.Instance() }
+
 func (host hostAdapter) TrafficGate() <-chan struct{} { return host.app.trafficGate }
 
 func (host hostAdapter) SubmitTask(identity plugin.Identity, fn func(context.Context), critical bool) bool {

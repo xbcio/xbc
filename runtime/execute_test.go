@@ -293,6 +293,8 @@ func TestHostAdapterDegradesWhenTheAppHasNoRuntimeStateYet(t *testing.T) {
 		"a not-yet-executing App exposes Background rather than a nil context")
 	assert.NotNil(t, host.Logger())
 	assert.NotNil(t, host.TrafficGate())
+	assert.Empty(t, host.ProcessInstance(),
+		"the process identity is bound during bootstrap, so there is nothing honest to report before it")
 	assert.False(t, host.SubmitTask(plugin.Identity{Plugin: "p"}, func(context.Context) {}, false),
 		"there is no task runtime before bootstrap")
 

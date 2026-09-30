@@ -37,6 +37,7 @@ func newRefusingHost() *refusingHost {
 
 func (h *refusingHost) ExecutionContext() context.Context { return h.executionCtx }
 func (h *refusingHost) Logger() log.Logger                { return log.Nop() }
+func (*refusingHost) ProcessInstance() string             { return "test-process" }
 func (h *refusingHost) TrafficGate() <-chan struct{}      { return h.gate }
 
 func (h *refusingHost) SubmitTask(_ plugin.Identity, _ func(context.Context), _ bool) bool {

@@ -280,7 +280,16 @@ plugins:
       redis_instance: coordination
 ```
 
-Distributed mode uses a random owner token, a `SET NX` lease with TTL, and Lua scripts for atomic renewal and release. Only the lease owner runs a given job among healthy replicas, and TTL expiry enables takeover after a node is lost.
+Distributed mode uses a `SET NX` lease with TTL and Lua scripts for atomic renewal and release. Only the lease owner runs a given job among healthy replicas, and TTL expiry enables takeover after a node is lost.
+
+The owner token names the replica that won, so a lock answers *which* process is running a job and not only that one is:
+
+```
+$ redis-cli GET orders:cron:nightly-report
+"host-7-1758091200-9f3c1a2b/4f2ab9c1d0e3f5a7b9c1d3e5f7a9b1c3"
+```
+
+Everything before the last `/` is `xbc.instance_id` -- the same identity `doctor` prints as a slot's `holder`, so a job lock and a workload slot read as one process rather than two. The random half identifies the acquisition rather than the process, and it is what renewal and release compare: an explicitly set `XBC_INSTANCE_ID` survives a restart, so a token that were only the name would let a dead replica's lease renew the lock its successor now holds.
 
 This mechanism provides at-most-one-active-owner coordination, not exactly-once business execution. Jobs must remain idempotent and record retryable outcomes.
 

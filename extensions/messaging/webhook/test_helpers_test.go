@@ -86,7 +86,8 @@ func newTestRuntimeHost() *testRuntimeHost {
 
 func (h *testRuntimeHost) ExecutionContext() context.Context { return h.taskCtx }
 
-func (*testRuntimeHost) Logger() corelog.Logger { return corelog.Nop() }
+func (*testRuntimeHost) Logger() corelog.Logger  { return corelog.Nop() }
+func (*testRuntimeHost) ProcessInstance() string { return "test-process" }
 
 func (h *testRuntimeHost) TrafficGate() <-chan struct{} { return h.trafficGate }
 

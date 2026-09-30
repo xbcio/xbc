@@ -11,6 +11,7 @@ type testHost struct{}
 
 func (testHost) ExecutionContext() context.Context { return context.Background() }
 func (testHost) Logger() log.Logger                { return log.Nop() }
+func (testHost) ProcessInstance() string           { return "test-process" }
 func (testHost) TrafficGate() <-chan struct{} {
 	ch := make(chan struct{})
 	close(ch)

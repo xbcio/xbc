@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,102 @@ func newRedisLockerTest(t *testing.T) (*miniredis.Miniredis, *redis.Client, leas
 func TestRedisLockerRejectsNilClient(t *testing.T) {
 	if locker, err := newRedisLocker(nil); err == nil {
 		t.Fatalf("newRedisLocker(nil) = (%v, nil), want an error", locker)
+	}
+}
+
+// TestTheStoredValueNamesTheReplicaRunningTheJob is the test behind the
+// `redis-cli GET` an operator is told to run: the value under a job's lock key
+// has to begin with the replica's identity, or the documented "take everything
+// before the last slash" gives back the wrong thing.
+//
+// The random half is asserted as present and as distinct from the name, because
+// both halves carry a separate obligation. Without the name the value answers
+// nobody; without the random half a restarted replica reusing an explicitly set
+// identity would mint a token equal to the one already stored, and its stale
+// lease would renew its successor's lock.
+func TestTheStoredValueNamesTheReplicaRunningTheJob(t *testing.T) {
+	_, client, locker := newRedisLockerTest(t)
+	ctx := context.Background()
+
+	held, acquired, err := locker.TryAcquire(ctx, "locks:nightly", "replica-7", time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("TryAcquire() = (%v, %v), error = %v", held, acquired, err)
+	}
+
+	stored, err := client.Get(ctx, "locks:nightly").Result()
+	if err != nil {
+		t.Fatalf("GET locks:nightly error = %v", err)
+	}
+	if stored != held.Owner() {
+		t.Fatalf("stored value = %q, want the lease's own token %q", stored, held.Owner())
+	}
+	separator := strings.LastIndex(stored, "/")
+	if separator < 0 {
+		t.Fatalf("stored value = %q, want a %q-separated claimant and acquisition", stored, "/")
+	}
+	name, unique := stored[:separator], stored[separator+1:]
+	if name != "replica-7" {
+		t.Fatalf("stored value names %q, want the claiming replica %q", name, "replica-7")
+	}
+	if unique == "" || unique == name {
+		t.Fatalf("stored value = %q, want an acquisition-unique half beside the name", stored)
+	}
+}
+
+// TestTheStoredValueNamesTheReplicaEvenWhenItsOwnNameContainsASlash guards the
+// reason the split moved to the last slash: xbc.instance_id is operator-chosen
+// and may itself contain '/' (e.g. a zone-qualified name), and the documented
+// recovery procedure -- take everything before the last slash -- must still
+// recover that whole name rather than truncating it at the first one.
+func TestTheStoredValueNamesTheReplicaEvenWhenItsOwnNameContainsASlash(t *testing.T) {
+	_, client, locker := newRedisLockerTest(t)
+	ctx := context.Background()
+
+	claimant := "zone-a/replica-7"
+	held, acquired, err := locker.TryAcquire(ctx, "locks:nightly", claimant, time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("TryAcquire() = (%v, %v), error = %v", held, acquired, err)
+	}
+
+	stored, err := client.Get(ctx, "locks:nightly").Result()
+	if err != nil {
+		t.Fatalf("GET locks:nightly error = %v", err)
+	}
+	separator := strings.LastIndex(stored, "/")
+	if separator < 0 {
+		t.Fatalf("stored value = %q, want a %q-separated claimant and acquisition", stored, "/")
+	}
+	name := stored[:separator]
+	if name != claimant {
+		t.Fatalf("stored value names %q, want the claiming replica %q", name, claimant)
+	}
+}
+
+// TestAnAnonymousAcquisitionIsStillUnique keeps the claimant a reporting detail
+// rather than a precondition. Naming the holder is what the value is for, but
+// locking correctly must not depend on having a name to publish.
+func TestAnAnonymousAcquisitionIsStillUnique(t *testing.T) {
+	_, client, locker := newRedisLockerTest(t)
+	ctx := context.Background()
+
+	first, acquired, err := locker.TryAcquire(ctx, "locks:a", "", time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("first TryAcquire() = (%v, %v), error = %v", first, acquired, err)
+	}
+	second, acquired, err := locker.TryAcquire(ctx, "locks:b", "", time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("second TryAcquire() = (%v, %v), error = %v", second, acquired, err)
+	}
+
+	if first.Owner() == second.Owner() {
+		t.Fatalf("two anonymous acquisitions share the token %q", first.Owner())
+	}
+	stored, err := client.Get(ctx, "locks:a").Result()
+	if err != nil {
+		t.Fatalf("GET locks:a error = %v", err)
+	}
+	if strings.HasPrefix(stored, "/") {
+		t.Fatalf("stored value = %q, want no empty claimant half in front of the separator", stored)
 	}
 }
 

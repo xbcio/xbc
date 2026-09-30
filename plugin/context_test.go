@@ -20,6 +20,7 @@ type fakeHost struct {
 	execution context.Context
 	logger    log.Logger
 	gate      chan struct{}
+	process   string
 	submits   []fakeSubmit
 	shutdowns []fakeShutdown
 	admit     bool
@@ -41,6 +42,8 @@ func newFakeHost() *fakeHost { return &fakeHost{admit: true} }
 func (h *fakeHost) ExecutionContext() context.Context { return h.execution }
 
 func (h *fakeHost) Logger() log.Logger { return h.logger }
+
+func (h *fakeHost) ProcessInstance() string { return h.process }
 
 func (h *fakeHost) TrafficGate() <-chan struct{} { return h.gate }
 
@@ -113,6 +116,39 @@ func TestContextIdentityIsNormalizedOnceAtConstruction(t *testing.T) {
 	unnamed := NewRuntimeContext(newFakeHost(), Identity{Plugin: "gorm"})
 	assert.Equal(t, DefaultInstance, unnamed.Instance(), "Instance never hands back an empty string")
 	assert.Equal(t, "gorm", unnamed.Identity().String())
+}
+
+// TestTheProcessIsIdentifiedSeparatelyFromThePluginInstance pins the one axis
+// Instance cannot express. Both halves matter: two Contexts in one process
+// answer with the same process identity however differently their Definitions
+// are instanced, and a Context whose plugin instance name is the default still
+// reports the process it runs in. Code that publishes "who holds this" into a
+// store shared by replicas is only correct if it reaches for this one.
+func TestTheProcessIsIdentifiedSeparatelyFromThePluginInstance(t *testing.T) {
+	t.Parallel()
+	host := newFakeHost()
+	host.process = "host-7-1758091200-9f3c1a2b"
+
+	named := NewRuntimeContext(host, Identity{Plugin: "cron", Instance: "reports"})
+	unnamed := NewRuntimeContext(host, Identity{Plugin: "cron"})
+
+	assert.Equal(t, host.process, named.ProcessInstance())
+	assert.Equal(t, host.process, unnamed.ProcessInstance(),
+		"one process answers with one identity no matter how its plugins are instanced")
+	assert.NotEqual(t, named.Instance(), named.ProcessInstance(),
+		"the plugin instance name is a different question and must not stand in for the process")
+}
+
+// TestAContextWithNoRuntimeNamesNoProcess keeps the empty string meaning exactly
+// one thing: there is no runtime behind this Context. A real host always has an
+// identity to report -- the runtime derives one when the deployment gave none --
+// so a caller that sees empty is looking at a zero value, not at an anonymous
+// process, and nothing here invents a name to paper over that.
+func TestAContextWithNoRuntimeNamesNoProcess(t *testing.T) {
+	t.Parallel()
+	var missing *Context
+	assert.Empty(t, missing.ProcessInstance())
+	assert.Empty(t, NewRuntimeContext(nil, Identity{Plugin: "p"}).ProcessInstance())
 }
 
 func TestContextLogFallsBackToTheProcessLogger(t *testing.T) {

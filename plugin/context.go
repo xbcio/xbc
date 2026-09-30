@@ -12,6 +12,7 @@ import (
 type RuntimeHost interface {
 	ExecutionContext() context.Context
 	Logger() log.Logger
+	ProcessInstance() string
 	TrafficGate() <-chan struct{}
 	SubmitTask(id Identity, fn func(context.Context), critical bool) bool
 	RequestShutdown(id Identity, reason string) bool
@@ -56,6 +57,28 @@ func (c *Context) Name() string       { return c.id.Plugin.String() }
 func (c *Context) Key() Key           { return c.id.Plugin }
 func (c *Context) Instance() string   { return c.id.Instance }
 func (c *Context) Identity() Identity { return c.id }
+
+// ProcessInstance returns the identity of the process this Plugin runs in: the
+// configured instance id when the deployment gave one, and the runtime's
+// derived default otherwise. Every Plugin in one process reports the same
+// string, and two replicas of one deployment report different ones.
+//
+// That is the opposite axis from Instance, which names this Plugin among the
+// instances of its own Definition and reads the same in every replica. Code
+// writing to a store shared by the replicas -- a lease claimant, a claim row, a
+// reported holder -- wants this string; a log field explaining which
+// configuration section acted wants Instance.
+//
+// Treat the value as opaque. It is a token to compare and to publish, not a
+// structure to parse: the derived default's spelling is the runtime's business
+// and may change. It is empty only when there is no runtime behind the Context,
+// which a plugin under a real application never sees.
+func (c *Context) ProcessInstance() string {
+	if c == nil || c.host == nil {
+		return ""
+	}
+	return c.host.ProcessInstance()
+}
 
 func (c *Context) Log() log.Logger {
 	if c == nil || c.host == nil || c.host.Logger() == nil {

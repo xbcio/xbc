@@ -112,6 +112,12 @@ type Plugin struct {
 	finalizeOnce    sync.Once
 	finalizeDone    chan struct{}
 	stopErr         error
+
+	// process is the identity of the process this replica runs in, learned from
+	// the Context at Init and published as the claimant of every job lock. It is
+	// written once under mu and read without it: the only readers are tasks that
+	// Start admits, and Start takes mu before admitting any of them.
+	process string
 }
 
 func newConfiguredPlugin(
@@ -383,6 +389,7 @@ func (p *Plugin) init(ctx *plugin.Context) error {
 		return errors.New("cron: Init called more than once")
 	default:
 		p.initialized = true
+		p.process = ctx.ProcessInstance()
 		return nil
 	}
 }

@@ -221,13 +221,12 @@ func (p *Plugin) runInvocation(ctx context.Context, logger log.Logger, entry *sc
 		return
 	}
 
-	// The scheduler names no claimant. A cron replica has no process identity to
-	// publish -- plugin.Context.Instance is this Plugin's instance name, the
-	// same string in every replica -- and the contract forbids inventing one:
-	// a name shared by every replica would be published on every lock while
-	// distinguishing none of them. The token stays unique either way, so the
-	// only thing given up is being able to read the holder out of the store.
-	held, acquired, err := p.locker.TryAcquire(ctx, entry.lockKey, "", p.config.Distributed.TTL)
+	// The claimant is this process, not this Plugin instance: the lock exists to
+	// pick one replica out of many, so the only useful answer to "which replica
+	// is running this job" is the one string that differs between them. It is
+	// published beside the token and never as the token, so a superseded holder
+	// cannot renew its successor's lock.
+	held, acquired, err := p.locker.TryAcquire(ctx, entry.lockKey, p.process, p.config.Distributed.TTL)
 	if err != nil {
 		if ctx.Err() == nil {
 			logger.Error("cron: distributed lease acquisition failed", "job", entry.label, "error", err)

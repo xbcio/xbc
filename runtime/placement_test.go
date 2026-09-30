@@ -161,6 +161,36 @@ func TestAConfiguredInstanceIdentityReachesThePlacementSource(t *testing.T) {
 	assert.Equal(t, "scanner-2", source.requests[0].Instance)
 }
 
+// TestOnePlacementIdentityIsAlsoWhatPluginsPublish closes the loop the claimant
+// parameter opened. A placement source records which process holds a slot; a
+// plugin holding anything else the replicas share -- a job lock, a claim row --
+// has to record the same thing, or an operator reading two stores gets two
+// answers about one process and cannot line them up.
+//
+// So the assertion is equality, not non-emptiness: the Context a plugin receives
+// must hand back the identity the source was told, not a second one derived
+// beside it.
+func TestOnePlacementIdentityIsAlsoWhatPluginsPublish(t *testing.T) {
+	source := &recordingPlacement{placement: plugin.Placement{Source: "lease"}}
+	app, err := New(WithBundles(placementTestBundles()...), WithPlacement(source))
+	require.NoError(t, err)
+	app.ready = make(chan struct{})
+
+	cmd, err := parseArgs(placementTestConfig(t, "  instance_id: scanner-2\n"), config.DefaultEnvPrefix)
+	require.NoError(t, err)
+	require.NoError(t, app.bootstrap(cmd))
+
+	_, err = app.resolvePlacement()
+	require.NoError(t, err)
+	require.Len(t, source.requests, 1)
+
+	ctx := plugin.NewRuntimeContext(hostAdapter{app: app}, plugin.Identity{Plugin: "cron", Instance: "reports"})
+	assert.Equal(t, source.requests[0].Instance, ctx.ProcessInstance(),
+		"a plugin publishes the same process identity the placement source was told")
+	assert.Equal(t, "reports", ctx.Instance(),
+		"the plugin instance name stays a separate answer and is not overwritten by it")
+}
+
 // TestWithPlacementOmittedIsStaticPlacement keeps the two spellings of the
 // default from drifting.
 //

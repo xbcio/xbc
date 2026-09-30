@@ -58,21 +58,18 @@ func TestDistributedTwoReplicasExecuteOnlyOnce(t *testing.T) {
 	stopTestPlugin(t, pluginB, hostB)
 }
 
-// TestTheSchedulerLockNamesNoClaimant pins a decision that is otherwise only a
-// comment at the call site.
+// TestTheSchedulerLockNamesTheProcessRunningTheJob pins the answer an operator
+// gets from `GET xbc:cron:<job>`: the identity of the replica that won, not a
+// word every replica shares.
 //
-// lease.Locker lets an acquirer publish who it is, and placement uses that to
-// make a held slot traceable to a process. cron deliberately does not: a cron
-// replica has no process identity to offer -- plugin.Context.Instance is this
-// Plugin's instance name, identical in every replica -- and publishing a name
-// every replica shares would fill the stored value with a word that
-// distinguishes nobody, while looking exactly like an answer. The lock is still
-// owner-safe, because the token is unique whether or not a claimant was named;
-// the only thing given up is reading the holder back out of the store.
-//
-// If cron is ever given a real process identity, this test is the one to change,
-// and changing it is meant to be a decision rather than an accident.
-func TestTheSchedulerLockNamesNoClaimant(t *testing.T) {
+// The distinction the assertion makes is the whole point. plugin.Context carries
+// two identities, and only one of them can answer "which replica is running
+// this": Instance names this Plugin among its Definition's instances and reads
+// the same in every replica, while ProcessInstance differs between them. A lock
+// published under the former would look exactly like an answer while
+// distinguishing nobody, so the test fails if the claimant ever becomes the
+// plugin instance name, empty, or anything other than the process.
+func TestTheSchedulerLockNamesTheProcessRunningTheJob(t *testing.T) {
 	locker := newFakeLocker()
 	ran := make(chan struct{}, 1)
 	job := &funcJob{name: "nightly", spec: "@hourly", run: func(context.Context) error {
@@ -84,6 +81,7 @@ func TestTheSchedulerLockNamesNoClaimant(t *testing.T) {
 	}}
 
 	host := newTestHost()
+	host.process = "replica-7"
 	p, runtimeContext := initTestPlugin(t, host, distributedConfig, locker, job)
 	if err := p.start(runtimeContext); err != nil {
 		t.Fatal(err)
@@ -97,8 +95,13 @@ func TestTheSchedulerLockNamesNoClaimant(t *testing.T) {
 		t.Fatal("no acquisition was recorded, so this test proves nothing")
 	}
 	for index, claimant := range claimants {
-		if claimant != "" {
-			t.Fatalf("acquisition %d named claimant %q; the scheduler has no process identity to publish", index, claimant)
+		if claimant != "replica-7" {
+			t.Fatalf("acquisition %d named claimant %q, want the process identity %q",
+				index, claimant, "replica-7")
+		}
+		if claimant == runtimeContext.Instance() {
+			t.Fatalf("acquisition %d published the plugin instance name %q, which every replica shares",
+				index, claimant)
 		}
 	}
 }

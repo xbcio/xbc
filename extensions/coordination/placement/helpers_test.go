@@ -342,6 +342,7 @@ func newTestHost() *testHost {
 
 func (h *testHost) ExecutionContext() context.Context { return h.executionCtx }
 func (h *testHost) Logger() log.Logger                { return h.logger }
+func (*testHost) ProcessInstance() string             { return "test-process" }
 func (h *testHost) TrafficGate() <-chan struct{}      { return h.gate }
 
 func (h *testHost) SubmitTask(_ plugin.Identity, fn func(context.Context), _ bool) bool {

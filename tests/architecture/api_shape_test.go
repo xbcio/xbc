@@ -140,6 +140,7 @@ func TestArchRuntimeHostPublicAPIShape(t *testing.T) {
 	want := map[string]reflect.Type{
 		"ExecutionContext": reflect.TypeOf((func() context.Context)(nil)),
 		"Logger":           reflect.TypeOf((func() log.Logger)(nil)),
+		"ProcessInstance":  reflect.TypeOf((func() string)(nil)),
 		"TrafficGate":      reflect.TypeOf((func() <-chan struct{})(nil)),
 		"SubmitTask":       reflect.TypeOf((func(plugin.Identity, func(context.Context), bool) bool)(nil)),
 		"RequestShutdown":  reflect.TypeOf((func(plugin.Identity, string) bool)(nil)),

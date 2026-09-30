@@ -30,7 +30,8 @@ func (host *fakeHost) ExecutionContext() context.Context {
 	return host.ctx
 }
 
-func (*fakeHost) Logger() log.Logger { return log.Nop() }
+func (*fakeHost) Logger() log.Logger      { return log.Nop() }
+func (*fakeHost) ProcessInstance() string { return "test-process" }
 
 func (*fakeHost) TrafficGate() <-chan struct{} {
 	gate := make(chan struct{})

@@ -25,6 +25,11 @@ type testHost struct {
 	submitted      int
 	critical       int
 	tasks          sync.WaitGroup
+
+	// process is what this host reports as the identity of the process the
+	// plugin runs in. It is fixed for the life of the host, as a real runtime's
+	// is, so a test can name two hosts and read the two names apart in a store.
+	process string
 }
 
 var _ plugin.RuntimeHost = (*testHost)(nil)
@@ -37,11 +42,13 @@ func newTestHost() *testHost {
 		gate:           make(chan struct{}),
 		accepting:      true,
 		admissionLimit: -1,
+		process:        "test-process",
 	}
 }
 
 func (h *testHost) ExecutionContext() context.Context { return h.ctx }
 func (*testHost) Logger() corelog.Logger              { return corelog.Nop() }
+func (h *testHost) ProcessInstance() string           { return h.process }
 func (h *testHost) TrafficGate() <-chan struct{}      { return h.gate }
 func (*testHost) RequestShutdown(plugin.Identity, string) bool {
 	return false

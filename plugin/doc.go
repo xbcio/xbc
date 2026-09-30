@@ -371,6 +371,10 @@
 // once, by the runtime, only after every participant's OpenTraffic has
 // succeeded — never by a Plugin itself. ctx.RequestShutdown(reason) asks
 // the whole application to stop and is safe to call from any goroutine a
-// Plugin owns, at any time. Ordinary Plugins never construct a Context
-// themselves; NewRuntimeContext is framework assembly API.
+// Plugin owns, at any time. ctx.ProcessInstance() names the process the
+// Plugin runs in, which is the identity to publish into anything the
+// replicas of one deployment share; ctx.Instance() answers the unrelated
+// question of which of a Definition's instances this is. Ordinary Plugins
+// never construct a Context themselves; NewRuntimeContext is framework
+// assembly API.
 package plugin
