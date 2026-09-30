@@ -564,10 +564,27 @@ func validateConfigPath(path string) error {
 func expandDefinitions(selections []selectedDefinition, env *config.Environment, logger log.Logger) (map[plugin.Identity]*plannedInstance, []DisabledDefinition, error) {
 	instances := make(map[plugin.Identity]*plannedInstance)
 	var disabled []DisabledDefinition
-	for _, selection := range selections {
+
+	// Activation is decided for every Definition before any of them binds its
+	// configuration. Binding writes a section's fully-bound leaves back into
+	// the environment -- default tags included -- so that a section built
+	// entirely from defaults stays visible to Get/Exists/Sub. That write makes
+	// the section path look configured to every later reader, and a Definition
+	// activated by another Definition's section would then turn on because that
+	// section was bound, not because the user configured it. Deciding all of
+	// them here keeps the answer a function of the user's configuration rather
+	// than of the key order freezeBundles sorted the Definitions into.
+	activated := make([]bool, len(selections))
+	for index, selection := range selections {
+		definition := selection.descriptor
+		activated[index] = definition.Activation.Kind != pluginmodel.ActivationConfigured ||
+			env.Exists(definition.Activation.Path)
+	}
+
+	for index, selection := range selections {
 		definition := selection.descriptor
 		path := definitionPath(definition)
-		if definition.Activation.Kind == pluginmodel.ActivationConfigured && !env.Exists(definition.Activation.Path) {
+		if !activated[index] {
 			disabled = append(disabled, DisabledDefinition{
 				Key:    plugin.Key(definition.Key),
 				Path:   path,
