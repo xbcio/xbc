@@ -31,7 +31,7 @@ xbc/
 │   ├── assembly/                        # Planning, binding, validation, graph, and construction
 │   ├── autoload/                        # Optional process-wide Bundle collector
 │   ├── model/                           # Low-level type-erased framework representations
-│   └── ordering/                        # Stable dependency ordering shared by core and transports
+│   └── ordering/                        # Stable string-keyed ordering; used by the Web transport
 ├── runtime/                             # Low-level application execution and process lifecycle
 ├── scripts/                             # Repository validation and migration tooling
 │   ├── plugin-migration-inventory/
