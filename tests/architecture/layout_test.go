@@ -58,6 +58,7 @@ var archWebPackageExtensionPaths = []string{
 
 var archProtocolNeutralExtensionGroups = []string{
 	"authorization",
+	"concurrency",
 	"coordination",
 	"reliability",
 	"storage",

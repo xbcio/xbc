@@ -2,7 +2,7 @@
 
 xbc is a transport-protocol-agnostic Go plugin application runtime. A Definition is one runtime unit, with its Key and applicable configuration, contracts, dependencies, factory, and lifecycle; a Bundle is an explicit, side-effect-free static composition of zero or more Definitions. A package's Definition() accessor, when present, identifies its primary unit, while its Bundle() may select additional independent units or purely aggregate other Bundles. Core is responsible only for explicit composition, strict configuration binding, dependency planning, resource construction, lifecycle, managed tasks, and reverse-order shutdown; transport stacks and optional extensions are isolated by owner and dependency weight, and do not enter core's dependency closure.
 
-The repository is still ahead of its first stable tag. The root `go.work` currently links 31 modules: 30 product modules (core, examples, `transport/web`, 16 protocol-neutral extensions, and 11 Web engine, extension, or adapter modules) and 1 tooling module (`scripts/plugin-snapshots`). Architecture tests guarantee that every `go.mod` in the repository is covered by the workspace, the Makefile, and CI. Publishable submodules must not use local `replace`, `v0.0.0`, or pseudo-versions; a real release must use real tags in dependency-topology order.
+The repository is still ahead of its first stable tag. The root `go.work` currently links 32 modules: 31 product modules (core, examples, `transport/web`, 17 protocol-neutral extensions, and 11 Web engine, extension, or adapter modules) and 1 tooling module (`scripts/plugin-snapshots`). Architecture tests guarantee that every `go.mod` in the repository is covered by the workspace, the Makefile, and CI. Publishable submodules must not use local `replace`, `v0.0.0`, or pseudo-versions; a real release must use real tags in dependency-topology order.
 
 ## Directories and boundaries
 
@@ -17,6 +17,7 @@ xbc/
 ├── extensions/                          # Optional protocol-neutral capabilities
 │   ├── authentication/                  # Protocol-neutral authentication contracts; zero-dependency module
 │   ├── authorization/rbac/              # RBAC business plugin module
+│   ├── concurrency/async/               # Drained background task pool plugin; process-global Spawner
 │   ├── coordination/                    # Coordination capabilities
 │   │   ├── lease/                       # Lease contract module; zero-dependency vocabulary
 │   │   ├── placement/                   # Lease-backed plugin.PlacementSource

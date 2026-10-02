@@ -24,6 +24,20 @@
       }
     },
     {
+      "key": "async",
+      "config_type": "github.com/xbcio/xbc/extensions/concurrency/async.Config",
+      "defaults": {
+        "Executor": "goroutine",
+        "MaxConcurrency": 256,
+        "QueueCapacity": 1024,
+        "SubmitTimeout": 0,
+        "Shutdown": {
+          "AwaitTermination": true,
+          "AwaitTerminationPeriod": 0
+        }
+      }
+    },
+    {
       "key": "asynq",
       "config_type": "github.com/xbcio/xbc/extensions/jobs/asynq.Config",
       "defaults": {

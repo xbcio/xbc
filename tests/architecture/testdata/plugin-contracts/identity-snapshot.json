@@ -18,6 +18,14 @@
       ]
     },
     {
+      "key": "async",
+      "config_path": "plugins.async",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/extensions/concurrency/async.Spawner"
+      ]
+    },
+    {
       "key": "asynq",
       "config_path": "plugins.asynq",
       "cardinality": "single",

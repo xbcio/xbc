@@ -4,6 +4,7 @@ import (
 	"github.com/xbcio/xbc/extensions/authorization/rbac"
 	"github.com/xbcio/xbc/plugin"
 
+	"github.com/xbcio/xbc/extensions/concurrency/async"
 	"github.com/xbcio/xbc/extensions/coordination/placement"
 	"github.com/xbcio/xbc/extensions/coordination/raft"
 	"github.com/xbcio/xbc/extensions/jobs/asynq"
@@ -67,6 +68,7 @@ import (
 // Regenerate this list by re-running that grep whenever a plugin package is
 // added or removed.
 var bundleProviders = []func() plugin.Bundle{
+	async.Bundle,
 	asynq.Bundle,
 	corehealth.Bundle,
 	cron.Bundle,

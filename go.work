@@ -18,6 +18,7 @@ use (
 	./examples
 	./extensions/authentication
 	./extensions/authorization/rbac
+	./extensions/concurrency/async
 	./extensions/coordination/lease
 	./extensions/coordination/placement
 	./extensions/coordination/raft
