@@ -44,6 +44,17 @@ Keep dependency graphs acyclic and ownership explicit. Keep reusable core concep
 
 Architecture and public-API guards live in `tests/architecture/` and `tests/integration/`. They represent the currently intended design. When changing that design deliberately, update the guards and affected callers in the same change; do not merely bypass or delete a failing guard.
 
+### Plugin Shutdown: Drain and Stop
+Every new or changed plugin that accepts work asynchronously -- a queue, a worker pool, a consumer, a scheduler, a batching buffer, an outbound dispatcher -- must decide whether it needs `plugin.Drainer` (or a `Lifecycle[P].Drain` adapter), and implement it when work accepted before shutdown could otherwise be lost or cut short. A plugin that only holds a connection or client (a database, Redis, an object store) needs `Stop` alone; an ingress plugin (a `TrafficOpener`, or anything depending on one) is stopped before the drain phase and finishes its in-flight requests in its own `Stop`.
+
+Split shutdown so the two halves can be relied on independently:
+- `Drain` stops admitting new work, waits for already accepted work within its context, and leaves every resource that work or a dependent still uses -- producers, connection pools, transports, enqueue clients -- open. An expired context means "stop waiting", never "abort": do not cancel running work or close resources in `Drain`.
+- `Stop` cancels whatever outlived the drain, releases resources, and must be correct whether `Drain` ran, timed out, failed, or never ran. Share one shutdown sequence between the two (a once-guard or shared channel) so nothing is closed or shut down twice, and do not report a failure `Drain` already returned.
+- `Drain` must be idempotent and safe before `Start`, after a failed `Start`, and while a background task is still waiting for the traffic gate; a plugin drained before `Start` refuses to start.
+- Test the split beside the package: accepted work completes under a live context, new work is refused, an expired drain leaves the work running for `Stop`, and the pre-`Start` path.
+
+Prefer an unexported `Lifecycle[P].Drain` adapter to an exported method unless the primary type's public API already exposes its lifecycle, and describe the plugin's `Drain`/`Stop` behavior in its package documentation.
+
 ## Build & Validation
 Run commands from the repository root:
 
