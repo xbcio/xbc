@@ -44,13 +44,37 @@ type Client struct {
 	stopErr      error
 
 	// draining is set by drainClient and keeps a later Start from creating a
-	// fresh bulk worker. bulkReported records that the bulk worker's final
-	// result has already been claimed by whichever of drainClient or
-	// finishClose first observed it while holding lifecycleMu, so the other
-	// does not report the same failure a second time.
-	draining     bool
-	bulkReported bool
+	// fresh bulk worker.
+	//
+	// bulkClaimedBy records which side first observed the bulk worker's
+	// final Close result and is therefore responsible for the failure,
+	// decided in one critical section so a drainClient and a finishClose
+	// that wake up together cannot both claim it:
+	//   - bulkClaimOwnerDrain: a drainClient call observed completion first.
+	//     Every drainClient call, before and after, replays the same cached
+	//     bulkErr, so Drain is idempotent including its result; Stop never
+	//     reports it.
+	//   - bulkClaimOwnerStop: no drainClient call observed completion
+	//     (Drain never ran, or every Drain call timed out first), so
+	//     finishClose (Stop) is the sole owner. Stop reports bulkErr exactly
+	//     once via stopErr; a drainClient call made after Stop has claimed it
+	//     deliberately returns nil for it instead of re-reporting a failure
+	//     Stop already surfaced.
+	draining      bool
+	bulkErr       error
+	bulkClaimedBy bulkClaimOwner
 }
+
+// bulkClaimOwner records which side of shutdown is responsible for
+// reporting the bulk worker's final Close failure, decided once that result
+// is first observed.
+type bulkClaimOwner int
+
+const (
+	bulkClaimOwnerNone bulkClaimOwner = iota
+	bulkClaimOwnerDrain
+	bulkClaimOwnerStop
+)
 
 // Request describes one cluster-relative HTTP request. Path must begin with a
 // single slash, which prevents bypassing the configured cluster endpoints.
@@ -170,19 +194,48 @@ func (c *Client) closeTransport(ctx context.Context) error {
 	return c.closeErr
 }
 
-// claimBulkErr reports err only to the first caller that claims the bulk
-// worker's final result. drainClient and finishClose each call this with the
-// same result from the same idempotent bulk.Close; whichever observes it
-// first while holding lifecycleMu is the only one that returns a non-nil
-// error, so a drain and a stop that overlap cannot both report it.
-func (c *Client) claimBulkErr(err error) error {
+// claimBulkErrForDrain is called by every drainClient caller once the bulk
+// worker's Close has returned. The first call to reach here claims
+// bulkClaimOwnerDrain and caches err for replay; every call after that, from
+// this drainClient caller or any other, replays the same cached error under
+// the lock instead of re-deriving ownership, so Drain's result is idempotent
+// and every drainClient caller that observes completion returns the same
+// failure. If finishClose already claimed ownership first, this returns
+// nil: Stop is the sole owner and Drain must not re-report what Stop already
+// surfaced.
+func (c *Client) claimBulkErrForDrain(err error) error {
 	c.lifecycleMu.Lock()
 	defer c.lifecycleMu.Unlock()
-	if c.bulkReported {
+	if c.bulkClaimedBy == bulkClaimOwnerNone {
+		c.bulkClaimedBy = bulkClaimOwnerDrain
+		c.bulkErr = err
+	}
+	if c.bulkClaimedBy != bulkClaimOwnerDrain {
 		return nil
 	}
-	c.bulkReported = true
-	return err
+	return c.bulkErr
+}
+
+// claimBulkErrForStop is called by finishClose after the bulk worker's Close
+// has returned. If a drainClient call already claimed ownership
+// (bulkClaimOwnerDrain), Stop never reports the failure, even if that
+// drainClient call is still blocked replaying it. Otherwise Stop claims
+// ownership itself and reports err exactly once; because Stop's claim is
+// also recorded here, a drainClient call made after Stop has claimed it sees
+// bulkClaimOwnerStop and returns nil for it, deliberately not re-reporting a
+// failure Stop already returned.
+func (c *Client) claimBulkErrForStop(err error) error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if c.bulkClaimedBy == bulkClaimOwnerDrain {
+		return nil
+	}
+	if c.bulkClaimedBy == bulkClaimOwnerStop {
+		return nil
+	}
+	c.bulkClaimedBy = bulkClaimOwnerStop
+	c.bulkErr = err
+	return c.bulkErr
 }
 
 type clientFactory interface {

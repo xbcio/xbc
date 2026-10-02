@@ -96,16 +96,34 @@ type Plugin struct {
 	stopErr     error
 
 	// drainDone is closed once the worker server's graceful Shutdown, started
-	// by drain, has returned; drainErr is its result. drainReported records
-	// that drainErr has already been claimed by whichever of drain or stop
-	// first observed drainDone closed while holding mu, so the other does not
-	// report the same failure a second time. The observation and the claim
-	// happen in the same critical section as the read, so a drain and a stop
-	// that wake up together cannot both claim it.
-	drainDone     chan struct{}
-	drainErr      error
-	drainReported bool
+	// by drain, has returned; drainErr is its result.
+	//
+	// drainClaimedBy records which side first observed drainDone closed and
+	// is therefore responsible for the failure, decided in one critical
+	// section so a drain and a stop that wake up together cannot both claim
+	// it:
+	//   - drainClaimOwnerDrain: a drain call observed completion first. Every
+	//     drain call, before and after, replays the same cached drainErr, so
+	//     drain is idempotent including its result; stop never reports it.
+	//   - drainClaimOwnerStop: no drain call observed completion (drain never
+	//     ran, or every drain call timed out first), so stop is the sole
+	//     owner. Stop reports drainErr exactly once via stopErr; a drain call
+	//     made after stop has claimed it deliberately returns nil for it
+	//     instead of re-reporting a failure stop already surfaced.
+	drainDone      chan struct{}
+	drainErr       error
+	drainClaimedBy drainClaimOwner
 }
+
+// drainClaimOwner records which side of shutdown is responsible for
+// reporting the worker's Shutdown failure, decided once drainDone closes.
+type drainClaimOwner int
+
+const (
+	drainClaimOwnerNone drainClaimOwner = iota
+	drainClaimOwnerDrain
+	drainClaimOwnerStop
+)
 
 var _ Enqueuer = (*Plugin)(nil)
 
@@ -331,23 +349,49 @@ func (p *Plugin) drain(ctx context.Context) error {
 
 	select {
 	case <-done:
-		return p.claimDrainErr()
+		return p.claimDrainErrForDrain()
 	case <-ctx.Done():
 		return fmt.Errorf("asynq: drain running handlers: %w", ctx.Err())
 	}
 }
 
-// claimDrainErr reads drainErr and marks it reported in one critical section,
-// so whichever of drain or stop observes drainDone closed first is the only
-// one that returns the failure; the other sees drainReported already set and
-// returns nil for it.
-func (p *Plugin) claimDrainErr() error {
+// claimDrainErrForDrain is called by every drain caller once drainDone is
+// observed closed. The first call to reach here claims drainClaimOwnerDrain
+// and caches drainErr for replay; every call after that, from this drain
+// caller or any other, replays the same cached error under the lock instead
+// of re-deriving ownership, so drain's result is idempotent and every drain
+// caller that observes completion returns the same failure. If stop already
+// claimed ownership first, this returns nil: stop is the sole owner and
+// drain must not re-report what stop already surfaced.
+func (p *Plugin) claimDrainErrForDrain() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.drainReported {
+	if p.drainClaimedBy == drainClaimOwnerNone {
+		p.drainClaimedBy = drainClaimOwnerDrain
+	}
+	if p.drainClaimedBy != drainClaimOwnerDrain {
 		return nil
 	}
-	p.drainReported = true
+	return p.drainErr
+}
+
+// claimDrainErrForStop is called by stop after drainDone has closed. If a
+// drain caller already claimed ownership (drainClaimOwnerDrain), stop never
+// reports the failure, even if that drain caller is still blocked replaying
+// it. Otherwise stop claims ownership itself and reports drainErr exactly
+// once; because stop's claim is also recorded here, a drain call made after
+// stop has claimed it sees drainClaimOwnerStop and returns nil for it,
+// deliberately not re-reporting a failure stop already returned.
+func (p *Plugin) claimDrainErrForStop() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.drainClaimedBy == drainClaimOwnerDrain {
+		return nil
+	}
+	if p.drainClaimedBy == drainClaimOwnerStop {
+		return nil
+	}
+	p.drainClaimedBy = drainClaimOwnerStop
 	return p.drainErr
 }
 
@@ -421,7 +465,7 @@ func (p *Plugin) finishStop(client *Client, server workerServer, redisClient *go
 	var errs []error
 	if drainDone != nil {
 		<-drainDone
-		if err := p.claimDrainErr(); err != nil {
+		if err := p.claimDrainErrForStop(); err != nil {
 			errs = append(errs, err)
 		}
 	}

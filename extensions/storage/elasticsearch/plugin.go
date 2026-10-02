@@ -198,7 +198,7 @@ func drainClient(client *Client, ctx context.Context) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("elasticsearch: drain bulk indexer: %w", ctx.Err())
 	}
-	return client.claimBulkErr(err)
+	return client.claimBulkErrForDrain(err)
 }
 
 func stopClient(client *Client, ctx context.Context) error {
@@ -298,7 +298,7 @@ func (client *Client) finishClose(bulk *asyncBulkIndexer, done chan struct{}) {
 	var errs []error
 	if bulk != nil {
 		err := bulk.Close(context.Background())
-		if claimed := client.claimBulkErr(err); claimed != nil {
+		if claimed := client.claimBulkErrForStop(err); claimed != nil {
 			errs = append(errs, claimed)
 		}
 	}
