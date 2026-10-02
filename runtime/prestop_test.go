@@ -87,6 +87,10 @@ func preStopLiveDefinition(key plugin.Key, lifecycle plugin.Lifecycle[*runtimeTe
 func runtimePreStopConfig(t *testing.T, preStop, shutdown time.Duration) []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "application.yml")
+	// drain_timeout is left unset: it derives as 60% of whatever shutdown
+	// argument a caller passes, which is always strictly smaller than
+	// shutdown, so this fixture stays usable without spelling out an off
+	// switch; these tests are about the pre-stop phase, not the drain phase.
 	contents := "log:\n  console:\n    enabled: false\n  file:\n    enabled: false\n" +
 		"xbc:\n  shutdown_timeout: " + shutdown.String() + "\n  pre_stop_timeout: " + preStop.String() + "\n"
 	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))

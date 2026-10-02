@@ -61,6 +61,9 @@ func (l *captureLogger) text() string {
 // the branch bootstrap uses to skip log.Init; nothing here runs doctor.
 func planUnderCapture(t *testing.T, app *App, extra string) (*assembly.Plan, *captureLogger) {
 	t.Helper()
+	// drain_timeout is left unset: it derives as 60% of the fixed 1s
+	// shutdown_timeout, which is always strictly smaller than it; these tests
+	// are not about the drain phase.
 	contents := "log:\n  console:\n    enabled: false\n  file:\n    enabled: false\nxbc:\n  shutdown_timeout: 1s\n" + extra
 	cmd, err := parseArgs(
 		[]string{"doctor", "--config", writeRuntimeTestConfig(t, contents)},

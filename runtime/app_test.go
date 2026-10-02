@@ -47,6 +47,10 @@ func runtimeTestPlanKeys(plan *assembly.Plan) []plugin.Key {
 func runtimeTestConfigWith(t *testing.T, shutdownTimeout time.Duration, extra string) []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "application.yml")
+	// drain_timeout is left unset: it derives as 60% of whatever
+	// shutdownTimeout a caller passes, which is always strictly smaller than
+	// shutdownTimeout, so this helper stays usable with any value a caller
+	// passes without having to spell out an off switch.
 	contents := "log:\n  console:\n    enabled: false\n  file:\n    enabled: false\nxbc:\n  shutdown_timeout: " +
 		shutdownTimeout.String() + "\n" + extra
 	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))

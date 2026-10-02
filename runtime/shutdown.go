@@ -18,10 +18,11 @@ func (a *App) abort(cause error) error {
 }
 
 // unwind is idempotent and applies one shared budget to the complete reverse
-// walk. Constructed.Unwind invokes Stop before afterStop cancels and joins the
-// same Plugin's task scope, and starts no further Stop once the budget is
-// spent. drainRemaining then reclaims every task scope the walk did not reach,
-// so an abandoned or not-attempted Plugin still cannot leak its goroutines.
+// walk. Constructed.UnwindWithDrain invokes Stop before afterStop cancels and
+// joins the same Plugin's task scope, and starts no further Stop once the
+// budget is spent. drainRemaining then reclaims every task scope the walk did
+// not reach, so an abandoned or not-attempted Plugin still cannot leak its
+// goroutines.
 //
 // This is also where the pre-stop phase runs, and it runs here rather than in
 // wait for a structural reason: "after requestStop, before the reverse walk"
@@ -51,20 +52,36 @@ func (a *App) unwind(reason string) error {
 		a.reportPreStop(phase)
 		budget := a.settings.ShutdownTimeout
 		if budget <= 0 {
-			budget = 30 * time.Second
+			budget = 25 * time.Second
 		}
 		deadline, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
 
+		// The drain phase's own deadline is derived from this same walk's
+		// deadline rather than from a fresh context.WithTimeout(Background()):
+		// drain_timeout is contained in shutdown_timeout (loadSettings rejects
+		// a drain_timeout that is not strictly smaller), so the phase must
+		// never outlive the walk that contains it. context.WithDeadline
+		// already picks the earlier of the two, which is exactly min(now +
+		// drain_timeout, the walk's own deadline).
+		drainBudget := a.settings.DrainTimeout
+		drainDeadline := deadline
+		var drainCancel context.CancelFunc = func() {}
+		if drainBudget > 0 {
+			drainDeadline, drainCancel = context.WithDeadline(deadline, time.Now().Add(drainBudget))
+		}
+		defer drainCancel()
+
 		var errs []error
 		if a.owned != nil {
-			report, err := a.owned.Unwind(deadline, budget, func(identity plugin.Identity) error {
+			report, drainReport, err := a.owned.UnwindWithDrain(deadline, budget, drainDeadline, drainBudget, func(identity plugin.Identity) error {
 				if a.tasks == nil {
 					return nil
 				}
 				return a.tasks.stopPlugin(identity, deadline)
 			})
 			a.shutdownReport = report
+			a.drainReport = drainReport
 			if err != nil {
 				errs = append(errs, err)
 			}
@@ -75,6 +92,7 @@ func (a *App) unwind(reason string) error {
 			}
 		}
 		a.unwindErr = errors.Join(errs...)
+		a.reportDrain(drainBudget)
 		a.reportShutdown(reason, budget, phase)
 	})
 	return a.unwindErr
@@ -230,6 +248,65 @@ func preStopErrorLabels(report assembly.PreStopReport) []string {
 	return labels
 }
 
+// reportDrain makes the drain phase visible to an operator exactly as
+// reportPreStop makes the pre-stop phase visible, and for the same reason it
+// stays silent for the common case: a report that fired on every clean
+// shutdown would train operators to ignore the one that matters.
+//
+// It is silent whenever drainReport.Empty() — the phase was skipped (budget
+// 0s), or no remaining instance declared a Drain hook — which is what keeps an
+// application with no Drainer anywhere producing byte-identical output to one
+// built before the stage existed. drainBudget is threaded through separately
+// from the report because an abandoned or not-attempted hook's own record
+// carries no usable "budget" field; see assembly.DrainReport.Waited.
+func (a *App) reportDrain(drainBudget time.Duration) {
+	if a.drainReport.Empty() {
+		return
+	}
+	abandoned := a.drainReport.Identities(assembly.DrainAbandoned)
+	notAttempted := a.drainReport.Identities(assembly.DrainNotAttempted)
+	if len(abandoned) > 0 || len(notAttempted) > 0 {
+		a.log().Warn("xbc: drain budget expired before every hook returned",
+			"budget", drainBudget.String(),
+			"abandoned", identityLabels(abandoned),
+			"not_attempted", identityLabels(notAttempted),
+			"waited", a.drainReport.Waited(),
+		)
+	}
+	failed := a.drainReport.Identities(assembly.DrainFailed)
+	panicked := a.drainReport.Identities(assembly.DrainPanicked)
+	if len(failed) > 0 || len(panicked) > 0 {
+		a.log().Warn("xbc: drain hooks did not finish cleanly",
+			"budget", drainBudget.String(),
+			"failed", identityLabels(failed),
+			"panicked", identityLabels(panicked),
+			"errors", drainErrorLabels(a.drainReport),
+		)
+	}
+	if len(abandoned) > 0 || len(notAttempted) > 0 || len(failed) > 0 || len(panicked) > 0 {
+		return
+	}
+	if !a.log().Enabled(log.DebugLevel) {
+		return
+	}
+	a.log().Debug("xbc: drain phase finished inside its budget",
+		"budget", drainBudget.String(),
+		"waited", a.drainReport.Waited(),
+	)
+}
+
+// drainErrorLabels is preStopErrorLabels for a DrainReport.
+func drainErrorLabels(report assembly.DrainReport) []string {
+	var labels []string
+	for _, record := range report.Records {
+		if record.Err == nil {
+			continue
+		}
+		labels = append(labels, record.Identity.String()+": "+record.Err.Error())
+	}
+	return labels
+}
+
 // reportShutdown makes the budget's casualties visible to an operator. A clean
 // reverse unwind stays silent at warn level; anything the budget cut short
 // names the exact plugins, because "the process exited" alone hides skipped
@@ -239,7 +316,10 @@ func preStopErrorLabels(report assembly.PreStopReport) []string {
 // phase is carried in so that both lines can state the stop's real ceiling.
 // One stop now costs pre_stop_timeout plus shutdown_timeout, and a supervisor
 // that kills at the old single budget would cut the process off in the phase
-// that exists precisely to let it hand its work over.
+// that exists precisely to let it hand its work over. drain_timeout is
+// deliberately not part of that ceiling: it runs inside shutdown_timeout, not
+// beside it, so including it in total_budget would double-count a budget this
+// walk's own deadline already bounds.
 func (a *App) reportShutdown(reason string, budget time.Duration, phase preStopPhase) {
 	abandoned := a.shutdownReport.Identities(assembly.StopAbandoned)
 	notAttempted := a.shutdownReport.Identities(assembly.StopNotAttempted)

@@ -556,17 +556,20 @@ The lease store itself needs no high availability. It carries resource placement
 
 ## The supervisor's stop grace period
 
-Shutdown now has two phases. `xbc.pre_stop_timeout` defaults to `2s` and runs `PreStop` on every started plugin before any `Stop` begins; that is where a placement plugin gives its slot back. `xbc.shutdown_timeout` defaults to `30s` and then covers cancellation, HTTP drain, and reverse-order `Stop`:
+Shutdown has two outer phases plus one inner one. `xbc.pre_stop_timeout` defaults to `2s` and runs `PreStop` on every started plugin before any `Stop` begins; that is where a placement plugin gives its slot back. `xbc.shutdown_timeout` defaults to `25s` and then covers cancellation, ingress shutdown, draining, HTTP drain, and reverse-order `Stop`. `xbc.drain_timeout` is not a third outer budget: it runs inside `shutdown_timeout`, between the ingress stop and the remaining `Stop` calls, so it does not add to the sum a supervisor has to allow for. Left unset it defaults to 60% of the effective `shutdown_timeout` (`15s` at the `25s` default):
 
 ```yaml
 xbc:
   pre_stop_timeout: 2s
-  shutdown_timeout: 30s
+  shutdown_timeout: 25s
+  drain_timeout: 15s
 ```
 
-The total budget is their sum, `2s + 30s = 32s`, and the supervisor must allow at least that much before it kills the process. A supervisor that kills earlier interrupts the release, and the slot then waits for its TTL instead of being freed immediately.
+The total budget is still just the two outer phases' sum, `2s + 25s = 27s`, and the supervisor must allow at least that much before it kills the process. A supervisor that kills earlier interrupts the release, and the slot then waits for its TTL instead of being freed immediately.
 
-systemd's `TimeoutStopSec` and Docker's `stop_grace_period` are the two settings that matter. Docker's default of `10s` is shorter than the default budget and is the one that bites in practice:
+The 2s/25s split is deliberate: their sum stays below Kubernetes' default `terminationGracePeriodSeconds` of `30s`, so a pod using XBC's own defaults is not killed mid-shutdown by a cluster that never set the grace period explicitly. A deployment that raises either budget should raise `terminationGracePeriodSeconds` to match.
+
+systemd's `TimeoutStopSec` and Docker's `stop_grace_period` are the two settings that matter outside Kubernetes. Docker's default of `10s` is shorter than the default budget and is the one that bites in practice:
 
 ```ini
 # systemd
@@ -575,7 +578,7 @@ ExecStart=/usr/local/bin/orders --config /etc/orders/application.yml
 Restart=always
 RestartSec=1s
 KillSignal=SIGTERM
-# 2s pre_stop_timeout + 30s shutdown_timeout = 32s; 45s leaves scheduling headroom.
+# 2s pre_stop_timeout + 25s shutdown_timeout = 27s; 45s leaves scheduling headroom.
 TimeoutStopSec=45s
 ```
 
@@ -585,11 +588,11 @@ services:
   orders:
     image: registry.internal/orders:1.2.3
     restart: always
-    # Default is 10s, which is shorter than the 32s stop budget.
+    # Default is 10s, which is shorter than the 27s stop budget.
     stop_grace_period: 45s
 ```
 
-Setting `pre_stop_timeout: 0s` skips the phase and makes the total `shutdown_timeout` alone.
+Setting `pre_stop_timeout: 0s` skips the phase and makes the total `shutdown_timeout` alone. Setting `drain_timeout: 0s` skips the drain phase the same way, without changing the total at all, because that phase was never counted beside `shutdown_timeout` in the first place.
 
 The restart policy is not optional. Takeover works by a standby requesting shutdown on purpose once it has won a slot, and the supervisor is what brings that process back as the real holder. Without `Restart=always` or `restart: always`, the first takeover turns a standby into a stopped container.
 

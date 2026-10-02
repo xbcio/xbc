@@ -53,3 +53,38 @@ type Closer interface {
 type PreStopper interface {
 	PreStop(ctx context.Context) error
 }
+
+// Drainer finishes accepted in-flight work while every dependency it may call
+// into is still running, and is called at most once by XBC. It runs after the
+// process has stopped accepting ingress and before any non-ingress Stop: the
+// ingress closure (every TrafficOpener and everything that transitively
+// depends on one) has already been stopped, so no new external request can
+// reach a Drainer, and everything it depends on is still running. Drainers run
+// one at a time in reverse start order, so a Drainer's dependents that are
+// Drainers themselves have already drained -- and may have handed it
+// follow-up work -- before it is drained, while its non-Drainer dependents are
+// still running and may still call it. Its managed tasks are also still
+// running: a task scope is cancelled only after its owner's Stop. This is
+// XBC's counterpart of Spring's executor SmartLifecycle phase, which stops
+// after the web container's graceful shutdown and before bean destruction.
+//
+// Drain must stop admitting new work, wait for work it already accepted, and
+// return either when that work has finished or when ctx expires, whichever
+// comes first. An expired ctx means "stop waiting", not "abort": cancelling
+// work that is still running, and releasing what that work uses, is Stop's
+// job. Drain must not close a resource that its own in-flight work, or a
+// dependent's, may still use -- a producer, a connection pool, a transport --
+// and must be safe to call before Start, after a failed Start, and more than
+// once. ctx carries only the drain deadline (xbc.drain_timeout): it is
+// derived from Background, exactly as PreStop's context is, and for the same
+// reason -- the execution context is already cancelled by the time this runs,
+// and a hook wired to it would fail its first check with context.Canceled.
+//
+// A returned error, a panic, or a Drain that ignores its deadline is recorded
+// and reported, and never stops the unwind: Drain hands work over voluntarily,
+// and the Stop phase that follows must be correct whether or not Drain ran or
+// succeeded -- it still has to finish, or abandon, whatever Drain left behind.
+// A failure Drain already returned should not be returned by Stop again.
+type Drainer interface {
+	Drain(ctx context.Context) error
+}

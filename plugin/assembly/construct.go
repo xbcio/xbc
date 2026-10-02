@@ -48,6 +48,12 @@ const (
 	// started it, so a slice owned by the instance would be written from
 	// outside the walk that reads it.
 	StagePreStop Stage = "PreStop"
+	// StageDrain runs during shutdown after the ingress closure has been
+	// stopped and before any remaining instance's Stop, on its own goroutine
+	// and under the drain budget. Its duration is reported per attempt in
+	// DrainRecord rather than in Instance.Timings, for the same reason
+	// StageStop's and StagePreStop's are.
+	StageDrain Stage = "Drain"
 	// StageStop runs during the reverse unwind, on its own goroutine and
 	// under a shared deadline. Its duration is reported per attempt in
 	// StopRecord rather than in Instance.Timings.
@@ -71,11 +77,11 @@ type ConstructOptions struct {
 	// invokes one startup stage on one instance: the factory and Init inside
 	// Construct, and Migrate, Start and OpenTraffic through the Invoke*
 	// methods. A hook the Definition never declared announces nothing,
-	// because nothing runs. StageStop and StagePreStop announce nothing
-	// either: both are already bounded by the budget they run under and
-	// reported per attempt in StopRecord and PreStopRecord, and both run on
-	// their own goroutine, so they are the stages a caller can already see
-	// while they are still in flight.
+	// because nothing runs. StageStop, StagePreStop and StageDrain announce
+	// nothing either: all three are already bounded by the budget they run
+	// under and reported per attempt in StopRecord, PreStopRecord and
+	// DrainRecord, and all three run on their own goroutine, so they are the
+	// stages a caller can already see while they are still in flight.
 	//
 	// Only the beginning is reported, and that is enough to name the stage
 	// currently in flight: these stages are strictly serial, so the last one
@@ -104,6 +110,15 @@ type Instance struct {
 	// was actually constructed.
 	workload pluginmodel.WorkloadKey
 
+	// dependsOn lists the identities this instance declared an Input on,
+	// deduplicated, in no particular order. It is copied out of the plan's own
+	// bindings at construction time rather than read from the plan afterward,
+	// because Unwind's ingress closure (see Constructed.unwindPhases) needs
+	// exactly the edges that were actually wired for the instances that were
+	// actually constructed, and an Instance is the one record both methods
+	// already share.
+	dependsOn []plugin.Identity
+
 	// timings is appended to only by the single goroutine that drives this
 	// instance's lifecycle: Construct, and then the Invoke* methods the
 	// runtime calls in order. Stop is excluded by construction because it
@@ -131,6 +146,21 @@ func (instance *Instance) HasStop() bool { return instance.lifecycle.stop != nil
 
 // HasPreStop reports whether this instance declares a PreStop hook.
 func (instance *Instance) HasPreStop() bool { return instance.lifecycle.preStop != nil }
+
+// HasDrain reports whether this instance declares a Drain hook.
+func (instance *Instance) HasDrain() bool { return instance.lifecycle.drain != nil }
+
+// IsIngress reports whether this instance opens traffic: either its primary
+// value implements plugin.TrafficOpener directly, or an Options[P].Lifecycle
+// adapter supplies OpenTraffic. Both forms are equally real ingress -- the
+// compiled lifecycleDescriptor is what already erases that distinction for
+// every other stage, and the ingress closure must not see fewer ingress
+// instances than Construct's own OpenTraffic phase does. It names only the
+// direct capability, not the transitive ingress closure Unwind actually stops
+// first; see Constructed.ingressClosure for that set.
+func (instance *Instance) IsIngress() bool {
+	return instance.lifecycle.openTraffic != nil
+}
 
 // Timings returns how long each stage took for this instance, in the order the
 // stages ran, including a stage that ended in an error or a recovered panic:
@@ -221,6 +251,7 @@ func Construct(plan *Plan, options ConstructOptions) (*Constructed, error) {
 			context:      lifecycleContext,
 			lifecycle:    planned.lifecycle,
 			workload:     planned.workload,
+			dependsOn:    directDependencies(planned),
 			timings:      []StageTiming{{Stage: StageFactory, Duration: factoryElapsed}},
 			onStageBegin: options.OnStageBegin,
 		}
@@ -234,6 +265,29 @@ func Construct(plan *Plan, options ConstructOptions) (*Constructed, error) {
 		}
 	}
 	return constructed, nil
+}
+
+// directDependencies flattens one planned instance's token bindings into the
+// deduplicated set of identities it declared an Input on. Order does not
+// matter to any caller: the ingress closure (see Constructed.ingressClosure)
+// only tests set membership, never walks this slice in a particular order.
+func directDependencies(planned *plannedInstance) []plugin.Identity {
+	if len(planned.bindings) == 0 {
+		return nil
+	}
+	seen := make(map[plugin.Identity]bool)
+	var dependencies []plugin.Identity
+	for _, producers := range planned.bindings {
+		for _, producer := range producers {
+			producer = producer.Normalized()
+			if seen[producer] {
+				continue
+			}
+			seen[producer] = true
+			dependencies = append(dependencies, producer)
+		}
+	}
+	return dependencies
 }
 
 func materializeSlots(planned *plannedInstance, owned map[plugin.Identity]*Instance) (map[uint64][]pluginmodel.ResolvedEntry, error) {
@@ -462,54 +516,6 @@ func (instance *Instance) stopBounded(deadline context.Context, budget time.Dura
 	default:
 		return StopAbandoned, time.Since(started), fmt.Errorf("xbc: plugin %s Stop did not return within shutdown budget %s; abandoning it", instance.identity, budget)
 	}
-}
-
-// Unwind visits every owned instance in reverse graph order under one shared
-// budget and returns what actually happened. afterStop is called even after
-// Stop errors and lets runtime enforce Stop→cancel→join for each Plugin's
-// managed task scope.
-//
-// Exactly one Stop is in flight at a time. Once the shared budget is spent the
-// walk starts no further Stop and calls no further afterStop: an abandoned
-// Stop is still running, so launching the next one would let two Stop bodies
-// execute concurrently and would make reverse order a scheduling outcome
-// rather than a contract. The instances the walk no longer reaches are
-// reported as not-attempted; releasing whatever they still hold is the
-// caller's job.
-func (constructed *Constructed) Unwind(deadline context.Context, budget time.Duration, afterStop func(plugin.Identity) error) (ShutdownReport, error) {
-	var report ShutdownReport
-	if constructed == nil {
-		return report, nil
-	}
-	var errs []error
-	for index := len(constructed.instances) - 1; index >= 0; index-- {
-		instance := constructed.instances[index]
-		if deadline.Err() != nil {
-			report.Records = append(report.Records, StopRecord{
-				Identity: instance.identity,
-				Outcome:  StopNotAttempted,
-			})
-			errs = append(errs, fmt.Errorf("xbc: plugin %s Stop was not attempted: the %s shutdown budget was already spent", instance.identity, budget))
-			continue
-		}
-		report.Attempted = append(report.Attempted, instance.identity)
-		outcome, elapsed, err := instance.stopBounded(deadline, budget)
-		record := StopRecord{Identity: instance.identity, Outcome: outcome, Err: err, Duration: elapsed}
-		if err != nil {
-			errs = append(errs, err)
-		}
-		if outcome != StopAbandoned {
-			report.Completed = append(report.Completed, instance.identity)
-			if afterStop != nil {
-				if taskErr := afterStop(instance.identity); taskErr != nil {
-					record.TaskErr = taskErr
-					errs = append(errs, taskErr)
-				}
-			}
-		}
-		report.Records = append(report.Records, record)
-	}
-	return report, errors.Join(errs...)
 }
 
 // PreStopOutcome classifies how one owned value's PreStop attempt ended.
@@ -788,4 +794,386 @@ func (constructed *Constructed) PreStop(deadline context.Context, budget time.Du
 		}
 	}
 	return report, errors.Join(errs...)
+}
+
+// ingressClosure returns the set of identities Unwind stops in phase A: every
+// instance whose primary value implements plugin.TrafficOpener, plus every
+// instance that transitively depends on one. The set is upward-closed by
+// construction -- it is built by walking dependents, never dependencies -- so
+// stopping it in reverse start order can never stop a producer before every
+// one of its consumers, which is what keeps phase A dependency-safe without
+// consulting the graph a second time.
+//
+// A Drainer inside this closure is deliberately not drained in phase B: see
+// Constructed.Unwind for why it is simply stopped in phase A instead.
+func (constructed *Constructed) ingressClosure() map[plugin.Identity]bool {
+	ingress := make(map[plugin.Identity]bool)
+	for _, instance := range constructed.instances {
+		if instance.IsIngress() {
+			ingress[instance.identity] = true
+		}
+	}
+	if len(ingress) == 0 {
+		return ingress
+	}
+	// dependents inverts the dependsOn edges once, so growing the ingress set
+	// below is a map lookup per instance rather than a rescan of every other
+	// instance's dependency list.
+	dependents := make(map[plugin.Identity][]plugin.Identity)
+	for _, instance := range constructed.instances {
+		for _, dependency := range instance.dependsOn {
+			dependents[dependency] = append(dependents[dependency], instance.identity)
+		}
+	}
+	// Breadth-first closure over "depends on": every instance already in the
+	// set contributes its own dependents, until nothing new is added. Graph
+	// order already guarantees no cycle, so this always terminates.
+	queue := make([]plugin.Identity, 0, len(ingress))
+	for identity := range ingress {
+		queue = append(queue, identity)
+	}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, dependent := range dependents[current] {
+			if ingress[dependent] {
+				continue
+			}
+			ingress[dependent] = true
+			queue = append(queue, dependent)
+		}
+	}
+	return ingress
+}
+
+// DrainOutcome classifies how one owned value's Drain attempt ended.
+//
+// Its vocabulary matches StopOutcome's rather than PreStopOutcome's: unlike
+// the pre-stop phase, which starts every hook before waiting on any of them,
+// the drain phase runs its hooks strictly one at a time in reverse start
+// order (see Constructed.Unwind), so a hook reached after the phase deadline
+// has already expired is a real omission the report must be able to name.
+type DrainOutcome string
+
+const (
+	// DrainSkipped means the instance declares no Drain hook, or the drain
+	// phase was never entered because xbc.drain_timeout is 0s.
+	DrainSkipped DrainOutcome = "skipped"
+	// DrainCompleted means Drain returned nil inside the phase budget.
+	DrainCompleted DrainOutcome = "completed"
+	// DrainFailed means Drain returned an error inside the phase budget. The
+	// error is reported, and the unwind proceeds: a drain that failed has no
+	// better outcome left to offer during a shutdown already under way.
+	DrainFailed DrainOutcome = "failed"
+	// DrainPanicked means Drain panicked; the panic was recovered and
+	// reported, and the unwind proceeds.
+	DrainPanicked DrainOutcome = "panicked"
+	// DrainAbandoned means Drain ignored the phase deadline and was left
+	// running. That is a plugin contract violation, not a runtime choice. The
+	// abandoned hook keeps running and is therefore concurrent with the Stop
+	// that follows it, which is exactly why Stop must be correct whether or
+	// not Drain succeeded.
+	DrainAbandoned DrainOutcome = "abandoned"
+	// DrainNotAttempted means the drain phase's own deadline was already
+	// spent when the walk reached this instance, so no Drain was started for
+	// it. The phase runs its hooks one at a time in reverse start order (see
+	// Constructed.Unwind), so an instance reached after the budget expired is
+	// a real omission rather than a hook that chose to do nothing.
+	DrainNotAttempted DrainOutcome = "not-attempted"
+)
+
+// DrainRecord is one instance's entry in a DrainReport.
+type DrainRecord struct {
+	Identity plugin.Identity
+	Outcome  DrainOutcome
+	Err      error
+	// Duration is how long the phase waited on this instance: until Drain
+	// returned, or until the phase deadline expired and it was abandoned. It
+	// is zero for a skipped or not-attempted instance.
+	Duration time.Duration
+}
+
+// DrainReport is the observable result of one drain phase. It records only
+// the remaining (non-ingress) instances that declared a hook, in reverse
+// start order, exactly as Constructed.Unwind drains them.
+type DrainReport struct {
+	Records []DrainRecord
+}
+
+// Identities returns the recorded identities with the given outcome, in the
+// order Unwind drained them (reverse start order).
+func (report DrainReport) Identities(outcome DrainOutcome) []plugin.Identity {
+	var found []plugin.Identity
+	for _, record := range report.Records {
+		if record.Outcome == outcome {
+			found = append(found, record.Identity)
+		}
+	}
+	return found
+}
+
+// Empty reports whether this phase drained no hook at all: either
+// xbc.drain_timeout was 0s, or no remaining instance declared one. A phase
+// that ran but drained nothing and a phase that never ran are the same thing
+// to every caller, so they share one answer -- the same choice
+// PreStopReport.Empty already makes.
+func (report DrainReport) Empty() bool { return len(report.Records) == 0 }
+
+// Waited renders how long the phase waited on each instance it actually
+// waited for, in the order they were drained. Abandoned and not-attempted
+// instances are omitted: nothing was waited for there.
+func (report DrainReport) Waited() []string {
+	var labels []string
+	for _, record := range report.Records {
+		if record.Outcome == DrainAbandoned || record.Outcome == DrainNotAttempted {
+			continue
+		}
+		labels = append(labels, record.Identity.String()+" "+record.Duration.String())
+	}
+	return labels
+}
+
+// drainBounded runs one instance's Drain hook, if it declares one, under the
+// phase's shared deadline, abandoning it if it outlives that deadline. It is
+// the Drain counterpart of stopBounded: unlike PreStop's hooks, which all
+// start together, the drain phase visits one instance at a time (see
+// Constructed.Unwind), so each hook can simply run to completion or be
+// abandoned on its own goroutine exactly as a Stop is.
+func (instance *Instance) drainBounded(deadline context.Context, budget time.Duration) (DrainOutcome, time.Duration, error) {
+	if instance.lifecycle.drain == nil {
+		return DrainSkipped, 0, nil
+	}
+	type drainResult struct {
+		outcome DrainOutcome
+		err     error
+	}
+	started := time.Now()
+	done := make(chan drainResult, 1)
+	go func() {
+		panicked, err := instance.invokeClassified(StageDrain, func() error {
+			return instance.lifecycle.drain(instance.value, deadline)
+		})
+		switch {
+		case panicked:
+			done <- drainResult{outcome: DrainPanicked, err: err}
+		case err != nil:
+			done <- drainResult{outcome: DrainFailed, err: err}
+		default:
+			done <- drainResult{outcome: DrainCompleted}
+		}
+	}()
+	select {
+	case result := <-done:
+		return result.outcome, time.Since(started), result.err
+	case <-deadline.Done():
+	}
+	select {
+	case result := <-done:
+		return result.outcome, time.Since(started), result.err
+	default:
+		return DrainAbandoned, time.Since(started), fmt.Errorf("xbc: plugin %s Drain did not return within drain budget %s; abandoning it", instance.identity, budget)
+	}
+}
+
+// Unwind visits every owned instance in three phases under one shared budget
+// and returns what actually happened. afterStop is called even after Stop
+// errors and lets runtime enforce Stop→cancel→join for each Plugin's managed
+// task scope.
+//
+// # The three phases
+//
+// Phase A stops the ingress closure (see Constructed.ingressClosure) in
+// reverse start order, exactly as an unwind with no drain phase at all would.
+// That set is upward-closed, so stopping it first can never stop a producer
+// out from under a consumer that has not been stopped yet.
+//
+// Phase B drains every remaining instance that declares a Drain hook,
+// strictly one at a time in reverse start order, under one shared deadline:
+// drainBudget bounds the whole phase, not one hook, for the same reason
+// ShutdownTimeout bounds the whole walk and not one Stop -- a per-instance
+// budget would make the worst case scale with the number of drainers. Running
+// drain sequentially rather than concurrently (unlike PreStop) is deliberate:
+// a drainer that depends on another drainer must drain after it finishes
+// accepting work and before it is stopped, and reverse start order is the
+// only order that can promise that for every pair at once. drainBudget of 0
+// skips the phase entirely -- no Drain hook is called -- which is the
+// documented off switch.
+//
+// An instance inside the ingress closure that also declares a Drain hook is
+// deliberately not drained here: phase A already stopped it, in the same
+// reverse order a dedicated drain pass would use, and running Drain on an
+// instance already mid-Stop would hand it two deadlines for one shutdown. An
+// ingress-dependent value's natural place to finish in-flight work is its own
+// Stop, which it already controls; phase B exists for the instances Stop
+// would otherwise reach with no chance to hand work over first.
+//
+// Phase C stops every remaining instance in reverse start order, exactly as
+// before this phase split existed.
+//
+// # Budgets
+//
+// deadline and budget bound the whole call, phases A and C included, exactly
+// as they did before Drain existed. drainDeadline and drainBudget bound phase
+// B alone, and drainDeadline is already the earlier of "now plus
+// drain_timeout" and deadline -- the caller computes that once, because
+// Unwind has no clock of its own to derive a second deadline from the first.
+//
+// # Idempotency and abandonment
+//
+// Exactly one Stop or Drain is in flight at a time across every phase. Once
+// the overall budget is spent, no further Stop is started and no further
+// Drain is started: an abandoned hook is still running, so starting the next
+// one would let two hook bodies execute concurrently and would make phase
+// order a scheduling outcome rather than a contract. The instances phase A or
+// C no longer reaches are reported as not-attempted; the instances phase B no
+// longer reaches are reported as not-attempted the same way. Releasing
+// whatever an abandoned or not-attempted instance still holds is the caller's
+// job, exactly as it always was.
+//
+// # What the returned error covers
+//
+// The returned error is about Stop (phases A and C) only: a failed, panicked,
+// abandoned, or not-attempted Stop is joined into it, exactly as before Drain
+// existed. A Drain failure, panic, abandonment, or not-attempted outcome is
+// never joined into it; it is recorded in the returned DrainReport instead,
+// which the caller is expected to inspect and log. That asymmetry mirrors
+// PreStop's: Drain hands work over voluntarily, so a Drain that did not
+// succeed has no better outcome to offer during a shutdown already under way,
+// exactly as a failed PreStop does not fail the run it precedes.
+func (constructed *Constructed) Unwind(deadline context.Context, budget time.Duration, afterStop func(plugin.Identity) error) (ShutdownReport, error) {
+	report, _, err := constructed.unwindPhases(deadline, budget, deadline, 0, afterStop)
+	return report, err
+}
+
+// UnwindWithDrain is Unwind with the drain phase (phase B) enabled: see
+// Constructed.Unwind for the complete three-phase contract. drainDeadline is
+// the phase's own deadline -- min(now+drain_timeout, deadline), computed by
+// the caller -- and drainBudget is drain_timeout itself, reported alongside
+// each record exactly as PreStop's budget is. drainBudget of 0 skips phase B
+// entirely and produces an empty DrainReport, which is what keeps an
+// application with no Drainer anywhere byte-for-byte identical to one built
+// before the stage existed.
+func (constructed *Constructed) UnwindWithDrain(deadline context.Context, budget time.Duration, drainDeadline context.Context, drainBudget time.Duration, afterStop func(plugin.Identity) error) (ShutdownReport, DrainReport, error) {
+	return constructed.unwindPhases(deadline, budget, drainDeadline, drainBudget, afterStop)
+}
+
+func (constructed *Constructed) unwindPhases(
+	deadline context.Context,
+	budget time.Duration,
+	drainDeadline context.Context,
+	drainBudget time.Duration,
+	afterStop func(plugin.Identity) error,
+) (ShutdownReport, DrainReport, error) {
+	var report ShutdownReport
+	var drainReport DrainReport
+	if constructed == nil {
+		return report, drainReport, nil
+	}
+	ingress := constructed.ingressClosure()
+	var errs []error
+
+	// Phase A: stop the ingress closure, in reverse start order, exactly as
+	// an unwind with no drain phase would.
+	for index := len(constructed.instances) - 1; index >= 0; index-- {
+		instance := constructed.instances[index]
+		if !ingress[instance.identity] {
+			continue
+		}
+		record, taskErr, stopErr := constructed.stopOne(instance, deadline, budget, afterStop, &report)
+		if stopErr != nil {
+			errs = append(errs, stopErr)
+		}
+		if taskErr != nil {
+			errs = append(errs, taskErr)
+		}
+		_ = record
+	}
+
+	// Phase B: drain every remaining instance that declares a hook, strictly
+	// one at a time in reverse start order, under the shared phase deadline.
+	// drainBudget of 0 is the documented off switch: no Drain is called and no
+	// record is produced, which is what reportDrain depends on to stay silent
+	// for an application that declares no Drainer at all.
+	//
+	// A Drain failure, panic, or abandonment is recorded in drainReport but
+	// deliberately not joined into the error this method returns: Drain hands
+	// work over voluntarily, exactly as PreStop retracts participation
+	// voluntarily, and PreStop's own joined error is dropped for the identical
+	// reason (see runtime.runPreStopPhase). The caller's report is the record;
+	// the returned error stays about Stop, which is the stage whose outcome
+	// still decides whether cleanup finished.
+	if drainBudget > 0 {
+		for index := len(constructed.instances) - 1; index >= 0; index-- {
+			instance := constructed.instances[index]
+			if ingress[instance.identity] || !instance.HasDrain() {
+				continue
+			}
+			if drainDeadline.Err() != nil {
+				drainReport.Records = append(drainReport.Records, DrainRecord{
+					Identity: instance.identity,
+					Outcome:  DrainNotAttempted,
+					Err:      fmt.Errorf("xbc: plugin %s Drain was not attempted: the %s drain budget was already spent", instance.identity, drainBudget),
+				})
+				continue
+			}
+			outcome, elapsed, err := instance.drainBounded(drainDeadline, drainBudget)
+			drainReport.Records = append(drainReport.Records, DrainRecord{
+				Identity: instance.identity,
+				Outcome:  outcome,
+				Err:      err,
+				Duration: elapsed,
+			})
+		}
+	}
+
+	// Phase C: stop every remaining instance in reverse start order, exactly
+	// as before this phase split existed.
+	for index := len(constructed.instances) - 1; index >= 0; index-- {
+		instance := constructed.instances[index]
+		if ingress[instance.identity] {
+			continue
+		}
+		_, taskErr, stopErr := constructed.stopOne(instance, deadline, budget, afterStop, &report)
+		if stopErr != nil {
+			errs = append(errs, stopErr)
+		}
+		if taskErr != nil {
+			errs = append(errs, taskErr)
+		}
+	}
+
+	return report, drainReport, errors.Join(errs...)
+}
+
+// stopOne runs one instance's bounded Stop and folds its outcome into report,
+// exactly as the single-phase walk used to do inline. It is shared by phases A
+// and C so the not-attempted/abandoned bookkeeping has exactly one
+// implementation regardless of which phase an instance's Stop belongs to.
+func (constructed *Constructed) stopOne(
+	instance *Instance,
+	deadline context.Context,
+	budget time.Duration,
+	afterStop func(plugin.Identity) error,
+	report *ShutdownReport,
+) (StopRecord, error, error) {
+	if deadline.Err() != nil {
+		record := StopRecord{Identity: instance.identity, Outcome: StopNotAttempted}
+		report.Records = append(report.Records, record)
+		return record, nil, fmt.Errorf("xbc: plugin %s Stop was not attempted: the %s shutdown budget was already spent", instance.identity, budget)
+	}
+	report.Attempted = append(report.Attempted, instance.identity)
+	outcome, elapsed, err := instance.stopBounded(deadline, budget)
+	record := StopRecord{Identity: instance.identity, Outcome: outcome, Err: err, Duration: elapsed}
+	var taskErr error
+	if outcome != StopAbandoned {
+		report.Completed = append(report.Completed, instance.identity)
+		if afterStop != nil {
+			if callErr := afterStop(instance.identity); callErr != nil {
+				record.TaskErr = callErr
+				taskErr = callErr
+			}
+		}
+	}
+	report.Records = append(report.Records, record)
+	return record, taskErr, err
 }

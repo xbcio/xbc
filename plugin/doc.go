@@ -179,16 +179,16 @@
 //
 // # Lifecycle capabilities
 //
-// A primary value opts into up to six stages by implementing the matching
+// A primary value opts into up to seven stages by implementing the matching
 // interface directly: Initializer, Migrator, Runner, TrafficOpener, Closer,
-// and PreStopper. None is required, and P inherits none of them from a base
-// type — a bare struct with no methods is a perfectly valid, lifecycle-free
-// Plugin.
+// PreStopper, and Drainer. None is required, and P inherits none of them from
+// a base type — a bare struct with no methods is a perfectly valid,
+// lifecycle-free Plugin.
 //
 // When P should not implement a stage itself — a third-party type, or a
 // method you would rather keep unexported — supply a typed adapter on
 // Options[P].Lifecycle instead. An adapter's signature is func(P, *Context)
-// error (func(P, context.Context) error for Stop and PreStop), so an
+// error (func(P, context.Context) error for Stop, PreStop and Drain), so an
 // unexported method value satisfies it directly without ever implementing the
 // exported interface:
 //
@@ -197,6 +197,7 @@
 //		Start:       (*Service).start,
 //		OpenTraffic: (*Service).openTraffic,
 //		PreStop:     (*Service).preStop,
+//		Drain:       (*Service).drain,
 //		Stop:        (*Service).stop,
 //	}
 //
@@ -207,6 +208,24 @@
 // has opened its traffic gate, which is exactly the path where every Start
 // hook returned; a process that failed during construction, migration, Start,
 // or traffic preparation holds nothing and skips the phase.
+//
+// Drain runs after the process has stopped accepting ingress and before any
+// remaining plugin's Stop. Shutdown stops in three phases: first the ingress
+// closure — every TrafficOpener and everything that transitively depends on
+// one, in reverse start order — then Drain on every remaining plugin that
+// declares one, sequentially in reverse start order, then Stop on everything
+// that still has not been stopped. A Drainer that is itself part of the
+// ingress closure is simply stopped in the first phase rather than drained a
+// second time under a different deadline. Like PreStop, Drain takes a plain
+// context.Context carrying only its own phase deadline (xbc.drain_timeout),
+// never the application's execution context.
+//
+// A plugin that accepts work asynchronously -- a queue, worker pool,
+// consumer, scheduler, or batching buffer -- should implement Drain: stop
+// admitting work and wait for what was accepted, keeping open every resource
+// that work still uses. Stop then cancels whatever outlived the drain and
+// releases those resources, and must be correct whether or not Drain ran.
+// A plugin that only owns a client or connection needs Stop alone.
 //
 // A single stage can be adapted the same way, such as closing a client XBC
 // does not otherwise know how to stop:

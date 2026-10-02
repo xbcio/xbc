@@ -43,6 +43,12 @@ func newRuntimeTestApp(definitions ...plugin.Definition) *App {
 func runtimeTestConfig(t *testing.T, shutdownTimeout time.Duration) []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "application.yml")
+	// drain_timeout is left unset: it derives as 60% of whatever
+	// shutdownTimeout a caller passes, which is always strictly smaller than
+	// shutdownTimeout, so this fixture stays usable with any value a caller
+	// passes without having to spell out an off switch. Tests of the drain
+	// phase itself configure it explicitly instead of going through this
+	// helper.
 	contents := []byte("log:\n  console:\n    enabled: false\n  file:\n    enabled: false\nxbc:\n  shutdown_timeout: " + shutdownTimeout.String() + "\n")
 	require.NoError(t, os.WriteFile(path, contents, 0o600))
 	return []string{"--config", path}
@@ -436,20 +442,25 @@ func TestShutdownBudgetAbandonsTheStuckStopAndAttemptsNoFurtherStop(t *testing.T
 	require.Error(t, completed.err)
 	assert.Contains(t, completed.err.Error(), "xbc: plugin c-stuck Stop did not return within shutdown budget")
 	assert.Contains(t, completed.err.Error(), "xbc: plugin b-next Stop was not attempted")
-	assert.Contains(t, completed.err.Error(), "xbc: plugin a-live Stop was not attempted")
 
 	stuck := plugin.Identity{Plugin: "c-stuck", Instance: plugin.DefaultInstance}
-	assert.Equal(t, []plugin.Identity{stuck}, app.shutdownReport.Attempted)
+	live := plugin.Identity{Plugin: "a-live", Instance: plugin.DefaultInstance}
+	// a-live implements OpenTraffic, which makes it the whole ingress closure
+	// (phase A): Unwind stops it before any non-ingress instance, regardless
+	// of where it would otherwise fall in reverse graph order. It is not
+	// itself stuck, so phase A completes cleanly and only phase C -- which
+	// walks c-stuck and b-next in their own reverse order -- is cut short by
+	// the budget c-stuck's hang consumes.
+	assert.Equal(t, []plugin.Identity{live, stuck}, app.shutdownReport.Attempted)
 	assert.Equal(t, []plugin.Identity{stuck}, app.shutdownReport.Identities(assembly.StopAbandoned))
 	assert.Equal(t, []plugin.Identity{
 		{Plugin: "b-next", Instance: plugin.DefaultInstance},
-		{Plugin: "a-live", Instance: plugin.DefaultInstance},
 	}, app.shutdownReport.Identities(assembly.StopNotAttempted))
 
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Equal(t, []string{"c-stuck"}, stopped,
-		"no Stop body below the stuck plugin may be entered after the budget is spent")
+	assert.Equal(t, []string{"a-live", "c-stuck"}, stopped,
+		"a-live (the ingress closure) stops first and cleanly; no Stop body below the stuck plugin may be entered after the budget is spent")
 }
 
 // TestShutdownCancelsTaskScopesTheSpentBudgetNeverReached closes the leak
@@ -468,6 +479,15 @@ func TestShutdownCancelsTaskScopesTheSpentBudgetNeverReached(t *testing.T) {
 	releaseStuck := make(chan struct{})
 	defer close(releaseStuck)
 
+	// ingress is the sole TrafficOpener, so it is Unwind's whole ingress
+	// closure (phase A) and is stopped before leaky-first or z-stuck -- the
+	// two plugins this test is actually about -- regardless of their own
+	// relative order.
+	ingress := plugin.Define("ingress", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
+	}})
 	leaky := plugin.Define("leaky-first", func(plugin.BuildContext) (*runtimeTestValue, error) {
 		return &runtimeTestValue{}, nil
 	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
@@ -479,7 +499,6 @@ func TestShutdownCancelsTaskScopesTheSpentBudgetNeverReached(t *testing.T) {
 			}))
 			return nil
 		},
-		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
 	}})
 	stuck := plugin.Define("z-stuck", func(plugin.BuildContext) (*runtimeTestValue, error) {
 		return &runtimeTestValue{}, nil
@@ -491,7 +510,7 @@ func TestShutdownCancelsTaskScopesTheSpentBudgetNeverReached(t *testing.T) {
 		},
 	}})
 
-	app := newRuntimeTestApp(leaky, stuck)
+	app := newRuntimeTestApp(ingress, leaky, stuck)
 	result := executeRuntimeTest(app, runtimeTestConfig(t, 200*time.Millisecond)...)
 	awaitRuntimeTestReady(t, app)
 	select {

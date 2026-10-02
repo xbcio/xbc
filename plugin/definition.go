@@ -69,10 +69,11 @@ type Options[P any] struct {
 // implement XBC's lifecycle interfaces itself. A stage must not be supplied
 // both here and on P; catalog freeze rejects that ambiguity.
 //
-// The field order is declaration order, not execution order: PreStop is
-// appended so that adding it moved nothing, and it runs before Stop. See
-// PreStopper for why it takes a plain context.Context while Init, Migrate,
-// Start and OpenTraffic take a *Context.
+// The field order is declaration order, not execution order: PreStop and
+// Drain are appended in the order they were added so that adding each one
+// moved nothing. PreStop runs before Stop, and Drain runs after PreStop and
+// before Stop; see PreStopper and Drainer for why both take a plain
+// context.Context while Init, Migrate, Start and OpenTraffic take a *Context.
 type Lifecycle[P any] struct {
 	Init        func(P, *Context) error
 	Migrate     func(P, *Context) error
@@ -80,6 +81,7 @@ type Lifecycle[P any] struct {
 	OpenTraffic func(P, *Context) error
 	Stop        func(P, context.Context) error
 	PreStop     func(P, context.Context) error
+	Drain       func(P, context.Context) error
 }
 
 // Contract is one additional interface export tied to primary type P.
@@ -270,6 +272,9 @@ func eraseLifecycle[P any](lifecycle Lifecycle[P]) pluginmodel.LifecycleAdapters
 	}
 	if lifecycle.PreStop != nil {
 		erased.PreStop = func(value any, context context.Context) error { return lifecycle.PreStop(value.(P), context) }
+	}
+	if lifecycle.Drain != nil {
+		erased.Drain = func(value any, context context.Context) error { return lifecycle.Drain(value.(P), context) }
 	}
 	return erased
 }

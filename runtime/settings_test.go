@@ -36,7 +36,7 @@ func TestSettingsFallBackToDeclaredDefaultsWithoutAnXbcSection(t *testing.T) {
 	t.Parallel()
 	loaded, err := loadSettings(settingsEnvironment(t, nil))
 	require.NoError(t, err)
-	assert.Equal(t, 30*time.Second, loaded.ShutdownTimeout)
+	assert.Equal(t, 25*time.Second, loaded.ShutdownTimeout)
 	assert.False(t, loaded.AutoMigrate, "migration is a side-effecting write and is never on by default")
 	assert.Equal(t, 30*time.Second, loaded.SlowStartupAfter,
 		"the default is positive because a startup that hangs is otherwise silent under the default configuration")
@@ -152,7 +152,7 @@ func TestSettingsPreStopTimeoutDefaultsToAPositiveBudget(t *testing.T) {
 	loaded, err := loadSettings(settingsEnvironment(t, nil))
 	require.NoError(t, err)
 	assert.Equal(t, 2*time.Second, loaded.PreStopTimeout)
-	assert.Equal(t, 30*time.Second, loaded.ShutdownTimeout,
+	assert.Equal(t, 25*time.Second, loaded.ShutdownTimeout,
 		"the two budgets stay separate, so the worst case for one stop is their sum")
 }
 
@@ -178,6 +178,137 @@ func TestSettingsPreStopTimeoutAcceptsZeroButNotNegative(t *testing.T) {
 		assert.Contains(t, err.Error(), "0s skips the pre-stop phase",
 			"the diagnostic has to name the off switch, or the author has no way to say what they meant")
 	}
+}
+
+// TestSettingsDrainTimeoutDefaultsToDerivedShareOfShutdown pins the unset
+// default: 60% of the effective shutdown_timeout (shutdown*3/5), which is by
+// construction always strictly smaller than shutdown_timeout and therefore
+// never trips the containment check below, whatever shutdown_timeout a
+// deployment chooses -- unlike a fixed tag, which could not satisfy every
+// shutdown_timeout at once.
+func TestSettingsDrainTimeoutDefaultsToDerivedShareOfShutdown(t *testing.T) {
+	t.Parallel()
+	loaded, err := loadSettings(settingsEnvironment(t, nil))
+	require.NoError(t, err)
+	assert.Equal(t, 15*time.Second, loaded.DrainTimeout)
+	assert.Equal(t, 25*time.Second, loaded.ShutdownTimeout,
+		"drain_timeout runs inside shutdown_timeout, so the derived default must already satisfy that containment")
+
+	loaded, err = loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"shutdown_timeout": "5s"},
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, 3*time.Second, loaded.DrainTimeout,
+		"the derived default scales with whatever shutdown_timeout is in effect")
+	assert.Equal(t, 5*time.Second, loaded.ShutdownTimeout)
+}
+
+// TestSettingsDrainTimeoutAcceptsZeroButNotNegative mirrors
+// TestSettingsPreStopTimeoutAcceptsZeroButNotNegative: 0s is the documented
+// off switch, and negative is a mistake no author can have meant.
+func TestSettingsDrainTimeoutAcceptsZeroButNotNegative(t *testing.T) {
+	t.Parallel()
+	loaded, err := loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"drain_timeout": "0s"},
+	}))
+	require.NoError(t, err)
+	assert.Zero(t, loaded.DrainTimeout, "0s is how the drain phase is turned off")
+
+	for _, value := range []string{"-1s", "-1ns"} {
+		_, err := loadSettings(settingsEnvironment(t, map[string]any{
+			"xbc": map[string]any{"drain_timeout": value},
+		}))
+		require.Error(t, err, "drain_timeout=%s must be rejected", value)
+		assert.Contains(t, err.Error(), "drain_timeout")
+		assert.Contains(t, err.Error(), "0s skips the drain phase",
+			"the diagnostic has to name the off switch, or the author has no way to say what they meant")
+	}
+}
+
+// TestSettingsRejectsDrainTimeoutNotSmallerThanShutdownTimeout pins the
+// containment rule: the drain phase runs inside shutdown_timeout, so a
+// drain_timeout equal to or larger than it would leave no budget at all for
+// the Stops that still have to run once the drain phase returns. This only
+// applies to an explicit value -- the derived default always satisfies it,
+// which is why both values here are set explicitly.
+func TestSettingsRejectsDrainTimeoutNotSmallerThanShutdownTimeout(t *testing.T) {
+	t.Parallel()
+	for name, testCase := range map[string]struct {
+		drain, shutdown string
+	}{
+		"equal":   {drain: "5s", shutdown: "5s"},
+		"greater": {drain: "6s", shutdown: "5s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := loadSettings(settingsEnvironment(t, map[string]any{
+				"xbc": map[string]any{
+					"drain_timeout":    testCase.drain,
+					"shutdown_timeout": testCase.shutdown,
+				},
+			}))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "drain_timeout")
+			assert.Contains(t, err.Error(), "shutdown_timeout")
+			assert.Contains(t, err.Error(), testCase.drain)
+			assert.Contains(t, err.Error(), testCase.shutdown)
+			assert.Contains(t, err.Error(), "lower xbc.drain_timeout or raise xbc.shutdown_timeout",
+				"the diagnostic has to name both remedies, not just the violated rule")
+		})
+	}
+
+	// A drain_timeout of 0s always fits, however small shutdown_timeout is:
+	// the off switch is exempt from the containment check it would otherwise
+	// trivially violate.
+	loaded, err := loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"drain_timeout": "0s", "shutdown_timeout": "1s"},
+	}))
+	require.NoError(t, err)
+	assert.Zero(t, loaded.DrainTimeout)
+}
+
+// TestSettingsDrainTimeoutUnsetIsNeverRejectedEvenAtATinyShutdownBudget pins
+// the property the derivation exists for: whatever shutdown_timeout is in
+// effect, leaving drain_timeout unset must load cleanly, because the derived
+// value is always strictly smaller than shutdown_timeout.
+func TestSettingsDrainTimeoutUnsetIsNeverRejectedEvenAtATinyShutdownBudget(t *testing.T) {
+	t.Parallel()
+	loaded, err := loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"shutdown_timeout": "5s"},
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, 3*time.Second, loaded.DrainTimeout)
+}
+
+// TestSettingsDrainTimeoutExplicitZeroIsDistinctFromUnset pins that an
+// explicit 0s is read as the documented off switch rather than as "unset" --
+// the two must not collapse into each other now that unset derives a
+// nonzero default.
+func TestSettingsDrainTimeoutExplicitZeroIsDistinctFromUnset(t *testing.T) {
+	t.Parallel()
+	loaded, err := loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"drain_timeout": "0s"},
+	}))
+	require.NoError(t, err)
+	assert.Zero(t, loaded.DrainTimeout, "an explicit 0s must still skip the phase, not be read as unset")
+}
+
+// TestSettingsDrainTimeoutComesFromTheEnvironment pins the environment
+// override path, matching the pattern TestSettingsRuntimeKnobsComeFromTheEnvironment
+// uses for xbc.runtime. It also pins that XBC_DRAIN_TIMEOUT counts as
+// "explicit" for the unset/set distinction: runtimeTestConfig's file leaves
+// drain_timeout unset, so if the environment layer did not count as explicit
+// this would silently fall back to the derived default (6s for a 10s
+// shutdown_timeout) instead of the 3s asserted below.
+func TestSettingsDrainTimeoutComesFromTheEnvironment(t *testing.T) {
+	t.Setenv("XBC_DRAIN_TIMEOUT", "3s")
+
+	app := newRuntimeTestApp()
+	cmd, err := parseArgs(runtimeTestConfig(t, 10*time.Second), config.DefaultEnvPrefix)
+	require.NoError(t, err)
+	require.NoError(t, app.bootstrap(cmd))
+
+	assert.Equal(t, 3*time.Second, app.settings.DrainTimeout)
 }
 
 // TestSettingsRuntimeKnobsComeFromTheEnvironment pins the environment path for

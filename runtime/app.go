@@ -53,6 +53,10 @@ type App struct {
 	// shutdownReport is written inside unwindOnce, so any goroutine that has
 	// returned from unwind observes it.
 	shutdownReport assembly.ShutdownReport
+	// drainReport is written inside the same unwindOnce, alongside
+	// shutdownReport: the drain phase is part of the same reverse walk, not a
+	// separate stage with its own once-guard.
+	drainReport assembly.DrainReport
 
 	// startup is written on the execute goroutine, before the released-gate
 	// report that reads it, and is never written again.

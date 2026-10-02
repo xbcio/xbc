@@ -190,10 +190,11 @@ type ConfigDescriptor struct {
 // Context-bearing stages accept any to keep this low-level representation free
 // of a dependency cycle with the parent plugin package.
 //
-// The field order is declaration order, not execution order: PreStop is
-// appended so that adding it moved nothing, and it runs before Stop. Erased
-// adapters are read by name everywhere they are used, so the two orders never
-// have to agree.
+// The field order is declaration order, not execution order: PreStop and Drain
+// are appended in the order they were added so that adding each one moved
+// nothing. Drain runs after PreStop and before Stop. Erased adapters are read
+// by name everywhere they are used, so the declaration order never has to
+// agree with execution order.
 type LifecycleAdapters struct {
 	Init        func(any, any) error
 	Migrate     func(any, any) error
@@ -201,6 +202,7 @@ type LifecycleAdapters struct {
 	OpenTraffic func(any, any) error
 	Stop        func(any, context.Context) error
 	PreStop     func(any, context.Context) error
+	Drain       func(any, context.Context) error
 }
 
 // InstancePlan is the complete side-effect-free plan for one instance.

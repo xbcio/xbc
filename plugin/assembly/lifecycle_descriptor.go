@@ -16,6 +16,7 @@ var (
 	trafficOpenerType = reflect.TypeOf((*plugin.TrafficOpener)(nil)).Elem()
 	closerType        = reflect.TypeOf((*plugin.Closer)(nil)).Elem()
 	preStopperType    = reflect.TypeOf((*plugin.PreStopper)(nil)).Elem()
+	drainerType       = reflect.TypeOf((*plugin.Drainer)(nil)).Elem()
 )
 
 func compileLifecycle(definition pluginmodel.DefinitionDescriptor) (lifecycleDescriptor, error) {
@@ -97,6 +98,20 @@ func compileLifecycle(definition pluginmodel.DefinitionDescriptor) (lifecycleDes
 		}
 	} else if adapters.PreStop != nil {
 		descriptor.preStop = adapters.PreStop
+	}
+	// Drain is compiled last for the same reason PreStop was appended rather
+	// than inserted: it was added last, not because it runs last -- it runs
+	// after PreStop and before Stop. The mutual-exclusion rule is identical to
+	// every stage above.
+	if primary.Implements(drainerType) {
+		if adapters.Drain != nil {
+			return lifecycleDescriptor{}, duplicateLifecycle(definition, "Drain")
+		}
+		descriptor.drain = func(value any, context context.Context) error {
+			return value.(plugin.Drainer).Drain(context)
+		}
+	} else if adapters.Drain != nil {
+		descriptor.drain = adapters.Drain
 	}
 	return descriptor, nil
 }

@@ -14,6 +14,8 @@
 xbc:
   # One budget covers cancellation, managed-task join, and reverse-order Stop.
   shutdown_timeout: 15s
+  # The drain phase runs inside shutdown_timeout, before the remaining plugin
+  # Stops. Left unset, it defaults to 60% of shutdown_timeout.
   # Reporting only: while startup is unfinished, name the phase and the plugin
   # still holding it every 30s. It never aborts a startup.
   slow_startup_after: 30s

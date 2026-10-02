@@ -89,6 +89,7 @@ type lifecycleDescriptor struct {
 	openTraffic func(any, *plugin.Context) error
 	stop        func(any, context.Context) error
 	preStop     func(any, context.Context) error
+	drain       func(any, context.Context) error
 }
 
 // Order returns the canonical deterministic dependency order.

@@ -55,12 +55,18 @@ type settings struct {
 	// for why a per-plugin budget would make the worst case scale with the
 	// number of plugins instead of staying bounded.
 	//
-	// It is the second of a stop's two budgets. PreStopTimeout runs first and
-	// is accounted separately, so the worst case for one stop is
-	// PreStopTimeout + ShutdownTimeout (2s + 30s by default). Keeping them
-	// apart is what lets a deployment that needs a long lease-release window
-	// widen that window without handing every Stop a budget it does not need.
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" default:"30s"`
+	// It is the second of a stop's two outer budgets. PreStopTimeout runs
+	// first and is accounted separately, so the worst case for one stop is
+	// PreStopTimeout + ShutdownTimeout (2s + 25s by default). The default sum
+	// is deliberately kept below Kubernetes' default
+	// terminationGracePeriodSeconds of 30s, so a process that keeps the
+	// framework's own defaults is not killed mid-shutdown by a supervisor
+	// using its own default grace period; DrainTimeout runs inside this
+	// budget, not beside it (see DrainTimeout), so it does not add to that
+	// sum. Keeping PreStopTimeout and ShutdownTimeout apart is what lets a
+	// deployment that needs a long lease-release window widen that window
+	// without handing every Stop a budget it does not need.
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" default:"25s"`
 
 	// PreStopTimeout is the total budget for the pre-stop phase: every plugin's
 	// PreStop runs inside this one budget, exactly as every plugin's Stop runs
@@ -79,6 +85,45 @@ type settings struct {
 	// PreStop anywhere is doing implicitly. Negative is not an off switch, it is
 	// a mistake, and loadSettings rejects it.
 	PreStopTimeout time.Duration `yaml:"pre_stop_timeout" default:"2s"`
+
+	// DrainTimeout is the budget for the drain phase: every remaining
+	// (non-ingress) Drainer's Drain hook runs inside this one phase budget,
+	// sequentially in reverse start order, for the same reason PreStopTimeout
+	// and ShutdownTimeout are whole-phase rather than per-plugin.
+	//
+	// Unlike PreStopTimeout, it is contained in ShutdownTimeout rather than
+	// accounted beside it: the drain phase runs between the ingress stop and
+	// the remaining Stops, all three inside the one shutdown budget a
+	// supervisor's kill timeout has to allow for, so DrainTimeout does not
+	// enlarge that ceiling the way PreStopTimeout does. loadSettings therefore
+	// rejects a DrainTimeout that is not strictly less than ShutdownTimeout
+	// when DrainTimeout is positive -- a drain phase that could consume the
+	// whole shutdown budget, or more of it than there is, would leave no
+	// budget at all for the Stops that still have to run afterward.
+	//
+	// There deliberately is no `default` tag on this field. A fixed default
+	// would have to satisfy the containment check against whatever
+	// ShutdownTimeout a deployment chooses, and no single fixed value does
+	// that for every ShutdownTimeout a deployment may pick -- the three
+	// bundled examples that lower ShutdownTimeout to 15s are exactly the case
+	// a fixed 15s default cannot survive. loadSettings instead derives the
+	// unset default from the effective ShutdownTimeout, as 60% of it
+	// (ShutdownTimeout*3/5): 25s -> 15s, 15s -> 9s, 5s -> 3s. A derived value
+	// is by construction always strictly less than ShutdownTimeout, so it can
+	// never trip the containment check below. "Unset" has to be distinguished
+	// from "explicitly set", including to 0s, for the derivation to apply only
+	// when nobody asked for anything else; loadSettings does so with
+	// Environment.Exists on this field's path, read before Bind runs on this
+	// section -- Bind's own syncBack would otherwise make every leaf, defaulted
+	// or not, read back as "exists" once bound (see Environment.Exists).
+	//
+	// Explicitly set to 0s, it skips the phase entirely: no Drain hook is
+	// called. That is the documented off switch, matching PreStopTimeout's.
+	// Explicitly set to a negative value, it is not an off switch, it is a
+	// mistake, and loadSettings rejects it. Explicitly set to a value greater
+	// than or equal to the effective ShutdownTimeout, it is rejected by the
+	// same containment check the derived default is built to always satisfy.
+	DrainTimeout time.Duration `yaml:"drain_timeout"`
 
 	// AutoMigrate makes every boot run the migration stage, as if --migrate
 	// had been passed. Off by default: migration is a side-effecting write,
@@ -357,13 +402,36 @@ func parseRuntimeSection(section runtimeSettings) (maxProcsSpec, memoryLimitSpec
 	return maxProcs, memoryLimit, nil
 }
 
+// drainTimeoutPath is the dotted configuration path checked against
+// Environment.Exists before Bind runs on settingsSection, which is what lets
+// loadSettings tell "nobody set this" apart from "set to the zero value".
+// Checking it before Bind matters: Bind's syncBack writes every bound leaf
+// back into the Environment's tree, defaulted or not, so the same check made
+// after Bind would read true unconditionally (see Environment.Exists).
+const drainTimeoutPath = settingsSection + ".drain_timeout"
+
+// deriveDrainTimeout computes the unset default for xbc.drain_timeout: 60% of
+// the effective shutdown_timeout (shutdown*3/5). A derived value is by
+// construction always strictly less than shutdown, so it can never trip the
+// containment check loadSettings applies to an explicit value, whatever
+// shutdown_timeout a deployment chooses -- which is exactly why this is
+// derived rather than carried as a fixed `default` tag (see DrainTimeout).
+func deriveDrainTimeout(shutdown time.Duration) time.Duration {
+	return shutdown * 3 / 5
+}
+
 // loadSettings binds the "xbc" section onto a zero settings and validates it.
 //
 // Environment.Bind applies the whole file/ENV/default chain and syncs the
 // result back into the underlying koanf tree, so settings' `default` tags are
 // visible to Config().Get("xbc.shutdown_timeout") afterwards, not just on the
-// struct field.
+// struct field. drain_timeout carries no `default` tag; loadSettings derives
+// its unset value itself, after shutdown_timeout is known, which is why that
+// one field is resolved below rather than through the tag chain Bind applies
+// to everything else.
 func loadSettings(env *config.Environment) (settings, error) {
+	// Read before Bind: see drainTimeoutPath.
+	drainTimeoutSet := env.Exists(drainTimeoutPath)
 	var s settings
 	if err := env.Bind(settingsSection, &s); err != nil {
 		return s, fmt.Errorf("xbc: failed to bind %s configuration: %w", settingsSection, err)
@@ -387,6 +455,37 @@ func loadSettings(env *config.Environment) (settings, error) {
 		return s, fmt.Errorf(
 			"xbc: %s.pre_stop_timeout must not be negative, got %s; 0s skips the pre-stop phase, which is how it is turned off",
 			settingsSection, s.PreStopTimeout)
+	}
+	if !drainTimeoutSet {
+		// Unset: derive the default from the now-known effective
+		// shutdown_timeout rather than reading a fixed tag. The derived value
+		// is by construction always strictly less than ShutdownTimeout (see
+		// deriveDrainTimeout), so it is never rejected and the containment
+		// check below never has to run against it.
+		s.DrainTimeout = deriveDrainTimeout(s.ShutdownTimeout)
+	} else {
+		// drain_timeout has the identical off-switch asymmetry pre_stop_timeout
+		// has, for the identical reason: the drain phase is optional, and a
+		// negative value can only be a mistake. This only applies to an
+		// explicit value -- the derived default is never negative.
+		if s.DrainTimeout < 0 {
+			return s, fmt.Errorf(
+				"xbc: %s.drain_timeout must not be negative, got %s; 0s skips the drain phase, which is how it is turned off",
+				settingsSection, s.DrainTimeout)
+		}
+		// drain_timeout is contained in shutdown_timeout -- the drain phase
+		// runs between the ingress stop and the remaining Stops, all three
+		// inside the one shutdown budget -- so a drain_timeout that is not
+		// strictly smaller would leave no budget at all for the Stops that
+		// still have to run once the drain phase returns. The check is
+		// skipped when drain_timeout is 0: the off switch always fits,
+		// however small shutdown_timeout is. This only applies to an explicit
+		// value -- the derived default always satisfies it.
+		if s.DrainTimeout > 0 && s.DrainTimeout >= s.ShutdownTimeout {
+			return s, fmt.Errorf(
+				"xbc: %s.drain_timeout (%s) must be less than %s.shutdown_timeout (%s); the drain phase runs inside the shutdown budget, so lower %s.drain_timeout or raise %s.shutdown_timeout",
+				settingsSection, s.DrainTimeout, settingsSection, s.ShutdownTimeout, settingsSection, settingsSection)
+		}
 	}
 	// The process-level knobs are validated here rather than where they are
 	// installed, so an unusable xbc.runtime section is reported beside every
