@@ -182,9 +182,14 @@ func (p *Pool) Spawn(ctx context.Context, name string, task func(context.Context
 	if err != nil {
 		return err
 	}
+	// admit already called p.inFlight.Add(1) for this task inside the same
+	// locked section that granted it a running or queued slot, so Add is
+	// guaranteed to happen-before any inFlight.Wait call Drain or Stop can
+	// start afterward: a Wait that starts when the counter is (transiently)
+	// zero can never race a positive Add from a Spawn that admit already
+	// let through.
 
 	taskCtx := p.taskContext(ctx)
-	p.inFlight.Add(1)
 	switch outcome {
 	case admitRunning:
 		if err := p.exec.Go(func() { p.runTask(name, taskCtx, task) }); err != nil {
@@ -210,10 +215,18 @@ const (
 )
 
 // admit decides whether this Spawn call may proceed, reserving a running slot
-// or a queue slot before returning. SubmitTimeout 0 rejects immediately with
-// ErrSaturated the moment neither is available, regardless of ctx's own
-// deadline: the configured wait is the effective ceiling, never widened by a
-// caller's longer-lived ctx. A positive SubmitTimeout instead waits up to
+// or a queue slot before returning. It also calls p.inFlight.Add(1) inside the
+// same locked section that grants the slot, so the Add is guaranteed to
+// happen-before any inFlight.Wait call a concurrent Drain or Stop starts: a
+// Spawn that admit lets through can never be invisible to a Wait that begins
+// immediately afterward, which is the hazard sync.WaitGroup's own contract
+// warns against ("calls with a positive delta that start when the counter is
+// zero must happen before a Wait").
+//
+// SubmitTimeout 0 rejects immediately with ErrSaturated the moment neither a
+// running nor a queue slot is available, regardless of ctx's own deadline:
+// the configured wait is the effective ceiling, never widened by a caller's
+// longer-lived ctx. A positive SubmitTimeout instead waits up to
 // min(SubmitTimeout, ctx's own deadline); if ctx itself is the earlier
 // deadline and it fires first, admit returns ctx.Err() rather than
 // ErrSaturated, so "the spawn ctx deadline shorter than submit_timeout wins".
@@ -234,11 +247,13 @@ func (p *Pool) admit(ctx context.Context) (admitOutcome, error) {
 		}
 		if p.cfg.MaxConcurrency == 0 || p.running < uint64(p.cfg.MaxConcurrency) {
 			p.running++
+			p.inFlight.Add(1)
 			p.signalChangedLocked()
 			p.mu.Unlock()
 			return admitRunning, nil
 		}
 		if len(p.queue) < p.cfg.QueueCapacity {
+			p.inFlight.Add(1)
 			p.mu.Unlock()
 			return admitQueued, nil
 		}
