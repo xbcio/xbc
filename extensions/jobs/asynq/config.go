@@ -26,7 +26,12 @@ type Config struct {
 	DefaultTimeout    time.Duration `yaml:"default_timeout"     default:"30m"     validate:"gt=0"`
 
 	TaskCheckInterval time.Duration `yaml:"task_check_interval" default:"1s" validate:"gt=0"`
-	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"   default:"8s" validate:"gt=0"`
+
+	// ShutdownTimeout bounds the asynq library's own worker Shutdown, which
+	// Drain starts. It should be at or below xbc.drain_timeout: anything that
+	// Shutdown cannot finish within this budget is waited out by Stop
+	// instead, not abandoned.
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" default:"8s" validate:"gt=0"`
 }
 
 // RedisConfig configures the Redis connection owned exclusively by the plugin.

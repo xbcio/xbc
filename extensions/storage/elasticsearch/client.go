@@ -44,8 +44,10 @@ type Client struct {
 	stopErr      error
 
 	// draining is set by drainClient and keeps a later Start from creating a
-	// fresh bulk worker. bulkReported records that drain already returned the
-	// bulk worker's final result, so Close does not report it a second time.
+	// fresh bulk worker. bulkReported records that the bulk worker's final
+	// result has already been claimed by whichever of drainClient or
+	// finishClose first observed it while holding lifecycleMu, so the other
+	// does not report the same failure a second time.
 	draining     bool
 	bulkReported bool
 }
@@ -166,6 +168,21 @@ func (c *Client) closeTransport(ctx context.Context) error {
 		}
 	})
 	return c.closeErr
+}
+
+// claimBulkErr reports err only to the first caller that claims the bulk
+// worker's final result. drainClient and finishClose each call this with the
+// same result from the same idempotent bulk.Close; whichever observes it
+// first while holding lifecycleMu is the only one that returns a non-nil
+// error, so a drain and a stop that overlap cannot both report it.
+func (c *Client) claimBulkErr(err error) error {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if c.bulkReported {
+		return nil
+	}
+	c.bulkReported = true
+	return err
 }
 
 type clientFactory interface {

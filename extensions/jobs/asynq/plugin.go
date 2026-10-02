@@ -97,8 +97,11 @@ type Plugin struct {
 
 	// drainDone is closed once the worker server's graceful Shutdown, started
 	// by drain, has returned; drainErr is its result. drainReported records
-	// that drain already returned drainErr to its caller, so stop does not
-	// report the same failure a second time.
+	// that drainErr has already been claimed by whichever of drain or stop
+	// first observed drainDone closed while holding mu, so the other does not
+	// report the same failure a second time. The observation and the claim
+	// happen in the same critical section as the read, so a drain and a stop
+	// that wake up together cannot both claim it.
 	drainDone     chan struct{}
 	drainErr      error
 	drainReported bool
@@ -328,14 +331,24 @@ func (p *Plugin) drain(ctx context.Context) error {
 
 	select {
 	case <-done:
-		p.mu.Lock()
-		err := p.drainErr
-		p.drainReported = true
-		p.mu.Unlock()
-		return err
+		return p.claimDrainErr()
 	case <-ctx.Done():
 		return fmt.Errorf("asynq: drain running handlers: %w", ctx.Err())
 	}
+}
+
+// claimDrainErr reads drainErr and marks it reported in one critical section,
+// so whichever of drain or stop observes drainDone closed first is the only
+// one that returns the failure; the other sees drainReported already set and
+// returns nil for it.
+func (p *Plugin) claimDrainErr() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.drainReported {
+		return nil
+	}
+	p.drainReported = true
+	return p.drainErr
 }
 
 func (p *Plugin) shutdownForDrain(server workerServer, done chan struct{}) {
@@ -408,11 +421,9 @@ func (p *Plugin) finishStop(client *Client, server workerServer, redisClient *go
 	var errs []error
 	if drainDone != nil {
 		<-drainDone
-		p.mu.Lock()
-		if !p.drainReported && p.drainErr != nil {
-			errs = append(errs, p.drainErr)
+		if err := p.claimDrainErr(); err != nil {
+			errs = append(errs, err)
 		}
-		p.mu.Unlock()
 	}
 	if server != nil {
 		p.workerMu.Lock()

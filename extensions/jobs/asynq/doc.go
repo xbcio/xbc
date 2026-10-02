@@ -50,11 +50,15 @@
 // Queue names passed to Queue must exist in plugins.asynq. The runtime owns its
 // Redis connection, enqueue client, and worker server. Start submits the worker
 // as a critical managed task, which waits for XBC's global traffic gate before
-// polling Redis. Drain stops the worker fetching new tasks and waits for the
-// running handlers within the drain budget, while Enqueue and Redis stay usable;
-// Stop then rejects new enqueue calls, finishes that shutdown if Drain did not,
-// and closes Redis. Tasks may be redelivered, so handlers should be idempotent and payloads
-// should not contain unprotected secrets.
+// polling Redis. Drain stops the worker fetching new tasks and starts the
+// asynq library's own worker Shutdown, waiting for it within the drain budget
+// while Enqueue and Redis stay usable; plugins.asynq.shutdown_timeout bounds
+// that Shutdown call itself and should be set at or below xbc.drain_timeout.
+// Whatever Shutdown cannot finish in that time is waited out, not abandoned:
+// Stop rejects new enqueue calls, waits for the same Shutdown to finish if
+// Drain did not, and then closes Redis. A failure already reported by Drain is
+// never reported again by Stop. Tasks may be redelivered, so handlers should
+// be idempotent and payloads should not contain unprotected secrets.
 //
 // # Readiness
 //
