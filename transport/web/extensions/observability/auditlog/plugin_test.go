@@ -179,7 +179,7 @@ func TestAsyncOverflowIsExplicit(t *testing.T) {
 	close(gate)
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
 	defer stopCancel()
-	if err := dispatcher.stopAndWait(stopCtx, true); err != nil {
+	if err := dispatcher.stopAndWait(stopCtx, true, true); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -201,7 +201,7 @@ func TestBlockOverflowSubmitIsReleasedByStop(t *testing.T) {
 	go func() { blocked <- dispatcher.submit(context.Background(), Event{Status: 202}) }()
 	stopCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if err := dispatcher.stopAndWait(stopCtx, true); err == nil {
+	if err := dispatcher.stopAndWait(stopCtx, true, true); err == nil {
 		t.Fatal("blocked sink unexpectedly drained")
 	}
 	if err := <-blocked; err != ErrStopped {

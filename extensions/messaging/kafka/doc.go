@@ -46,8 +46,10 @@
 // consumer as a critical managed task. Those tasks wait for XBC's global traffic
 // gate before fetching. A consumer commits only after its handler succeeds (or
 // after the configured skip policy). Commits are synchronous so broker errors
-// stay observable. Stop rejects production, cancels and joins consumers, then
-// closes readers and the producer.
+// stay observable. Drain stops each consumer fetching another message and waits
+// for the message it holds to be handled and committed, while production stays
+// open. Stop rejects production, cancels and joins consumers, then closes
+// readers and the producer.
 //
 // TLS supports private CAs and client certificates. SASL PLAIN or SCRAM is
 // accepted only with TLS. Keep credentials in secret-backed configuration and

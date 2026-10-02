@@ -48,8 +48,9 @@
 // successful response body. Client.Raw is an explicit escape hatch that does
 // not apply that timeout. Bulk admission is bounded and uses the configured
 // block or reject policy; Flush is a barrier for previously admitted items.
-// During shutdown the primary Client stops admission, drains and flushes its
-// worker, then closes the transport.
+// Drain stops bulk admission and waits for every admitted item to be flushed,
+// leaving the transport open; Stop finishes that flush if Drain did not, then
+// closes the transport.
 //
 // Supply API keys, passwords, and private certificate authorities through
 // secret-backed configuration. Credentials in node URLs are rejected, and this

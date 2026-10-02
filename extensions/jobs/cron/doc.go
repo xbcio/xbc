@@ -51,8 +51,10 @@
 // Definition returns the canonical declaration and Bundle is side-effect free.
 // Executables that deliberately choose process-wide composition may import the
 // autoload subpackage. Every runner and lease-renewal manager is admitted during
-// Start and waits for XBC's traffic gate before scheduling. Job contexts are
-// canceled on shutdown or lease loss; jobs should honor cancellation and keep
+// Start and waits for XBC's traffic gate before scheduling. Drain stops
+// scheduling new invocations and waits for the running ones within the drain
+// budget, without cancelling them or their lease renewal. Job contexts are
+// canceled by Stop or on lease loss; jobs should honor cancellation and keep
 // externally visible work idempotent because a lease cannot fence code that
 // ignores it.
 package cron

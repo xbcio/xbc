@@ -19,6 +19,10 @@ type scheduledJob struct {
 	lockKey  string
 	schedule robfigcron.Schedule
 	renewals chan *leaseSession
+	// runnerDone is closed when this job's runner returns, which is how its
+	// renewal manager learns that no further session can arrive once drain has
+	// let the last invocation finish.
+	runnerDone chan struct{}
 }
 
 type leaseSession struct {
@@ -50,6 +54,9 @@ func (p *Plugin) start(ctx *plugin.Context) error {
 	case p.stopping:
 		p.mu.Unlock()
 		return errors.New("cron: cannot Start after Stop")
+	case p.draining:
+		p.mu.Unlock()
+		return errors.New("cron: cannot Start after Drain")
 	}
 	p.startAttempted = true
 	p.starting = true
@@ -144,31 +151,34 @@ func (p *Plugin) runJob(
 	logger log.Logger,
 	entry *scheduledJob,
 ) {
+	defer close(entry.runnerDone)
 	ctx, cancel := mergedContext(runContext, taskContext)
 	defer cancel()
 
 	select {
 	case <-trafficGate:
+	case <-p.drainCh:
+		return
 	case <-ctx.Done():
 		return
 	}
 
 	now := time.Now().In(p.location)
 	next := entry.schedule.Next(now)
-	if p.config.RunImmediately {
+	if p.config.RunImmediately && !p.drainRequested() {
 		p.runInvocation(ctx, logger, entry)
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || p.drainRequested() {
 			return
 		}
 	}
 
 	for !next.IsZero() {
-		if !waitUntil(ctx, next) {
+		if !waitUntil(ctx, p.drainCh, next) {
 			return
 		}
 		scheduled := next
 		p.runInvocation(ctx, logger, entry)
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || p.drainRequested() {
 			return
 		}
 		next = nextOccurrence(p.config.Concurrency, entry.schedule, scheduled, time.Now().In(p.location))
@@ -182,7 +192,20 @@ func nextOccurrence(policy ConcurrencyPolicy, schedule robfigcron.Schedule, sche
 	return schedule.Next(finished)
 }
 
-func waitUntil(ctx context.Context, deadline time.Time) bool {
+// drainRequested reports whether drain has asked the runners to stop
+// scheduling, without blocking.
+func (p *Plugin) drainRequested() bool {
+	select {
+	case <-p.drainCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// waitUntil sleeps until deadline and reports whether the invocation due then
+// should still run: it returns false as soon as ctx is done or drain is closed.
+func waitUntil(ctx context.Context, drain <-chan struct{}, deadline time.Time) bool {
 	delay := time.Until(deadline)
 	if delay < 0 {
 		delay = 0
@@ -192,6 +215,8 @@ func waitUntil(ctx context.Context, deadline time.Time) bool {
 	select {
 	case <-timer.C:
 		return true
+	case <-drain:
+		return false
 	case <-ctx.Done():
 		return false
 	}
@@ -278,6 +303,8 @@ func (p *Plugin) runRenewalManager(
 		select {
 		case session := <-entry.renewals:
 			p.renewSession(ctx, logger, entry.label, session)
+		case <-entry.runnerDone:
+			return
 		case <-ctx.Done():
 			return
 		}

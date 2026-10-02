@@ -54,8 +54,10 @@
 // Deliver applies retries synchronously. Enqueue uses a bounded queue and the
 // configured block or reject backpressure policy; asynchronous workers become
 // available only after OpenTraffic. Payload, response, retry, and request
-// limits are bounded. Shutdown rejects new deliveries and lets accepted work
-// drain within the lifecycle budget.
+// limits are bounded. Drain rejects new deliveries and waits for accepted work
+// within the drain budget without cancelling it; Stop finishes that wait if
+// Drain did not, aborts whatever outlives the shutdown budget, and closes idle
+// connections.
 //
 // HTTPS is required by default. The default transport rejects private and
 // otherwise non-public targets, validates every DNS answer and the actual peer,

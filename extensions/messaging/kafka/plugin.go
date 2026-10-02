@@ -36,6 +36,7 @@ var definition = plugin.DefineConfigured(
 		),
 		Lifecycle: plugin.Lifecycle[*Client]{
 			Start: (*Client).start,
+			Drain: (*Client).drain,
 			Stop:  (*Client).stop,
 		},
 	},
@@ -164,6 +165,10 @@ func (c *Client) start(ctx *plugin.Context) error {
 		c.stateMu.Unlock()
 		return errors.New("kafka: client is stopped")
 	}
+	if c.drainDone != nil {
+		c.stateMu.Unlock()
+		return errors.New("kafka: client is draining")
+	}
 	if c.started || len(c.consumers) != 0 || c.runCancel != nil {
 		c.stateMu.Unlock()
 		return errors.New("kafka: client has already started")
@@ -214,14 +219,20 @@ func (c *Client) start(ctx *plugin.Context) error {
 	}
 
 	runCtx, runCancel := context.WithCancel(context.Background())
+	// drainCtx is cancelled by drain: it stops each consumer fetching another
+	// message without touching runCtx, which the handler of the message
+	// already fetched keeps running under.
+	drainCtx, drainCancel := context.WithCancel(context.Background())
 	c.stateMu.Lock()
-	if c.stopping || c.closing.Load() {
+	if c.stopping || c.closing.Load() || c.drainDone != nil {
 		c.stateMu.Unlock()
 		runCancel()
+		drainCancel()
 		return errors.Join(errors.New("kafka: client is stopping"), rollbackReaders())
 	}
 	c.consumers = created
 	c.runCancel = runCancel
+	c.drainCancel = drainCancel
 	c.stateMu.Unlock()
 
 	logger := ctx.Log()
@@ -230,16 +241,18 @@ func (c *Client) start(ctx *plugin.Context) error {
 		c.loops.Add(1)
 		accepted := ctx.GoCritical(func(taskCtx context.Context) {
 			defer c.loops.Done()
-			c.runConsumer(taskCtx, runCtx, gate, logger, consumer)
+			c.runConsumer(taskCtx, runCtx, drainCtx, gate, logger, consumer)
 		})
 		if !accepted {
 			c.loops.Done()
 			runCancel()
+			drainCancel()
 			closeErr := rollbackReaders()
 			c.loops.Wait()
 			c.stateMu.Lock()
 			c.consumers = nil
 			c.runCancel = nil
+			c.drainCancel = nil
 			c.stateMu.Unlock()
 			return errors.Join(errors.New("kafka: runtime rejected consumer task during Start"), closeErr)
 		}
@@ -258,7 +271,7 @@ func (c *Client) writerClosed() bool {
 	return c.closed || c.writer == nil
 }
 
-func (c *Client) runConsumer(taskCtx, runCtx context.Context, gate <-chan struct{}, logger log.Logger, consumer *runningConsumer) {
+func (c *Client) runConsumer(taskCtx, runCtx, drainCtx context.Context, gate <-chan struct{}, logger log.Logger, consumer *runningConsumer) {
 	consumerCtx, cancel := context.WithCancel(taskCtx)
 	stopLink := context.AfterFunc(runCtx, cancel)
 	defer stopLink()
@@ -266,21 +279,34 @@ func (c *Client) runConsumer(taskCtx, runCtx context.Context, gate <-chan struct
 
 	select {
 	case <-gate:
+	case <-drainCtx.Done():
+		return
 	case <-consumerCtx.Done():
 		return
 	}
-	c.consume(consumerCtx, logger, consumer)
+	c.consume(consumerCtx, drainCtx, logger, consumer)
 }
 
-func (c *Client) consume(ctx context.Context, logger log.Logger, consumer *runningConsumer) {
+// consume fetches, handles and commits one message at a time. ctx bounds the
+// whole loop; drainCtx bounds only the wait for the next message, so a drain
+// lets the message already fetched be handled and committed and then returns
+// instead of fetching another.
+func (c *Client) consume(ctx, drainCtx context.Context, logger log.Logger, consumer *runningConsumer) {
+	fetchCtx, cancelFetch := context.WithCancel(ctx)
+	stopFetchLink := context.AfterFunc(drainCtx, cancelFetch)
+	defer stopFetchLink()
+	defer cancelFetch()
 	for {
-		message, err := consumer.reader.Fetch(ctx)
+		if fetchCtx.Err() != nil {
+			return
+		}
+		message, err := consumer.reader.Fetch(fetchCtx)
 		if err != nil {
-			if ctx.Err() != nil || c.isStopping() {
+			if fetchCtx.Err() != nil || c.isStopping() {
 				return
 			}
 			logger.Warn("kafka consumer fetch failed", "consumer", consumer.name, "error", err)
-			if !sleepContext(ctx, consumer.config.FetchErrorBackoff) {
+			if !sleepContext(fetchCtx, consumer.config.FetchErrorBackoff) {
 				return
 			}
 			continue
@@ -338,6 +364,42 @@ func sleepContext(ctx context.Context, duration time.Duration) bool {
 		return true
 	case <-ctx.Done():
 		return false
+	}
+}
+
+// drain stops every consumer from fetching another message and waits, within
+// ctx, for each to finish handling and committing the one it already holds.
+// Production stays open until stop, so a handler that is still finishing may
+// publish follow-up messages; stop then closes the readers and the producer.
+// It is safe before Start, where there is no consumer to wait for, and
+// repeated calls share the same wait.
+func (c *Client) drain(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.stateMu.Lock()
+	if c.drainDone == nil {
+		c.drainDone = make(chan struct{})
+		if c.drainCancel != nil {
+			c.drainCancel()
+		}
+		done := c.drainDone
+		go func() {
+			c.loops.Wait()
+			close(done)
+		}()
+	}
+	done := c.drainDone
+	c.stateMu.Unlock()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("kafka: drain consumers: %w", ctx.Err())
 	}
 }
 
@@ -400,6 +462,11 @@ func (c *Client) finishStop(consumers []*runningConsumer, cancel context.CancelF
 	if cancel != nil {
 		cancel()
 	}
+	c.stateMu.Lock()
+	if c.drainCancel != nil {
+		c.drainCancel()
+	}
+	c.stateMu.Unlock()
 	var errs []error
 	for index := len(consumers) - 1; index >= 0; index-- {
 		if err := consumers[index].reader.Close(); err != nil {

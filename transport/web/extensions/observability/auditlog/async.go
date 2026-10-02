@@ -33,6 +33,9 @@ type asyncDispatcher struct {
 	senders   sync.WaitGroup
 	stopOnce  sync.Once
 	drainOnce sync.Once
+	// syncDrain serializes drainWithoutWorker, so a Drain and a Stop that
+	// overlap never write to the sink from two goroutines at once.
+	syncDrain sync.Mutex
 
 	cancelMu sync.Mutex
 	cancel   context.CancelFunc
@@ -125,7 +128,11 @@ func (d *asyncDispatcher) submit(ctx context.Context, event Event) error {
 	}
 }
 
-func (d *asyncDispatcher) stopAndWait(ctx context.Context, workerAccepted bool) error {
+// stopAndWait closes admission and waits, within ctx, for every accepted event
+// to reach the sink. abandon decides what an expired ctx does to the events
+// still queued: Stop abandons them by cancelling the worker, while Drain only
+// stops waiting and leaves the worker writing for the Stop that follows.
+func (d *asyncDispatcher) stopAndWait(ctx context.Context, workerAccepted, abandon bool) error {
 	d.stopOnce.Do(func() {
 		d.admission.Lock()
 		d.stopped = true
@@ -143,7 +150,9 @@ func (d *asyncDispatcher) stopAndWait(ctx context.Context, workerAccepted bool) 
 	select {
 	case <-sendersDone:
 	case <-ctx.Done():
-		d.cancelWorker()
+		if abandon {
+			d.cancelWorker()
+		}
 		return fmt.Errorf("auditlog: stop queue admission: %w", ctx.Err())
 	}
 
@@ -155,12 +164,16 @@ func (d *asyncDispatcher) stopAndWait(ctx context.Context, workerAccepted bool) 
 	case <-d.done:
 		return nil
 	case <-ctx.Done():
-		d.cancelWorker()
+		if abandon {
+			d.cancelWorker()
+		}
 		return fmt.Errorf("auditlog: drain async queue: %w", ctx.Err())
 	}
 }
 
 func (d *asyncDispatcher) drainWithoutWorker(ctx context.Context) error {
+	d.syncDrain.Lock()
+	defer d.syncDrain.Unlock()
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("auditlog: drain async queue: %w", err)

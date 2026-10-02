@@ -70,6 +70,7 @@ func WithClientIPExtractor(extractor ClientIPExtractor) Option {
 
 var (
 	_ plugin.Runner  = (*Plugin)(nil)
+	_ plugin.Drainer = (*Plugin)(nil)
 	_ plugin.Closer  = (*Plugin)(nil)
 	_ web.Middleware = (*Plugin)(nil)
 )
@@ -196,6 +197,26 @@ func (p *Plugin) Start(ctx *plugin.Context) error {
 	return nil
 }
 
+// Drain stops queue admission and writes every accepted event to the sink
+// within ctx's deadline, after the Web server has stopped serving and before
+// anything the sink depends on is stopped. An expired ctx only stops the wait:
+// the events still queued keep being written, and Stop decides their fate.
+// Drain does not flush the sink; Stop does. It is a no-op for synchronous
+// dispatch, which has no queue, and safe before Start.
+func (p *Plugin) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	state := p.state.Load()
+	if state == nil || state.dispatch == nil {
+		return nil
+	}
+	p.lifecycleMu.Lock()
+	workerAccepted := p.workerAccepted
+	p.lifecycleMu.Unlock()
+	return state.dispatch.stopAndWait(ctx, workerAccepted, false)
+}
+
 // Stop stops queue admission, drains accepted events within ctx's deadline,
 // then invokes the optional Sink Flusher. It is concurrent and idempotent, and
 // also drains a dispatcher that was constructed but never started.
@@ -241,7 +262,7 @@ func (p *Plugin) stop(ctx context.Context, workerAccepted bool) error {
 	defer cancel()
 	var result error
 	if state.dispatch != nil {
-		result = state.dispatch.stopAndWait(stopCtx, workerAccepted)
+		result = state.dispatch.stopAndWait(stopCtx, workerAccepted, true)
 	}
 	if flusher, ok := state.sink.(Flusher); ok && stopCtx.Err() == nil {
 		if err := callFlush(flusher, stopCtx); err != nil {

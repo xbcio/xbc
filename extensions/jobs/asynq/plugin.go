@@ -37,6 +37,7 @@ var definition = plugin.DefineConfigured(
 		Lifecycle: plugin.Lifecycle[*Plugin]{
 			Init:  (*Plugin).init,
 			Start: (*Plugin).start,
+			Drain: (*Plugin).drain,
 			Stop:  (*Plugin).stop,
 		},
 	},
@@ -93,6 +94,14 @@ type Plugin struct {
 	stopped     bool
 	stopDone    chan struct{}
 	stopErr     error
+
+	// drainDone is closed once the worker server's graceful Shutdown, started
+	// by drain, has returned; drainErr is its result. drainReported records
+	// that drain already returned drainErr to its caller, so stop does not
+	// report the same failure a second time.
+	drainDone     chan struct{}
+	drainErr      error
+	drainReported bool
 }
 
 var _ Enqueuer = (*Plugin)(nil)
@@ -220,6 +229,9 @@ func (p *Plugin) start(ctx *plugin.Context) error {
 	case p.stopping || p.stopped:
 		p.mu.Unlock()
 		return fmt.Errorf("asynq: cannot Start after Stop")
+	case p.drainDone != nil:
+		p.mu.Unlock()
+		return fmt.Errorf("asynq: cannot Start after Drain")
 	case p.server == nil || p.dispatcher == nil:
 		p.mu.Unlock()
 		return fmt.Errorf("asynq: Start called without a prepared worker")
@@ -286,9 +298,64 @@ func (p *Plugin) runWorker(taskCtx context.Context, gate <-chan struct{}, server
 	<-taskCtx.Done()
 }
 
+// drain stops the worker from fetching new tasks and waits, within ctx, for the
+// handlers already running to return. It is the graceful half of shutdown:
+// Enqueue and the owned Redis connection stay usable until stop, so a plugin
+// that is still draining its own work may keep enqueueing follow-up tasks.
+//
+// The worker's Shutdown has no context, so it runs on its own goroutine and
+// drain returns at ctx's deadline even if a handler ignores cancellation; stop
+// then waits for that same Shutdown rather than starting a second one. A
+// worker that never opened is shut down as well, exactly as stop would, so the
+// server's own resources are released either way.
+func (p *Plugin) drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p.mu.Lock()
+	if p.drainDone == nil {
+		p.drainDone = make(chan struct{})
+		server := p.server
+		// Taking the server here is what keeps runWorker from starting it
+		// after the drain: runWorker re-reads p.server under workerMu before
+		// Start, and stop then has no second server to shut down.
+		p.server = nil
+		done := p.drainDone
+		go p.shutdownForDrain(server, done)
+	}
+	done := p.drainDone
+	p.mu.Unlock()
+
+	select {
+	case <-done:
+		p.mu.Lock()
+		err := p.drainErr
+		p.drainReported = true
+		p.mu.Unlock()
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("asynq: drain running handlers: %w", ctx.Err())
+	}
+}
+
+func (p *Plugin) shutdownForDrain(server workerServer, done chan struct{}) {
+	var err error
+	if server != nil {
+		p.workerMu.Lock()
+		err = shutdownWorker(server)
+		p.workerMu.Unlock()
+	}
+	p.mu.Lock()
+	p.drainErr = err
+	close(done)
+	p.mu.Unlock()
+}
+
 // stop closes enqueue admission, gracefully drains the worker, and closes the
 // owned Redis connection. It is safe in every factory-owned partial state and
-// idempotent under repeated or concurrent calls.
+// idempotent under repeated or concurrent calls. When drain already ran, the
+// worker is not shut down again: stop waits for drain's Shutdown to finish and
+// only then closes Redis, because a running handler may still be using it.
 func (p *Plugin) stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -306,11 +373,12 @@ func (p *Plugin) stop(ctx context.Context) error {
 		if client != nil {
 			client.beginClose()
 		}
+		drainDone := p.drainDone
 		p.client = nil
 		p.server = nil
 		p.redis = nil
 		p.mu.Unlock()
-		p.finishStop(client, server, redisClient)
+		p.finishStop(client, server, redisClient, drainDone)
 	} else {
 		p.mu.Unlock()
 	}
@@ -333,11 +401,19 @@ func (p *Plugin) stop(ctx context.Context) error {
 	return err
 }
 
-func (p *Plugin) finishStop(client *Client, server workerServer, redisClient *goredis.Client) {
+func (p *Plugin) finishStop(client *Client, server workerServer, redisClient *goredis.Client, drainDone <-chan struct{}) {
 	if client != nil {
 		client.close()
 	}
 	var errs []error
+	if drainDone != nil {
+		<-drainDone
+		p.mu.Lock()
+		if !p.drainReported && p.drainErr != nil {
+			errs = append(errs, p.drainErr)
+		}
+		p.mu.Unlock()
+	}
 	if server != nil {
 		p.workerMu.Lock()
 		if err := shutdownWorker(server); err != nil {

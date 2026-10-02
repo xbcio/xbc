@@ -44,6 +44,7 @@ var definition = plugin.DefineConfigured(
 		Lifecycle: plugin.Lifecycle[*Client]{
 			Init:  initClient,
 			Start: startClient,
+			Drain: drainClient,
 			Stop:  stopClient,
 		},
 	},
@@ -156,6 +157,9 @@ func startClient(client *Client, ctx *plugin.Context) error {
 	if client.stopDone != nil || client.closed.Load() {
 		return errors.New("elasticsearch: cannot start a closed client")
 	}
+	if client.draining {
+		return errors.New("elasticsearch: cannot start a drained client")
+	}
 	if client.bulk != nil {
 		return errors.New("elasticsearch: client is already started")
 	}
@@ -170,6 +174,34 @@ func startClient(client *Client, ctx *plugin.Context) error {
 	}
 	client.bulk = bulk
 	return nil
+}
+
+// drainClient closes bulk admission and waits, within ctx, for every accepted
+// item to be flushed. The transport stays open until Stop, so the client's
+// synchronous API remains usable by a plugin that is itself still draining.
+// The bulk worker's final result is returned here and not repeated by Stop.
+func drainClient(client *Client, ctx context.Context) error {
+	if client == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	client.lifecycleMu.Lock()
+	client.draining = true
+	bulk := client.bulk
+	client.lifecycleMu.Unlock()
+	if bulk == nil {
+		return nil
+	}
+	err := bulk.Close(ctx)
+	if ctx.Err() != nil {
+		return fmt.Errorf("elasticsearch: drain bulk indexer: %w", ctx.Err())
+	}
+	client.lifecycleMu.Lock()
+	client.bulkReported = true
+	client.lifecycleMu.Unlock()
+	return err
 }
 
 func stopClient(client *Client, ctx context.Context) error {
@@ -268,7 +300,11 @@ func (client *Client) Close(ctx context.Context) error {
 func (client *Client) finishClose(bulk *asyncBulkIndexer, done chan struct{}) {
 	var errs []error
 	if bulk != nil {
-		if err := bulk.Close(context.Background()); err != nil {
+		err := bulk.Close(context.Background())
+		client.lifecycleMu.Lock()
+		reported := client.bulkReported
+		client.lifecycleMu.Unlock()
+		if err != nil && !reported {
 			errs = append(errs, err)
 		}
 	}

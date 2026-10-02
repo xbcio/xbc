@@ -32,6 +32,11 @@ type Client struct {
 	stopErr    error
 	runCancel  context.CancelFunc
 	loops      sync.WaitGroup
+
+	// drainCancel stops the consumers fetching; drainDone is closed once every
+	// consumer loop has returned after a drain.
+	drainCancel context.CancelFunc
+	drainDone   chan struct{}
 }
 
 var _ Producer = (*Client)(nil)

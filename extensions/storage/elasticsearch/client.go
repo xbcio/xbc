@@ -42,6 +42,12 @@ type Client struct {
 	bulk         *asyncBulkIndexer
 	stopDone     chan struct{}
 	stopErr      error
+
+	// draining is set by drainClient and keeps a later Start from creating a
+	// fresh bulk worker. bulkReported records that drain already returned the
+	// bulk worker's final result, so Close does not report it a second time.
+	draining     bool
+	bulkReported bool
 }
 
 // Request describes one cluster-relative HTTP request. Path must begin with a

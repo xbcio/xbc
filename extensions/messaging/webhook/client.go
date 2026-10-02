@@ -46,6 +46,11 @@ type Client struct {
 
 	stopOnce sync.Once
 	stopErr  error
+
+	// drainOnce starts the drain sequence shared by drain and stop; drained is
+	// closed once every accepted delivery has finished.
+	drainOnce sync.Once
+	drained   chan struct{}
 }
 
 func newClient(cfg Config, transport Transport, resolver Resolver, policy EndpointPolicy, observer Observer) *Client {
@@ -440,9 +445,54 @@ func (c *Client) worker(taskCtx context.Context) {
 	}
 }
 
+// drain closes admission and waits, within ctx, for every accepted delivery --
+// queued or in flight through Deliver -- to finish while the managed workers
+// are still live. It never cancels in-flight work: an expired drain only stops
+// waiting, and stop is what aborts whatever is left.
+func (c *Client) drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-c.beginDrain():
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("webhook: drain accepted deliveries: %w", ctx.Err())
+	}
+}
+
+// beginDrain starts the shared drain sequence exactly once and returns the
+// channel closed when it has finished. Both drain and stop wait on it, so the
+// queue is closed once however the two are interleaved.
+func (c *Client) beginDrain() <-chan struct{} {
+	c.drainOnce.Do(func() {
+		c.drained = make(chan struct{})
+		c.admissionMu.Lock()
+		if c.accepting {
+			c.accepting = false
+			close(c.closing)
+		}
+		c.admissionMu.Unlock()
+		go func() {
+			// beginAdmission adds senders under admissionMu. Waiting for them
+			// before closing the queue prevents a send/close race. Deliver moves
+			// into active before releasing its sender slot, so active.Wait
+			// cannot race an Add.
+			c.senders.Wait()
+			close(c.queue)
+			c.workers.Wait()
+			c.active.Wait()
+			close(c.drained)
+		}()
+	})
+	return c.drained
+}
+
 // stop closes admission synchronously, drains accepted work while managed
 // workers are still live, and closes transport resources exactly once. It is
-// safe before Start, after partial worker admission, and on repeated calls.
+// safe before Start, after partial worker admission, after drain, and on
+// repeated calls. It completes the drain itself when drain was skipped or ran
+// out of budget, so it stays correct whether or not drain ran.
 func (c *Client) stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -454,20 +504,7 @@ func (c *Client) stop(ctx context.Context) error {
 		stopCancellation := context.AfterFunc(ctx, c.cancel)
 		defer stopCancellation()
 
-		c.admissionMu.Lock()
-		if c.accepting {
-			c.accepting = false
-			close(c.closing)
-		}
-		c.admissionMu.Unlock()
-
-		// beginAdmission adds senders under admissionMu. Waiting for them before
-		// closing the queue prevents a send/close race. Deliver moves into active
-		// before releasing its sender slot, so active.Wait cannot race an Add.
-		c.senders.Wait()
-		close(c.queue)
-		c.workers.Wait()
-		c.active.Wait()
+		<-c.beginDrain()
 		c.cancel()
 		c.stopErr = closeIdleConnections(c.transport)
 	})

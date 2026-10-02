@@ -41,4 +41,9 @@
 // deployment's trusted-proxy policy. Bundle and ordinary imports are side-effect
 // free. Applications that prefer xbc.Run may opt into process-global
 // composition through this package's autoload leaf.
+//
+// With async dispatch, shutdown is split in two: Drain runs after the Web
+// server has stopped serving and writes every queued event to the sink within
+// the drain budget, and Stop flushes the sink, abandoning whatever is still
+// queued once the shutdown budget is spent.
 package auditlog

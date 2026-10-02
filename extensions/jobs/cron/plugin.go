@@ -36,6 +36,7 @@ var definition = plugin.DefinePlanned(
 		Lifecycle: plugin.Lifecycle[*Plugin]{
 			Init:  (*Plugin).init,
 			Start: (*Plugin).start,
+			Drain: (*Plugin).drain,
 			Stop:  (*Plugin).stop,
 		},
 	},
@@ -107,11 +108,17 @@ type Plugin struct {
 	taskCount       int
 	submissionsDone bool
 	stopCh          chan struct{}
-	tasksDone       chan struct{}
-	tasksDoneOnce   sync.Once
-	finalizeOnce    sync.Once
-	finalizeDone    chan struct{}
-	stopErr         error
+	// drainCh is closed by drain: runners stop scheduling new invocations and
+	// return once the one in flight, if any, has finished. Unlike stopCh's
+	// companion runCancel, it cancels nothing that is already running.
+	drainCh       chan struct{}
+	drainOnce     sync.Once
+	draining      bool
+	tasksDone     chan struct{}
+	tasksDoneOnce sync.Once
+	finalizeOnce  sync.Once
+	finalizeDone  chan struct{}
+	stopErr       error
 
 	// process is the identity of the process this replica runs in, learned from
 	// the Context at Init and published as the claimant of every job lock. It is
@@ -180,6 +187,7 @@ func newConfiguredPlugin(
 		ownedRedis:    owned,
 		jobs:          jobs,
 		stopCh:        make(chan struct{}),
+		drainCh:       make(chan struct{}),
 		tasksDone:     make(chan struct{}),
 		finalizeDone:  make(chan struct{}),
 	}, nil
@@ -298,10 +306,11 @@ func buildScheduledJobs(config Config, parser robfigcron.Parser, contributors []
 				return nil, fmt.Errorf("cron: spec %q for job %s has no future occurrence", spec, label)
 			}
 			entry := &scheduledJob{
-				job:      job,
-				label:    label,
-				lockKey:  lockKey(config.Distributed.KeyPrefix, label),
-				schedule: schedule,
+				job:        job,
+				label:      label,
+				lockKey:    lockKey(config.Distributed.KeyPrefix, label),
+				schedule:   schedule,
+				runnerDone: make(chan struct{}),
 			}
 			if config.Distributed.Enabled {
 				entry.renewals = make(chan *leaseSession)
@@ -391,6 +400,37 @@ func (p *Plugin) init(ctx *plugin.Context) error {
 		p.initialized = true
 		p.process = ctx.ProcessInstance()
 		return nil
+	}
+}
+
+// drain stops every runner from scheduling another invocation and waits,
+// within ctx, for the invocations already running to finish. Their contexts
+// stay live -- a running job is neither cancelled nor robbed of its lease
+// renewal -- and the owned Redis client stays open, because a distributed
+// job in flight still needs it to renew and release its lock. stop is what
+// cancels whatever drain could not wait out and closes Redis.
+//
+// It is safe before Start, where there is nothing to wait for, and repeated
+// calls share the same wait.
+func (p *Plugin) drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p.drainOnce.Do(func() {
+		p.mu.Lock()
+		p.draining = true
+		close(p.drainCh)
+		if !p.starting && !p.submissionsDone {
+			p.submissionsDone = true
+		}
+		p.mu.Unlock()
+		p.completeTasksIfReady()
+	})
+	select {
+	case <-p.tasksDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("cron: drain running jobs: %w", ctx.Err())
 	}
 }
 

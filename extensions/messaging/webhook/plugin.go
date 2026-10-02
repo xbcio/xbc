@@ -27,6 +27,7 @@ var definition = plugin.DefineConfigured(
 		),
 		Lifecycle: plugin.Lifecycle[*Client]{
 			Start: startClient,
+			Drain: drainClient,
 			Stop:  stopClient,
 		},
 	},
@@ -41,5 +42,7 @@ func Bundle() plugin.Bundle { return plugin.BundleOf(definition) }
 func prepareConfig(config Config) (Config, error) { return config.normalized() }
 
 func startClient(client *Client, ctx *plugin.Context) error { return client.start(ctx) }
+
+func drainClient(client *Client, ctx context.Context) error { return client.drain(ctx) }
 
 func stopClient(client *Client, ctx context.Context) error { return client.stop(ctx) }
