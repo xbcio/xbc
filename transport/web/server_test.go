@@ -541,10 +541,10 @@ func TestOpenTrafficReturnsRouteFreezeErrorWithoutNotifyingListeners(t *testing.
 }
 
 // TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator pins the
-// deny-by-default promise every management plugin now relies on. metrics, pprof
-// and gracefulshutdown deliberately register their endpoints without declaring
-// .Auth(...), so an enabled endpoint resolves through tier-3 "default: deny";
-// an application that turned one on without registering an authenticator must
+// deny-by-default promise every management plugin now relies on. metrics and
+// pprof deliberately register their endpoints without declaring .Auth(...),
+// so an enabled endpoint resolves through tier-3 "default: deny"; an
+// application that turned one on without registering an authenticator must
 // fail startup in the RoutesReady phase instead of serving it.
 //
 // newPingServer cannot be reused here: it forces Security.Default = permit,

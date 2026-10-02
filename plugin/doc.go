@@ -148,16 +148,16 @@
 // return immutable, reusable metadata with no per-App binding, so a token
 // is safe to declare once at package scope and read concurrently:
 //
-//	var controllerInput = plugin.RefTo[*Controller](Key)
+//	var proberInput = plugin.RefTo[*corehealth.Plugin](corehealth.Key)
 //
 //	var definition = plugin.DefineConfigured(
-//		HTTPKey,
-//		plugin.ConfigSpec[Config]{Defaults: defaultConfig, Prepare: prepareConfig},
+//		Key,
+//		plugin.ConfigSpec[Config]{Defaults: DefaultConfig, Prepare: prepareConfig},
 //		func(ctx plugin.BuildContext, cfg Config) (*Plugin, error) {
-//			return newPlugin(cfg, controllerInput.Get(ctx).Value)
+//			return newPlugin(cfg, proberInput.Get(ctx).Value)
 //		},
 //		plugin.Options[*Plugin]{
-//			Inputs: plugin.Inputs(controllerInput),
+//			Inputs: plugin.Inputs(proberInput),
 //		},
 //	)
 //
@@ -236,15 +236,14 @@
 // Definitions, or no Definitions at all.
 //
 // A package that owns several runtime units composes them with BundleOf. For
-// example, transport/web exposes its HTTP server Definition as its primary
-// Definition while its Bundle also selects an independently ordered error
-// boundary. gracefulshutdown similarly selects its programmatic Controller and
-// its HTTP route contributor as separate Definitions, so each keeps its own
-// Key, configuration, contracts, dependencies, and lifecycle behavior:
+// example, extensions/storage/gorm exposes its database Definition as its
+// primary Definition while its Bundle also selects an independently ordered
+// health readiness probe, so each keeps its own Key, configuration,
+// contracts, dependencies, and lifecycle behavior:
 //
-//	var bundle = plugin.BundleOf(controllerDefinition, httpDefinition)
+//	var bundle = plugin.BundleOf(definition, healthDefinition)
 //
-//	func Definition() plugin.Definition { return controllerDefinition }
+//	func Definition() plugin.Definition { return definition }
 //
 //	func Bundle() plugin.Bundle { return bundle }
 //

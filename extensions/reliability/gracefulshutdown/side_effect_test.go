@@ -4,11 +4,11 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/xbcio/xbc/extensions/reliability/gracefulshutdown"
 	"github.com/xbcio/xbc/plugin"
-	"github.com/xbcio/xbc/transport/web/extensions/reliability/gracefulshutdown"
 )
 
-func TestDefinitionAndBundleAreCanonical(t *testing.T) {
+func TestOrdinaryImportExposesOnlyExplicitCanonicalComposition(t *testing.T) {
 	var zeroDefinition plugin.Definition
 	if gracefulshutdown.Definition() == zeroDefinition || gracefulshutdown.Definition() != gracefulshutdown.Definition() {
 		t.Fatal("Definition() must return one non-zero canonical handle")

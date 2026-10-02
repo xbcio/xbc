@@ -11,6 +11,7 @@ import (
 	"github.com/xbcio/xbc/extensions/messaging/kafka"
 	"github.com/xbcio/xbc/extensions/messaging/outbox"
 	"github.com/xbcio/xbc/extensions/messaging/webhook"
+	"github.com/xbcio/xbc/extensions/reliability/gracefulshutdown"
 	corehealth "github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/extensions/storage/elasticsearch"
 	"github.com/xbcio/xbc/extensions/storage/gorm"
@@ -32,7 +33,6 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/observability/requestid"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/tracing"
 	"github.com/xbcio/xbc/transport/web/extensions/openapi/swag"
-	"github.com/xbcio/xbc/transport/web/extensions/reliability/gracefulshutdown"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/health"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit"
@@ -72,6 +72,7 @@ var bundleProviders = []func() plugin.Bundle{
 	cron.Bundle,
 	elasticsearch.Bundle,
 	gorm.Bundle,
+	gracefulshutdown.Bundle,
 	kafka.Bundle,
 	objectstorage.Bundle,
 	outbox.Bundle,
@@ -86,7 +87,6 @@ var bundleProviders = []func() plugin.Bundle{
 	auditlog.Bundle,
 	biz.Bundle,
 	cors.Bundle,
-	gracefulshutdown.Bundle,
 	gzip.Bundle,
 	health.Bundle,
 	casbin.Bundle,

@@ -14,9 +14,8 @@ import (
 // TestArchPluginBundlesCoverAllLocalCanonicalDefinitions ensures that a
 // reusable plugin package cannot leave a package-level plugin.Define* handle
 // unreachable from its public Bundle(). Definition() deliberately remains the
-// package's primary Definition accessor; Bundle() may, and in Web and
-// gracefulshutdown does, include additional independently assembled
-// Definitions.
+// package's primary Definition accessor; Bundle() may, and in gorm does,
+// include additional independently assembled Definitions.
 func TestArchPluginBundlesCoverAllLocalCanonicalDefinitions(t *testing.T) {
 	repositoryRoot := archRepositoryRoot(t)
 	for _, implementationRoot := range archBundleCoverageImplementationRoots(t) {

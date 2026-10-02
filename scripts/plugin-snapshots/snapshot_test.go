@@ -98,7 +98,7 @@ func TestCollectDescriptorsIncludesEveryBundleEntry(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		"gracefulshutdown-http": false,
+		"placement-health": false,
 	}
 	for _, descriptor := range descriptors {
 		if _, expected := want[descriptor.Key.String()]; expected {

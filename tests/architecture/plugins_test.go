@@ -37,7 +37,6 @@ const (
 var archManagementEndpointPackages = []string{
 	filepath.Join("transport", "web", "extensions", "observability", "metrics"),
 	filepath.Join("transport", "web", "extensions", "observability", "pprof"),
-	filepath.Join("transport", "web", "extensions", "reliability", "gracefulshutdown"),
 }
 
 // archWebAuthPolicyConstructors are the web package functions that build a
@@ -428,11 +427,11 @@ func TestArchPluginImplementationsDocumentUsage(t *testing.T) {
 
 // TestArchManagementEndpointsDeclareNoAuthenticationExemption keeps the
 // built-in management endpoints on the application's authentication policy.
-// These plugins expose operator surfaces (metrics, pprof, shutdown) and must
-// not carry their own exemption: a route-level web.Public() declaration
-// outranks the security default, so re-adding one here would silently reopen
-// an operator endpoint that the deny default is meant to protect. The
-// companion runtime guard lives in transport/web
+// These plugins expose operator surfaces (metrics, pprof) and must not carry
+// their own exemption: a route-level web.Public() declaration outranks the
+// security default, so re-adding one here would silently reopen an operator
+// endpoint that the deny default is meant to protect. The companion runtime
+// guard lives in transport/web
 // (TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator); this one
 // catches the source-level regression directly, in the packages that own it.
 func TestArchManagementEndpointsDeclareNoAuthenticationExemption(t *testing.T) {
@@ -629,7 +628,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 			protocolNeutral = append(protocolNeutral, moduleRoot)
 		}
 	}
-	require.Len(t, protocolNeutral, 13, "expected 13 protocol-neutral extension plugins plus the non-plugin contract modules beneath extensions")
+	require.Len(t, protocolNeutral, 14, "expected 14 protocol-neutral extension plugins plus the non-plugin contract modules beneath extensions")
 	roots = append(roots, protocolNeutral...)
 
 	webAdapter := filepath.Join(webRoot, "extensions", "authorization", "rbac")
@@ -642,7 +641,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	require.Len(t, webPlugins, 9, "expected 9 Web extension plugins plus the non-plugin RBAC adapter")
 	roots = append(roots, webPlugins...)
 
-	require.Len(t, roots, 37, "expected 15 Web package extensions, 13 protocol-neutral extension plugins, and 9 independently versioned Web extension plugins; the two contract modules beneath extensions are not plugin implementations")
+	require.Len(t, roots, 37, "expected 14 Web package extensions, 14 protocol-neutral extension plugins, and 9 independently versioned Web extension plugins; the two contract modules beneath extensions are not plugin implementations")
 	sort.Strings(roots)
 	return roots
 }

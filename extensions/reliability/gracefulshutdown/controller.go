@@ -40,6 +40,8 @@ func (c *Controller) Init(ctx *plugin.Context) error {
 
 // Request initiates graceful shutdown with an operator-facing reason. Blank
 // and multiline input is normalized before it reaches runtime diagnostics.
+// Request returns false when the Controller is unbound (never initialized, or
+// already Stopped) or when shutdown has already begun.
 func (c *Controller) Request(reason string) bool {
 	if c == nil {
 		return false

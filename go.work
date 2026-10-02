@@ -21,6 +21,7 @@ use (
 	./extensions/coordination/lease
 	./extensions/coordination/placement
 	./extensions/coordination/raft
+	./extensions/reliability/gracefulshutdown
 	./extensions/reliability/health
 	./extensions/storage/elasticsearch
 	./extensions/storage/gorm

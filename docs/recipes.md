@@ -718,9 +718,9 @@ xbc:
 
 Read the `plugin` field first: it names the hook that has not returned, which the startup timing breakdown cannot do — that breakdown is emitted only after every phase returns, so a boot stuck in `Start` produces none of it. The threshold is a reporting threshold, not a deadline: nothing is cancelled or aborted, and the startup keeps waiting. Compare consecutive lines to tell the two failures apart — an unchanged phase and plugin mean stuck, a moving one means slow but progressing. An application whose migrations legitimately run for minutes should raise the value or set `0s` to switch the report off.
 
-pprof and remote shutdown are disabled by default. Neither endpoint carries its own authentication mechanism: they fall through to the `web.security` global default, which is `deny` out of the box. An application that enables them must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`.
+pprof is disabled by default. It carries no authentication mechanism of its own: it falls through to the `web.security` global default, which is `deny` out of the box. An application that enables it must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`.
 
-The `deny` default only means "must authenticate" -- it accepts any registered scheme, not "reachable by operators only". If the application registers an authenticator for any purpose and writes no tier-1 rule for these routes, pprof, metrics, and remote shutdown become reachable by any authenticated principal, not just operators. Restricting them to operators requires two things: a tier-1 rule that narrows the accepted scheme, and an authorization layer on top of authentication, because none of these three routes carries a `.Perm` for Casbin or another authorizer to check (see below).
+The `deny` default only means "must authenticate" -- it accepts any registered scheme, not "reachable by operators only". If the application registers an authenticator for any purpose and writes no tier-1 rule for these routes, pprof and metrics become reachable by any authenticated principal, not just operators. Restricting them to operators requires two things: a tier-1 rule that narrows the accepted scheme, and an authorization layer on top of authentication, because neither route carries a `.Perm` for Casbin or another authorizer to check (see below).
 
 A tier-1 `match` pattern is matched against the route's full path, including the `web.base_path` prefix (`RouteInfo.Path` is built by joining the base path with the route's relative path). The example below only matches as written when `base_path: "/"`; an application running with `base_path: "/api/v1"` must write `/api/v1/debug/pprof/**` instead -- see the quickstart's own `/api/v1/docs/**` rule for a working example at a non-root base path.
 
@@ -749,22 +749,16 @@ plugins:
     enabled: true
     path: "/debug/pprof"
 
-  gracefulshutdown:
-    enabled: true
-
-  gracefulshutdown-http:
-    http:
-      enabled: true
-      path: "/-/shutdown"
+  gracefulshutdown: {}
 ```
 
-The `plugins.gracefulshutdown` section activates the programmatic `Controller`, and `plugins.gracefulshutdown-http` activates the optional HTTP adapter, which is disabled unless its own `http.enabled` is true. They are two sections because each Definition owns exactly one: a section claimed by two owners is rejected before any plugin is constructed, the same way `plugins.health` and `plugins.health-http` are kept apart.
+Signals are handled by the runtime: SIGINT and SIGTERM already drain the Web listener, then unwind every started plugin in reverse order within the shared shutdown budget, with no plugin or opt-in required. For application-triggered shutdown -- a plugin or any application code it holds deciding on its own that the process should stop -- select `gracefulshutdown.Bundle()`, activate it with `plugins.gracefulshutdown: {}`, and depend on its `*gracefulshutdown.Controller` to call `Request(reason)`; a plugin may instead call `ctx.RequestShutdown(reason)` on its own `plugin.Context` directly. Neither path offers or needs an HTTP endpoint: exposing process control over a route anyone can reach is a liability, not a convenience, so no such endpoint is offered by design.
 
 Select the corresponding Bundles at the composition root before configuring these sections. Never commit JWT secrets, Redis or database passwords, API keys, or operations tokens to the repository. Environment variables are only a minimum deployment interface; production systems should inject them through a secret manager.
 
 XBC does not echo these values. `doctor` output and startup reports contain only paths, identities, and source labels, while validation errors describe fields tagged with `mask:"true"` without reproducing their values.
 
-Do not trust forwarded headers from the public network unless a trusted reverse proxy removes untrusted values first. Remote shutdown reuses core's unified cancellation, HTTP drain, and reverse-order plugin shutdown path; it must not call `os.Exit` independently.
+Do not trust forwarded headers from the public network unless a trusted reverse proxy removes untrusted values first. Graceful shutdown, whichever way it is triggered, reuses the same unified cancellation, HTTP drain, and reverse-order plugin shutdown path, and it must not call `os.Exit` independently.
 
 
 ## Diagnosing a slow boot or a slow shutdown

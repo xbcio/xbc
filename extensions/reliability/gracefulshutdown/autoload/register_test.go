@@ -4,9 +4,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/xbcio/xbc/extensions/reliability/gracefulshutdown"
 	"github.com/xbcio/xbc/plugin"
 	pluginautoload "github.com/xbcio/xbc/plugin/autoload"
-	"github.com/xbcio/xbc/transport/web/extensions/reliability/gracefulshutdown"
 )
 
 func TestImportDeclaresCanonicalBundle(t *testing.T) {

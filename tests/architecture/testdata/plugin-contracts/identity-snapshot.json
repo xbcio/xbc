@@ -112,14 +112,6 @@
       "contracts": []
     },
     {
-      "key": "gracefulshutdown-http",
-      "config_path": "plugins.gracefulshutdown-http",
-      "cardinality": "single",
-      "contracts": [
-        "github.com/xbcio/xbc/transport/web.RouteContributor"
-      ]
-    },
-    {
       "key": "gzip",
       "config_path": "plugins.gzip",
       "cardinality": "single",
