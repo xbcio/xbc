@@ -255,7 +255,7 @@ plugins:
 
 The object-storage `local` backend is suitable for development and single-node deployments. It enforces a confined root, atomic temporary-file replacement, and streaming size limits. Replicas should use a shared S3-compatible backend.
 
-Asynq starts consuming only after `OpenTraffic`, freezes handler registration at Start, and stops admission before draining during shutdown. If committing business data and enqueueing work must be atomic, write an outbox event first and let its publisher enqueue the task. Do not rely on a post-commit dual write.
+Asynq starts consuming only after `OpenTraffic` and freezes handler registration at Start. Shutdown splits in two: Drain stops the worker fetching new tasks and waits, within `xbc.drain_timeout`, for the handlers already running to finish, while Enqueue and the owned Redis connection stay usable; Stop then rejects further Enqueue calls and closes Redis. `plugins.asynq.shutdown_timeout` (default `8s`) bounds the worker's own graceful shutdown started by Drain, so keep it at or below `xbc.drain_timeout` -- any part it cannot finish in time is left for Stop to wait out instead. If committing business data and enqueueing work must be atomic, write an outbox event first and let its publisher enqueue the task. Do not rely on a post-commit dual write.
 
 ## Distributed Cron
 
