@@ -138,3 +138,51 @@ func assertNoDrain(t *testing.T, drained <-chan error) {
 	default:
 	}
 }
+
+// TestExecutionCancellationDoesNotCancelARunningInvocation pins why job
+// contexts are detached from the plugin context: XBC cancels the execution
+// context as soon as shutdown begins, before the drain phase, and a job that
+// inherited that cancellation would be cut short before drain could wait for
+// it.
+func TestExecutionCancellationDoesNotCancelARunningInvocation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	cancelled := make(chan error, 1)
+	job := &funcJob{name: "detached", spec: "@hourly", run: func(ctx context.Context) error {
+		close(started)
+		select {
+		case <-release:
+			cancelled <- nil
+		case <-ctx.Done():
+			cancelled <- ctx.Err()
+		}
+		return nil
+	}}
+	host := newTestHost()
+	p, runtimeContext := initTestPlugin(t, host, func(config *Config) { config.RunImmediately = true }, nil, job)
+	if err := p.start(runtimeContext); err != nil {
+		t.Fatal(err)
+	}
+	host.openTraffic()
+	awaitSignal(t, started, "detached job start")
+
+	host.cancelExecution()
+	drained := make(chan error, 1)
+	go func() { drained <- p.drain(context.Background()) }()
+	select {
+	case err := <-cancelled:
+		t.Fatalf("execution cancellation reached the running job: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	if err := <-cancelled; err != nil {
+		t.Fatalf("job context error = %v, want live", err)
+	}
+	if err := <-drained; err != nil {
+		t.Fatalf("drain() error = %v", err)
+	}
+	if err := p.stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	host.close()
+}

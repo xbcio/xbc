@@ -60,7 +60,12 @@ func (p *Plugin) start(ctx *plugin.Context) error {
 	}
 	p.startAttempted = true
 	p.starting = true
-	runContext, runCancel := context.WithCancel(ctx)
+	// The plugin context follows the execution context, which XBC cancels the
+	// moment shutdown begins -- before the drain phase. Deriving the job
+	// contexts from it would cancel every running invocation before drain
+	// could wait for it, so only its values are inherited: running jobs are
+	// cancelled by Stop (runCancel) or by the end of their managed-task scope.
+	runContext, runCancel := context.WithCancel(context.WithoutCancel(ctx))
 	p.runCancel = runCancel
 	jobs := append([]*scheduledJob(nil), p.jobs...)
 	p.mu.Unlock()

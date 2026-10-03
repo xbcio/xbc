@@ -16,15 +16,20 @@ import (
 type testHost struct {
 	mu sync.Mutex
 
-	ctx            context.Context
-	cancel         context.CancelFunc
-	gate           chan struct{}
-	gateOnce       sync.Once
-	accepting      bool
-	admissionLimit int
-	submitted      int
-	critical       int
-	tasks          sync.WaitGroup
+	ctx    context.Context
+	cancel context.CancelFunc
+	// execution is what ExecutionContext returns. As in the real runtime it
+	// is separate from the managed-task scope (ctx): XBC cancels it when
+	// shutdown begins, long before it cancels a plugin's tasks.
+	execution       context.Context
+	cancelExecution context.CancelFunc
+	gate            chan struct{}
+	gateOnce        sync.Once
+	accepting       bool
+	admissionLimit  int
+	submitted       int
+	critical        int
+	tasks           sync.WaitGroup
 
 	// process is what this host reports as the identity of the process the
 	// plugin runs in. It is fixed for the life of the host, as a real runtime's
@@ -36,17 +41,20 @@ var _ plugin.RuntimeHost = (*testHost)(nil)
 
 func newTestHost() *testHost {
 	ctx, cancel := context.WithCancel(context.Background())
+	execution, cancelExecution := context.WithCancel(ctx)
 	return &testHost{
-		ctx:            ctx,
-		cancel:         cancel,
-		gate:           make(chan struct{}),
-		accepting:      true,
-		admissionLimit: -1,
-		process:        "test-process",
+		ctx:             ctx,
+		cancel:          cancel,
+		execution:       execution,
+		cancelExecution: cancelExecution,
+		gate:            make(chan struct{}),
+		accepting:       true,
+		admissionLimit:  -1,
+		process:         "test-process",
 	}
 }
 
-func (h *testHost) ExecutionContext() context.Context { return h.ctx }
+func (h *testHost) ExecutionContext() context.Context { return h.execution }
 func (*testHost) Logger() corelog.Logger              { return corelog.Nop() }
 func (h *testHost) ProcessInstance() string           { return h.process }
 func (h *testHost) TrafficGate() <-chan struct{}      { return h.gate }
