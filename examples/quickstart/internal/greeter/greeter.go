@@ -112,24 +112,12 @@ func (*Plugin) createGreeting(ctx context.Context, c *web.Ctx) error {
 	}
 	greeting := Greeting{Message: "hello " + request.Name + " from xbc"}
 
-	// Spawn a best-effort follow-up through the process-wide Spawner installed
-	// by async.Bundle(). ctx is the request's own context: Spawn only uses it
-	// to bound how long it may wait for pool capacity (SubmitTimeout), and to
-	// seed the task with the request's values (e.g. trace identifiers). The
-	// task itself does not inherit ctx's cancellation -- the Pool hands it
-	// context.WithoutCancel(ctx) combined with its own shutdown -- so the
-	// welcome follow-up keeps running after this handler returns and this
-	// request's context is cancelled, and is drained (not abandoned) when the
-	// process shuts down: async.Bundle()'s Pool is a plugin.Drainer, so XBC
-	// waits for it, within xbc.drain_timeout, before Stop runs.
-	//
-	// The global async.Spawn is used rather than an explicit
-	// plugin.RefTo[async.Spawner](async.Key) dependency: nothing here requires
-	// greeter to declare a construction-time dependency on async, and no
-	// guard in this repository demands one for a best-effort fire-and-forget
-	// call like this. A plugin that wants the capability guaranteed present,
-	// rather than optional and best-effort, would declare that typed input
-	// instead -- see async's package documentation for that form.
+	// Spawn a best-effort follow-up on the process-wide pool installed by
+	// async.Bundle(). The task keeps ctx's values but not its cancellation, so
+	// it outlives this request; on shutdown the async plugin's Drain waits for
+	// it within xbc.drain_timeout, after the Web server has stopped and before
+	// any resource is closed. A plugin that needs the pool guaranteed present
+	// declares plugin.RefTo[async.Spawner](async.Key) instead.
 	if err := async.Spawn(ctx, "greeter.welcome", func(context.Context) {
 		log.L().Info("greeter: welcome sent", "name", request.Name)
 	}); err != nil {
