@@ -41,6 +41,7 @@ type Plugin struct {
 	lifecycleMu    sync.Mutex
 	startAttempted bool
 	workerAccepted bool
+	drained        bool
 	stopDone       chan struct{}
 	stopErr        error
 }
@@ -178,6 +179,9 @@ func (p *Plugin) Start(ctx *plugin.Context) error {
 	if p.stopDone != nil {
 		return errors.New("auditlog: cannot Start after Stop")
 	}
+	if p.drained {
+		return errors.New("auditlog: cannot Start after Drain")
+	}
 	if p.startAttempted {
 		return errors.New("auditlog: Start called more than once")
 	}
@@ -202,18 +206,20 @@ func (p *Plugin) Start(ctx *plugin.Context) error {
 // anything the sink depends on is stopped. An expired ctx only stops the wait:
 // the events still queued keep being written, and Stop decides their fate.
 // Drain does not flush the sink; Stop does. It is a no-op for synchronous
-// dispatch, which has no queue, and safe before Start.
+// dispatch, which has no queue, and safe before Start; a drained plugin
+// refuses to Start.
 func (p *Plugin) Drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	p.lifecycleMu.Lock()
+	p.drained = true
+	workerAccepted := p.workerAccepted
+	p.lifecycleMu.Unlock()
 	state := p.state.Load()
 	if state == nil || state.dispatch == nil {
 		return nil
 	}
-	p.lifecycleMu.Lock()
-	workerAccepted := p.workerAccepted
-	p.lifecycleMu.Unlock()
 	return state.dispatch.stopAndWait(ctx, workerAccepted, false)
 }
 

@@ -117,7 +117,60 @@ func TestDrainIsANoOpForSynchronousDispatchAndBeforeStart(t *testing.T) {
 	if events, _ := sink.snapshot(); len(events) != 1 {
 		t.Fatalf("events written = %d, want the queued event written without a worker", len(events))
 	}
+	if err := unstarted.Start(runtimeContext(&fakeHost{})); err == nil {
+		t.Fatal("Start() after Drain error = nil")
+	}
+	if err := synchronous.Start(runtimeContext(&fakeHost{})); err == nil {
+		t.Fatal("synchronous Start() after Drain error = nil")
+	}
 	if err := unstarted.Stop(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestConcurrentDrainAndStopWithoutAWorkerWriteEachEventOnce covers the
+// never-started dispatcher, where Drain and Stop both write the queue from the
+// caller's goroutine: overlapping calls must neither lose nor duplicate an
+// event, and the sink is flushed exactly once.
+func TestConcurrentDrainAndStopWithoutAWorkerWriteEachEventOnce(t *testing.T) {
+	sink := &memorySink{}
+	cfg := DefaultConfig()
+	cfg.Async = true
+	cfg.QueueSize = 32
+	p, err := New(cfg, WithSink(sink))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := p.state.Load()
+	for i := range 20 {
+		if err := state.dispatch.submit(context.Background(), Event{Status: 200 + i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	errs := make(chan error, 4)
+	for i := range 4 {
+		go func() {
+			if i%2 == 0 {
+				errs <- p.Drain(context.Background())
+				return
+			}
+			errs <- p.Stop(context.Background())
+		}()
+	}
+	for range 4 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, flushes := sink.snapshot()
+	if len(events) != 20 || flushes != 1 {
+		t.Fatalf("events=%d flushes=%d, want 20/1", len(events), flushes)
+	}
+	seen := make(map[int]bool, len(events))
+	for _, event := range events {
+		if seen[event.Status] {
+			t.Fatalf("event %d written twice", event.Status)
+		}
+		seen[event.Status] = true
 	}
 }
