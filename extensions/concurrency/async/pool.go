@@ -76,25 +76,25 @@ type Pool struct {
 	draining  bool
 	stopped   bool
 
-	// execCtx is cancelled by Stop and is the cancellation every running
+	// execCtx is cancelled by stop and is the cancellation every running
 	// task's context is derived from in addition to its own detached parent.
 	execCtx    context.Context
 	execCancel context.CancelFunc
 
 	// inFlight tracks every task handed to the executor, running or queued,
-	// so Drain and Stop can wait for it without separate bookkeeping.
+	// so drain and stop can wait for it without separate bookkeeping.
 	inFlight sync.WaitGroup
 
-	// shutdownOnce guards the Stop sequence so it never runs twice and
+	// shutdownOnce guards the stop sequence so it never runs twice and
 	// nothing is released twice, matching AGENTS.md's shared once-guard
 	// requirement for the Drain/Stop split.
 	shutdownOnce sync.Once
 	stopErr      error
 
 	// drainClaimed/drainErr mirror elasticsearch's cached-error ownership:
-	// the first Drain call to observe the wait's outcome owns reporting it,
-	// and every later Drain call -- concurrent or sequential -- replays that
-	// same value instead of re-waiting, keeping Drain idempotent including
+	// the first drain call to observe the wait's outcome owns reporting it,
+	// and every later drain call -- concurrent or sequential -- replays that
+	// same value instead of re-waiting, keeping drain idempotent including
 	// its result.
 	drainClaimed bool
 	drainErr     error
@@ -102,16 +102,20 @@ type Pool struct {
 
 var _ Spawner = (*Pool)(nil)
 
-// New constructs a directly usable Pool with the given configuration and
-// opens admission immediately, matching the Definition's Init-time admission
-// opening. New does not bind the process-global Spawner; use the Definition
-// for that.
-func New(cfg Config) (*Pool, error) {
+// newPreparedPool constructs a directly usable Pool with the given
+// configuration and opens admission immediately, matching the Definition's
+// Init-time admission opening. It does not bind the process-global Spawner;
+// the Definition does that through initPool. A Pool built this way is not
+// started, drained, or stopped by anyone unless its caller wires it into a
+// Lifecycle itself (as the Definition does): it exists for tests that need a
+// ready-to-use Pool without going through full plugin construction, not as a
+// supported way to run a Pool outside the framework.
+func newPreparedPool(cfg Config, logger log.Logger) (*Pool, error) {
 	prepared, err := prepareConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-	pool := newPool(prepared, log.L())
+	pool := newPool(prepared, logger)
 	pool.open()
 	return pool, nil
 }
@@ -184,7 +188,7 @@ func (p *Pool) Spawn(ctx context.Context, name string, task func(context.Context
 	}
 	// admit already called p.inFlight.Add(1) for this task inside the same
 	// locked section that granted it a running or queued slot, so Add is
-	// guaranteed to happen-before any inFlight.Wait call Drain or Stop can
+	// guaranteed to happen-before any inFlight.Wait call drain or stop can
 	// start afterward: a Wait that starts when the counter is (transiently)
 	// zero can never race a positive Add from a Spawn that admit already
 	// let through.
@@ -217,7 +221,7 @@ const (
 // admit decides whether this Spawn call may proceed, reserving a running slot
 // or a queue slot before returning. It also calls p.inFlight.Add(1) inside the
 // same locked section that grants the slot, so the Add is guaranteed to
-// happen-before any inFlight.Wait call a concurrent Drain or Stop starts: a
+// happen-before any inFlight.Wait call a concurrent drain or stop starts: a
 // Spawn that admit lets through can never be invisible to a Wait that begins
 // immediately afterward, which is the hazard sync.WaitGroup's own contract
 // warns against ("calls with a positive delta that start when the counter is
@@ -317,7 +321,7 @@ func (p *Pool) dispatchQueue() {
 // taskContext builds the context a running task receives: it carries ctx's
 // values (so trace identifiers survive) but neither ctx's cancellation (a
 // finished request must not cancel work it merely scheduled) nor an already
-// expired deadline, combined with the Pool's own cancellation so Stop can
+// expired deadline, combined with the Pool's own cancellation so stop can
 // still terminate the task.
 func (p *Pool) taskContext(ctx context.Context) context.Context {
 	detached := context.WithoutCancel(ctx)
@@ -345,16 +349,16 @@ func (p *Pool) runTask(name string, ctx context.Context, task func(context.Conte
 	})
 }
 
-// Drain stops admitting new work and, if configured, waits for running and
+// drain stops admitting new work and, if configured, waits for running and
 // queued tasks to finish. It never cancels running work or discards the
-// queue; that is Stop's job. See doc.go for the full shutdown sequence.
+// queue; that is stop's job. See doc.go for the full shutdown sequence.
 //
-// Drain is idempotent, including its result: a Drain call that observes the
+// drain is idempotent, including its result: a drain call that observes the
 // wait finish (or that it never needed to wait) owns the result, and every
-// later Drain call -- concurrent or sequential -- replays that same result
-// rather than re-waiting. Drain is also safe before Init/Start and after Stop
+// later drain call -- concurrent or sequential -- replays that same result
+// rather than re-waiting. drain is also safe before Init/Start and after stop
 // has already run.
-func (p *Pool) Drain(ctx context.Context) error {
+func (p *Pool) drain(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
@@ -405,15 +409,15 @@ func (p *Pool) Drain(ctx context.Context) error {
 }
 
 // claimDrainResult records the first observed drain outcome and replays it on
-// every later call, so Drain's result is idempotent and Stop never has to
+// every later call, so drain's result is idempotent and stop never has to
 // recompute or repeat it.
 func (p *Pool) claimDrainResult(err error) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped && !p.drainClaimed {
-		// Stop ran first, or raced this call to completion: Drain
-		// contributes nothing of its own to report, and Stop's own result
-		// (if any) is reported through Stop, not replayed here.
+		// stop ran first, or raced this call to completion: drain
+		// contributes nothing of its own to report, and stop's own result
+		// (if any) is reported through stop, not replayed here.
 		return nil
 	}
 	if !p.drainClaimed {
@@ -442,12 +446,12 @@ func (p *Pool) logAbandonedTasks() {
 	)
 }
 
-// Stop cancels whatever outlived the drain, discards any still-queued tasks,
+// stop cancels whatever outlived the drain, discards any still-queued tasks,
 // waits for running goroutines within ctx, releases the executor, and unbinds
-// the process-global Spawner if this Pool is bound. Stop is correct whether
-// Drain ran, timed out, failed, or never ran at all, and never repeats a
-// failure Drain already returned.
-func (p *Pool) Stop(ctx context.Context) error {
+// the process-global Spawner if this Pool is bound. stop is correct whether
+// drain ran, timed out, failed, or never ran at all, and never repeats a
+// failure drain already returned.
+func (p *Pool) stop(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
@@ -473,8 +477,8 @@ func (p *Pool) Stop(ctx context.Context) error {
 			p.log.Warn("async: stop discarded queued tasks", "count", len(discardedQueue), "tasks", names)
 		}
 
-		// Cancel whatever outlived the drain (or everything, if Drain never
-		// ran) before waiting: Stop must not wait forever for work Drain
+		// Cancel whatever outlived the drain (or everything, if drain never
+		// ran) before waiting: stop must not wait forever for work drain
 		// already gave up on.
 		p.execCancel()
 

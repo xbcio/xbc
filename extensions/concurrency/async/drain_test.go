@@ -24,7 +24,7 @@ func TestDrainWaitsForRunningAndQueuedTasksUnderLiveContext(t *testing.T) {
 	waitForCondition(t, func() bool { return pool.Stats().Queued == 1 }, "second task to queue")
 
 	drainDone := make(chan error, 1)
-	go func() { drainDone <- pool.Drain(context.Background()) }()
+	go func() { drainDone <- pool.drain(context.Background()) }()
 
 	// New Spawn calls are refused while draining.
 	waitForCondition(t, func() bool {
@@ -52,7 +52,7 @@ func TestDrainWaitsForRunningAndQueuedTasksUnderLiveContext(t *testing.T) {
 	}
 
 	assert.ErrorIs(t, pool.Spawn(context.Background(), "after-drain", func(context.Context) {}), ErrShuttingDown)
-	require.NoError(t, pool.Stop(context.Background()))
+	require.NoError(t, pool.stop(context.Background()))
 }
 
 func TestExpiredDrainLeavesTasksRunningAndStopThenCancelsThemAndDiscardsQueue(t *testing.T) {
@@ -76,7 +76,7 @@ func TestExpiredDrainLeavesTasksRunningAndStopThenCancelsThemAndDiscardsQueue(t 
 
 	drainCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	err := pool.Drain(drainCtx)
+	err := pool.drain(drainCtx)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 
 	// The running task is left running, not cancelled, by the expired drain.
@@ -87,7 +87,7 @@ func TestExpiredDrainLeavesTasksRunningAndStopThenCancelsThemAndDiscardsQueue(t 
 	}
 
 	// Stop now cancels the running task and discards the queue.
-	stopErr := pool.Stop(context.Background())
+	stopErr := pool.stop(context.Background())
 	assert.NoError(t, stopErr)
 
 	select {
@@ -115,7 +115,7 @@ func TestAwaitTerminationFalseDrainDoesNotWaitAndStopCancelsRunning(t *testing.T
 	waitForCondition(t, func() bool { return pool.Stats().Running == 1 }, "running task to start")
 
 	start := time.Now()
-	err := pool.Drain(context.Background())
+	err := pool.drain(context.Background())
 	elapsed := time.Since(start)
 	assert.NoError(t, err)
 	assert.Less(t, elapsed, 500*time.Millisecond, "Drain with await_termination=false must return immediately")
@@ -126,7 +126,7 @@ func TestAwaitTerminationFalseDrainDoesNotWaitAndStopCancelsRunning(t *testing.T
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	require.NoError(t, pool.Stop(context.Background()))
+	require.NoError(t, pool.stop(context.Background()))
 	select {
 	case taskErr := <-running.finished:
 		assert.ErrorIs(t, taskErr, context.Canceled)
@@ -140,7 +140,7 @@ func TestAwaitTerminationPeriodCapsTheWait(t *testing.T) {
 	cfg.MaxConcurrency = 1
 	cfg.Shutdown.AwaitTerminationPeriod = 50 * time.Millisecond
 	pool := newTestPool(t, cfg)
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	running := newBlockingTask()
 	defer close(running.release)
@@ -149,7 +149,7 @@ func TestAwaitTerminationPeriodCapsTheWait(t *testing.T) {
 
 	start := time.Now()
 	// A long-lived ctx; the configured period must still cap the wait.
-	err := pool.Drain(context.Background())
+	err := pool.drain(context.Background())
 	elapsed := time.Since(start)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Less(t, elapsed, time.Second)
@@ -161,15 +161,15 @@ func TestDrainIsIdempotentAndReplaysTheSameResult(t *testing.T) {
 	cfg.MaxConcurrency = 1
 	cfg.Shutdown.AwaitTerminationPeriod = 30 * time.Millisecond
 	pool := newTestPool(t, cfg)
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	running := newBlockingTask()
 	defer close(running.release)
 	require.NoError(t, pool.Spawn(context.Background(), "running", running.run))
 	waitForCondition(t, func() bool { return pool.Stats().Running == 1 }, "running task to start")
 
-	first := pool.Drain(context.Background())
-	second := pool.Drain(context.Background())
+	first := pool.drain(context.Background())
+	second := pool.drain(context.Background())
 	assert.ErrorIs(t, first, context.DeadlineExceeded)
 	assert.Equal(t, first, second)
 }
@@ -177,7 +177,7 @@ func TestDrainIsIdempotentAndReplaysTheSameResult(t *testing.T) {
 func TestDrainBeforeInitOrStartIsSafeAndRefusesLaterOpen(t *testing.T) {
 	pool := newPool(DefaultConfig(), nil) // not yet "opened"/started
 
-	err := pool.Drain(context.Background())
+	err := pool.drain(context.Background())
 	assert.NoError(t, err)
 
 	// A pool drained before Start refuses to (re)open admission.
@@ -185,7 +185,7 @@ func TestDrainBeforeInitOrStartIsSafeAndRefusesLaterOpen(t *testing.T) {
 	err = pool.Spawn(context.Background(), "x", func(context.Context) {})
 	assert.ErrorIs(t, err, ErrShuttingDown)
 
-	require.NoError(t, pool.Stop(context.Background()))
+	require.NoError(t, pool.stop(context.Background()))
 }
 
 func TestConcurrentDrainAndStop(t *testing.T) {
@@ -199,12 +199,12 @@ func TestConcurrentDrainAndStop(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_ = pool.Drain(context.Background())
+		_ = pool.drain(context.Background())
 	}()
 	go func() {
 		defer wg.Done()
 		time.Sleep(5 * time.Millisecond)
-		_ = pool.Stop(context.Background())
+		_ = pool.stop(context.Background())
 	}()
 	close(running.release)
 	wg.Wait()
@@ -212,8 +212,8 @@ func TestConcurrentDrainAndStop(t *testing.T) {
 
 func TestStopIsIdempotent(t *testing.T) {
 	pool := newTestPool(t, DefaultConfig())
-	require.NoError(t, pool.Stop(context.Background()))
-	require.NoError(t, pool.Stop(context.Background()))
+	require.NoError(t, pool.stop(context.Background()))
+	require.NoError(t, pool.stop(context.Background()))
 }
 
 func TestStopDiscardsQueuedTasksAndLogsThem(t *testing.T) {
@@ -235,7 +235,7 @@ func TestStopDiscardsQueuedTasksAndLogsThem(t *testing.T) {
 	}))
 	waitForCondition(t, func() bool { return pool.Stats().Queued == 1 }, "task to queue")
 
-	require.NoError(t, pool.Stop(context.Background()))
+	require.NoError(t, pool.stop(context.Background()))
 	select {
 	case <-started:
 		t.Fatal("Stop must discard a queued task rather than run it")

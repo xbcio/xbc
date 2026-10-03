@@ -14,7 +14,7 @@ import (
 
 func TestSpawnRunsTask(t *testing.T) {
 	pool := newTestPool(t, DefaultConfig())
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	done := make(chan struct{})
 	err := pool.Spawn(context.Background(), "greet", func(context.Context) { close(done) })
@@ -31,7 +31,7 @@ type ctxKey string
 
 func TestTaskContextSurvivesSpawnCancellationButCarriesValues(t *testing.T) {
 	pool := newTestPool(t, DefaultConfig())
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	spawnCtx, cancel := context.WithCancel(context.WithValue(context.Background(), ctxKey("trace"), "abc123"))
 
@@ -64,7 +64,7 @@ func TestTaskContextSurvivesSpawnCancellationButCarriesValues(t *testing.T) {
 
 func TestSpawnRejectsInvalidArguments(t *testing.T) {
 	pool := newTestPool(t, DefaultConfig())
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	assert.ErrorIs(t, pool.Spawn(context.Background(), "", func(context.Context) {}), ErrInvalidTask)
 	assert.ErrorIs(t, pool.Spawn(context.Background(), "name", nil), ErrInvalidTask)
@@ -75,7 +75,7 @@ func TestMaxConcurrencyIsNeverExceeded(t *testing.T) {
 	cfg.MaxConcurrency = 3
 	cfg.QueueCapacity = 100
 	pool := newTestPool(t, cfg)
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	const tasks = 20
 	var running atomic.Int64
@@ -111,7 +111,7 @@ func TestQueueUsedThenErrSaturated(t *testing.T) {
 	cfg.MaxConcurrency = 1
 	cfg.QueueCapacity = 1
 	pool := newTestPool(t, cfg)
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	release := make(chan struct{})
 	require.NoError(t, pool.Spawn(context.Background(), "running", func(context.Context) { <-release }))
@@ -135,7 +135,7 @@ func TestSubmitTimeoutWaitsThenSucceedsWhenSlotFrees(t *testing.T) {
 	cfg.QueueCapacity = 0
 	cfg.SubmitTimeout = 2 * time.Second
 	pool := newTestPool(t, cfg)
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	release := make(chan struct{})
 	require.NoError(t, pool.Spawn(context.Background(), "occupying", func(context.Context) { <-release }))
@@ -163,7 +163,7 @@ func TestSubmitTimeoutFailsAfterTimeout(t *testing.T) {
 	cfg.QueueCapacity = 0
 	cfg.SubmitTimeout = 100 * time.Millisecond
 	pool := newTestPool(t, cfg)
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	release := make(chan struct{})
 	defer close(release)
@@ -183,7 +183,7 @@ func TestSpawnCtxDeadlineShorterThanSubmitTimeoutWins(t *testing.T) {
 	cfg.QueueCapacity = 0
 	cfg.SubmitTimeout = 10 * time.Second
 	pool := newTestPool(t, cfg)
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	release := make(chan struct{})
 	defer close(release)
@@ -201,7 +201,7 @@ func TestSpawnCtxDeadlineShorterThanSubmitTimeoutWins(t *testing.T) {
 
 func TestPanicInTaskIsRecoveredAndPoolKeepsWorking(t *testing.T) {
 	pool := newTestPool(t, DefaultConfig())
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	panicked := make(chan struct{})
 	require.NoError(t, pool.Spawn(context.Background(), "panics", func(context.Context) {
@@ -233,7 +233,7 @@ func TestSpawnOnNilPoolReturnsErrNotInstalled(t *testing.T) {
 
 func TestSpawnRequiresNonNilContext(t *testing.T) {
 	pool := newTestPool(t, DefaultConfig())
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 	//nolint:staticcheck // intentionally passing nil to exercise the guard
 	err := pool.Spawn(nil, "x", func(context.Context) {})
 	require.Error(t, err)
@@ -241,7 +241,7 @@ func TestSpawnRequiresNonNilContext(t *testing.T) {
 
 func TestSpawnRejectsAlreadyExpiredContext(t *testing.T) {
 	pool := newTestPool(t, DefaultConfig())
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := pool.Spawn(ctx, "x", func(context.Context) {})
@@ -253,7 +253,7 @@ func TestQueuedTasksRunAsSlotsFree(t *testing.T) {
 	cfg.MaxConcurrency = 1
 	cfg.QueueCapacity = 5
 	pool := newTestPool(t, cfg)
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	var order []int
 	var mu sync.Mutex

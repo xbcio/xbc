@@ -21,7 +21,7 @@ func TestInitPoolOpensAdmissionSoLaterStartCanSpawn(t *testing.T) {
 	resetGlobal(t)
 	pool := newPool(DefaultConfig(), nil)
 	require.NoError(t, initPool(pool, runtimeContext(newFakeHost(), "")))
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	// Admission must already be open immediately after Init, before any
 	// Start phase runs, so another plugin's Init/Start can Spawn.

@@ -9,13 +9,6 @@ import (
 // Key is the stable configuration and runtime identity of the async pool.
 const Key plugin.Key = "async"
 
-// definition relies on Pool implementing plugin.Drainer and plugin.Closer
-// directly (Pool.Drain, Pool.Stop) rather than through a Lifecycle adapter:
-// Pool's exported Drain and Stop are part of its own public API -- tests and
-// callers that hold a *Pool directly call them the same way XBC does -- so
-// AGENTS.md's preference for an unexported adapter does not apply here. Only
-// Init has no exported method on Pool (open() and bindGlobal are
-// Definition-only concerns) and is wired through the Lifecycle adapter.
 var definition = plugin.DefineConfigured(
 	Key,
 	plugin.ConfigSpec[Config]{
@@ -30,7 +23,9 @@ var definition = plugin.DefineConfigured(
 			plugin.ExportAs[Spawner](func(pool *Pool) Spawner { return pool }),
 		),
 		Lifecycle: plugin.Lifecycle[*Pool]{
-			Init: initPool,
+			Init:  initPool,
+			Drain: (*Pool).drain,
+			Stop:  (*Pool).stop,
 		},
 	},
 )

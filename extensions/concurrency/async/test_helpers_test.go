@@ -44,12 +44,10 @@ func runtimeContext(host plugin.RuntimeHost, instance string) *plugin.Context {
 // binding.
 func newTestPool(t *testing.T, cfg Config) *Pool {
 	t.Helper()
-	prepared, err := prepareConfig(cfg)
+	pool, err := newPreparedPool(cfg, log.Nop())
 	if err != nil {
-		t.Fatalf("prepareConfig: %v", err)
+		t.Fatalf("newPreparedPool: %v", err)
 	}
-	pool := newPool(prepared, log.Nop())
-	pool.open()
 	return pool
 }
 

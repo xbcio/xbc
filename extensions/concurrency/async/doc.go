@@ -70,26 +70,30 @@
 //
 // # Shutdown
 //
-// Shutdown runs in XBC's usual three phases: ingress (every TrafficOpener and
-// its dependents) stops first, then Drain runs on every remaining Drainer --
+// Drain and Stop are lifecycle the framework runs on this Pool through the
+// Definition, not methods a caller invokes directly. Shutdown runs in XBC's
+// usual three phases: ingress (every TrafficOpener and its dependents) stops
+// first, then the framework drains every remaining participant that
+// implements plugin.Drainer or declares a Drain lifecycle adapter --
 // including this Pool -- in reverse start order within xbc.drain_timeout,
-// then Stop runs on everything not yet stopped.
+// then it stops everything not yet stopped.
 //
-// Drain stops admitting new work (Spawn then returns ErrShuttingDown) and, if
-// shutdown.await_termination is true, waits for running and queued tasks to
-// finish, bounded by min(shutdown.await_termination_period, the drain ctx).
-// An expired wait means Drain stops waiting, never that it cancels anything:
-// every task Drain gave up on is still running when it returns, and Drain
-// logs what it abandoned (names, running time, queue depth) rather than
-// silently losing track of it. Drain is idempotent, including its result,
-// and is safe before Init/Start, after a failed Start, and more than once.
+// Draining stops this Pool from admitting new work (Spawn then returns
+// ErrShuttingDown) and, if shutdown.await_termination is true, waits for
+// running and queued tasks to finish, bounded by
+// min(shutdown.await_termination_period, the drain ctx). An expired wait
+// means draining stops waiting, never that it cancels anything: every task
+// still outstanding when the wait expires keeps running, and the Pool logs
+// what it abandoned (names, running time, queue depth) rather than silently
+// losing track of it. Draining is idempotent, including its result, and is
+// safe before Init/Start, after a failed Start, and more than once.
 //
-// Stop cancels whatever outlived the drain, discards any still-queued tasks
-// (logging their names), waits for the running goroutines Stop itself
-// cancelled to actually return within Stop's own ctx, releases the executor,
-// and unbinds the process-global Spawner if this Pool was the one bound.
-// Stop is correct whether Drain ran, timed out, failed, or never ran, and it
-// never re-reports a failure Drain already returned.
+// Stopping cancels whatever outlived the drain, discards any still-queued
+// tasks (logging their names), waits for the running goroutines it cancelled
+// to actually return within its own ctx, releases the executor, and unbinds
+// the process-global Spawner if this Pool was the one bound. It is correct
+// whether draining ran, timed out, failed, or never ran, and it never
+// re-reports a failure draining already returned.
 //
 // The guarantee this Pool offers is best-effort, not durable: a process that
 // receives SIGKILL, hits an OOM kill, or crashes loses every task still

@@ -28,7 +28,7 @@ func TestGlobalSpawnIsBoundAfterInit(t *testing.T) {
 	resetGlobal(t)
 	pool := newPool(DefaultConfig(), nil)
 	require.NoError(t, initPool(pool, runtimeContext(newFakeHost(), "")))
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
 	done := make(chan struct{})
 	err := Spawn(context.Background(), "global-task", func(context.Context) { close(done) })
@@ -44,7 +44,7 @@ func TestGlobalSpawnReturnsErrNotInstalledAfterStop(t *testing.T) {
 	resetGlobal(t)
 	pool := newPool(DefaultConfig(), nil)
 	require.NoError(t, initPool(pool, runtimeContext(newFakeHost(), "")))
-	require.NoError(t, pool.Stop(context.Background()))
+	require.NoError(t, pool.stop(context.Background()))
 
 	err := Spawn(context.Background(), "x", func(context.Context) {})
 	assert.ErrorIs(t, err, ErrNotInstalled)
@@ -54,9 +54,9 @@ func TestGlobalSpawnReturnsErrShuttingDownDuringDrain(t *testing.T) {
 	resetGlobal(t)
 	pool := newPool(DefaultConfig(), nil)
 	require.NoError(t, initPool(pool, runtimeContext(newFakeHost(), "")))
-	t.Cleanup(func() { _ = pool.Stop(context.Background()) })
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
-	require.NoError(t, pool.Drain(context.Background()))
+	require.NoError(t, pool.drain(context.Background()))
 	err := Spawn(context.Background(), "x", func(context.Context) {})
 	assert.ErrorIs(t, err, ErrShuttingDown)
 }
@@ -65,16 +65,16 @@ func TestSecondPoolDoesNotOverwriteTheGlobalBinding(t *testing.T) {
 	resetGlobal(t)
 	first := newPool(DefaultConfig(), nil)
 	require.NoError(t, initPool(first, runtimeContext(newFakeHost(), "")))
-	t.Cleanup(func() { _ = first.Stop(context.Background()) })
+	t.Cleanup(func() { _ = first.stop(context.Background()) })
 
 	second := newPool(DefaultConfig(), nil)
 	require.NoError(t, initPool(second, runtimeContext(newFakeHost(), "")))
-	t.Cleanup(func() { _ = second.Stop(context.Background()) })
+	t.Cleanup(func() { _ = second.stop(context.Background()) })
 
 	assert.Same(t, first, globalPool.Load())
 
 	// Stopping the second pool (never bound) must not unbind the first.
-	require.NoError(t, second.Stop(context.Background()))
+	require.NoError(t, second.stop(context.Background()))
 	assert.Same(t, first, globalPool.Load())
 }
 
