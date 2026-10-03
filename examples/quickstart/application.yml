@@ -237,3 +237,24 @@ plugins:
     json_path: "/swagger.json"
     ui_path: "/docs"
     ui_enabled: true
+
+  # async.Bundle() is selected in main.go so greeter's createGreeting handler
+  # can fire a best-effort background follow-up through the process-wide
+  # async.Spawn. Selecting the Bundle alone is enough: every key below is
+  # already at its default, so this section can stay absent. It is shown
+  # commented, at the generic plugins.async defaults, so the knobs are visible
+  # without changing runtime behavior.
+  #
+  # async:
+  #   executor: goroutine          # or "ants"; see the async package doc for the tradeoff
+  #   max_concurrency: 256         # tasks running at once; 0 = unlimited (ants requires > 0)
+  #   queue_capacity: 1024         # tasks waiting once max_concurrency is reached; 0 = no queue
+  #   submit_timeout: 0s           # how long Spawn waits for capacity; 0s = reject immediately
+  #   shutdown:
+  #     await_termination: true          # Drain waits for running and queued tasks
+  #     await_termination_period: 0s     # extra cap on that wait; the effective drain wait is
+  #                                       # always also bounded by xbc.drain_timeout above
+  #   ants:                               # only meaningful when executor: ants
+  #     expiry_duration: 1s                # ants' own default idle-worker scan interval
+  #     pre_alloc: false                   # ants' own default
+  #     disable_purge: false               # ants' own default

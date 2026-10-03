@@ -20,6 +20,7 @@ import (
 	"github.com/xbcio/xbc"
 	_ "github.com/xbcio/xbc/examples/quickstart/docs"
 	"github.com/xbcio/xbc/examples/quickstart/internal/greeter"
+	"github.com/xbcio/xbc/extensions/concurrency/async"
 	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
 	"github.com/xbcio/xbc/transport/web/extensions/openapi/swag"
 	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
@@ -35,5 +36,6 @@ func main() {
 		cors.Bundle(),
 		swag.Bundle(),
 		greeter.Bundle(),
+		async.Bundle(),
 	))
 }

@@ -37,6 +37,7 @@ func main() {
         cors.Bundle(),
         swag.Bundle(),
         greeter.Bundle(),
+        async.Bundle(),
     ))
 }
 ```
@@ -46,6 +47,8 @@ func main() {
 Use `xbc.New` and `App.Execute` instead when the process is not XBC's to own -- when the application must supply its own parent context, or when XBC is embedded in a larger process that already handles signals and decides the exit code. That pair touches none of the facilities listed above, which then belong to the caller.
 
 `prelude.Bundle()` provides the production Web baseline: the Web server, recovery, request IDs, access logging, security headers, compression, cooperative timeouts, and health probes. The Web runtime is engine-neutral, so the HTTP engine is a separate choice: `ginengine.Bundle()` from `github.com/xbcio/xbc/transport/web/engines/gin` supplies it, and exactly one engine Bundle must be selected. The response envelope, CORS policy, generated Swagger UI, and application-owned Greeter remain explicit choices.
+
+`async.Bundle()` adds a drained background task pool: XBC's analogue of a managed task executor. `greeter`'s `createGreeting` handler uses it to fire a best-effort "welcome" follow-up through the process-wide `async.Spawn` after building its response, without making the request wait on it; see [`examples/quickstart/internal/greeter/greeter.go`](../examples/quickstart/internal/greeter/greeter.go) and the `async` package documentation for why the task outlives the request's own context and is still drained on shutdown.
 
 A Bundle contains side-effect-free composition data. XBC finishes configuration and dependency planning before any plugin factory runs, then owns successfully constructed resources through reverse-order shutdown.
 
@@ -192,6 +195,7 @@ xbc.Run(xbc.WithBundles(
     cors.Bundle(),
     swag.Bundle(),
     greeter.Bundle(),
+    async.Bundle(),
     redis.Bundle(),
 ))
 ```
