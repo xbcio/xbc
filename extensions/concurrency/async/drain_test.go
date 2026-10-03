@@ -175,7 +175,7 @@ func TestDrainIsIdempotentAndReplaysTheSameResult(t *testing.T) {
 }
 
 func TestDrainBeforeInitOrStartIsSafeAndRefusesLaterOpen(t *testing.T) {
-	pool := newPool(DefaultConfig(), nil) // not yet "opened"/started
+	pool := mustNewPool(t, DefaultConfig(), nil) // not yet "opened"/started
 
 	err := pool.drain(context.Background())
 	assert.NoError(t, err)

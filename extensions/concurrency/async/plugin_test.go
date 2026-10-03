@@ -12,14 +12,14 @@ func TestInitPoolRejectsNilArguments(t *testing.T) {
 	err := initPool(nil, runtimeContext(newFakeHost(), ""))
 	assert.Error(t, err)
 
-	pool := newPool(DefaultConfig(), nil)
+	pool := mustNewPool(t, DefaultConfig(), nil)
 	err = initPool(pool, nil)
 	assert.Error(t, err)
 }
 
 func TestInitPoolOpensAdmissionSoLaterStartCanSpawn(t *testing.T) {
 	resetGlobal(t)
-	pool := newPool(DefaultConfig(), nil)
+	pool := mustNewPool(t, DefaultConfig(), nil)
 	require.NoError(t, initPool(pool, runtimeContext(newFakeHost(), "")))
 	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 

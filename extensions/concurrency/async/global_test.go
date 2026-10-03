@@ -26,7 +26,7 @@ func TestGlobalSpawnBeforeInitReturnsErrNotInstalled(t *testing.T) {
 
 func TestGlobalSpawnIsBoundAfterInit(t *testing.T) {
 	resetGlobal(t)
-	pool := newPool(DefaultConfig(), nil)
+	pool := mustNewPool(t, DefaultConfig(), nil)
 	require.NoError(t, initPool(pool, runtimeContext(newFakeHost(), "")))
 	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
@@ -42,7 +42,7 @@ func TestGlobalSpawnIsBoundAfterInit(t *testing.T) {
 
 func TestGlobalSpawnReturnsErrNotInstalledAfterStop(t *testing.T) {
 	resetGlobal(t)
-	pool := newPool(DefaultConfig(), nil)
+	pool := mustNewPool(t, DefaultConfig(), nil)
 	require.NoError(t, initPool(pool, runtimeContext(newFakeHost(), "")))
 	require.NoError(t, pool.stop(context.Background()))
 
@@ -52,7 +52,7 @@ func TestGlobalSpawnReturnsErrNotInstalledAfterStop(t *testing.T) {
 
 func TestGlobalSpawnReturnsErrShuttingDownDuringDrain(t *testing.T) {
 	resetGlobal(t)
-	pool := newPool(DefaultConfig(), nil)
+	pool := mustNewPool(t, DefaultConfig(), nil)
 	require.NoError(t, initPool(pool, runtimeContext(newFakeHost(), "")))
 	t.Cleanup(func() { _ = pool.stop(context.Background()) })
 
@@ -63,11 +63,11 @@ func TestGlobalSpawnReturnsErrShuttingDownDuringDrain(t *testing.T) {
 
 func TestSecondPoolDoesNotOverwriteTheGlobalBinding(t *testing.T) {
 	resetGlobal(t)
-	first := newPool(DefaultConfig(), nil)
+	first := mustNewPool(t, DefaultConfig(), nil)
 	require.NoError(t, initPool(first, runtimeContext(newFakeHost(), "")))
 	t.Cleanup(func() { _ = first.stop(context.Background()) })
 
-	second := newPool(DefaultConfig(), nil)
+	second := mustNewPool(t, DefaultConfig(), nil)
 	require.NoError(t, initPool(second, runtimeContext(newFakeHost(), "")))
 	t.Cleanup(func() { _ = second.stop(context.Background()) })
 
@@ -80,10 +80,10 @@ func TestSecondPoolDoesNotOverwriteTheGlobalBinding(t *testing.T) {
 
 func TestUnbindGlobalOnlyClearsItsOwnBinding(t *testing.T) {
 	resetGlobal(t)
-	first := newPool(DefaultConfig(), nil)
+	first := mustNewPool(t, DefaultConfig(), nil)
 	require.NoError(t, initPool(first, runtimeContext(newFakeHost(), "")))
 
-	second := newPool(DefaultConfig(), nil)
+	second := mustNewPool(t, DefaultConfig(), nil)
 	// second never bound (first already holds the slot); stopping it must be
 	// a no-op for the global binding.
 	unbindGlobal(second)

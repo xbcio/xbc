@@ -57,16 +57,57 @@
 //
 //	plugins:
 //	  async:
-//	    executor: goroutine          # only accepted value in this step
-//	    max_concurrency: 256         # tasks running at once; 0 = unlimited
+//	    executor: goroutine          # or "ants"; see "# Executors" below
+//	    max_concurrency: 256         # tasks running at once; 0 = unlimited (ants requires > 0)
 //	    queue_capacity: 1024         # tasks waiting once max_concurrency is reached; 0 = no queue
 //	    submit_timeout: 0s           # how long Spawn waits for capacity; 0s = reject immediately
 //	    shutdown:
 //	      await_termination: true          # Drain waits for running and queued tasks
 //	      await_termination_period: 0s     # extra cap on that wait; 0s = bounded only by xbc.drain_timeout
+//	    ants:                               # only meaningful when executor: ants
+//	      expiry_duration: 1s                # ants' own default idle-worker scan interval
+//	      pre_alloc: false                   # ants' own default
+//	      disable_purge: false               # ants' own default
 //
 // Selecting the Bundle enables the Pool with these safe defaults; a
 // deployment that wants it absent sets plugins.async.enabled: false.
+//
+// The ants section's three fields are read only when executor is "ants": see
+// AntsConfig's doc comment for why setting any of them away from its default
+// while executor is "goroutine" is rejected at startup rather than silently
+// ignored, and why that check cannot distinguish "written on purpose" from
+// "never written" the way xbc.drain_timeout's own env.Exists check can.
+//
+// # Executors
+//
+// Both executors behind Config.Executor honor identical Pool semantics:
+// the same MaxConcurrency cap, the same QueueCapacity and SubmitTimeout
+// behavior, the same panic recovery and pprof labeling per task, and the
+// same Drain/Stop contract. Switching Executor changes only how an admitted
+// task is actually run, never what Spawn, Drain, or Stop promise a caller.
+//
+// ExecutorGoroutine (the default) starts every task on its own goroutine.
+// It needs no further configuration and is the right choice unless profiling
+// shows goroutine creation/teardown itself is a bottleneck.
+//
+// ExecutorAnts runs tasks on a github.com/panjf2000/ants/v2 pool sized to
+// MaxConcurrency, reusing a fixed set of goroutines across tasks instead of
+// spawning a fresh one per task. Prefer it when Spawn is called at a very
+// high rate and profiling shows goroutine creation and the GC pressure from
+// its stack allocation are a measurable cost: ants' worker reuse amortizes
+// that cost across many tasks instead of paying it on every Spawn. It is not
+// a default-safe upgrade -- benchmark your own workload (BenchmarkSpawn in
+// this package compares both executors for a tiny task) before switching,
+// since worker-reuse overhead can offset or exceed the saved allocation for
+// short, infrequent, or already-cheap tasks.
+//
+// ants is given no exported MaxBlockingTasks/Nonblocking knob: Pool's own
+// semaphore already guarantees at most MaxConcurrency tasks ever reach the
+// executor, so the ants pool is always created non-blocking and Submit is
+// expected to never itself block or report overload. Its ReleaseContext (or
+// ReleaseTimeout, if the remaining Stop ctx carries a deadline) runs in Stop,
+// after Pool's own wait for in-flight work -- never in Drain, which must
+// leave every resource a still-running task depends on open.
 //
 // # Shutdown
 //

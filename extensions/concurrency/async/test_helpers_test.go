@@ -51,6 +51,36 @@ func newTestPool(t *testing.T, cfg Config) *Pool {
 	return pool
 }
 
+// mustNewPool builds an unopened Pool directly, for tests that call open,
+// drain, or Init themselves rather than going through newPreparedPool.
+func mustNewPool(t *testing.T, cfg Config, logger log.Logger) *Pool {
+	t.Helper()
+	pool, err := newPool(cfg, logger)
+	if err != nil {
+		t.Fatalf("newPool: %v", err)
+	}
+	return pool
+}
+
+// executorConfigs names one base Config per executor, used by the shared
+// behavior suite (executor_shared_test.go) to run the same assertions
+// against both goroutineExecutor and antsExecutor. Every entry starts from
+// DefaultConfig so a test that overrides MaxConcurrency/QueueCapacity/etc.
+// still gets each executor's own required settings (ExecutorAnts needs a
+// positive MaxConcurrency) without repeating them at every call site.
+func executorConfigs() map[string]Config {
+	goroutineCfg := DefaultConfig()
+	goroutineCfg.Executor = ExecutorGoroutine
+
+	antsCfg := DefaultConfig()
+	antsCfg.Executor = ExecutorAnts
+
+	return map[string]Config{
+		ExecutorGoroutine: goroutineCfg,
+		ExecutorAnts:      antsCfg,
+	}
+}
+
 // waitForCondition polls condition until it is true or the deadline passes.
 func waitForCondition(t *testing.T, condition func() bool, description string) {
 	t.Helper()

@@ -115,24 +115,46 @@ func newPreparedPool(cfg Config, logger log.Logger) (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	pool := newPool(prepared, logger)
+	pool, err := newPool(prepared, logger)
+	if err != nil {
+		return nil, err
+	}
 	pool.open()
 	return pool, nil
 }
 
-func newPool(cfg Config, logger log.Logger) *Pool {
+// newPool constructs a Pool with its configured executor. cfg is expected to
+// have already passed prepareConfig/validate; newPool itself only fails if
+// building the configured executor fails (currently only possible for
+// ExecutorAnts, whose pool construction can reject an invalid ants.* value
+// prepareConfig did not already catch).
+func newPool(cfg Config, logger log.Logger) (*Pool, error) {
 	if logger == nil {
 		logger = log.Nop()
+	}
+	exec, err := newExecutor(cfg, logger)
+	if err != nil {
+		return nil, err
 	}
 	execCtx, execCancel := context.WithCancel(context.Background())
 	return &Pool{
 		cfg:        cfg,
 		log:        logger,
 		now:        time.Now,
-		exec:       newGoroutineExecutor(),
+		exec:       exec,
 		execCtx:    execCtx,
 		execCancel: execCancel,
 		changed:    make(chan struct{}),
+	}, nil
+}
+
+// newExecutor builds the executor named by cfg.Executor.
+func newExecutor(cfg Config, logger log.Logger) (executor, error) {
+	switch cfg.Executor {
+	case ExecutorAnts:
+		return newAntsExecutor(cfg.MaxConcurrency, cfg.Ants, logger)
+	default:
+		return newGoroutineExecutor(), nil
 	}
 }
 
@@ -283,6 +305,20 @@ func (p *Pool) admit(ctx context.Context) (admitOutcome, error) {
 // finishRunning frees one running slot and dispatches the next queued task
 // into it, if any; otherwise it wakes any Spawn call parked in admit waiting
 // for capacity.
+//
+// Dispatch runs on a fresh goroutine rather than inline: finishRunning is
+// called from runTask's own defer chain, which still executes on the
+// executor's goroutine before that goroutine returns control to its
+// executor. For antsExecutor in particular, the ants worker running this
+// very task is not reclaimable (ants' own Running() count has not dropped)
+// until the task function this defer is unwinding from actually returns;
+// promoting a queued task into the slot finishRunning just freed by calling
+// exec.Go synchronously here would therefore sometimes ask ants for a worker
+// before ants itself considers one free, surfacing ErrPoolOverload despite
+// Pool's semaphore having correctly reserved the slot. Deferring the
+// dispatch to another goroutine gives that worker's own reclaim a chance to
+// finish first; dispatchQueue's loop and antsExecutor.Go's own bounded retry
+// (see its doc comment) cover the remaining, much narrower, scheduling race.
 func (p *Pool) finishRunning() {
 	p.mu.Lock()
 	if p.running > 0 {
@@ -290,7 +326,7 @@ func (p *Pool) finishRunning() {
 	}
 	p.signalChangedLocked()
 	p.mu.Unlock()
-	p.dispatchQueue()
+	go p.dispatchQueue()
 }
 
 // dispatchQueue starts queued tasks while a running slot is free. It is safe

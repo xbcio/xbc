@@ -16,7 +16,7 @@ var definition = plugin.DefineConfigured(
 		Prepare:  prepareConfig,
 	},
 	func(_ plugin.BuildContext, cfg Config) (*Pool, error) {
-		return newPool(cfg, nil), nil
+		return newPool(cfg, nil)
 	},
 	plugin.Options[*Pool]{
 		Exports: plugin.Contracts(

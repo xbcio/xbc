@@ -4,13 +4,15 @@ import "context"
 
 // executor is the unexported seam between Pool's accounting (concurrency
 // limits, queueing, and bookkeeping all live in Pool, never here) and the
-// strategy that actually runs a task. goroutineExecutor is the only
-// implementation in this step; a later step adds an ants-backed executor
-// behind the same seam without changing Pool.
+// strategy that actually runs a task. goroutineExecutor and antsExecutor are
+// the two implementations behind this seam; Pool itself never branches on
+// which one is installed.
 type executor interface {
 	// Go runs fn. A goroutine implementation never returns a non-nil error;
-	// a bounded-worker implementation (ants, in a later step) may return one
-	// when it cannot accept fn at all.
+	// antsExecutor may return one when it cannot accept fn at all, which Pool
+	// treats as an invariant violation (see antsExecutor.Go) rather than a
+	// capacity signal: Pool's own semaphore already guarantees at most
+	// max_concurrency fn's reach Go at once.
 	Go(fn func()) error
 	// Release stops accepting new work and waits, within ctx, for the
 	// executor's own resources to wind down. A goroutine implementation has

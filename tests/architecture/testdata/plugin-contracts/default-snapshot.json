@@ -34,6 +34,11 @@
         "Shutdown": {
           "AwaitTermination": true,
           "AwaitTerminationPeriod": 0
+        },
+        "Ants": {
+          "ExpiryDuration": 1000000000,
+          "PreAlloc": false,
+          "DisablePurge": false
         }
       }
     },
