@@ -204,7 +204,8 @@ func (p *Pool) Spawn(ctx context.Context, name string, task func(context.Context
 		return err
 	}
 
-	outcome, err := p.admit(ctx)
+	taskCtx := p.taskContext(ctx)
+	outcome, err := p.admit(ctx, queuedTask{name: name, taskCtx: taskCtx, task: task, queuedAt: p.now()})
 	if err != nil {
 		return err
 	}
@@ -213,22 +214,17 @@ func (p *Pool) Spawn(ctx context.Context, name string, task func(context.Context
 	// guaranteed to happen-before any inFlight.Wait call drain or stop can
 	// start afterward: a Wait that starts when the counter is (transiently)
 	// zero can never race a positive Add from a Spawn that admit already
-	// let through.
-
-	taskCtx := p.taskContext(ctx)
-	switch outcome {
-	case admitRunning:
-		if err := p.exec.Go(func() { p.runTask(name, taskCtx, task) }); err != nil {
-			p.finishRunning()
+	// let through. The same locked section also already appended the task
+	// to p.queue itself when it decided to queue rather than run it (see
+	// admit's own doc comment for why that decision and the append cannot
+	// be split across two lock acquisitions), so admitQueued needs no
+	// further action here.
+	if outcome == admitRunning {
+		if err := p.exec.Go(func() { p.runWorker(name, taskCtx, task) }); err != nil {
 			p.inFlight.Done()
+			p.releaseOrHandoff(name)
 			return fmt.Errorf("async: executor rejected task %q: %w", name, err)
 		}
-	case admitQueued:
-		p.mu.Lock()
-		p.queue = append(p.queue, queuedTask{name: name, taskCtx: taskCtx, task: task, queuedAt: p.now()})
-		p.signalChangedLocked()
-		p.mu.Unlock()
-		go p.dispatchQueue()
 	}
 	return nil
 }
@@ -249,6 +245,19 @@ const (
 // warns against ("calls with a positive delta that start when the counter is
 // zero must happen before a Wait").
 //
+// When it decides to queue rather than run entry, admit appends entry to
+// p.queue itself, inside the very same locked section as that decision,
+// rather than returning admitQueued and letting Spawn append separately
+// under a second lock acquisition. Splitting it across two critical
+// sections would open a gap between "admit decided to queue" and "the task
+// actually landed in p.queue" during which a worker's own nextOrRelease
+// (also taken under p.mu) could observe an empty queue, release its running
+// slot, and return -- abandoning this task forever, since nothing else is
+// looking at the queue once every worker has exited. Appending inside the
+// same critical section that made the decision closes that gap: by the
+// time admit's lock is released, the task is already wherever a concurrent
+// nextOrRelease will look for it.
+//
 // SubmitTimeout 0 rejects immediately with ErrSaturated the moment neither a
 // running nor a queue slot is available, regardless of ctx's own deadline:
 // the configured wait is the effective ceiling, never widened by a caller's
@@ -256,7 +265,7 @@ const (
 // min(SubmitTimeout, ctx's own deadline); if ctx itself is the earlier
 // deadline and it fires first, admit returns ctx.Err() rather than
 // ErrSaturated, so "the spawn ctx deadline shorter than submit_timeout wins".
-func (p *Pool) admit(ctx context.Context) (admitOutcome, error) {
+func (p *Pool) admit(ctx context.Context, entry queuedTask) (admitOutcome, error) {
 	waitCtx := ctx
 	hasWait := p.cfg.SubmitTimeout > 0
 	if hasWait {
@@ -280,6 +289,8 @@ func (p *Pool) admit(ctx context.Context) (admitOutcome, error) {
 		}
 		if len(p.queue) < p.cfg.QueueCapacity {
 			p.inFlight.Add(1)
+			p.queue = append(p.queue, entry)
+			p.signalChangedLocked()
 			p.mu.Unlock()
 			return admitQueued, nil
 		}
@@ -302,55 +313,57 @@ func (p *Pool) admit(ctx context.Context) (admitOutcome, error) {
 	}
 }
 
-// finishRunning frees one running slot and dispatches the next queued task
-// into it, if any; otherwise it wakes any Spawn call parked in admit waiting
-// for capacity.
-//
-// Dispatch runs on a fresh goroutine rather than inline: finishRunning is
-// called from runTask's own defer chain, which still executes on the
-// executor's goroutine before that goroutine returns control to its
-// executor. For antsExecutor in particular, the ants worker running this
-// very task is not reclaimable (ants' own Running() count has not dropped)
-// until the task function this defer is unwinding from actually returns;
-// promoting a queued task into the slot finishRunning just freed by calling
-// exec.Go synchronously here would therefore sometimes ask ants for a worker
-// before ants itself considers one free, surfacing ErrPoolOverload despite
-// Pool's semaphore having correctly reserved the slot. Deferring the
-// dispatch to another goroutine gives that worker's own reclaim a chance to
-// finish first; dispatchQueue's loop and antsExecutor.Go's own bounded retry
-// (see its doc comment) cover the remaining, much narrower, scheduling race.
-func (p *Pool) finishRunning() {
+// nextOrRelease is the single atomic decision point between a worker
+// picking up another queued task and releasing its running slot: it must
+// run as one locked step, not two, because admit's own "is a slot free"
+// check (also taken under p.mu) would otherwise be able to interleave
+// between "the queue looked empty" and "the slot was released" and queue a
+// task no worker is left looking for. Under one lock acquisition: if the
+// pool has stopped, the worker must stop popping (any remaining queued
+// tasks are stop's to discard, not this worker's to run) and release its
+// slot; otherwise, if the queue is non-empty, the next task is popped and
+// the slot stays reserved for the caller to keep running with; otherwise
+// the slot is released in the same critical section that observed the
+// empty queue, so no concurrent admit can ever queue a task behind a
+// worker that has already decided to exit.
+func (p *Pool) nextOrRelease() (queuedTask, bool) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.stopped && len(p.queue) > 0 {
+		next := p.queue[0]
+		p.queue = p.queue[1:]
+		p.signalChangedLocked()
+		return next, true
+	}
 	if p.running > 0 {
 		p.running--
 	}
 	p.signalChangedLocked()
-	p.mu.Unlock()
-	go p.dispatchQueue()
+	return queuedTask{}, false
 }
 
-// dispatchQueue starts queued tasks while a running slot is free. It is safe
-// to call concurrently and when the queue is empty.
-func (p *Pool) dispatchQueue() {
-	for {
-		p.mu.Lock()
-		if len(p.queue) == 0 || !(p.cfg.MaxConcurrency == 0 || p.running < uint64(p.cfg.MaxConcurrency)) {
-			p.mu.Unlock()
-			return
-		}
-		next := p.queue[0]
-		p.queue = p.queue[1:]
-		p.running++
-		p.signalChangedLocked()
-		p.mu.Unlock()
-
-		name, taskCtx, task := next.name, next.taskCtx, next.task
-		if err := p.exec.Go(func() { p.runTask(name, taskCtx, task) }); err != nil {
-			p.log.Error("async: executor rejected queued task", "name", name, "error", err.Error())
-			p.inFlight.Done()
-			p.finishRunning()
-			continue
-		}
+// releaseOrHandoff frees the running slot a task never actually started in
+// (exec.Go itself failed, which Pool treats as an invariant violation; see
+// antsExecutor.Go) and, in the same spirit as nextOrRelease, hands that slot
+// to a queued task instead of silently abandoning it if one is waiting.
+// Unlike nextOrRelease, there is no live worker goroutine to keep looping on
+// here -- the task that would have started this goroutine's runWorker never
+// got to -- so a queued task picked up this way is submitted to the
+// executor as a fresh worker rather than run inline. A second exec.Go
+// failure recurses rather than looping, which is safe: Pool treats every
+// such failure as a rare invariant violation, and nextOrRelease's own
+// stopped/empty-queue checks still bound how many times this can happen.
+func (p *Pool) releaseOrHandoff(failedName string) {
+	next, ok := p.nextOrRelease()
+	if !ok {
+		return
+	}
+	name, taskCtx, task := next.name, next.taskCtx, next.task
+	if err := p.exec.Go(func() { p.runWorker(name, taskCtx, task) }); err != nil {
+		p.log.Error("async: executor rejected queued task while recovering a failed submission",
+			"name", name, "failedTask", failedName, "error", err.Error())
+		p.inFlight.Done()
+		p.releaseOrHandoff(name)
 	}
 }
 
@@ -366,11 +379,41 @@ func (p *Pool) taskContext(ctx context.Context) context.Context {
 	return combined
 }
 
-// runTask executes one task with panic recovery and a pprof label, then frees
-// its running slot.
-func (p *Pool) runTask(name string, ctx context.Context, task func(context.Context)) {
+// runWorker is the body an executor goroutine runs for one admitted task and
+// then, in a loop, for every queued task it picks up itself afterward. It is
+// the sole place a task actually executes.
+//
+// After the first task returns, the same goroutine -- still holding its
+// running slot -- checks the queue itself (nextOrRelease) instead of
+// releasing the slot and relying on a new Submit/Spawn to pick the next task
+// up: a queued task is guaranteed a worker without ever asking the executor
+// for one, so ants (or any future executor) never needs to admit more
+// workers than max_concurrency to drain its own queue, and no extra
+// goroutine is created per task. Only once the queue is empty, or the pool
+// has stopped, does the loop release its slot and let the goroutine return
+// to its executor (idle for goroutineExecutor, reclaimed by ants for
+// antsExecutor).
+//
+// Each iteration gets its own panic recovery, pprof label, inFlight.Done,
+// and Stats accounting, exactly as a one-task-per-goroutine executor would
+// provide for each task individually.
+func (p *Pool) runWorker(name string, ctx context.Context, task func(context.Context)) {
+	for {
+		p.runOne(name, ctx, task)
+		next, ok := p.nextOrRelease()
+		if !ok {
+			return
+		}
+		name, ctx, task = next.name, next.taskCtx, next.task
+	}
+}
+
+// runOne executes a single task with panic recovery and a pprof label, then
+// marks it done in inFlight. It never touches p.running: the caller
+// (runWorker) owns the running slot for as long as it keeps picking up
+// queued work.
+func (p *Pool) runOne(name string, ctx context.Context, task func(context.Context)) {
 	defer p.inFlight.Done()
-	defer p.finishRunning()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			p.log.Error("async: task panicked",
@@ -508,7 +551,7 @@ func (p *Pool) stop(ctx context.Context) error {
 			names := make([]string, 0, len(discardedQueue))
 			for _, entry := range discardedQueue {
 				names = append(names, entry.name)
-				p.inFlight.Done() // discarded, never ran: it will not reach runTask's Done.
+				p.inFlight.Done() // discarded, never ran: it will not reach runOne's Done.
 			}
 			p.log.Warn("async: stop discarded queued tasks", "count", len(discardedQueue), "tasks", names)
 		}

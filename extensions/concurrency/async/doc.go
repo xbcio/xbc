@@ -96,18 +96,34 @@
 // high rate and profiling shows goroutine creation and the GC pressure from
 // its stack allocation are a measurable cost: ants' worker reuse amortizes
 // that cost across many tasks instead of paying it on every Spawn. It is not
-// a default-safe upgrade -- benchmark your own workload (BenchmarkSpawn in
-// this package compares both executors for a tiny task) before switching,
-// since worker-reuse overhead can offset or exceed the saved allocation for
-// short, infrequent, or already-cheap tasks.
+// a default-safe upgrade -- benchmark your own workload (BenchmarkSpawn and
+// BenchmarkSpawnQueued in this package compare both executors for a tiny
+// task) before switching, since worker-reuse overhead can offset or exceed
+// the saved allocation for short, infrequent, or already-cheap tasks.
+//
+// Measured on this package's own BenchmarkSpawn/BenchmarkSpawnQueued (Apple
+// M3, go test -bench Spawn -benchmem -count=5, averaged), ExecutorGoroutine
+// was consistently faster than ExecutorAnts for a tiny task in both an
+// unsaturated run (BenchmarkSpawn: ~1.2us/op goroutine vs. ~1.3us/op ants)
+// and a saturated, queueing one (BenchmarkSpawnQueued, MaxConcurrency 8:
+// ~1.08us/op for both, no measurable difference). ants' worker reuse did
+// not amortize its own overhead away for a task this cheap on this
+// workload; do not read ExecutorAnts as a speedup for small tasks from
+// these numbers -- it exists for workloads where goroutine creation and
+// stack-allocation GC pressure are the measured bottleneck, which a
+// microbenchmark this small does not reproduce.
 //
 // ants is given no exported MaxBlockingTasks/Nonblocking knob: Pool's own
 // semaphore already guarantees at most MaxConcurrency tasks ever reach the
-// executor, so the ants pool is always created non-blocking and Submit is
-// expected to never itself block or report overload. Its ReleaseContext (or
-// ReleaseTimeout, if the remaining Stop ctx carries a deadline) runs in Stop,
-// after Pool's own wait for in-flight work -- never in Drain, which must
-// leave every resource a still-running task depends on open.
+// executor, and queued tasks are run by the worker loop itself (see
+// Pool.runWorker) rather than resubmitted to the executor, so the ants pool
+// is left in its default blocking mode and Submit is expected to block only
+// as briefly as the in-progress hand-off of the one worker it is always
+// waiting on, never to deadlock (see antsExecutor.Go's own doc comment for
+// the argument) or report overload. Its ReleaseContext (or ReleaseTimeout,
+// if the remaining Stop ctx carries a deadline) runs in Stop, after Pool's
+// own wait for in-flight work -- never in Drain, which must leave every
+// resource a still-running task depends on open.
 //
 // # Shutdown
 //

@@ -66,7 +66,7 @@ func TestAntsExecutorReleaseErrorIsReportedByStop(t *testing.T) {
 }
 
 // TestAntsExecutorNoPprofLabelLeaksBetweenReusedWorkers proves that ants
-// reusing a goroutine across tasks does not leak Pool.runTask's "async_task"
+// reusing a goroutine across tasks does not leak Pool.runOne's "async_task"
 // pprof label from one task to the next.
 //
 // pprof labels live in two places: the context value pprof.Do's own f
@@ -111,7 +111,7 @@ func TestAntsExecutorNoPprofLabelLeaksBetweenReusedWorkers(t *testing.T) {
 
 	// The worker goroutine is now idle, parked inside ants waiting for its
 	// next task (see worker.go's `for fn := range w.task`), with
-	// Pool.runTask's deferred SetGoroutineLabels(ctx) already having
+	// Pool.runOne's deferred SetGoroutineLabels(ctx) already having
 	// restored it to whatever it carried before the first task ran (nil,
 	// for a freshly spawned worker): its label must not still read the
 	// first task's name while idle.
@@ -151,12 +151,92 @@ func goroutineProfileContains(t *testing.T, needle string) bool {
 	return bytes.Contains(raw, []byte(needle))
 }
 
+// TestAntsExecutorNestedSpawnAtSaturationNeverDeadlocksOrOverloads exercises
+// the specific scenario antsExecutor.Go's doc comment argues can never
+// deadlock: every running task itself calls Spawn again (a nested task)
+// while the pool is saturated at MaxConcurrency, and does not wait for that
+// nested task to finish before returning (an outer task synchronously
+// blocking on its own child it has no guarantee a saturated bounded pool
+// will ever schedule is a workload-level deadlock risk for any bounded
+// pool, goroutine or ants alike, and is not what this test -- or
+// antsExecutor.Go's correctness argument -- is about). What this test
+// checks is narrower and is specifically about antsExecutor.Go: the nested
+// Submit call itself (from inside a worker already holding a running slot)
+// must return promptly and must never observe ants.ErrPoolOverload, whether
+// it is admitted to run or queued.
+func TestAntsExecutorNestedSpawnAtSaturationNeverDeadlocksOrOverloads(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Executor = ExecutorAnts
+	cfg.MaxConcurrency = 4
+	cfg.QueueCapacity = 64
+	cfg.SubmitTimeout = time.Second
+	pool := newTestPool(t, cfg)
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
+
+	const outer = 32
+	var outerWG sync.WaitGroup
+	var innerWG sync.WaitGroup
+	var overloadObserved atomic.Bool
+	var innerCompleted atomic.Int64
+
+	outerWG.Add(outer)
+	innerWG.Add(outer)
+	for i := 0; i < outer; i++ {
+		i := i
+		err := pool.Spawn(context.Background(), fmt.Sprintf("outer-%d", i), func(ctx context.Context) {
+			defer outerWG.Done()
+			// The nested Spawn call itself -- not whether its child has
+			// finished -- is what must stay prompt and error-free: the
+			// outer task fires it and returns immediately, exactly like a
+			// handler that schedules best-effort follow-up work without
+			// waiting on it.
+			innerErr := pool.Spawn(ctx, fmt.Sprintf("inner-%d", i), func(context.Context) {
+				innerCompleted.Add(1)
+				innerWG.Done()
+			})
+			if innerErr != nil {
+				defer innerWG.Done()
+				if innerErr == ErrSaturated { //nolint:errorlint // sentinel identity check
+					return
+				}
+				overloadObserved.Store(true)
+				t.Errorf("unexpected nested Spawn error: %v", innerErr)
+			}
+		})
+		require.NoError(t, err, "the nested Submit call (outer Spawn here) must return promptly without error")
+	}
+
+	outerDone := make(chan struct{})
+	go func() { outerWG.Wait(); close(outerDone) }()
+	select {
+	case <-outerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("outer Spawn calls (each issuing one nested Spawn) did not all return: possible deadlock in Submit itself")
+	}
+
+	innerDone := make(chan struct{})
+	go func() { innerWG.Wait(); close(innerDone) }()
+	select {
+	case <-innerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("nested (inner) tasks never finished draining from the queue")
+	}
+
+	assert.False(t, overloadObserved.Load(), "ants.ErrPoolOverload must never be observed for a nested Spawn at saturation")
+	assert.Greater(t, innerCompleted.Load(), int64(0), "at least some inner (nested) tasks should have run")
+}
+
 // TestAntsExecutorErrPoolOverloadNeverObservedUnderSaturationStress stresses
 // an ants-backed Pool far past its MaxConcurrency with concurrent Spawn
 // callers under -race, asserting Go never surfaces the "ants pool rejected a
 // task its own size should have admitted" error: Pool's own semaphore must
 // always have reserved a slot before any task reaches antsExecutor.Go, so
-// ants.ErrPoolOverload is never actually observed in practice.
+// ants.ErrPoolOverload is never actually observed in practice. Go no longer
+// retries ErrPoolOverload at all (blocking mode plus the worker loop removes
+// the window the retry used to paper over), so this is now a direct
+// assertion rather than one a bounded retry could mask; run with
+// `go test -race -count=20` to match the stress level AGENTS.md's shutdown
+// split expects for a concurrency invariant like this one.
 func TestAntsExecutorErrPoolOverloadNeverObservedUnderSaturationStress(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Executor = ExecutorAnts
