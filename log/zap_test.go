@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -327,4 +329,271 @@ func TestSetLoggerNilFallsBackToNop(t *testing.T) {
 		SetLogger(nil)
 		L().Info("still fine")
 	})
+}
+
+// ── Lazy-closing sink ──────────────────────────────────────
+
+func TestLazyClosingSinkWriteErrorsAfterClose(t *testing.T) {
+	buf := zapcore.AddSync(&bytes.Buffer{})
+	closed := false
+	s := newLazyClosingSink(buf, func() error { closed = true; return nil })
+
+	n, err := s.Write([]byte("before close"))
+	require.NoError(t, err)
+	assert.Equal(t, len("before close"), n)
+
+	require.NoError(t, s.Close())
+	assert.True(t, closed)
+
+	n, err = s.Write([]byte("after close"))
+	assert.Error(t, err, "a write after Close must be reported, not silently dropped or delegated")
+	assert.Equal(t, 0, n)
+}
+
+func TestLazyClosingSinkSyncIsNoopAfterClose(t *testing.T) {
+	s := newLazyClosingSink(zapcore.AddSync(&bytes.Buffer{}), func() error { return nil })
+	require.NoError(t, s.Close())
+	assert.NoError(t, s.Sync(), "Sync on a closed sink must be harmless")
+}
+
+func TestLazyClosingSinkCloseIsIdempotent(t *testing.T) {
+	calls := 0
+	s := newLazyClosingSink(zapcore.AddSync(&bytes.Buffer{}), func() error { calls++; return nil })
+	require.NoError(t, s.Close())
+	require.NoError(t, s.Close())
+	assert.Equal(t, 1, calls, "the underlying close func must run exactly once")
+}
+
+// gatedSyncer blocks inside Write until release is closed, so a test can hold
+// a write in flight and observe what Close does while it is there.
+type gatedSyncer struct {
+	entered chan struct{}
+	release chan struct{}
+	inWrite atomic.Bool
+}
+
+func (g *gatedSyncer) Write(p []byte) (int, error) {
+	g.inWrite.Store(true)
+	close(g.entered)
+	<-g.release
+	g.inWrite.Store(false)
+	return len(p), nil
+}
+
+func (g *gatedSyncer) Sync() error { return nil }
+
+// TestLazyClosingSinkCloseWaitsForInFlightWrite pins the ordering the closed
+// check alone cannot give: checking closed and then delegating leaves a window
+// in which Close can complete and the delegate then lands on a closed sink --
+// for a lumberjack sink that is the reopen-on-write resurrection again. A
+// write that passed the check must therefore keep the sink open until it
+// finishes delegating, and Close must not run the real close func while that
+// delegation is still in flight.
+func TestLazyClosingSinkCloseWaitsForInFlightWrite(t *testing.T) {
+	syncer := &gatedSyncer{entered: make(chan struct{}), release: make(chan struct{})}
+	var closedDuringWrite atomic.Bool
+	s := newLazyClosingSink(syncer, func() error {
+		if syncer.inWrite.Load() {
+			closedDuringWrite.Store(true)
+		}
+		return nil
+	})
+
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		_, _ = s.Write([]byte("in flight"))
+	}()
+	<-syncer.entered
+
+	closeDone := make(chan struct{})
+	go func() {
+		defer close(closeDone)
+		_ = s.Close()
+	}()
+
+	select {
+	case <-closeDone:
+		t.Fatal("Close completed while a write was still delegating to the sink it closes")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(syncer.release)
+	<-writeDone
+	<-closeDone
+
+	assert.False(t, closedDuringWrite.Load(),
+		"the underlying close must not run concurrently with a write it would pull the sink from under")
+	_, err := s.Write([]byte("after close"))
+	assert.ErrorIs(t, err, errSinkClosed,
+		"a write after Close must report the package's discard error, not a freshly allocated one")
+}
+
+// ── Close / Init must not let a cached Logger resurrect a closed file ──────
+
+// Regression test for the audit finding: a caller holding an earlier L()
+// result that keeps writing after Close() must not make lumberjack silently
+// reopen the file Close just closed. Before the fix, Close closed the sink
+// while the global logger still pointed at it, and lumberjack.Write's
+// `if l.file == nil { openExistingOrNew }` resurrected the file on the very
+// next write through the cached Logger.
+func TestCachedLoggerCannotResurrectFileAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Console.Enabled = false
+	cfg.File.Enabled = true
+	cfg.File.Path = filepath.Join(dir, "app.log")
+	require.NoError(t, Init(cfg))
+	t.Cleanup(func() { SetLogger(Nop()) })
+
+	cached := L() // simulates a caller that stashed an earlier L() result
+	cached.Info("line one")
+	require.NoError(t, Close())
+
+	info, err := os.Stat(cfg.File.Path)
+	require.NoError(t, err)
+	sizeAtClose := info.Size()
+	assert.Positive(t, sizeAtClose)
+
+	// Writes through the cached value after Close must not grow the file.
+	for i := 0; i < 5; i++ {
+		cached.Info("line after close")
+	}
+
+	info, err = os.Stat(cfg.File.Path)
+	require.NoError(t, err)
+	assert.Equal(t, sizeAtClose, info.Size(),
+		"writing through a Logger cached before Close must not reopen or grow the closed file")
+}
+
+// Regression test for the same finding, but across a second Init rather than
+// Close: Init must swap the global logger before closing the previous
+// round's sinks, otherwise a concurrent write landing on the old cached
+// Logger during the handover window hits an already-closed lumberjack and
+// resurrects the old file.
+func TestCachedLoggerCannotResurrectFileAcrossReinit(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Console.Enabled = false
+	cfg.File.Enabled = true
+	cfg.File.Path = filepath.Join(dir, "first.log")
+	require.NoError(t, Init(cfg))
+	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
+
+	oldCached := L()
+	oldCached.Info("first round")
+
+	cfg2 := cfg
+	cfg2.File.Path = filepath.Join(dir, "second.log")
+	require.NoError(t, Init(cfg2))
+
+	oldInfo, err := os.Stat(cfg.File.Path)
+	require.NoError(t, err)
+	oldSizeAfterReinit := oldInfo.Size()
+
+	for i := 0; i < 5; i++ {
+		oldCached.Info("stale write")
+	}
+	L().Info("new round") // through the new global, must land in second.log
+
+	oldInfoAfter, err := os.Stat(cfg.File.Path)
+	require.NoError(t, err)
+	assert.Equal(t, oldSizeAfterReinit, oldInfoAfter.Size(),
+		"writes through the pre-reinit cached Logger must not grow the old file")
+
+	require.NoError(t, Close())
+	newData, err := os.ReadFile(cfg2.File.Path)
+	require.NoError(t, err)
+	assert.Contains(t, string(newData), "new round")
+}
+
+// Two consecutive Init calls at different paths: only the new file grows,
+// the old one is untouched from that point on.
+func TestConsecutiveInitOnlyNewFileGrows(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Console.Enabled = false
+	cfg.File.Enabled = true
+	cfg.File.Path = filepath.Join(dir, "a.log")
+	require.NoError(t, Init(cfg))
+
+	L().Info("into a")
+	require.NoError(t, Sync())
+	aInfo, err := os.Stat(cfg.File.Path)
+	require.NoError(t, err)
+	aSize := aInfo.Size()
+	assert.Positive(t, aSize)
+
+	cfg2 := cfg
+	cfg2.File.Path = filepath.Join(dir, "b.log")
+	require.NoError(t, Init(cfg2))
+	t.Cleanup(func() { _ = Close(); SetLogger(Nop()) })
+
+	L().Info("into b")
+	require.NoError(t, Sync())
+
+	aInfoAfter, err := os.Stat(cfg.File.Path)
+	require.NoError(t, err)
+	assert.Equal(t, aSize, aInfoAfter.Size(), "the old file must not grow after a second Init")
+
+	bInfo, err := os.Stat(cfg2.File.Path)
+	require.NoError(t, err)
+	assert.Positive(t, bInfo.Size())
+}
+
+// Deleting the closed file after Close and writing through the cached
+// Logger again must not recreate it -- the strongest form of "does not
+// resurrect": not just "does not grow", but "does not even come back into
+// existence".
+func TestCachedLoggerDoesNotRecreateDeletedFileAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Console.Enabled = false
+	cfg.File.Enabled = true
+	cfg.File.Path = filepath.Join(dir, "app.log")
+	require.NoError(t, Init(cfg))
+	t.Cleanup(func() { SetLogger(Nop()) })
+
+	cached := L()
+	cached.Info("line one")
+	require.NoError(t, Close())
+	require.NoError(t, os.Remove(cfg.File.Path))
+
+	cached.Info("should not recreate the file")
+
+	_, err := os.Stat(cfg.File.Path)
+	assert.True(t, os.IsNotExist(err), "a write through a cached Logger after Close must not recreate the deleted file")
+}
+
+// After Close, the facade's own global falls back to discarding -- not to
+// a zapLogger still pointed at closed sinks.
+func TestCloseSwapsOwnBackendToNop(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Console.Enabled = false
+	cfg.File.Enabled = true
+	cfg.File.Path = filepath.Join(dir, "app.log")
+	require.NoError(t, Init(cfg))
+	t.Cleanup(func() { SetLogger(Nop()) })
+
+	require.NoError(t, Close())
+	assert.Equal(t, Nop(), L(), "Close must swap its own backend to Nop so L() stops pointing at closed sinks")
+}
+
+// Close must not clobber a third-party backend installed after Init via
+// SetLogger -- it only owns the backend it, through Init, put there itself.
+func TestCloseLeavesThirdPartyBackendAlone(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.Console.Enabled = false
+	cfg.File.Enabled = true
+	cfg.File.Path = filepath.Join(dir, "app.log")
+	require.NoError(t, Init(cfg))
+	t.Cleanup(func() { SetLogger(Nop()) })
+
+	third := fakeBackend{Nop()}
+	SetLogger(third)
+
+	require.NoError(t, Close())
+	assert.Equal(t, Logger(third), L(), "Close must not replace a third-party backend installed via SetLogger")
 }

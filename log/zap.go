@@ -298,8 +298,8 @@ func Init(cfg Config) error {
 	}
 
 	if len(cores) == 0 { // everything off is equivalent to Nop, common in test environments
+		SetLogger(Nop()) // swap the global first, then close -- see the swap/close ordering note below
 		closeAll(swapClosers(nil))
-		SetLogger(Nop())
 		return nil
 	}
 
@@ -331,8 +331,18 @@ func Init(cfg Config) error {
 		opts = append(opts, zap.AddStacktrace(zapcore.Level(st)))
 	}
 
-	closeAll(swapClosers(cls)) // close the previous round's sinks first, then hook up the new ones
+	// Swap the global logger to the new backend FIRST, then close the
+	// previous round's sinks. Reversed, there is a window after closeAll
+	// and before SetLogger where a concurrent caller using L() still gets
+	// the old *zapLogger, whose sinks were just closed -- lumberjack would
+	// silently reopen the file it was just told to close (see
+	// lazyClosingSink's doc). Swapping first means any write that still
+	// lands on the old logger during the handover hits the old sink while
+	// it is still legitimately open; only after the swap do we close it,
+	// at which point lazyClosingSink makes further writes to it an error
+	// rather than a silent reopen.
 	SetLogger(newZapLogger(zap.New(core, opts...)))
+	closeAll(swapClosers(cls))
 	return nil
 }
 
@@ -355,6 +365,83 @@ func jsonEncoderConfig() zapcore.EncoderConfig {
 	c.StacktraceKey = "stack"
 	c.EncodeDuration = zapcore.MillisDurationEncoder
 	return c
+}
+
+// lazyClosingSink wraps a file-backed zapcore.WriteSyncer so that once its
+// close func has run, Write becomes a no-op that reports an error instead of
+// forwarding to the underlying sink.
+//
+// This exists because of lumberjack's reopen-on-write behavior: lumberjack's
+// own Write checks `if l.file == nil { openExistingOrNew }`, with no
+// awareness of an explicit Close -- so a caller holding an earlier log.L()
+// result that keeps writing after Init's swap (or after Close) would
+// silently recreate the file lumberjack just closed, line by line, forever.
+// Returning an error here instead routes the write through zap's
+// ErrorOutput (zapcore/entry.go's CheckedEntry.Write), which Init wires to
+// stderr -- so the caller gets a visible signal instead of a resurrected
+// file.
+//
+// A reader holds mu's read lock across both the closed check and the
+// delegate, so a close cannot land in between them -- checking first and then
+// delegating would leave exactly the window this type exists to remove.
+// Close takes the write lock only to flip the flag, and runs the real close
+// func after releasing it: any Write that passed the check has already
+// finished delegating by then, and every later Write sees closed and is
+// discarded without touching the sink. That ordering also keeps Close from
+// holding a lock while close() runs, which matters because lumberjack.Close
+// takes lumberjack's own lock and a write racing it would otherwise be made
+// to wait on cleanup it has nothing to do with.
+type lazyClosingSink struct {
+	zapcore.WriteSyncer
+	mu     sync.RWMutex
+	closed bool
+	close  func() error
+}
+
+// errSinkClosed is what a write to a closed sink reports. It is a package
+// value rather than a fmt.Errorf per call because the discard path is reached
+// by every write from a logger that outlived its sink, and allocating a fresh
+// error for each one is pure waste.
+var errSinkClosed = errors.New("log: write to a closed sink was discarded")
+
+func newLazyClosingSink(w zapcore.WriteSyncer, close func() error) *lazyClosingSink {
+	return &lazyClosingSink{WriteSyncer: w, close: close}
+}
+
+func (s *lazyClosingSink) Write(p []byte) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return 0, errSinkClosed
+	}
+	return s.WriteSyncer.Write(p)
+}
+
+func (s *lazyClosingSink) Sync() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil
+	}
+	return s.WriteSyncer.Sync()
+}
+
+// Close marks the sink closed, so every subsequent Write is discarded
+// instead of being delegated to the (now closed) underlying sink, then runs
+// the real close func. Safe to call more than once; only the first call
+// actually closes.
+func (s *lazyClosingSink) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	s.mu.Unlock()
+	if s.close == nil {
+		return nil
+	}
+	return s.close()
 }
 
 func buildFileWriter(cfg FileConfig, path string) (zapcore.WriteSyncer, func() error, error) {
@@ -381,11 +468,17 @@ func buildFileWriter(cfg FileConfig, path string) (zapcore.WriteSyncer, func() e
 		Compress:   cfg.Compress,
 		LocalTime:  true,
 	}
+	// Wrapped in lazyClosingSink regardless of rotation mode: once closeFn
+	// has run, further writes must be discarded with an error rather than
+	// being delegated to lumberjack (which would silently reopen the file
+	// it was just closed from under -- see lazyClosingSink's own doc).
 	if cfg.Rotate == RotateDaily {
 		d := newDailyRotator(lj)
-		return zapcore.AddSync(d), d.Close, nil
+		sink := newLazyClosingSink(zapcore.AddSync(d), d.Close)
+		return sink, sink.Close, nil
 	}
-	return zapcore.AddSync(lj), lj.Close, nil
+	sink := newLazyClosingSink(zapcore.AddSync(lj), lj.Close)
+	return sink, sink.Close, nil
 }
 
 func swapClosers(next []func() error) []func() error {
@@ -419,8 +512,33 @@ func Sync() error {
 
 // Close flushes to disk and closes all file sinks. The framework calls this
 // as the last step of a graceful shutdown.
+//
+// After Close, the global logger -- if it is still this package's own
+// *zapLogger -- is swapped to Nop(), so the facade records to nothing
+// instead of silently falling through to a sink that lazyClosingSink has
+// made error-returning. A third-party backend wired in later via SetLogger
+// is left untouched: this package did not open its sinks and has no
+// business tearing it down.
+//
+// Sync runs before the swap/close for the same reason Init swaps before
+// closing: a concurrent writer still holding the old logger during the
+// handover should hit a sink that is flushed and only then closed, not a
+// half-torn-down one.
 func Close() error {
 	err := Sync()
+
+	// Load-then-conditional-SetLogger rather than an unconditional
+	// SetLogger(Nop()): a concurrent SetLogger(thirdParty) call interleaved
+	// with this check is an inherent TOCTOU on a global the whole package
+	// treats as externally swappable at any time (SetLogger itself offers
+	// no stronger guarantee) -- the goal here is only to not clobber a
+	// third-party backend that was already in place when Close started.
+	if p := global.Load(); p != nil {
+		if _, ok := (*p).(*zapLogger); ok {
+			SetLogger(Nop())
+		}
+	}
+
 	closeAll(swapClosers(nil))
 	return err
 }

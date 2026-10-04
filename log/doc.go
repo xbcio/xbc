@@ -25,6 +25,23 @@
 // zap's well-known "fsync returns EINVAL against a terminal or pipe" glitch,
 // so a deferred Close never reports a false error on ordinary exit.
 //
+// After Close, the facade's global Logger -- obtained via L() from that
+// point on -- records to nothing: Close swaps the global to Nop() once its
+// sinks are closed (unless a third-party backend was installed via
+// SetLogger in the meantime, which Close leaves alone). The same happens
+// across a second Init call: closing the previous round's file sinks never
+// leaves them reachable through the new global either.
+//
+// Caching a Logger value (an earlier L() result, or anything derived from
+// it via With) across a Close or a second Init is not supported. Once the
+// sink behind that cached value has been closed, writes through it are
+// discarded and reported as an error through zap's ErrorOutput (stderr by
+// default) rather than silently lost -- but they do not resurrect the
+// closed file. This is deliberate: without it, a cached Logger writing
+// after Close would make lumberjack transparently reopen the very file
+// Close just told it to close, growing a file callers were told had been
+// shut down.
+//
 // # Fatal
 //
 // Fatal logs, flushes, and then terminates the process with exit code 1 --
