@@ -95,7 +95,15 @@ type ContractSet[P any] struct {
 }
 
 // ExportAs declares interface I as an additional contract of primary type P.
-// The witness function makes the Go compiler prove P is assignable to I.
+//
+// assign exists only so its signature, func(P) I, makes the Go compiler prove
+// at this call site that P is assignable to I; ExportAs never calls it. The
+// resulting Contract carries nothing but reflect.TypeOf of I (see
+// pluginmodel.Contract.Type) and the declaration's origin -- no reference to
+// assign survives past this function. At resolution time a consumer's
+// exported value is the producer's own primary value, recovered with an
+// ordinary Go type assertion against I; nothing re-derives or re-converts it
+// through assign or anything like it.
 //
 // I must be an interface: it names the capability a consumer resolves and asks
 // for, and a concrete type would instead publish that implementation as the
@@ -103,6 +111,10 @@ type ContractSet[P any] struct {
 // declaration that made it.
 func ExportAs[I any, P any](assign func(P) I) Contract[P] {
 	if assign == nil {
+		// Checked for nil only: a nil witness would still type-check (the
+		// compiler already confirmed P satisfies I from the parameter type
+		// alone), so this guard exists purely to reject a careless nil
+		// literal at the declaration site, not because the value is read.
 		panic("xbc: plugin.ExportAs witness cannot be nil")
 	}
 	contract := typeOf[I]()
