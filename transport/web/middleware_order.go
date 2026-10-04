@@ -50,6 +50,24 @@ func (e *PhaseConflictError) Error() string {
 	)
 }
 
+// MiddlewarePhaseOutsideRecoveryError reports a middleware placed before
+// PhaseRecover. The Server's panic boundary occupies PhaseRecover and is pinned
+// outermost there, so an earlier phase would run outside it -- a panic in that
+// middleware's own code would escape every ordered stage, which is the gap the
+// boundary exists to close. Rejecting the phase at startup is what makes
+// "outermost" true rather than approximately true.
+type MiddlewarePhaseOutsideRecoveryError struct {
+	Identity plugin.Identity
+	Phase    Phase
+}
+
+func (e *MiddlewarePhaseOutsideRecoveryError) Error() string {
+	return fmt.Sprintf(
+		"xbc: middleware %s declares phase %s, outside the Server's panic boundary at %s; no middleware may sit where a panic escapes every ordered stage",
+		e.Identity, e.Phase, PhaseRecover,
+	)
+}
+
 // DuplicateMiddlewareIdentityError reports two contributions attributed to the
 // same producer. Plugin Identity is the complete middleware identity, so there
 // is no name field available to disambiguate this condition.
@@ -76,10 +94,17 @@ type middlewareAfterPin struct {
 type middlewareOrderOption func(*middlewareOrderOptions)
 
 // pinMiddlewareOutermost pins one exact middleware identity before every other
-// entry in its phase. Web uses it for the two stages the Server assembles
-// itself -- the error boundary and the authentication middleware -- so the
-// target is a framework-owned Identity rather than a contributed key that might
-// resolve to several instances or to nothing.
+// entry in its phase. Web uses it for the three stages the Server assembles
+// itself -- the panic boundary, the error boundary, and the authentication
+// middleware -- so the target is a framework-owned Identity rather than a
+// contributed key that might resolve to several instances or to nothing.
+//
+// The pin orders within the target's own phase only. That makes the panic
+// boundary outermost of the whole chain because PhaseRecover is the lowest
+// phase any middleware may declare, enforced in orderMiddlewares below; for
+// the error and authentication stages the pin buys the same guarantee one
+// phase at a time -- outermost among their phase's entries, with earlier
+// phases outside them by the hard phase boundary.
 func pinMiddlewareOutermost(identity plugin.Identity) middlewareOrderOption {
 	return func(options *middlewareOrderOptions) {
 		options.outermost = append(options.outermost, identity)
@@ -151,9 +176,16 @@ func orderMiddlewares(
 		if _, duplicate := byIdentity[id]; duplicate {
 			return nil, nil, &DuplicateMiddlewareIdentityError{Identity: entry.Identity}
 		}
+		order := entry.Value.Order()
+		if order.Phase < PhaseRecover {
+			return nil, nil, &MiddlewarePhaseOutsideRecoveryError{
+				Identity: entry.Identity,
+				Phase:    order.Phase,
+			}
+		}
 		nodes[i] = middlewareNode{
 			entry: entry,
-			order: entry.Value.Order(),
+			order: order,
 			id:    id,
 		}
 		byIdentity[id] = &nodes[i]

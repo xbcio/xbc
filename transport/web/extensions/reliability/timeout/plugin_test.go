@@ -279,7 +279,7 @@ func TestAbortedRequestStillCommitsTheBufferedStatus(t *testing.T) {
 // observedSize checks below read c.Writer().Written()/Size() while the wrapper
 // is still installed, which only report the write once Write has set
 // w.written -- the same commit-state guard transport/web/problem.go,
-// errors.go, extensions/response/biz and extensions/reliability/recovery rely
+// errors.go, extensions/response/biz, and transport/web's own panic boundary
 // on to avoid writing a response twice.
 func TestWriteBuffersBodyAndDeferredHeaders(t *testing.T) {
 	p := pluginFor(t, Config{Duration: time.Second})

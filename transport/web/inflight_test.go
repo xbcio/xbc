@@ -266,10 +266,13 @@ func TestInFlightPressureLeavesNoGoroutineBehind(t *testing.T) {
 }
 
 // TestInFlightSlotIsReleasedWhenTheHandlerPanics pins release on the panic path.
-// The panic boundary is downstream of the gate -- PhaseRecover is a middleware
-// -- so the gate is the outermost frame a panic unwinds through, and a slot lost
-// there would make the process narrower with every panic until it refused
-// everything.
+// The gate is the outermost frame in the chain -- it precedes even the
+// Server-assembled panic boundary -- so release must happen through the gate's
+// own defer rather than depend on anything downstream recovering first. The
+// panic boundary now recovers the panic itself and renders a 500, which is the
+// behavior this test used to be unable to exercise when recovery was an opt-in
+// plugin newPingServer did not install; what it still must prove is that the
+// slot comes back regardless.
 func TestInFlightSlotIsReleasedWhenTheHandlerPanics(t *testing.T) {
 	cfg := web.DefaultConfig()
 	cfg.Addr = "127.0.0.1:0"
@@ -288,9 +291,10 @@ func TestInFlightSlotIsReleasedWhenTheHandlerPanics(t *testing.T) {
 	require.NoError(t, server.Start(ctx))
 	engine := testEngineOf(t, server)
 
-	assert.Panics(t, func() {
-		engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/boom", nil))
-	}, "the panic must reach the caller: no middleware sits outside the gate to recover it")
+	boomResponse := httptest.NewRecorder()
+	engine.ServeHTTP(boomResponse, httptest.NewRequest(http.MethodGet, "/boom", nil))
+	assert.Equal(t, http.StatusInternalServerError, boomResponse.Code,
+		"the Server-assembled panic boundary recovers the panic and renders a safe 500")
 
 	// /ping is admitted only if the panicking request returned its slot. With a
 	// ceiling of one there is no other slot it could have used.

@@ -15,12 +15,13 @@ import "net/http"
 // twice. Only the writer the request is currently writing through knows that.
 //
 // All three of them have production call sites through this interface.
-// Written gates the duplicate-write guards in the biz, recovery, and timeout
-// middleware; biz reads it before rendering an envelope and then writes the
-// payload through the embedded http.ResponseWriter. Status and Size are what
-// the observability middleware (metrics, tracing, accesslog, auditlog) records
-// for a finished request, so narrowing either one breaks a byte count or a
-// status label that ships today.
+// Written gates the duplicate-write guards in the biz and timeout middleware
+// and in the Server's own panic boundary; biz reads it before rendering an
+// envelope and then writes the payload through the embedded
+// http.ResponseWriter. Status and Size are what the observability middleware
+// (metrics, tracing, accesslog, auditlog) records for a finished request, so
+// narrowing either one breaks a byte count or a status label that ships
+// today.
 //
 // problem.go's duplicate-write guard reads Written through this interface via
 // Ctx.Writer, and so does the adapter that drains an engine's own error

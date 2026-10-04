@@ -140,21 +140,24 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		},
 	}
 
-	// The framework's error boundary and authentication middleware are
-	// assembled here rather than selected as plugins. Both are stages the
-	// ordering pins below make required, and a required stage must not be
-	// something a composition root can omit or an operator can disable: without
-	// the boundary every contributed ErrorMapper is unreachable, and without
-	// authentication every route is served unauthenticated even though
-	// web.security defaults to deny. Enforcing web.security is additionally
-	// this Definition's own configuration section, which has exactly one owning
-	// plugin. Both still enter the ordering graph under their canonical keys,
-	// so the pins resolve against real entries. Those keys are therefore
-	// reserved: a contributed middleware claiming one is rejected by rule,
-	// before it can surface as a duplicate identity.
+	// The framework's panic boundary, error boundary, and authentication
+	// middleware are assembled here rather than selected as plugins. All
+	// three are stages the ordering pins below make required, and a required
+	// stage must not be something a composition root can omit or an operator
+	// can disable: without the panic boundary a handler panic escapes every
+	// ordered middleware, without the error boundary every contributed
+	// ErrorMapper is unreachable, and without authentication every route is
+	// served unauthenticated even though web.security defaults to deny.
+	// Enforcing web.security is additionally this Definition's own
+	// configuration section, which has exactly one owning plugin. All three
+	// still enter the ordering graph under their canonical keys, so the pins
+	// resolve against real entries. Those keys are therefore reserved: a
+	// contributed middleware claiming one is rejected by rule, before it can
+	// surface as a duplicate identity.
 	if err := rejectReservedMiddlewareIdentities(s.middlewares); err != nil {
 		return err
 	}
+	panicGuard := newPanicBoundary(logger, cfg.Recovery.Stack)
 	boundary, err := newErrorBoundary(s.mappers)
 	if err != nil {
 		return err
@@ -165,6 +168,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	}
 	middlewares := append(
 		[]plugin.Entry[Middleware]{
+			{Identity: panicBoundaryIdentity, Value: panicGuard},
 			{Identity: errorBoundaryIdentity, Value: boundary},
 			{Identity: authenticationIdentity, Value: authenticator},
 		},
@@ -172,6 +176,11 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	)
 
 	orderOptions := []middlewareOrderOption{
+		// The panic boundary must wrap every other PhaseRecover middleware --
+		// there should be none, since the phase is reserved for this single
+		// framework-owned stage, but the pin still asserts it rather than
+		// assuming it.
+		pinMiddlewareOutermost(panicBoundaryIdentity),
 		// The outer boundary must wrap every focused PhaseError middleware, so
 		// an unknown error still reaches Web's safe non-leaking fallbacks.
 		pinMiddlewareOutermost(errorBoundaryIdentity),

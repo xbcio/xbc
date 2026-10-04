@@ -46,7 +46,9 @@ func main() {
 
 Use `xbc.New` and `App.Execute` instead when the process is not XBC's to own -- when the application must supply its own parent context, or when XBC is embedded in a larger process that already handles signals and decides the exit code. That pair touches none of the facilities listed above, which then belong to the caller.
 
-`prelude.Bundle()` provides the production Web baseline: the Web server, recovery, request IDs, access logging, security headers, compression, cooperative timeouts, and health probes. The Web runtime is engine-neutral, so the HTTP engine is a separate choice: `ginengine.Bundle()` from `github.com/xbcio/xbc/transport/web/engines/gin` supplies it, and exactly one engine Bundle must be selected. The response envelope, CORS policy, generated Swagger UI, and application-owned Greeter remain explicit choices.
+`prelude.Bundle()` provides the production Web baseline: the Web server, request IDs, access logging, security headers, compression, cooperative timeouts, and health probes. The Web runtime is engine-neutral, so the HTTP engine is a separate choice: `ginengine.Bundle()` from `github.com/xbcio/xbc/transport/web/engines/gin` supplies it, and exactly one engine Bundle must be selected. The response envelope, CORS policy, generated Swagger UI, and application-owned Greeter remain explicit choices.
+
+The panic boundary is not part of this list because it is no longer a plugin: the Server assembles it unconditionally for every `web.Bundle()` composition, alongside the process-level in-flight gate, the request body ceiling, and the error resolver. It sits outermost among the ordered middleware -- outside even `prelude`'s own entries -- but still inside those three framework-owned stages, so its guarantee covers middleware and routing, not `net/http` itself or the gate ahead of it. See `web.recovery` under [Configuration](#configuration) below.
 
 `async.Bundle()` adds a drained background task pool: XBC's analogue of a managed task executor. `greeter`'s `createGreeting` handler uses it to fire a best-effort "welcome" follow-up through the process-wide `async.Spawn` after building its response, without making the request wait on it; see [`examples/quickstart/internal/greeter/greeter.go`](../examples/quickstart/internal/greeter/greeter.go) and the `async` package documentation for why the task outlives the request's own context and is still drained on shutdown.
 
@@ -89,6 +91,24 @@ The runnable baseline is [`examples/quickstart/application.yml`](../examples/qui
 - `app` is a free-form namespace for application settings.
 
 Only Bundles selected at the composition root can own configuration sections. A misspelled section, an unknown field in a typed section, an unknown key under a plugin that declares no configuration of its own and therefore accepts only `enabled`, or configuration for an unselected plugin fails startup instead of being ignored.
+
+**Breaking change:** the panic boundary moved from the optional `recovery` plugin into the Web server itself. `plugins.recovery.stack` is now `web.recovery.stack`, owned by the `web` section like `web.security` and `web.max_in_flight`. A configuration file still carrying `plugins.recovery` fails startup rather than silently keeping the old behavior -- strict decoding rejects it as an orphaned section once the plugin is gone. Migrate by moving the `stack` key:
+
+```yaml
+# before
+plugins:
+  recovery:
+    stack: true
+
+# after
+web:
+  recovery:
+    stack: true
+```
+
+There is no enable/disable switch for it: the boundary is assembled unconditionally for every `web.Bundle()` composition, so there is no `enabled` key to carry over.
+
+The boundary's log lines also change owner: they were emitted by the `recovery` plugin and are now emitted by the `web` plugin, so an alert or filter keyed on `plugin=recovery` must be repointed at `plugin=web`. The messages themselves are unchanged.
 
 The example sets `web.shutdown.pre_drain_delay: 2s` so `/readyz` can return 503 after runtime cancellation before HTTP draining begins. The transport default is `0s`; a nonzero deployment-specific interval consumes the shared shutdown budget and still accepts ordinary traffic, so it is a propagation opportunity rather than acknowledgement that a load balancer has withdrawn the instance.
 

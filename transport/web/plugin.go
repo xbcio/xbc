@@ -11,16 +11,23 @@ const (
 
 	// ErrorBoundaryKey is the canonical producer identity of the outermost
 	// error boundary. The Server assembles that boundary itself from the
-	// collected ErrorMapper plugins, so this key is reserved and no Definition
-	// may claim it; see ReservedMiddlewareKeys. Ordering against it inside
-	// PhaseError is the supported use of the key.
+	// collected ErrorMapper plugins rather than accepting it as a plugin, so
+	// the key is reserved for that stage; see ReservedMiddlewareKeys for what
+	// the reservation enforces. Ordering against it inside PhaseError is the
+	// supported use of the key.
 	ErrorBoundaryKey plugin.Key = "web-error-boundary"
 
+	// PanicBoundaryKey is the canonical producer identity of the outermost
+	// panic boundary, which the Server assembles itself rather than selecting
+	// it as a plugin. The key is reserved for that stage; see
+	// ReservedMiddlewareKeys for what the reservation enforces and why the
+	// stage cannot be a Definition.
+	PanicBoundaryKey plugin.Key = "web-panic-boundary"
+
 	// AuthenticationMiddlewareKey is the canonical producer identity expected
-	// for the Web authentication middleware. RequiresPrincipal entries are
-	// framework-pinned after this key. The Server assembles that middleware
-	// itself, so this key is reserved and no Definition may claim it; see
-	// ReservedMiddlewareKeys.
+	// for the Web authentication middleware, which the Server assembles
+	// itself. RequiresPrincipal entries are framework-pinned after this key.
+	// The key is reserved for that stage; see ReservedMiddlewareKeys.
 	AuthenticationMiddlewareKey plugin.Key = "authentication-middleware"
 
 	// ConfigPath is the canonical configuration section for the HTTP server.
@@ -32,13 +39,14 @@ var (
 	routeInput      = plugin.Collect[RouteContributor]()
 	listenerInput   = plugin.Collect[RouteCatalogListener]()
 	// The Server, not a separate Definition, assembles the outermost error
-	// boundary and the built-in authentication middleware. Both are stages a
-	// framework-owned ordering pin makes required, and a required stage cannot
-	// be an opt-in plugin: omitting or disabling it would either serve every
-	// route unauthenticated or leave every contributed ErrorMapper unreachable.
-	// Enforcing web.security is additionally this Definition's own config
-	// section, which has exactly one owning plugin. Both keys are reserved
-	// accordingly; see reserved_middleware.go.
+	// boundary, the outermost panic boundary, and the built-in authentication
+	// middleware. All three are stages a framework-owned ordering pin makes
+	// required, and a required stage cannot be an opt-in plugin: omitting or
+	// disabling one would serve every route unauthenticated, leave every
+	// contributed ErrorMapper unreachable, or let a handler panic escape every
+	// ordered middleware. Enforcing web.security is additionally this
+	// Definition's own config section, which has exactly one owning plugin.
+	// All three keys are reserved accordingly; see reserved_middleware.go.
 	errorMapperInput   = plugin.Collect[ErrorMapper]()
 	authenticatorInput = plugin.Collect[authentication.Authenticator]()
 	extractorInput     = plugin.Collect[CredentialExtractor]()
@@ -98,7 +106,8 @@ func New(factory EngineFactory) *Server {
 // Definition returns the canonical HTTP server declaration handle.
 func Definition() plugin.Definition { return definition }
 
-// Bundle returns Web's HTTP server. The error boundary and the authentication
-// middleware travel inside it rather than as separate Definitions, because the
-// Server assembles both; see ReservedMiddlewareKeys.
+// Bundle returns Web's HTTP server. The error boundary, the panic boundary,
+// and the authentication middleware travel inside it rather than as separate
+// Definitions, because the Server assembles all three; see
+// ReservedMiddlewareKeys.
 func Bundle() plugin.Bundle { return bundle }

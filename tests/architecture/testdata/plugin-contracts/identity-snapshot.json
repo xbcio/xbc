@@ -241,14 +241,6 @@
       ]
     },
     {
-      "key": "recovery",
-      "config_path": "plugins.recovery",
-      "cardinality": "single",
-      "contracts": [
-        "github.com/xbcio/xbc/transport/web.Middleware"
-      ]
-    },
-    {
       "key": "redis",
       "config_path": "plugins.redis",
       "cardinality": "multiple",
@@ -347,6 +339,7 @@
   ],
   "reserved_keys": [
     "authentication-middleware",
-    "web-error-boundary"
+    "web-error-boundary",
+    "web-panic-boundary"
   ]
 }

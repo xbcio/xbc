@@ -2,8 +2,8 @@
 // side-effect-free composition data. It is a pure aggregate: it declares no
 // Definition and creates no runtime unit of its own.
 //
-// Its Bundle explicitly combines member Bundles for the HTTP server, recovery,
-// request IDs, structured access logging, security headers, compression,
+// Its Bundle explicitly combines member Bundles for the HTTP server, request
+// IDs, structured access logging, security headers, compression,
 // cooperative request timeouts, and health probes. Every Definition contributed
 // by those members remains independent: web.Bundle(), for example, contributes
 // both the primary HTTP server Definition and its independently ordered error

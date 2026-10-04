@@ -19,8 +19,8 @@
 //
 // Web's Bundle contains the server, but no engine: exactly one engine Bundle
 // must be selected alongside it, and transport/web/engines/gin is the one this
-// repository ships. The prelude adds the lightweight production baseline: recovery,
-// request IDs, access logging, security headers, gzip, cooperative request
+// repository ships. The prelude adds the lightweight production baseline: request
+// IDs, access logging, security headers, gzip, cooperative request
 // timeouts, and health probes. Business response envelopes, CORS,
 // authentication, authorization, persistence, telemetry exporters, and API
 // documentation remain explicit Bundles because they select application policy
@@ -65,22 +65,32 @@
 // implementing authentication.RequiresPrincipal is framework-pinned after the
 // canonical authentication middleware.
 //
-// The Server assembles two middleware stages itself rather than selecting them
-// as plugins: the outermost error boundary and the authentication middleware.
-// A framework-owned ordering pin makes each one required, and a required stage
-// must not be omittable at the composition root or disableable through
-// plugins.<key>.enabled -- without the boundary every contributed ErrorMapper is
-// unreachable, and without authentication every route is served unauthenticated
-// even though web.security defaults to deny. Their identities are therefore
-// reserved -- see ReservedMiddlewareKeys -- and a contributed Middleware
-// claiming a reserved key fails startup. Ordering against them, with
-// Require(AuthenticationMiddlewareKey) or by sitting inside PhaseError, is the
-// supported use of those keys.
+// The Server assembles three middleware stages itself rather than selecting
+// them as plugins: the outermost panic boundary, the outermost error
+// boundary, and the authentication middleware. A framework-owned ordering pin
+// makes each one required, and a required stage must not be omittable at the
+// composition root or disableable through plugins.<key>.enabled -- without the
+// panic boundary a handler panic escapes every ordered middleware and reaches
+// only net/http's own per-connection recover, which closes the connection
+// without a response; without the error boundary every contributed
+// ErrorMapper is unreachable; and without authentication every route is
+// served unauthenticated even though web.security defaults to deny. Their
+// identities are therefore reserved -- see ReservedMiddlewareKeys -- and a
+// contributed Middleware claiming a reserved key fails startup. Ordering
+// against them, with Require(AuthenticationMiddlewareKey) or by sitting
+// inside PhaseError, is the supported use of those keys.
 //
 // Ahead of all of that, and outside the middleware chain entirely, sits the
 // in-flight admission gate described under Configuration. It is not a
 // Middleware and cannot be ordered against: an admission ceiling that an
-// application could leave out of the chain would not be a ceiling.
+// application could leave out of the chain would not be a ceiling. The
+// in-flight gate, the request-body cap, and the error resolver attachment are
+// the three framework stages that precede even the panic boundary; a panic
+// inside one of them is not recovered by PhaseRecover, because PhaseRecover is
+// a middleware and those three run before any middleware at all. That is a
+// narrower exposure than it may read as: none of the three runs application
+// or plugin code, so a panic there is a framework bug rather than a surface
+// this boundary exists to cover.
 //
 // ErrorMapper Plugins declare a separate ErrorOrder. The Server collects and
 // sorts all mapper entries into that boundary, which is pinned outermost in
@@ -129,6 +139,8 @@
 //	  max_request_body_bytes: 10485760
 //	  max_multipart_memory: 8388608
 //	  trusted_proxies: []
+//	  recovery:
+//	    stack: true
 //
 // MaxRequestBodyBytes is a hard limit for the complete request body.
 // MaxMultipartMemory only controls how much memory multipart parsing may use

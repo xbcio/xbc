@@ -40,7 +40,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		c.SetWriter(original)
 		if recovered != nil {
 			// Both body and handler-owned headers are isolated until finish, so
-			// the outer recovery boundary can still emit a clean response.
+			// the outer panic boundary can still emit a clean response.
 			panic(recovered)
 		}
 		if err := writer.finish(c.Request(), *cfg); err != nil {

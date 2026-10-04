@@ -37,7 +37,6 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/health"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit"
-	"github.com/xbcio/xbc/transport/web/extensions/reliability/recovery"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/timeout"
 	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
 	"github.com/xbcio/xbc/transport/web/extensions/response/gzip"
@@ -102,7 +101,6 @@ var bundleProviders = []func() plugin.Bundle{
 	tracing.Bundle,
 	pprof.Bundle,
 	ratelimit.Bundle,
-	recovery.Bundle,
 	requestid.Bundle,
 	rbac.Bundle,
 	securityheaders.Bundle,

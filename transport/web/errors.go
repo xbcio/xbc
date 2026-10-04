@@ -48,9 +48,9 @@ func (ErrorMapperFunc) ErrorOrder() ErrorOrder { return ErrorOrder{} }
 // mappers in outer-to-inner order, so application plugins can add focused
 // converters without replacing Web's safe built-in fallbacks.
 //
-// OnError handles ordinary errors only. Panics remain the responsibility of a
-// recovery middleware, which can safely account for partially written
-// responses and broken connections.
+// OnError handles ordinary errors only. Panics remain the responsibility of
+// the Server's panic boundary (PhaseRecover), which can safely account for
+// partially written responses and broken connections.
 //
 // Errors an engine-native middleware reports through the engine's own error
 // accumulator instead of Handler's return path are drained by the adapter that

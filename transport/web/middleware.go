@@ -12,11 +12,12 @@ import (
 type Phase int
 
 // Normal extension phases are spaced 100 apart. PhaseError is the centralized
-// error boundary between observation and request policy. A middleware that
-// genuinely needs to sit outside PhaseRecover can use PhaseRecover-1, but then
-// runs outside panic recovery.
+// error boundary between observation and request policy. PhaseRecover is the
+// floor, not a convention: the Server assembles its panic boundary there, and a
+// contributed middleware declaring a lower phase is rejected at startup, so
+// nothing can run where a panic escapes every ordered stage.
 const (
-	PhaseRecover  Phase = 0   // outermost: panic backstop
+	PhaseRecover  Phase = 0   // outermost: panic backstop, assembled by the Server; see panic_boundary.go
 	PhaseObserve  Phase = 100 // tracing, metrics, access log
 	PhaseError    Phase = 150 // error boundary and focused error mapping
 	PhaseSecurity Phase = 200 // cors, rate limiting, replay defense

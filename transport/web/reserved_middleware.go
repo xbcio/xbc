@@ -32,6 +32,18 @@ import (
 // web.Bundle() -- while disabling it reported an unsatisfiable internal
 // ordering pin rather than the rule it broke.
 //
+// The panic boundary is the outermost PhaseRecover middleware, and used to be
+// exactly that kind of Definition: transport/web/extensions/reliability/recovery,
+// selected only by convention inside prelude.Bundle(). A composition root that
+// chose web.Bundle() plus an engine Bundle without that extension got no panic
+// recovery at all -- a handler panic reached net/http's own per-connection
+// recover, which closes the connection without a response, without an access
+// log entry, and without a trace span, rather than becoming the 500 Problem
+// Detail PhaseRecover's own doc comment already promised. Collapsing it into
+// an assembled stage removes that silent gap the same way the error boundary's
+// collapse removed its own: as an opt-in Definition, leaving it out produced
+// no error at all, because nothing required its presence.
+//
 // What the anchors are for is ordering: a contributed middleware declares
 // After: Require(AuthenticationMiddlewareKey) so authorization always observes a
 // published Principal, and a focused error middleware sits inside
@@ -42,6 +54,7 @@ import (
 var reservedMiddlewareKeys = map[plugin.Key]string{
 	AuthenticationMiddlewareKey: "the Server assembles the authentication middleware from its own web.security section",
 	ErrorBoundaryKey:            "the Server assembles the outermost error boundary from the collected ErrorMapper plugins",
+	PanicBoundaryKey:            "the Server assembles the outermost panic boundary from its own web.recovery section",
 }
 
 // ReservedMiddlewareIdentityError reports a contributed middleware that claims
@@ -59,9 +72,14 @@ func (e *ReservedMiddlewareIdentityError) Error() string {
 }
 
 // ReservedMiddlewareKeys returns the sorted plugin keys the Web transport
-// reserves for middleware its Server assembles itself. No Definition may claim
-// one, and no plugin may contribute a Middleware under one; they exist so
-// contributed middleware can order itself against a framework-owned stage.
+// reserves for middleware its Server assembles itself. They exist so
+// contributed middleware can order itself against a framework-owned stage, and
+// the reservation is enforced in the two places a claim can be seen:
+// contributing a Middleware under one of these keys fails server assembly with
+// ReservedMiddlewareIdentityError, and a Definition in this workspace claiming
+// one is rejected by the plugin-snapshot guard. A Definition declared outside
+// this repository is not observable from here, which is why the keys are
+// exported and documented rather than only checked.
 func ReservedMiddlewareKeys() []plugin.Key {
 	keys := make([]plugin.Key, 0, len(reservedMiddlewareKeys))
 	for key := range reservedMiddlewareKeys {

@@ -50,7 +50,6 @@ var archWebPackageExtensionPaths = []string{
 	"response/gzip",
 	"reliability/health",
 	"reliability/ratelimit",
-	"reliability/recovery",
 	"reliability/timeout",
 	"security/cors",
 	"security/securityheaders",

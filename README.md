@@ -51,7 +51,7 @@ xbc/
 │       │   ├── observability/{accesslog,auditlog,metrics,pprof,requestid,tracing}/
 │       │   ├── response/{biz,gzip}/
 │       │   ├── reliability/{health,idempotency,
-│       │   │   ratelimit,recovery,timeout}/
+│       │   │   ratelimit,timeout}/
 │       │   └── security/{cors,securityheaders}/
 │       └── prelude/                     # Side-effect-free production baseline Bundle
 ├── go.mod                               # Core module manifest

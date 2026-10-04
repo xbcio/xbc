@@ -874,9 +874,9 @@ unowned             plugins=14
     selected at /Users/dev/xbc/transport/web/engines/gin/bundle.go:30
     no declared inputs
   web
-    selected at /Users/dev/xbc/transport/web/plugin.go:87
+    selected at /Users/dev/xbc/transport/web/plugin.go:95
     requires one       web.EngineFactory                      from web-engine-gin
-    requires many      web.Middleware                         from accesslog, biz, cors, gzip, recovery, requestid, securityheaders, timeout
+    requires many      web.Middleware                         from accesslog, biz, cors, gzip, requestid, securityheaders, timeout
     requires many      web.ErrorMapper                        unsatisfied: no enabled plugin exports it
     requires many      web.RouteContributor                   from greeter, health-http, swag
     requires many      web.RouteCatalogListener               from swag

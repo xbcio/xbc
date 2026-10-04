@@ -136,6 +136,11 @@ web:
     # here, so a route that did fall through would fail startup rather than
     # silently serve.
     default: deny
+  # Outermost panic boundary. The server assembles it unconditionally for every
+  # web.Bundle() composition, so there is no enable/disable key here -- only how
+  # it logs.
+  recovery:
+    stack: true
 
 # Declared workloads, one section each. Two keys are accepted here:
 #
@@ -176,9 +181,8 @@ plugins:
   # turns each one on. They are configured here rather than left off so that the
   # only row that differs between this process's doctor output and another
   # role's is the workload row -- which is the comparison the example is for.
-  recovery:
-    stack: true
-
+  # The panic boundary is configured separately, at web.recovery above: the
+  # server assembles it unconditionally, so it is not one of these plugins.
   requestid:
     header: "X-Request-ID"
     trust_incoming: false

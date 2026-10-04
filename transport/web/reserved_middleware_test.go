@@ -17,16 +17,42 @@ import (
 // only reviewable if the set itself is asserted somewhere.
 func TestReservedMiddlewareKeysNameTheFrameworkAssembledStages(t *testing.T) {
 	assert.Equal(t,
-		[]plugin.Key{web.AuthenticationMiddlewareKey, web.ErrorBoundaryKey},
+		[]plugin.Key{web.AuthenticationMiddlewareKey, web.ErrorBoundaryKey, web.PanicBoundaryKey},
 		web.ReservedMiddlewareKeys(),
 	)
 
-	// Neither key may be reachable as a Definition: the Server assembles both
-	// stages, so web.Bundle() carries the server alone.
+	// None of the three keys may be reachable as a Definition: the Server
+	// assembles all three stages, so web.Bundle() carries the server alone.
 	entries := pluginmodel.BundleEntries(pluginmodel.Bundle(web.Bundle()))
 	require.Len(t, entries, 1, "web.Bundle() must contain only the server Definition")
 	require.True(t, pluginmodel.SameDefinition(
 		entries[0].Definition, pluginmodel.Definition(web.Definition())))
+}
+
+// TestStartRejectsMiddlewareBelowPhaseRecover pins the floor that makes
+// "outermost" true rather than approximately true. Phases sort ascending and
+// ordering pins only reach within one phase, so a contributed middleware at
+// PhaseRecover-1 would silently run outside the Server's panic boundary -- and
+// a panic in its own code would escape every ordered stage. The phase is
+// therefore refused at startup instead of documented as a hazard.
+func TestStartRejectsMiddlewareBelowPhaseRecover(t *testing.T) {
+	server, ctx, _ := newPingServer(t, web.DefaultConfig(), serverInputs{
+		middlewares: []plugin.Entry[web.Middleware]{{
+			Identity: plugin.Identity{Plugin: "outside-recovery"},
+			Value: fakeMiddleware{
+				handler: func(_ context.Context, c *web.Ctx) error { return nil },
+				order:   web.Order{Phase: web.PhaseRecover - 1},
+			},
+		}},
+	})
+
+	err := server.Start(ctx)
+	require.Error(t, err)
+	var phaseErr *web.MiddlewarePhaseOutsideRecoveryError
+	require.ErrorAs(t, err, &phaseErr)
+	assert.Equal(t, plugin.Key("outside-recovery"), phaseErr.Identity.Plugin)
+	assert.Equal(t, web.PhaseRecover-1, phaseErr.Phase)
+	assert.Contains(t, err.Error(), "panic boundary", "the error must name the guarantee the phase would break")
 }
 
 // TestStartRejectsAContributedMiddlewareClaimingAReservedIdentity is the guard

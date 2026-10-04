@@ -126,6 +126,13 @@ web:
       - match: "/api/v1/docs/**"
         permit: true
 
+  # Outermost panic boundary. The server assembles it unconditionally for every
+  # web.Bundle() composition, so there is no enable/disable key here -- only how
+  # it logs. Sensitive request data and the panic value itself are never
+  # included in its structured log record.
+  recovery:
+    stack: true
+
 # This composition declares no workload, and that is why there is no
 # `workloads:` block above. The workload root is declared only when at least one
 # workload is declared in Go, so an always-present root would claim a prefix
@@ -173,11 +180,8 @@ plugins:
   # biz.Bundle() is the complete opt-in for the success envelope and the
   # biz.onerror middleware. Web's outer error boundary has no section at all:
   # the server assembles it, so there is nothing here to configure or disable.
-
-  # Outermost panic boundary; sensitive request data and panic values are not
-  # included in its structured log record.
-  recovery:
-    stack: true
+  # The panic boundary is assembled the same way; its only configuration is
+  # web.recovery above.
 
   requestid:
     header: "X-Request-ID"

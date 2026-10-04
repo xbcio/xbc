@@ -142,8 +142,9 @@ func (p *policy) handle(c *web.Ctx) {
 	// code, it does not itself flip Written() to true (that happens on the
 	// underlying writer's first Write, via WriteHeaderNow). Writing a nil body
 	// commits the pending 204 immediately, so the shared "don't double-write
-	// the response" guards in biz, recovery, and problem observe Written() ==
-	// true through the same ResponseWriter this middleware just wrote to. See
+	// the response" guards in biz, problem, and the Server's panic boundary
+	// observe Written() == true through the same ResponseWriter this middleware
+	// just wrote to. See
 	// TestPreflightAbortIsObservableAsWrittenByOuterMiddleware.
 	c.Status(http.StatusNoContent)
 	_, _ = c.Writer().Write(nil)

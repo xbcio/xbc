@@ -468,13 +468,6 @@
       }
     },
     {
-      "key": "recovery",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/reliability/recovery.Config",
-      "defaults": {
-        "Stack": true
-      }
-    },
-    {
       "key": "redis",
       "config_type": "github.com/xbcio/xbc/extensions/storage/redis.Config",
       "defaults": {
@@ -646,6 +639,9 @@
         "Security": {
           "Default": "deny",
           "Policies": null
+        },
+        "Recovery": {
+          "Stack": true
         }
       }
     },

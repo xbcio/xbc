@@ -273,8 +273,8 @@
 //
 //	var bundle = plugin.CombineBundles(
 //		web.Bundle(),
-//		recovery.Bundle(),
 //		requestid.Bundle(),
+//		accesslog.Bundle(),
 //	)
 //
 // Both constructors only copy data: importing a package that calls them,

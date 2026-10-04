@@ -63,6 +63,7 @@ type Config struct {
 	TrustedProxies      []string       `yaml:"trusted_proxies"                          validate:"dive,required"`
 	Shutdown            ShutdownConfig `yaml:"shutdown"`
 	Security            SecurityConfig `yaml:"security"`
+	Recovery            RecoveryConfig `yaml:"recovery"`
 }
 
 // ShutdownConfig controls Web-owned behavior after runtime cancellation. The
@@ -75,6 +76,22 @@ type ShutdownConfig struct {
 	// opportunity, not confirmation that a load balancer has removed the
 	// instance, and normal application routes remain available during it.
 	PreDrainDelay time.Duration `yaml:"pre_drain_delay" default:"0s" validate:"gte=0"`
+}
+
+// RecoveryConfig controls the Server-assembled panic boundary (PhaseRecover).
+// There is deliberately no enable/disable switch: the boundary is a required
+// stage, not an opt-in one, and the whole point of collapsing it from a plugin
+// into this section is that a composition root can no longer leave it out.
+//
+// This is a value, not a pointer, field. A pointer sub-struct silently loses
+// both environment-variable overrides and default-tag filling in this
+// repository's configuration binder, which is a known trap -- see
+// SecurityConfig and ShutdownConfig for the same shape.
+type RecoveryConfig struct {
+	// Stack includes a runtime stack in the panic boundary's log entry. Panic
+	// values, request headers, query strings, and bodies are never logged
+	// regardless of this setting.
+	Stack bool `yaml:"stack" default:"true"`
 }
 
 // DefaultConfig returns the production-safe defaults used by New and by the
@@ -92,6 +109,7 @@ func DefaultConfig() Config {
 		MaxMultipartMemory:  defaultMaxMultipartMemory,
 		Shutdown:            ShutdownConfig{PreDrainDelay: 0},
 		Security:            SecurityConfig{Default: SecurityDeny},
+		Recovery:            RecoveryConfig{Stack: true},
 	}
 }
 

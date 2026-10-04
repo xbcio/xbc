@@ -47,7 +47,6 @@ var packageExtensionPrefixes = []string{
 	"github.com/xbcio/xbc/transport/web/extensions/response/gzip",
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/health",
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit",
-	"github.com/xbcio/xbc/transport/web/extensions/reliability/recovery",
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/timeout",
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors",
 	"github.com/xbcio/xbc/transport/web/extensions/security/securityheaders",
