@@ -215,6 +215,12 @@ func (a *App) requestStop(reason string) bool {
 	a.stopReason = reason
 	cancel := a.cancelExec
 	tasks := a.tasks
+	// This is where admission usually closes, under the same lock that
+	// records the stop, so a task can never be admitted after the stop is
+	// observable. unwind (shutdown.go) also closes admission, because a stop
+	// arriving before the task runtime is published finds no runtime here and
+	// this call is then a no-op; see its comment. Do not move it below the
+	// unlock without updating that.
 	if tasks != nil {
 		tasks.closeAdmission()
 	}

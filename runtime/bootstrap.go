@@ -78,8 +78,16 @@ func (a *App) bootstrap(cmd command) error {
 	}
 	a.env = env
 	a.settings = settings
-	a.tasks = newTaskRuntime(a.logger, a.onCritical)
-	a.tasks.configureWorkloadBudget(limits, a.workloadOf)
+	tasks := newTaskRuntime(a.logger, a.onCritical)
+	tasks.configureWorkloadBudget(limits, a.workloadOf)
+	// Published under stateMu, not before: the parent-context AfterFunc
+	// registered at the top of execute can run requestStop on another
+	// goroutine while bootstrap is still here, and requestStop reads a.tasks
+	// under this same lock. Configuring the runtime before publishing it keeps
+	// that reader from observing a half-built value.
+	a.stateMu.Lock()
+	a.tasks = tasks
+	a.stateMu.Unlock()
 	return nil
 }
 

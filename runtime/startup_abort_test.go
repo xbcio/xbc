@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/config"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -172,4 +173,37 @@ func TestStopDuringTrafficPreparationAbortsTheRemainingOpensAndUnwinds(t *testin
 		"the consumer opened traffic after a stop was already requested: %v", events)
 	assert.Equal(t, []string{"stop:abort-consumer", "stop:abort-provider"}, events[len(events)-2:])
 	assertChannelOpen(t, app.trafficGate, "the traffic gate opened during an aborted startup")
+}
+
+// TestUnwindClosesAdmissionWhenTheStopPrecedesTheTaskRuntime pins the
+// invariant that unwinding never leaves task admission open, in the one case
+// requestStop cannot establish by itself.
+//
+// A stop that arrives while bootstrap is still running -- a parent-context
+// cancellation is the production case -- reaches requestStop before bootstrap
+// has published the task runtime, so requestStop finds a.tasks nil and closes
+// nothing. Bootstrap then publishes the runtime, startup's own check notices
+// the pending stop, and abort unwinds: unwind's own closeAdmission is the only
+// closer left on that path, which is why it stays there.
+//
+// The three calls below are that sequence with the middle of bootstrap's work
+// left out, which is what makes it deterministic: no goroutine and no timing
+// is involved, and the property asserted is the one the reverse walk needs --
+// after unwinding, no new managed task can be admitted.
+func TestUnwindClosesAdmissionWhenTheStopPrecedesTheTaskRuntime(t *testing.T) {
+	recorder := &readinessRecorder{}
+	app := newRuntimeTestApp(readinessDefinition(recorder, "early-stop", nil, readinessStages(recorder, "early-stop")))
+
+	app.requestStop(stopReasonSignal)
+	require.Nil(t, app.tasks, "the fixture must not have a task runtime yet, or the case under test is not exercised")
+
+	command, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix)
+	require.NoError(t, err)
+	require.NoError(t, app.bootstrap(command), "bootstrap publishes the runtime even though a stop is already pending")
+	require.NotNil(t, app.tasks)
+
+	require.NoError(t, app.unwind(stopReasonStartupFailed), "the fixture unwinds cleanly; the property under test is admission, not the walk's error")
+
+	assert.False(t, app.tasks.openStart(plugin.Identity{Plugin: "early-stop"}),
+		"unwind must close admission even though requestStop, running before the runtime existed, could not")
 }

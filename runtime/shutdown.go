@@ -39,6 +39,12 @@ func (a *App) unwind(reason string) error {
 	// to fall silent here specifically and not on the stop request.
 	a.progress.conclude()
 	a.unwindOnce.Do(func() {
+		// Unwinding must not leave admission open, and requestStop alone
+		// cannot guarantee that: a stop arriving before bootstrap publishes
+		// the task runtime finds a.tasks nil there and closes nothing, and it
+		// still reaches this closure through abort. closeAdmission is
+		// idempotent, so enforcing the invariant here costs the ordinary path
+		// -- where requestStop already closed it -- one redundant call.
 		if a.tasks != nil {
 			a.tasks.closeAdmission()
 		}
