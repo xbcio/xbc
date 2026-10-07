@@ -642,35 +642,34 @@ const archRootPackage = "github.com/xbcio/xbc"
 // their own transitive dependencies. What it catches is the subject reaching
 // for a dependency of its own -- which belongs in an implementation package.
 //
-// firstParty names the repository subtrees the subject is allowed to contain
-// beyond what bases explain: normally just its own subtree, plus any explicitly
-// justified peer. Everything else in this
-// repository is held to the same ceiling as foreign code, because a first-party
-// addition is exactly how a leaf adapter quietly grows into an orchestrator.
-func archClosureCeiling(t *testing.T, subject, owner string, firstParty []string, bases ...string) {
+// The packages the subject pattern itself matches are exempt, because a
+// package is not a dependency of itself. Reading them from the pattern rather
+// than from a caller-supplied prefix is what lets a subject that names the
+// module root (`.`) be bounded as tightly as an interior subtree: the root
+// package's own subtree path is a prefix of every package in this repository,
+// so allowing it as a subtree would allow all of them. Every other package in
+// this repository is held to the same ceiling as foreign code, because a
+// first-party addition is exactly how a leaf adapter quietly grows into an
+// orchestrator.
+func archClosureCeiling(t *testing.T, subject, owner string, bases ...string) {
 	t.Helper()
+
+	own := make(map[string]bool)
+	for _, pkg := range archGoList(t, subject) {
+		own[pkg.ImportPath] = true
+	}
+
 	allowed := make(map[string]bool)
 	for _, base := range bases {
 		for _, dep := range archDeps(t, base) {
 			allowed[dep] = true
 		}
 	}
-	exempt := func(dep string) bool {
-		for _, prefix := range firstParty {
-			if archPathAtOrBelow(dep, prefix) {
-				return true
-			}
-		}
-		return false
-	}
 	for _, dep := range archDeps(t, subject) {
-		if allowed[dep] || archIsStdlib(dep) {
+		if allowed[dep] || own[dep] || archIsStdlib(dep) {
 			continue
 		}
 		if archPathAtOrBelow(dep, archRootPackage) {
-			if exempt(dep) {
-				continue
-			}
 			t.Errorf("%s's production closure contains repository package %q, which %s does not explain; "+
 				"this subject is a leaf over its bases, so reaching further up the repository belongs in an implementation package instead",
 				owner, dep, strings.Join(bases, " or "))
@@ -688,12 +687,11 @@ func archClosureCeiling(t *testing.T, subject, owner string, firstParty []string
 // grow indefinitely. plugin depends on config and log by design, so whatever
 // those two already justify may legitimately appear here too.
 //
-// The sole first-party exemption is the Plugin framework's own subtree,
-// including model, assembly, and autoload; guard 5 above pins that the subtree
-// imports neither runtime nor an internal package.
+// The Plugin framework's own subtree -- model, assembly, and autoload -- is
+// exempt as the subject itself, not as a dependency; guard 5 above pins that
+// the subtree imports neither runtime nor an internal package.
 func TestArchPluginClosureAddsNothingBeyondConfigAndLog(t *testing.T) {
 	archClosureCeiling(t, "./plugin/...", "github.com/xbcio/xbc/plugin",
-		[]string{archRootPackage + "/plugin"},
 		"./config/...", "./log/...")
 }
 
@@ -707,8 +705,33 @@ func TestArchPluginClosureAddsNothingBeyondConfigAndLog(t *testing.T) {
 // that reached for assembly or runtime would be caught here and nowhere else.
 func TestArchAutoloadClosureIsPluginAndStdlibOnly(t *testing.T) {
 	archClosureCeiling(t, "./plugin/autoload/...", "github.com/xbcio/xbc/plugin/autoload",
-		[]string{archRootPackage + "/plugin/autoload"},
 		"./plugin")
+}
+
+// TestArchRuntimeClosureAddsNothingBeyondPluginConfigAndLog extends the same
+// ceiling to runtime, the process-execution and private command package the
+// application facade sits on. Its production closure must stay within the
+// union of plugin's, config's and log's: every dependency runtime compiles in
+// has to be owned by one of those packages -- config's koanf and log's zap are
+// the examples an application actually pays for -- so a new one fails here
+// until it is deliberately adopted by a capability package instead of being
+// pulled into every application's runtime.
+func TestArchRuntimeClosureAddsNothingBeyondPluginConfigAndLog(t *testing.T) {
+	archClosureCeiling(t, "./runtime/...", "github.com/xbcio/xbc/runtime",
+		"./plugin/...", "./config/...", "./log/...")
+}
+
+// TestArchRootPackageClosureAddsNothingBeyondRuntime keeps the application
+// facade as narrow as its documentation claims. xbc.go only re-exports runtime
+// and plugin types, so its production closure must be runtime's own closure
+// plus nothing else: the heavy dependencies (koanf and validator through
+// config, zap and otel/trace through log) are justified there, and a package
+// runtime does not already compile in would become a compile cost every
+// application pays at its composition root. The root package itself is the
+// only package this subject owns, which is exactly why the ceiling reads its
+// own subtree from the subject pattern rather than from a path prefix.
+func TestArchRootPackageClosureAddsNothingBeyondRuntime(t *testing.T) {
+	archClosureCeiling(t, ".", archRootPackage, "./runtime/...")
 }
 
 // ── guard 10: assembly must not read optional process-wide autoload state ─
