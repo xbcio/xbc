@@ -52,6 +52,14 @@ type queuedTask struct {
 	queuedAt time.Time
 }
 
+// activeTask is one task currently executing in runOne, tracked so an expired
+// drain can log the abandoned task's name and how long it has been running,
+// not just how many tasks were left.
+type activeTask struct {
+	name    string
+	started time.Time
+}
+
 // Pool is a drained background task pool: the Spring applicationTaskExecutor
 // analogue described in doc.go. The zero value is not ready for use; obtain
 // one from Definition-based construction or New.
@@ -71,6 +79,11 @@ type Pool struct {
 	changed chan struct{}
 	running uint64
 	queue   []queuedTask
+	// active holds the tasks currently executing (their names with start
+	// times) for the abandoned-work log. Entries are appended and removed by
+	// runOne; the execution order of a worker's own tasks keeps it in sync
+	// with the running count without touching the slot accounting.
+	active []*activeTask
 
 	admitting bool // true once admission has opened (Init, or New)
 	draining  bool
@@ -158,16 +171,18 @@ func newExecutor(cfg Config, logger log.Logger) (executor, error) {
 	}
 }
 
-// open allows Spawn to admit work. It is idempotent. It does nothing once
-// draining or stopped has already been set, so a Pool drained before Start
-// refuses to (re)open admission.
-func (p *Pool) open() {
+// open allows Spawn to admit work and reports whether admission is open
+// afterward. It is idempotent. It does nothing once draining or stopped has
+// already been set, so a Pool drained before Start refuses to (re)open
+// admission.
+func (p *Pool) open() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.draining || p.stopped {
-		return
+		return false
 	}
 	p.admitting = true
+	return true
 }
 
 // Stats returns a snapshot of the Pool's current running and queued task
@@ -414,6 +429,22 @@ func (p *Pool) runWorker(name string, ctx context.Context, task func(context.Con
 // queued work.
 func (p *Pool) runOne(name string, ctx context.Context, task func(context.Context)) {
 	defer p.inFlight.Done()
+	entry := &activeTask{name: name, started: p.now()}
+	p.mu.Lock()
+	p.active = append(p.active, entry)
+	p.mu.Unlock()
+	// Deregister before inFlight.Done so a drain that observes the wait
+	// finished also observes no active entry for this task.
+	defer func() {
+		p.mu.Lock()
+		for index, candidate := range p.active {
+			if candidate == entry {
+				p.active = append(p.active[:index], p.active[index+1:]...)
+				break
+			}
+		}
+		p.mu.Unlock()
+	}()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			p.log.Error("async: task panicked",
@@ -506,22 +537,36 @@ func (p *Pool) claimDrainResult(err error) error {
 	return p.drainErr
 }
 
+// logAbandonedTasks records what a drain deadline left behind: the queued
+// task names, and every running task's name with how long it has been running,
+// so an operator can tell which task held the drain up rather than only how
+// many did.
 func (p *Pool) logAbandonedTasks() {
 	p.mu.Lock()
 	running := p.running
 	queued := len(p.queue)
-	names := make([]string, 0, queued)
+	queuedNames := make([]string, 0, queued)
 	for _, entry := range p.queue {
-		names = append(names, entry.name)
+		queuedNames = append(queuedNames, entry.name)
+	}
+	active := make([]activeTask, 0, len(p.active))
+	for _, entry := range p.active {
+		active = append(active, *entry)
 	}
 	p.mu.Unlock()
 	if running == 0 && queued == 0 {
 		return
 	}
+	now := p.now()
+	runningTasks := make([]string, 0, len(active))
+	for _, entry := range active {
+		runningTasks = append(runningTasks, fmt.Sprintf("%s (running %s)", entry.name, now.Sub(entry.started).Round(time.Millisecond)))
+	}
 	p.log.Warn("async: drain deadline expired with work still outstanding",
 		"running", running,
+		"runningTasks", runningTasks,
 		"queued", queued,
-		"queuedTasks", names,
+		"queuedTasks", queuedNames,
 	)
 }
 

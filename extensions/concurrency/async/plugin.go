@@ -38,9 +38,17 @@ func Definition() plugin.Definition { return definition }
 // Bundle returns async's side-effect-free explicit composition bundle.
 func Bundle() plugin.Bundle { return bundle }
 
+// ErrDrainedBeforeInit is returned by Init when the Pool's admission has
+// already been closed by drain or stop: such a Pool refuses to reopen, so
+// Init reports the refusal instead of binding a Pool that every later Spawn
+// would only reject.
+var ErrDrainedBeforeInit = errors.New("async: cannot Init after Drain or Stop")
+
 // initPool opens admission and installs the process-global Spawner. Admission
 // opens here, at Init, rather than Start, so other plugins' Init and Start
-// hooks -- and not only later request handlers -- can already Spawn.
+// hooks -- and not only later request handlers -- can already Spawn. A Pool
+// drained or stopped before its Init refuses to (re)open admission, and Init
+// reports that instead of silently succeeding.
 func initPool(pool *Pool, ctx *plugin.Context) error {
 	if pool == nil {
 		return errors.New("async: Init requires a non-nil pool")
@@ -49,7 +57,9 @@ func initPool(pool *Pool, ctx *plugin.Context) error {
 		return errors.New("async: Init requires a non-nil plugin context")
 	}
 	pool.log = ctx.Log()
-	pool.open()
+	if !pool.open() {
+		return ErrDrainedBeforeInit
+	}
 	bindGlobal(pool, ctx.Log())
 	return nil
 }

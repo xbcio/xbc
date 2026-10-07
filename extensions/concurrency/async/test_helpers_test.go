@@ -145,3 +145,51 @@ func (c *counter) value() int {
 	defer c.mu.Unlock()
 	return c.n
 }
+
+// capturedEntry is one log entry a captureLogger recorded.
+type capturedEntry struct {
+	level  string
+	msg    string
+	fields []any
+}
+
+// captureLogger records every entry's level, message, and key/value fields so
+// tests can assert on what the Pool logged.
+type captureLogger struct {
+	mu      sync.Mutex
+	entries []capturedEntry
+}
+
+func (l *captureLogger) add(level, msg string, kv ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.entries = append(l.entries, capturedEntry{level: level, msg: msg, fields: append([]any(nil), kv...)})
+}
+
+func (l *captureLogger) Debug(msg string, kv ...any) { l.add("debug", msg, kv...) }
+func (l *captureLogger) Info(msg string, kv ...any)  { l.add("info", msg, kv...) }
+func (l *captureLogger) Warn(msg string, kv ...any)  { l.add("warn", msg, kv...) }
+func (l *captureLogger) Error(msg string, kv ...any) { l.add("error", msg, kv...) }
+func (*captureLogger) Fatal(string, ...any)          { panic("unexpected fatal") }
+func (l *captureLogger) With(...any) log.Logger      { return l }
+func (*captureLogger) Enabled(log.Level) bool        { return true }
+
+// warnFields returns the key/value pairs of the first recorded warning with
+// the given message.
+func (l *captureLogger) warnFields(msg string) (map[string]any, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, entry := range l.entries {
+		if entry.level != "warn" || entry.msg != msg {
+			continue
+		}
+		fields := make(map[string]any, len(entry.fields)/2)
+		for index := 0; index+1 < len(entry.fields); index += 2 {
+			if key, ok := entry.fields[index].(string); ok {
+				fields[key] = entry.fields[index+1]
+			}
+		}
+		return fields, true
+	}
+	return nil, false
+}

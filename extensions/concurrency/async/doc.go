@@ -143,7 +143,10 @@
 // still outstanding when the wait expires keeps running, and the Pool logs
 // what it abandoned (names, running time, queue depth) rather than silently
 // losing track of it. Draining is idempotent, including its result, and is
-// safe before Init/Start, after a failed Start, and more than once.
+// safe before Init/Start, after a failed Start, and more than once. A Pool
+// drained or stopped before its Init stays closed: Init then returns
+// ErrDrainedBeforeInit instead of opening admission for a Pool every Spawn
+// would reject.
 //
 // Stopping cancels whatever outlived the drain, discards any still-queued
 // tasks (logging their names), waits for the running goroutines it cancelled

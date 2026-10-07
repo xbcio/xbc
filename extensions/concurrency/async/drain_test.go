@@ -2,6 +2,7 @@ package async
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -175,17 +176,85 @@ func TestDrainIsIdempotentAndReplaysTheSameResult(t *testing.T) {
 }
 
 func TestDrainBeforeInitOrStartIsSafeAndRefusesLaterOpen(t *testing.T) {
+	resetGlobal(t)
 	pool := mustNewPool(t, DefaultConfig(), nil) // not yet "opened"/started
 
 	err := pool.drain(context.Background())
 	assert.NoError(t, err)
 
 	// A pool drained before Start refuses to (re)open admission.
-	pool.open()
+	assert.False(t, pool.open())
 	err = pool.Spawn(context.Background(), "x", func(context.Context) {})
 	assert.ErrorIs(t, err, ErrShuttingDown)
 
+	// Init reports the refusal instead of silently binding a Pool that every
+	// later Spawn would only reject.
+	err = initPool(pool, runtimeContext(newFakeHost(), ""))
+	assert.ErrorIs(t, err, ErrDrainedBeforeInit)
+	if globalPool.Load() == pool {
+		t.Fatal("Init after Drain bound the drained pool globally")
+	}
+
 	require.NoError(t, pool.stop(context.Background()))
+}
+
+// TestInitAfterStopReturnsDrainedBeforeInit pins that admission closed by stop,
+// not only by drain, also makes Init refuse, and that the sentinel's message
+// names both phases.
+func TestInitAfterStopReturnsDrainedBeforeInit(t *testing.T) {
+	resetGlobal(t)
+	pool := mustNewPool(t, DefaultConfig(), nil)
+	require.NoError(t, pool.stop(context.Background()))
+
+	err := initPool(pool, runtimeContext(newFakeHost(), ""))
+	assert.ErrorIs(t, err, ErrDrainedBeforeInit)
+	assert.EqualError(t, err, "async: cannot Init after Drain or Stop")
+	if globalPool.Load() == pool {
+		t.Fatal("Init after Stop bound the stopped pool globally")
+	}
+}
+
+// TestExpiredDrainLogsRunningTaskNamesAndRunningTime pins the doc.go promise
+// that an expired drain logs what it abandoned: every queued task's name, and
+// every running task's name with how long it has been running.
+func TestExpiredDrainLogsRunningTaskNamesAndRunningTime(t *testing.T) {
+	logger := &captureLogger{}
+	cfg := DefaultConfig()
+	cfg.MaxConcurrency = 1
+	cfg.QueueCapacity = 4
+	cfg.Shutdown.AwaitTerminationPeriod = 20 * time.Millisecond
+	pool := mustNewPool(t, cfg, logger)
+	pool.open()
+	t.Cleanup(func() { _ = pool.stop(context.Background()) })
+
+	running := newBlockingTask()
+	defer close(running.release)
+	require.NoError(t, pool.Spawn(context.Background(), "running-task", running.run))
+	select {
+	case <-running.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("running task did not start")
+	}
+	require.NoError(t, pool.Spawn(context.Background(), "queued-task", func(context.Context) {}))
+	waitForCondition(t, func() bool { return pool.Stats().Queued == 1 }, "second task to queue")
+
+	err := pool.drain(context.Background())
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+
+	fields, ok := logger.warnFields("async: drain deadline expired with work still outstanding")
+	require.True(t, ok, "an expired drain must log the abandoned work")
+	assert.Equal(t, []string{"queued-task"}, fields["queuedTasks"])
+
+	runningTasks, ok := fields["runningTasks"].([]string)
+	require.True(t, ok, "runningTasks field = %#v", fields["runningTasks"])
+	require.Len(t, runningTasks, 1)
+	const prefix = "running-task (running "
+	if !strings.HasPrefix(runningTasks[0], prefix) || !strings.HasSuffix(runningTasks[0], ")") {
+		t.Fatalf("runningTasks[0] = %q, want the running task's name and running time", runningTasks[0])
+	}
+	runningFor, err := time.ParseDuration(strings.TrimSuffix(strings.TrimPrefix(runningTasks[0], prefix), ")"))
+	require.NoError(t, err, "runningTasks[0] = %q", runningTasks[0])
+	assert.GreaterOrEqual(t, runningFor, cfg.Shutdown.AwaitTerminationPeriod)
 }
 
 func TestConcurrentDrainAndStop(t *testing.T) {
