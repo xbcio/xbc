@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"net/netip"
 	"reflect"
 	"strings"
 	"testing"
@@ -475,6 +477,167 @@ func TestBindConvertsNumbersForTextUnmarshalingFieldsOnly(t *testing.T) {
 	var refused textSettingConfig
 	require.Error(t, plain.Bind("service", &refused),
 		"a plain string field must not silently accept a number")
+}
+
+// failingTextSetting is a string-kind TextUnmarshaler whose UnmarshalText
+// always fails and echoes exactly the text it was given, the way a real
+// decoder (netip.Addr's ParseAddr, for one) does. It exists so these
+// regression tests can assert on the exact text handed to UnmarshalText
+// without depending on another package's error wording.
+type failingTextSetting string
+
+func (f *failingTextSetting) UnmarshalText(text []byte) error {
+	return fmt.Errorf("rejected %q", string(text))
+}
+
+type maskedAndPlainTextConfig struct {
+	Secret failingTextSetting `yaml:"secret" mask:"true"`
+	Plain  failingTextSetting `yaml:"plain"`
+}
+
+// TestBindFileSourcedTextUnmarshalerErrorNeverEchoesTheValue pins the fix for
+// the leak the ENV-only TestBindEnvParseFailureNeverEchoesTheValue did not
+// cover: a file-sourced value that fails a TextUnmarshaler reaches mapstructure's
+// DecodeHook, not the ENV overlay's setScalar, so it needed its own
+// redaction. The configured text must never appear in the bind error, for a
+// field tagged mask:"true" and for a plain field alike -- bind has no way to
+// know, hook-side, which secret a caller forgot to tag, so every bind/decode
+// error stays value-free rather than relying on the field being tagged.
+func TestBindFileSourcedTextUnmarshalerErrorNeverEchoesTheValue(t *testing.T) {
+	const secret = "hunter2-super-secret-token"
+
+	masked, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"secret": secret},
+	}, "")
+	require.NoError(t, err)
+	var maskedCfg maskedAndPlainTextConfig
+	err = masked.Bind("service", &maskedCfg)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), secret)
+	require.Contains(t, err.Error(), "secret", "the field path stays in the error")
+
+	plain, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"plain": secret},
+	}, "")
+	require.NoError(t, err)
+	var plainCfg maskedAndPlainTextConfig
+	err = plain.Bind("service", &plainCfg)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), secret,
+		"an untagged field must not leak either -- bind cannot tell which field a caller forgot to mask")
+	require.Contains(t, err.Error(), "plain")
+}
+
+// TestBindFileSourcedNetipAddrErrorNeverEchoesTheValue pins the same
+// redaction against a real stdlib TextUnmarshaler rather than a test double:
+// netip.Addr's ParseAddr quotes exactly the string it rejected, so a secret
+// routed through a netip.Addr field (a credential embedded in a host:port,
+// for example) must not surface via that path either.
+func TestBindFileSourcedNetipAddrErrorNeverEchoesTheValue(t *testing.T) {
+	type addrConfig struct {
+		Addr netip.Addr `yaml:"addr" mask:"true"`
+	}
+	const secret = "not-an-ip-but-looks-like-a-secret-token"
+
+	env, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"addr": secret},
+	}, "")
+	require.NoError(t, err)
+
+	var cfg addrConfig
+	err = env.Bind("service", &cfg)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), secret)
+	require.Contains(t, err.Error(), "addr")
+}
+
+// TestBindFileSourcedNumericHookErrorNeverEchoesTheValue pins the leak the
+// roadmap called out for textFromNumber: an unquoted YAML integer offered to
+// a TextUnmarshaler field is converted to its decimal text before reaching
+// UnmarshalText, so a failing UnmarshalText must not echo that number either.
+func TestBindFileSourcedNumericHookErrorNeverEchoesTheValue(t *testing.T) {
+	type numericConfig struct {
+		Setting failingTextSetting `yaml:"setting" mask:"true"`
+	}
+	const secretNumber = 193564827
+
+	env, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"setting": secretNumber},
+	}, "")
+	require.NoError(t, err)
+
+	var cfg numericConfig
+	err = env.Bind("service", &cfg)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), fmt.Sprint(secretNumber))
+	require.Contains(t, err.Error(), "setting")
+}
+
+// TestBindRejectsNegativeIntoUnsignedWithoutEchoingTheValue pins the gap
+// rejectFractionalFloat and the TextUnmarshaler hooks left open: a
+// file-sourced negative integer bound to an unsigned field reached
+// mapstructure's own int-to-uint conversion unexamined, and that conversion
+// silently reinterprets the negative value as a huge unsigned one rather
+// than erroring, so a mask:"true" field leaked its raw digits via the error
+// mapstructure built around the result.
+func TestBindRejectsNegativeIntoUnsignedWithoutEchoingTheValue(t *testing.T) {
+	type maskedUint8 struct {
+		U uint8 `yaml:"u" mask:"true"`
+	}
+	env, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"u": -123456},
+	}, "")
+	require.NoError(t, err)
+	var cfg maskedUint8
+	err = env.Bind("service", &cfg)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "123456", "the masked field's digits must never reach the error")
+	require.Contains(t, err.Error(), "u", "the field path stays in the error")
+	require.Zero(t, cfg.U)
+
+	type plainUint struct {
+		U uint `yaml:"u"`
+	}
+	envWide, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"u": -5551234},
+	}, "")
+	require.NoError(t, err)
+	var wide plainUint
+	err = envWide.Bind("service", &wide)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "5551234")
+	require.Zero(t, wide.U)
+}
+
+// TestBindRejectsIntegerOverflowIntoNarrowerField pins the silent-truncation
+// half of the same gap: an in-range-type mismatch (an int or uint source
+// into a narrower int8/uint8 target) must be rejected rather than truncated
+// through Go's own integer conversion.
+func TestBindRejectsIntegerOverflowIntoNarrowerField(t *testing.T) {
+	type int8Field struct {
+		V int8 `yaml:"v"`
+	}
+	cases := []int{300, -99999}
+	for _, value := range cases {
+		env, err := NewEnvironment(map[string]any{"service": map[string]any{"v": value}}, "")
+		require.NoError(t, err)
+		var cfg int8Field
+		err = env.Bind("service", &cfg)
+		require.Error(t, err, "value %d must not be truncated into an int8 field", value)
+		require.Contains(t, err.Error(), "whole number")
+		require.Zero(t, cfg.V, "a rejected value must not be truncated into the field")
+	}
+
+	type uint8Field struct {
+		V uint8 `yaml:"v"`
+	}
+	env, err := NewEnvironment(map[string]any{"service": map[string]any{"v": 99999}}, "")
+	require.NoError(t, err)
+	var cfg uint8Field
+	err = env.Bind("service", &cfg)
+	require.Error(t, err, "99999 must not be truncated into a uint8 field")
+	require.Contains(t, err.Error(), "whole number")
+	require.Zero(t, cfg.V)
 }
 
 // TestBindDefaultTagDoesNotOverwriteAPreFilledValue pins the precedence a

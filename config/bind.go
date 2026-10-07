@@ -50,9 +50,10 @@ func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...str
 	decoderConfig := &mapstructure.DecoderConfig{
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
 			rejectFractionalFloat,
+			rejectIntegerOverflow,
 			textFromNumber,
 			mapstructure.StringToTimeDurationHookFunc(),
-			mapstructure.TextUnmarshallerHookFunc(),
+			valueFreeTextUnmarshallerHookFunc(),
 		),
 		SquashTagOption: "inline",
 	}
@@ -64,6 +65,14 @@ func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...str
 		pointer.SetZero()
 	}
 	if unmarshalErr != nil {
+		// mapstructure prefixes every decode-hook error with the dotted
+		// field path (for example 'nested.addr') before it ever reaches
+		// here, so the path survives this wrap. The hooks above -- and
+		// valueFreeTextUnmarshallerHookFunc for the one hook we cannot
+		// edit -- are responsible for never putting a configured value
+		// into the error they return; only the hook's own text goes
+		// into unmarshalErr, and that is file-sourced configuration, the
+		// same place secrets masked with mask:"true" live.
 		return fmt.Errorf("xbc: failed to bind configuration section %s: %w", displayPath(path), unmarshalErr)
 	}
 
@@ -225,6 +234,32 @@ func textFromNumber(from reflect.Type, to reflect.Type, data any) (any, error) {
 	}
 }
 
+// valueFreeTextUnmarshallerHookFunc wraps mapstructure's
+// TextUnmarshallerHookFunc so a failing UnmarshalText never reaches the
+// caller with the configured text still inside it. The library hook returns
+// the TextUnmarshaler's own error verbatim, and that error's message is
+// chosen by whichever type the field happens to be -- netip.Addr's
+// ParseAddr, for one, echoes exactly the string it rejected -- so a secret
+// routed through a mask:"true" field would otherwise surface in a bind
+// error regardless of what this package does on its own decode hooks. The
+// field path and target type survive (mapstructure attaches the path to
+// every decode-hook error on the way out, and target is this hook's own to
+// name), so the result stays actionable without the value.
+func valueFreeTextUnmarshallerHookFunc() mapstructure.DecodeHookFuncType {
+	unmarshal := mapstructure.TextUnmarshallerHookFunc()
+	return func(from reflect.Type, to reflect.Type, data any) (any, error) {
+		result, err := unmarshal(from, to, data)
+		if err != nil {
+			target := to
+			for target.Kind() == reflect.Pointer {
+				target = target.Elem()
+			}
+			return nil, fmt.Errorf("cannot be parsed as %s", target)
+		}
+		return result, nil
+	}
+}
+
 // rejectFractionalFloat refuses a fractional or out-of-range float offered
 // for an integer field. mapstructure would truncate 2.9 to 2 and wrap a large
 // value silently; strict binding must neither. YAML numbers reach a schema
@@ -247,19 +282,89 @@ func rejectFractionalFloat(from reflect.Type, to reflect.Type, data any) (any, e
 		return data, nil
 	}
 
+	// The configured value is deliberately left out of this error: the
+	// field path mapstructure attaches on the way out, plus the target
+	// type below, is enough to act on, and a value a caller later tags
+	// mask:"true" must never have appeared here in the first place.
 	text := strconv.FormatFloat(reflect.ValueOf(data).Float(), 'f', -1, 64)
 	if signed {
 		value, err := strconv.ParseInt(text, 10, target.Bits())
 		if err != nil {
-			return nil, fmt.Errorf("%v is not a whole number that fits %s", data, target)
+			return nil, fmt.Errorf("is not a whole number that fits %s", target)
 		}
 		return value, nil
 	}
 	value, err := strconv.ParseUint(text, 10, target.Bits())
 	if err != nil {
-		return nil, fmt.Errorf("%v is not a whole number that fits %s", data, target)
+		return nil, fmt.Errorf("is not a whole number that fits %s", target)
 	}
 	return value, nil
+}
+
+// rejectIntegerOverflow refuses a negative integer offered for an unsigned
+// target and any integer, signed or unsigned, whose magnitude does not fit
+// the target's Bits(). mapstructure's own int/uint decode path neither
+// checks the sign nor the width: a negative source silently reinterprets as
+// a huge unsigned value (WeaklyTypedInput-free mapstructure still truncates
+// through Go's int64/uint64 conversions), and an in-range-type mismatch such
+// as a uint8 field given 300 truncates to 44 with no error at all. Strict
+// binding must refuse both rather than let a mask:"true" field (or any
+// field) carry a value nobody intended.
+//
+// This runs ahead of textFromNumber in the hook chain: a target this hook
+// claims (a bare integer kind) is never a string-kind TextUnmarshaler, so
+// the two hooks never compete for the same target, and float sources are
+// rejectFractionalFloat's to answer for instead.
+//
+// The configured value is deliberately left out of this error, for the same
+// reason rejectFractionalFloat leaves it out: the field path mapstructure
+// attaches on the way out, plus the target type below, is enough to act on,
+// and a value a caller tags mask:"true" must never have appeared here.
+func rejectIntegerOverflow(from reflect.Type, to reflect.Type, data any) (any, error) {
+	target := to
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	switch target.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+	default:
+		return data, nil
+	}
+
+	switch from.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		value := reflect.ValueOf(data).Int()
+		if target.Kind() == reflect.Uint || target.Kind() == reflect.Uint8 ||
+			target.Kind() == reflect.Uint16 || target.Kind() == reflect.Uint32 || target.Kind() == reflect.Uint64 {
+			if value < 0 {
+				return nil, fmt.Errorf("is not a whole number that fits %s", target)
+			}
+			if _, err := strconv.ParseUint(strconv.FormatInt(value, 10), 10, target.Bits()); err != nil {
+				return nil, fmt.Errorf("is not a whole number that fits %s", target)
+			}
+			return uint64(value), nil
+		}
+		if _, err := strconv.ParseInt(strconv.FormatInt(value, 10), 10, target.Bits()); err != nil {
+			return nil, fmt.Errorf("is not a whole number that fits %s", target)
+		}
+		return value, nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		value := reflect.ValueOf(data).Uint()
+		if target.Kind() == reflect.Uint || target.Kind() == reflect.Uint8 ||
+			target.Kind() == reflect.Uint16 || target.Kind() == reflect.Uint32 || target.Kind() == reflect.Uint64 {
+			if _, err := strconv.ParseUint(strconv.FormatUint(value, 10), 10, target.Bits()); err != nil {
+				return nil, fmt.Errorf("is not a whole number that fits %s", target)
+			}
+			return value, nil
+		}
+		if _, err := strconv.ParseInt(strconv.FormatUint(value, 10), 10, target.Bits()); err != nil {
+			return nil, fmt.Errorf("is not a whole number that fits %s", target)
+		}
+		return value, nil
+	default:
+		return data, nil
+	}
 }
 
 func allowedPathSet(paths []string) (map[string]struct{}, error) {

@@ -428,7 +428,7 @@ func (u *Universe) envOverlay(prefix string, environ []string, existing *koanf.K
 			continue
 		}
 
-		candidates, claimed := u.resolve(prefix, name)
+		candidates, claimed, namespace := u.resolveWithNamespace(prefix, name)
 		if !claimed {
 			failures = append(failures, fmt.Errorf(
 				"xbc: environment variable %s uses the reserved %s prefix but names no declared configuration section (%s)",
@@ -442,7 +442,7 @@ func (u *Universe) envOverlay(prefix string, environ []string, existing *koanf.K
 			failures = append(failures, err)
 			continue
 		}
-		value, err := interpret(name, raw, candidates)
+		value, err := interpret(u, name, raw, candidates, namespace)
 		if err != nil {
 			failures = append(failures, err)
 			continue
@@ -512,10 +512,18 @@ func declaredInstances(k *koanf.Koanf, sectionPath string) map[string]bool {
 }
 
 // interpret turns one raw environment value into a typed configuration value,
-// once exactly one candidate path survives.
-func interpret(name, raw string, candidates []envCandidate) (any, error) {
+// once exactly one candidate path survives. namespace is the most specific
+// declared SectionNamespace that claimed name when candidates came up empty
+// -- "plugins" for an undeclared plugin's variable -- or "" when name was
+// claimed by something other than a namespace (a typed or instanced section
+// whose own leaves just did not match).
+func interpret(u *Universe, name, raw string, candidates []envCandidate, namespace string) (any, error) {
 	switch {
 	case len(candidates) == 0:
+		if namespace != "" {
+			return nil, fmt.Errorf("xbc: environment variable %s names no configuration field; %s",
+				name, u.describeDeclared(namespace))
+		}
 		return nil, fmt.Errorf("xbc: environment variable %s names no configuration field", name)
 	case len(candidates) > 1:
 		paths := make([]string, len(candidates))
@@ -552,11 +560,12 @@ func interpret(name, raw string, candidates []envCandidate) (any, error) {
 	return target.Interface(), nil
 }
 
-// resolve maps a complete environment variable name onto the configuration
-// paths it could name, and reports whether it fell inside any declared section
-// at all. prefix is the process-level environment prefix, which is what makes
-// the name comparable with the prefix envSectionPrefix derives for each
-// section.
+// resolveWithNamespace maps a complete environment variable name onto the
+// configuration paths it could name, reports whether it fell inside any
+// declared section at all, and additionally reports the most specific
+// declared SectionNamespace that claimed name, when one did. prefix is the
+// process-level environment prefix, which is what makes the name comparable
+// with the prefix envSectionPrefix derives for each section.
 //
 // A section whose root collapses into the process prefix owns no namespace of
 // its own: every variable carrying that prefix lands on its doorstep, so it may
@@ -565,9 +574,25 @@ func interpret(name, raw string, candidates []envCandidate) (any, error) {
 // instead of as the undeclared top-level name it is, and the "names no declared
 // configuration section" diagnostic -- the one that lists the roots an operator
 // could have meant -- would become unreachable for every variable.
-func (u *Universe) resolve(prefix, name string) ([]envCandidate, bool) {
+//
+// The namespace return value is what interpret's zero-candidate case needs to
+// name the section an unclaimed-plugin variable actually fell under --
+// "plugins", rather than the framework's whole root list -- the same way
+// checkOwnership's file-path error names the declared siblings under the
+// offending key's own parent. It is cleared, even when a namespace matched,
+// once some other declared section's own prefix also matched name: a typed or
+// instanced section's prefix matching means the variable names a field of
+// that specific declared section, not an undeclared sibling under the
+// namespace, so the enclosing namespace's sibling list would misdirect the
+// reader toward a section typo when the real mistake is the field.
+// XBC_PLUGINS_GREETER_NO_SUCH is this case -- plugins.greeter is declared and
+// its prefix matched, just not that field -- while XBC_PLUGINS_UNKNOWN_DSN is
+// not, because no declared child's prefix matches "unknown" at all.
+func (u *Universe) resolveWithNamespace(prefix, name string) ([]envCandidate, bool, string) {
 	var candidates []envCandidate
 	claimed := false
+	namespace := ""
+	namespaceCleared := false
 	seen := make(map[string]bool)
 	add := func(candidate envCandidate) {
 		if seen[candidate.path] {
@@ -595,7 +620,15 @@ func (u *Universe) resolve(prefix, name string) ([]envCandidate, bool) {
 			// The namespace claims the prefix; its children answer for it. A
 			// collapsed namespace has no prefix of its own to claim, and its
 			// children carry the process prefix plus their own spelling.
-			claimed = claimed || !collapsed
+			if !collapsed {
+				claimed = true
+				// Sections are declared in no particular nesting order, so the
+				// longest matching namespace path -- the most specific one --
+				// is kept rather than the first or last one seen.
+				if len(section.Path) > len(namespace) {
+					namespace = section.Path
+				}
+			}
 		case SectionFreeform:
 			claimed = true
 			add(envCandidate{
@@ -608,12 +641,35 @@ func (u *Universe) resolve(prefix, name string) ([]envCandidate, bool) {
 			// uncollapsed, must not short-circuit the candidate collection.
 			matched := section.matchTyped(tail, add)
 			claimed = claimed || matched || !collapsed
+			if !collapsed {
+				// name falls inside this declared section's own prefix, so the
+				// real question is which field of *this* section it meant, not
+				// which section under the namespace it meant: a sibling list
+				// would point at the wrong fix. See the comment on
+				// namespaceCleared below.
+				namespaceCleared = true
+			}
 		case SectionInstanced:
 			matched := section.matchInstanced(sectionPrefix, tail, add)
 			claimed = claimed || matched || !collapsed
+			if !collapsed {
+				namespaceCleared = true
+			}
 		}
 	}
-	return candidates, claimed
+	if namespaceCleared {
+		// A child section's own prefix matched name -- it owns this variable
+		// specifically, declared or not -- so the enclosing namespace must not
+		// also claim it. Without this, XBC_PLUGINS_GREETER_NO_SUCH reports
+		// "declared sections under plugins: plugins.greeter, plugins.store"
+		// even though plugins.greeter is exactly the section the variable
+		// names; the sibling list is only useful when the namespace itself,
+		// not one specific child, is the open question (an unselected plugin
+		// such as XBC_PLUGINS_UNKNOWN_DSN, which matches no child prefix at
+		// all).
+		namespace = ""
+	}
+	return candidates, claimed, namespace
 }
 
 // preferDeclaredCandidates drops a candidate whose instance name was inferred

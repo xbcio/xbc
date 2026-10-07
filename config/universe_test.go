@@ -268,6 +268,14 @@ func TestEnvironmentLayerRejectsShapesItCannotExpress(t *testing.T) {
 			wants: []string{"names no configuration field"},
 		},
 		{
+			name:  "unclaimed plugin under a namespace",
+			entry: "XBC_PLUGINS_UNKNOWN_DSN=x",
+			wants: []string{"names no configuration field", "declared sections under plugins", "plugins.store", "plugins.greeter"},
+			comment: "A plugin that is not selected must be named the same way an unowned file " +
+				"path is: by listing what the namespace actually declares, not by a bare " +
+				"\"names no configuration field\" that gives no section to check",
+		},
+		{
 			name:    "map-valued leaf",
 			entry:   "XBC_SERVER_EXTRA=x",
 			wants:   []string{"cannot be carried by a single environment variable", "configure it in a file"},
@@ -299,6 +307,43 @@ func TestEnvironmentLayerRejectsShapesItCannotExpress(t *testing.T) {
 			for _, want := range testCase.wants {
 				require.Contains(t, err.Error(), want, testCase.comment)
 			}
+		})
+	}
+}
+
+// TestEnvironmentLayerDoesNotListSiblingsWhenTheSectionItselfMatched pins the
+// fix for the case TestEnvironmentLayerRejectsShapesItCannotExpress's
+// "unclaimed plugin under a namespace" case does not cover: a variable whose
+// prefix matches a declared section exactly, just not one of that section's
+// known fields. Here the mistake is the field, not the section, so listing
+// sibling sections under the namespace would misdirect the reader toward a
+// section typo that is not the actual problem.
+func TestEnvironmentLayerDoesNotListSiblingsWhenTheSectionItselfMatched(t *testing.T) {
+	universe := testUniverse(t)
+
+	cases := []struct {
+		name  string
+		entry string
+	}{
+		{
+			name:  "typed section, unknown field",
+			entry: "XBC_PLUGINS_GREETER_NO_SUCH=x",
+		},
+		{
+			name:  "instanced section, unknown field under a named instance",
+			entry: "XBC_PLUGINS_STORE_MAIN_NO_SUCH=x",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := universe.envOverlay(DefaultEnvPrefix, []string{testCase.entry}, nil)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "names no configuration field")
+			require.NotContains(t, err.Error(), "declared sections under plugins",
+				"the variable's own section matched; a sibling-section list points at the wrong fix")
+			require.NotContains(t, err.Error(), "plugins.store")
+			require.NotContains(t, err.Error(), "plugins.greeter")
 		})
 	}
 }
