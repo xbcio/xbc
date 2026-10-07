@@ -50,15 +50,19 @@
 // Queue names passed to Queue must exist in plugins.asynq. The runtime owns its
 // Redis connection, enqueue client, and worker server. Start submits the worker
 // as a critical managed task, which waits for XBC's global traffic gate before
-// polling Redis. Drain stops the worker fetching new tasks and starts the
-// asynq library's own worker Shutdown, waiting for it within the drain budget
-// while Enqueue and Redis stay usable; plugins.asynq.shutdown_timeout bounds
-// that Shutdown call itself and should be set at or below xbc.drain_timeout.
-// Whatever Shutdown cannot finish in that time is waited out, not abandoned:
-// Stop rejects new enqueue calls, waits for the same Shutdown to finish if
-// Drain did not, and then closes Redis. A failure already reported by Drain is
-// never reported again by Stop. Tasks may be redelivered, so handlers should
-// be idempotent and payloads should not contain unprotected secrets.
+// polling Redis. Shutdown splits in two. Drain stops the worker fetching new
+// tasks and waits, within the drain budget, for the handlers already running to
+// return, while Enqueue and the owned Redis connection stay usable. That wait is
+// best-effort at the fetch boundary: asynq does not wait for a worker that
+// already dequeued a task, so a task dequeued just before the worker stopped may
+// begin after the wait and is left to Stop's library Shutdown, which finishes or
+// requeues it instead of losing it. An expired drain means stop waiting, never
+// abort, so handlers it leaves behind keep running with their contexts
+// untouched. Stop then rejects new enqueue calls and shuts the worker down
+// through the asynq library, which lets whatever outlived the drain finish
+// within plugins.asynq.shutdown_timeout before requeueing the rest, and closes
+// Redis only once the worker stopped. Tasks may be redelivered, so handlers
+// should be idempotent and payloads should not contain unprotected secrets.
 //
 // # Readiness
 //

@@ -27,10 +27,10 @@ type Config struct {
 
 	TaskCheckInterval time.Duration `yaml:"task_check_interval" default:"1s" validate:"gt=0"`
 
-	// ShutdownTimeout bounds the asynq library's own worker Shutdown, which
-	// Drain starts. It should be at or below xbc.drain_timeout: anything that
-	// Shutdown cannot finish within this budget is waited out by Stop
-	// instead, not abandoned.
+	// ShutdownTimeout bounds the asynq library's worker Shutdown, which Stop
+	// runs after Drain has already waited for the handlers still running. A
+	// handler that also outlives this budget is requeued by the asynq library
+	// and must not be relied on to finish.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" default:"8s" validate:"gt=0"`
 }
 

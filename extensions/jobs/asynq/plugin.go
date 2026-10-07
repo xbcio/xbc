@@ -51,6 +51,7 @@ func Bundle() plugin.Bundle { return plugin.BundleOf(definition) }
 
 type workerServer interface {
 	Start(hibiken.Handler) error
+	Stop()
 	Shutdown()
 }
 
@@ -95,35 +96,19 @@ type Plugin struct {
 	stopDone    chan struct{}
 	stopErr     error
 
-	// drainDone is closed once the worker server's graceful Shutdown, started
-	// by drain, has returned; drainErr is its result.
-	//
-	// drainClaimedBy records which side first observed drainDone closed and
-	// is therefore responsible for the failure, decided in one critical
-	// section so a drain and a stop that wake up together cannot both claim
-	// it:
-	//   - drainClaimOwnerDrain: a drain call observed completion first. Every
-	//     drain call, before and after, replays the same cached drainErr, so
-	//     drain is idempotent including its result; stop never reports it.
-	//   - drainClaimOwnerStop: no drain call observed completion (drain never
-	//     ran, or every drain call timed out first), so stop is the sole
-	//     owner. Stop reports drainErr exactly once via stopErr; a drain call
-	//     made after stop has claimed it deliberately returns nil for it
-	//     instead of re-reporting a failure stop already surfaced.
-	drainDone      chan struct{}
-	drainErr       error
-	drainClaimedBy drainClaimOwner
+	// handlers counts the handler invocations currently in flight, so drain
+	// can wait for work the worker already accepted without cancelling it.
+	handlers *handlerTracker
+
+	// drainDone is closed once the worker has been told to stop fetching new
+	// tasks; drainErr is the error that call left behind, replayed to every
+	// later drain call so drain is idempotent including its result. The
+	// handlers that were still running are waited for per drain call, within
+	// that call's own context, and any that outlive the drain budget are left
+	// to stop.
+	drainDone chan struct{}
+	drainErr  error
 }
-
-// drainClaimOwner records which side of shutdown is responsible for
-// reporting the worker's Shutdown failure, decided once drainDone closes.
-type drainClaimOwner int
-
-const (
-	drainClaimOwnerNone drainClaimOwner = iota
-	drainClaimOwnerDrain
-	drainClaimOwnerStop
-)
 
 var _ Enqueuer = (*Plugin)(nil)
 
@@ -148,6 +133,7 @@ func newPlugin(cfg Config, contributors []plugin.Entry[HandlerContributor]) (*Pl
 		cfg:        cfg.clone(),
 		factory:    defaultBackendFactory(),
 		dispatcher: dispatcher,
+		handlers:   newHandlerTracker(),
 	}, nil
 }
 
@@ -297,13 +283,13 @@ func (p *Plugin) runWorker(taskCtx context.Context, gate <-chan struct{}, server
 	startErr := func() error {
 		defer p.workerMu.Unlock()
 		p.mu.Lock()
-		if p.stopping || p.stopped || p.server != server {
+		if p.stopping || p.stopped || p.drainDone != nil || p.server != server {
 			p.mu.Unlock()
 			return nil
 		}
 		p.mu.Unlock()
 
-		if err := server.Start(dispatcher); err != nil {
+		if err := server.Start(p.handlers.wrap(dispatcher)); err != nil {
 			return fmt.Errorf("asynq: start worker: %w", err)
 		}
 		p.mu.Lock()
@@ -320,86 +306,74 @@ func (p *Plugin) runWorker(taskCtx context.Context, gate <-chan struct{}, server
 }
 
 // drain stops the worker from fetching new tasks and waits, within ctx, for the
-// handlers already running to return. It is the graceful half of shutdown:
-// Enqueue and the owned Redis connection stay usable until stop, so a plugin
-// that is still draining its own work may keep enqueueing follow-up tasks.
+// handler invocations already accepted to return. It is the graceful half of
+// shutdown: Enqueue and the owned Redis connection stay usable until stop, so a
+// plugin that is still draining its own work may keep enqueueing follow-up
+// tasks.
 //
-// The worker's Shutdown has no context, so it runs on its own goroutine and
-// drain returns at ctx's deadline even if a handler ignores cancellation; stop
-// then waits for that same Shutdown rather than starting a second one. A
-// worker that never opened is shut down as well, exactly as stop would, so the
-// server's own resources are released either way.
+// The wait is best-effort at the fetch boundary: asynq's Server.Stop only stops
+// the processor's fetch loop and does not wait for a worker goroutine that
+// already dequeued a task, so a task dequeued just before the worker stopped
+// can begin after the tracker saw no invocation in flight. Stop's library
+// Shutdown is the backstop for that window -- it waits for every worker and
+// requeues whatever exceeds plugins.asynq.shutdown_timeout, so such a task is
+// finished or requeued, never lost.
+//
+// An expired context means stop waiting, never abort: handlers that outlive
+// the drain budget are left running, with their contexts untouched, for stop
+// to cancel. The worker is told to stop exactly once, on its own goroutine
+// because the library call is not context-aware; every later drain call
+// replays that call's error and then waits for the handlers it left. A worker
+// that never opened is stopped as well, so the split is safe before Start,
+// after a failed Start, and while the background task still waits for the
+// traffic gate.
 func (p *Plugin) drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
 	p.mu.Lock()
-	if p.drainDone == nil {
+	started := p.drainDone == nil
+	var server workerServer
+	if started {
 		p.drainDone = make(chan struct{})
-		server := p.server
-		// Taking the server here is what keeps runWorker from starting it
-		// after the drain: runWorker re-reads p.server under workerMu before
-		// Start, and stop then has no second server to shut down.
-		p.server = nil
-		done := p.drainDone
-		go p.shutdownForDrain(server, done)
+		server = p.server
 	}
 	done := p.drainDone
 	p.mu.Unlock()
+	if started {
+		go p.stopWorkerForDrain(server, done)
+	}
 
 	select {
 	case <-done:
-		return p.claimDrainErrForDrain()
 	case <-ctx.Done():
 		return fmt.Errorf("asynq: drain running handlers: %w", ctx.Err())
 	}
-}
 
-// claimDrainErrForDrain is called by every drain caller once drainDone is
-// observed closed. The first call to reach here claims drainClaimOwnerDrain
-// and caches drainErr for replay; every call after that, from this drain
-// caller or any other, replays the same cached error under the lock instead
-// of re-deriving ownership, so drain's result is idempotent and every drain
-// caller that observes completion returns the same failure. If stop already
-// claimed ownership first, this returns nil: stop is the sole owner and
-// drain must not re-report what stop already surfaced.
-func (p *Plugin) claimDrainErrForDrain() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.drainClaimedBy == drainClaimOwnerNone {
-		p.drainClaimedBy = drainClaimOwnerDrain
+	err := p.drainErr
+	p.mu.Unlock()
+
+	// A failed worker stop does not mean the handlers already accepted have
+	// returned: wait for them first and report both outcomes joined, so the
+	// failure never turns into a shortcut that abandons running work.
+	waitErr := p.handlers.waitIdle(ctx)
+	if waitErr != nil {
+		waitErr = fmt.Errorf("asynq: drain running handlers: %w", waitErr)
 	}
-	if p.drainClaimedBy != drainClaimOwnerDrain {
-		return nil
-	}
-	return p.drainErr
+	return errors.Join(err, waitErr)
 }
 
-// claimDrainErrForStop is called by stop after drainDone has closed. If a
-// drain caller already claimed ownership (drainClaimOwnerDrain), stop never
-// reports the failure, even if that drain caller is still blocked replaying
-// it. Otherwise stop claims ownership itself and reports drainErr exactly
-// once; because stop's claim is also recorded here, a drain call made after
-// stop has claimed it sees drainClaimOwnerStop and returns nil for it,
-// deliberately not re-reporting a failure stop already returned.
-func (p *Plugin) claimDrainErrForStop() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.drainClaimedBy == drainClaimOwnerDrain {
-		return nil
-	}
-	if p.drainClaimedBy == drainClaimOwnerStop {
-		return nil
-	}
-	p.drainClaimedBy = drainClaimOwnerStop
-	return p.drainErr
-}
-
-func (p *Plugin) shutdownForDrain(server workerServer, done chan struct{}) {
+// stopWorkerForDrain stops the worker from fetching new tasks and records the
+// result for every drain call to replay. It shares workerMu with the worker's
+// Start, so a worker that is already being brought up is stopped after it
+// opened, and one that has not started yet never opens after the drain.
+func (p *Plugin) stopWorkerForDrain(server workerServer, done chan struct{}) {
 	var err error
 	if server != nil {
 		p.workerMu.Lock()
-		err = shutdownWorker(server)
+		err = stopWorker(server)
 		p.workerMu.Unlock()
 	}
 	p.mu.Lock()
@@ -408,20 +382,26 @@ func (p *Plugin) shutdownForDrain(server workerServer, done chan struct{}) {
 	p.mu.Unlock()
 }
 
-// stop closes enqueue admission, gracefully drains the worker, and closes the
-// owned Redis connection. It is safe in every factory-owned partial state and
-// idempotent under repeated or concurrent calls. When drain already ran, the
-// worker is not shut down again: stop waits for drain's Shutdown to finish and
-// only then closes Redis, because a running handler may still be using it.
+// stop closes enqueue admission, shuts the worker down through the asynq
+// library, and closes the owned Redis connection. It is safe in every
+// factory-owned partial state and idempotent under repeated or concurrent
+// calls. The shutdown gives the handlers that outlived drain another
+// plugins.asynq.shutdown_timeout to finish and requeues whatever still
+// exceeds it; Redis is closed only after the worker stopped. Stop never waits
+// for drain to finish: drain waits for handlers, and only stop can release
+// the ones it left.
+//
+// Cleanup runs on its own goroutine, and every caller, including the one that
+// started it, waits on the shared completion within its own context: a caller
+// whose context expires returns its error while cleanup continues, and a
+// later call reports the final result.
 func (p *Plugin) stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	p.mu.Lock()
-	owner := false
 	if p.stopDone == nil {
-		owner = true
 		p.stopping = true
 		p.stopDone = make(chan struct{})
 		client := p.client
@@ -430,12 +410,11 @@ func (p *Plugin) stop(ctx context.Context) error {
 		if client != nil {
 			client.beginClose()
 		}
-		drainDone := p.drainDone
 		p.client = nil
 		p.server = nil
 		p.redis = nil
 		p.mu.Unlock()
-		p.finishStop(client, server, redisClient, drainDone)
+		go p.finishStop(client, server, redisClient)
 	} else {
 		p.mu.Unlock()
 	}
@@ -443,14 +422,10 @@ func (p *Plugin) stop(ctx context.Context) error {
 	p.mu.Lock()
 	done := p.stopDone
 	p.mu.Unlock()
-	if owner {
-		<-done
-	} else {
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	p.mu.Lock()
 	err := p.stopErr
@@ -458,17 +433,11 @@ func (p *Plugin) stop(ctx context.Context) error {
 	return err
 }
 
-func (p *Plugin) finishStop(client *Client, server workerServer, redisClient *goredis.Client, drainDone <-chan struct{}) {
+func (p *Plugin) finishStop(client *Client, server workerServer, redisClient *goredis.Client) {
 	if client != nil {
 		client.close()
 	}
 	var errs []error
-	if drainDone != nil {
-		<-drainDone
-		if err := p.claimDrainErrForStop(); err != nil {
-			errs = append(errs, err)
-		}
-	}
 	if server != nil {
 		p.workerMu.Lock()
 		if err := shutdownWorker(server); err != nil {
@@ -493,6 +462,16 @@ func (p *Plugin) finishStop(client *Client, server workerServer, redisClient *go
 	p.mu.Unlock()
 }
 
+func stopWorker(server workerServer) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("asynq: worker stop panicked: %v", recovered)
+		}
+	}()
+	server.Stop()
+	return nil
+}
+
 func shutdownWorker(server workerServer) (err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -501,4 +480,82 @@ func shutdownWorker(server workerServer) (err error) {
 	}()
 	server.Shutdown()
 	return nil
+}
+
+// handlerTracker counts the handler invocations currently in flight. The
+// worker hands every task through wrap, so once an invocation is counted it is
+// covered exactly; drain waits on the count to let work the worker already
+// accepted finish without cancelling it.
+//
+// The count is best-effort at the fetch boundary. asynq v0.26.0's Server.Stop
+// only stops the processor's fetch loop and does not wait for a worker
+// goroutine that already dequeued a task, so a task dequeued just before Stop
+// returned can still reach wrap and call begin after waitIdle observed the
+// count at zero. That task is not lost: the library Shutdown in stop is the
+// backstop, waiting for every worker and requeueing whatever exceeds
+// plugins.asynq.shutdown_timeout.
+type handlerTracker struct {
+	mu     sync.Mutex
+	active int
+	idle   chan struct{}
+}
+
+func newHandlerTracker() *handlerTracker {
+	tracker := &handlerTracker{idle: make(chan struct{})}
+	close(tracker.idle)
+	return tracker
+}
+
+// wrap returns a handler that keeps the in-flight count for the duration of
+// every invocation.
+func (t *handlerTracker) wrap(inner hibiken.Handler) hibiken.Handler {
+	return hibiken.HandlerFunc(func(ctx context.Context, task *hibiken.Task) error {
+		t.begin()
+		defer t.end()
+		return inner.ProcessTask(ctx, task)
+	})
+}
+
+func (t *handlerTracker) begin() {
+	t.mu.Lock()
+	if t.active == 0 {
+		t.idle = make(chan struct{})
+	}
+	t.active++
+	t.mu.Unlock()
+}
+
+func (t *handlerTracker) end() {
+	t.mu.Lock()
+	t.active--
+	if t.active == 0 {
+		close(t.idle)
+	}
+	t.mu.Unlock()
+}
+
+// waitIdle blocks until no handler invocation is in flight, or ctx is done.
+// Callers must have stopped the worker from fetching new tasks first;
+// otherwise a handler that starts after the count was observed at zero is
+// missed. Even with the fetch loop stopped the observation is best-effort:
+// asynq may start a task dequeued just before Server.Stop returned after this
+// wait saw an idle tracker (see handlerTracker), and only the library Shutdown
+// in stop covers that invocation.
+func (t *handlerTracker) waitIdle(ctx context.Context) error {
+	for {
+		t.mu.Lock()
+		if t.active == 0 {
+			t.mu.Unlock()
+			return nil
+		}
+		idle := t.idle
+		t.mu.Unlock()
+
+		select {
+		case <-idle:
+			// A handler finished; re-check in case another started.
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }

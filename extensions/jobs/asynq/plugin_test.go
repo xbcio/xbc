@@ -280,6 +280,45 @@ func TestConcurrentStopSharesCleanupAndHonorsWaitingCallerContext(t *testing.T) 
 	}
 }
 
+// TestStopOwnerHonorsItsDeadline pins that the call which starts the cleanup
+// waits on the shared completion within its own context, like every later
+// caller: cleanup runs on its own goroutine, so the owner returns its deadline
+// error while the cleanup finishes in the background, and a later stop still
+// reports the final result.
+func TestStopOwnerHonorsItsDeadline(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	worker := &fakeWorkerServer{shutdownStarted: make(chan struct{}), shutdownRelease: make(chan struct{})}
+	p := newTestPlugin(t, validTestConfig(redisServer.Addr()), HandlerFunc(func(context.Context, Task) error { return nil }))
+	p.factory.newServer = func(goredis.UniversalClient, hibiken.Config) workerServer { return worker }
+	host := newTestHost()
+	defer host.stopTasks()
+	if err := p.init(testContext(host)); err != nil {
+		t.Fatal(err)
+	}
+
+	short, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	ownerResult := make(chan error, 1)
+	go func() { ownerResult <- p.stop(short) }()
+	<-worker.shutdownStarted
+	select {
+	case err := <-ownerResult:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("owner stop() error = %v, want deadline", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner stop() ignored its own deadline while cleanup was blocked")
+	}
+
+	close(worker.shutdownRelease)
+	if err := p.stop(context.Background()); err != nil {
+		t.Fatalf("stop() after the cleanup finished error = %v", err)
+	}
+	if worker.shutdownCount() != 1 {
+		t.Fatalf("worker Shutdown count = %d, want 1", worker.shutdownCount())
+	}
+}
+
 func TestStopBeforeInitIsIdempotentAndShutdownPanicBecomesError(t *testing.T) {
 	p := newTestPlugin(t, defaultConfig(), HandlerFunc(func(context.Context, Task) error { return nil }))
 	if err := p.stop(nil); err != nil {
@@ -295,6 +334,9 @@ func TestStopBeforeInitIsIdempotentAndShutdownPanicBecomesError(t *testing.T) {
 	if err := shutdownWorker(panicWorker); err == nil {
 		t.Fatal("shutdownWorker panic error = nil")
 	}
+	if err := stopWorker(&fakeWorkerServer{stopPanic: "boom"}); err == nil {
+		t.Fatal("stopWorker panic error = nil")
+	}
 }
 
 type fakeWorkerServer struct {
@@ -302,6 +344,8 @@ type fakeWorkerServer struct {
 	handler         hibiken.Handler
 	starts          int
 	startErr        error
+	stops           int
+	stopPanic       any
 	shutdowns       int
 	shutdownStarted chan struct{}
 	shutdownRelease chan struct{}
@@ -315,6 +359,16 @@ func (s *fakeWorkerServer) Start(handler hibiken.Handler) error {
 	s.starts++
 	s.handler = handler
 	return s.startErr
+}
+
+func (s *fakeWorkerServer) Stop() {
+	s.mu.Lock()
+	s.stops++
+	panicValue := s.stopPanic
+	s.mu.Unlock()
+	if panicValue != nil {
+		panic(panicValue)
+	}
 }
 
 func (s *fakeWorkerServer) Shutdown() {
@@ -341,8 +395,33 @@ func (s *fakeWorkerServer) startCount() int {
 	return s.starts
 }
 
+func (s *fakeWorkerServer) stopCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stops
+}
+
 func (s *fakeWorkerServer) shutdownCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.shutdowns
+}
+
+// runCapturedHandler invokes the handler this server was started with, exactly
+// as the asynq library would for one dequeued task, on a goroutine of its own;
+// the returned function waits for that invocation to return.
+func (s *fakeWorkerServer) runCapturedHandler(t *testing.T) func() {
+	t.Helper()
+	s.mu.Lock()
+	handler := s.handler
+	s.mu.Unlock()
+	if handler == nil {
+		t.Fatal("worker was not started with a handler")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = handler.ProcessTask(context.Background(), hibiken.NewTask("work", nil))
+	}()
+	return func() { <-done }
 }
