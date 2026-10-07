@@ -52,9 +52,16 @@ func TestArchAssemblyPlanPublicAPIShape(t *testing.T) {
 		"Disabled":           reflect.TypeOf((func(*assembly.Plan) []plugin.Key)(nil)),
 		"DisabledDetail":     reflect.TypeOf((func(*assembly.Plan) []assembly.DisabledDefinition)(nil)),
 		"InstanceConfigPath": reflect.TypeOf((func(*assembly.Plan, plugin.Identity) string)(nil)),
-		"InstanceSelectedAt": reflect.TypeOf((func(*assembly.Plan, plugin.Identity) string)(nil)),
-		"InstanceInputs":     reflect.TypeOf((func(*assembly.Plan, plugin.Identity) []assembly.InputEdge)(nil)),
-		"Contracts":          reflect.TypeOf((func(*assembly.Plan, reflect.Type) []plugin.Identity)(nil)),
+		// InstanceActivationPath answers a question InstanceConfigPath cannot:
+		// which section a Definition's WhenConfigured gate watches, which can
+		// differ from the section its own instance binds (gorm-health binds
+		// plugins.gorm-health but activates on plugins.gorm). A diagnostic
+		// that attributed activation provenance to InstanceConfigPath would
+		// misattribute every Definition shaped that way.
+		"InstanceActivationPath": reflect.TypeOf((func(*assembly.Plan, plugin.Identity) (string, bool))(nil)),
+		"InstanceSelectedAt":     reflect.TypeOf((func(*assembly.Plan, plugin.Identity) string)(nil)),
+		"InstanceInputs":         reflect.TypeOf((func(*assembly.Plan, plugin.Identity) []assembly.InputEdge)(nil)),
+		"Contracts":              reflect.TypeOf((func(*assembly.Plan, reflect.Type) []plugin.Identity)(nil)),
 		// The workload accessors answer "what does this process carry, and
 		// why", which is a different question from every accessor above: those
 		// describe the graph that was built, while these also describe the

@@ -198,6 +198,90 @@ func TestEnvironmentAloneActivatesAWhenConfiguredPlugin(t *testing.T) {
 	assert.Contains(t, out, "from env", "doctor attributes the activation to the environment layer")
 }
 
+// TestDoctorAttributesActivationToItsOwnPathNotTheInstanceConfigPath pins the
+// gorm-health shape: a Definition can bind one section (ConfigPath) while a
+// different section's presence is what WhenConfigured actually watches
+// (Activation.Path). Before this fix doctor read origins from the instance's
+// own config path, so an instance activated purely by its gate's section --
+// with nothing of its own in any source -- was reported as "declared
+// defaults only" even though a real source turned it on.
+func TestDoctorAttributesActivationToItsOwnPathNotTheInstanceConfigPath(t *testing.T) {
+	dependency := plugin.Define("watched-dependency", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+	checker := plugin.Define("health-checker", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{
+		ConfigPath: "plugins.health-checker",
+		Activation: plugin.WhenConfigured("plugins.watched-dependency"),
+	})
+
+	app := newRuntimeTestApp(dependency, checker)
+	out := runDoctor(t, app, runtimeTestConfigWith(t, time.Second,
+		"plugins:\n  watched-dependency:\n    enabled: true\n")...)
+
+	assert.Contains(t, out, "planned 2, enabled instances 2, disabled 0",
+		"the gate's own section is enough to activate the Definition")
+	assert.Contains(t, out, "plugins.health-checker",
+		"the instance still binds and reports its own config section")
+	assert.Contains(t, out, "origin      from declared defaults only",
+		"the instance's own section was never touched by any source; the origin line answers "+
+			"strictly for plugins.health-checker, not for the gate that activated it")
+	assert.Contains(t, out, "activation  plugins.watched-dependency from file",
+		"a separate activation line names the path that decided the instance exists, since that "+
+			"is a distinct question from where the instance's own values came from")
+}
+
+// TestDoctorKeepsPerInstanceOriginDistinctUnderASharedActivationPath pins the
+// multi-instance regression a previous revision introduced: Activation.Path
+// is the Definition's whole root, shared by every instance a WhenConfigured,
+// MultipleInstances Definition produces, so routing the origin line through
+// it made every instance of a multi-instance gated Definition report the
+// same sources, regardless of which source actually touched that instance's
+// own section.
+func TestDoctorKeepsPerInstanceOriginDistinctUnderASharedActivationPath(t *testing.T) {
+	type multiCfg struct {
+		DSN string `yaml:"dsn"`
+	}
+	dependency := plugin.Define("watched-dep", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+	checker := plugin.DefineConfigured("multi-checker",
+		plugin.ConfigSpec[multiCfg]{Defaults: func() multiCfg { return multiCfg{} }},
+		func(plugin.BuildContext, multiCfg) (*runtimeTestValue, error) {
+			return &runtimeTestValue{}, nil
+		},
+		plugin.Options[*runtimeTestValue]{
+			Instances:  plugin.MultipleInstances,
+			Activation: plugin.WhenConfigured("plugins.watched-dep"),
+		})
+
+	app := newRuntimeTestApp(dependency, checker)
+	t.Setenv("XBC_PLUGINS_MULTI_CHECKER_REPLICA_DSN", "replica-dsn")
+	out := runDoctor(t, app, runtimeTestConfigWith(t, time.Second,
+		"plugins:\n  watched-dep:\n    enabled: true\n  multi-checker:\n    primary:\n      dsn: file-dsn\n")...)
+
+	assert.Contains(t, out, "multi-checker[primary]")
+	assert.Contains(t, out, "multi-checker[replica]")
+
+	primaryIndex := strings.Index(out, "multi-checker[primary]")
+	replicaIndex := strings.Index(out, "multi-checker[replica]")
+	require.NotEqual(t, -1, primaryIndex)
+	require.NotEqual(t, -1, replicaIndex)
+	primaryBlock := out[primaryIndex:replicaIndex]
+	replicaBlock := out[replicaIndex:]
+
+	assert.Contains(t, primaryBlock, "origin      from file",
+		"primary's own section was set from the file")
+	assert.NotContains(t, strings.SplitN(primaryBlock, "\n", 3)[1], "env",
+		"primary's origin line must not claim the env source that only touched replica")
+
+	assert.Contains(t, replicaBlock, "origin      from env",
+		"replica's own section was set only from the environment")
+	assert.Contains(t, replicaBlock, "activation  plugins.watched-dep from file",
+		"both instances share the same activation path, printed on its own line")
+}
+
 // TestEnvironmentAloneDeclaresMultipleInstances pins the multi-instance half of
 // the same promise, including that the instance names came from nowhere but the
 // environment.

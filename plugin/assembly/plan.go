@@ -198,6 +198,35 @@ func (plan *Plan) InstanceConfigPath(identity plugin.Identity) string {
 	return instance.configPath
 }
 
+// InstanceActivationPath returns the configuration path identity's
+// Definition watches to decide whether it is enabled at all, together with
+// whether that Definition is gated by WhenConfigured. The second value is
+// false for a Definition with the zero Activation (always enabled unless its
+// own section sets "enabled: false"), in which case the activation path is
+// not a distinct thing: nothing was watched to decide the Definition should
+// exist, so the config path is already the whole answer.
+//
+// This is deliberately not the same path InstanceConfigPath returns. A
+// Definition can declare ConfigPath or a conventional path for its own
+// section while being gated by a different Definition's section --
+// gorm-health activates on plugins.gorm but binds plugins.gorm-health -- and
+// a diagnostic that reused the config path to explain activation would
+// misattribute every Definition shaped that way. It returns ("", false) when
+// identity is not part of the plan.
+func (plan *Plan) InstanceActivationPath(identity plugin.Identity) (path string, configured bool) {
+	if plan == nil {
+		return "", false
+	}
+	instance, exists := plan.instances[identity.Normalized()]
+	if !exists {
+		return "", false
+	}
+	if instance.definition.Activation.Kind != pluginmodel.ActivationConfigured {
+		return "", false
+	}
+	return instance.definition.Activation.Path, true
+}
+
 // InstanceSelectedAt returns the composition site that first selected the
 // Definition behind identity: the BundleOf call that introduced it, as an
 // absolute file:line. It answers "who put this plugin in my graph", which the

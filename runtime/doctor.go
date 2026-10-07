@@ -282,14 +282,29 @@ func doctorHostedLabel(hosted bool) string {
 }
 
 // reportDoctorInstances writes the instances one group contributed, in graph
-// order, each with the section it binds, where its values came from, the
-// composition site that selected it, and what feeds its declared inputs.
+// order, each with the section it binds, where its own values came from, the
+// activation that decided whether it exists at all (when that is a distinct
+// question), the composition site that selected it, and what feeds its
+// declared inputs.
 //
 // The origin line keeps the wording it has always had ("from env", "from
-// file …"). The "configuration" section above states the same fact globally,
-// but the per-instance spelling is what an operator reads while asking about
-// one plugin, and it is the one thing that distinguishes an environment-only
-// activation from a file-defined one.
+// file …") and keeps answering strictly for the instance's own config
+// section. The per-instance spelling is what an operator reads while asking
+// about one plugin, and it is the one thing that distinguishes an
+// environment-only activation from a file-defined one -- a promise that
+// holds for every instance of a multi-instance WhenConfigured Definition,
+// because InstanceConfigPath, unlike Activation.Path, is already per-instance.
+//
+// A gated Definition gets a second "activation" line naming the path that
+// decided it exists, printed only when that is a distinct question --
+// InstanceActivationPath reports configured, and the activation path differs
+// from the instance's own config path. Folding that into the origin line (as
+// a previous revision did) blurred the two questions it answers: gorm-health
+// binds plugins.gorm-health but activates on plugins.gorm, and a
+// multi-instance gate's Activation.Path is the Definition's whole root,
+// shared by every instance rather than any one instance's own section, so
+// routing the origin line through it made every instance report the same
+// sources regardless of where its own values actually came from.
 //
 // A group with nothing under it says so. An empty group and a group whose
 // instances failed to print look identical otherwise, and the empty case is a
@@ -307,6 +322,10 @@ func (a *App) reportDoctorInstances(out io.Writer, plan *assembly.Plan, identiti
 		fmt.Fprintf(out, "    %-*s %s\n", doctorInstanceLabelWidth, "config", path)
 		fmt.Fprintf(out, "    %-*s from %s\n", doctorInstanceLabelWidth, "origin",
 			describeOrigins(a.env.OriginsUnder(path)))
+		if activationPath, configured := plan.InstanceActivationPath(identity); configured && activationPath != path {
+			fmt.Fprintf(out, "    %-*s %s from %s\n", doctorInstanceLabelWidth, "activation",
+				activationPath, describeOrigins(a.env.OriginsUnder(activationPath)))
+		}
 		fmt.Fprintf(out, "    %-*s %s\n", doctorInstanceLabelWidth, "selected at",
 			plan.InstanceSelectedAt(identity))
 		edges := plan.InstanceInputs(identity)
