@@ -11,6 +11,19 @@ import (
 // Engine is the port every HTTP engine adapter implements. The chain is
 // flattened by the router before registration, so the port deliberately has
 // no Use or Group: middleware accumulation is xbc's job, not the engine's.
+//
+// An adapter must not answer a request itself. Every response has to come from
+// one of the three chains this port installs -- the matched route chain,
+// NoRoute, or NoMethod -- because everything xbc promises about a response is
+// a stage of that chain: the in-flight gate, the panic and error boundaries,
+// contributed middleware, request id, access log, CORS, security headers and
+// business metrics. A response an engine's own matcher produces bypasses all
+// of it. Engine conveniences that would otherwise reply first -- trailing-slash
+// redirects, fixed-path rewrites, automatic OPTIONS answers -- must therefore
+// be disabled by the adapter, not merely left unconfigured: an engine default
+// that answers is the same bypass with a different author, and an unmatched
+// path has to reach NoRoute so it can render the framework's 404 Problem
+// Detail like any other.
 type Engine interface {
 	Handle(method, path string, chain []Handler)
 	NoRoute(chain []Handler)

@@ -39,6 +39,15 @@ func (f Factory) NewEngine(opts web.Options) (web.Engine, error) {
 	// and the Engine port requires the two to stay distinct so 405 keeps its
 	// own Problem Detail and its Allow header.
 	e.HandleMethodNotAllowed = true
+	// gin's default trailing-slash behavior answers 301/307 straight from the
+	// matcher, outside every xbc stage -- the admission gate, the error
+	// boundary, the contributed middleware chain, request id, access log, CORS
+	// and security headers -- and it composes the redirect target from the
+	// client-supplied X-Forwarded-Prefix header. The Engine port requires an
+	// adapter not to answer requests itself, and a trailing-slash mismatch to
+	// fall through to NoRoute like any other unmatched path, so the redirect is
+	// disabled here rather than left at gin's default.
+	e.RedirectTrailingSlash = false
 	e.MaxMultipartMemory = opts.MaxMultipartMemory
 	// ContextWithFallback is no longer needed: the neutral Ctx has a single
 	// Set/Get store and a single context.Context (the Handler's first

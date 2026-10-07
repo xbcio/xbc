@@ -194,6 +194,55 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 		"the 405 must list every other method already registered for that path")
 }
 
+// TestTrailingSlashMismatchReachesNoRoute pins this adapter's half of the
+// web.Engine rule that an adapter must not answer a request itself. Gin's
+// default trailing-slash behaviour replies 301/307 straight from the matcher --
+// ahead of the in-flight gate, the error boundary, every contributed
+// middleware, and the request-id, access-log, CORS and security-header stages
+// -- and it composes the redirect target from the client-supplied
+// X-Forwarded-Prefix header. A request that differs from a registered route
+// only by a trailing slash must instead reach the NoRoute chain and come back
+// as the framework's 404 Problem Detail, exactly like any other unmatched
+// path.
+//
+// The X-Forwarded-Prefix header is set in the request on purpose: it is what
+// the inherited redirect would have honoured, so a regression to gin's default
+// changes the response observably in more than the status code.
+func TestTrailingSlashMismatchReachesNoRoute(t *testing.T) {
+	restoreProcessGlobals(t)
+
+	built, err := Factory{}.NewEngine(web.Options{})
+	require.NoError(t, err, "NewEngine() must not return an error")
+	adapter, ok := built.(*engine)
+	require.True(t, ok, "NewEngine must return this package's *engine")
+
+	ok200 := func(_ context.Context, c *web.Ctx) error { c.Status(http.StatusOK); return nil }
+	adapter.Handle(http.MethodGet, "/resource", []web.Handler{ok200})
+
+	var noRouteCalled bool
+	adapter.NoRoute([]web.Handler{func(_ context.Context, c *web.Ctx) error {
+		noRouteCalled = true
+		web.AbortProblem(c, web.NewProblem(http.StatusNotFound, "not_found"))
+		return nil
+	}})
+
+	request := httptest.NewRequest(http.MethodGet, "/resource/", nil)
+	request.Header.Set("X-Forwarded-Prefix", "/gateway")
+	recorder := httptest.NewRecorder()
+	adapter.e.ServeHTTP(recorder, request)
+
+	result := recorder.Result()
+	require.NoError(t, result.Body.Close())
+	assert.True(t, noRouteCalled,
+		"a trailing-slash mismatch must be answered by the NoRoute chain rather than by the engine")
+	assert.Equal(t, http.StatusNotFound, result.StatusCode,
+		"the mismatch must be an unmatched-route 404 Problem Detail, not a redirect")
+	assert.Empty(t, result.Header.Get("Location"),
+		"a redirect would answer outside every xbc stage and follow the client-supplied X-Forwarded-Prefix")
+	assert.Equal(t, "application/problem+json; charset=utf-8", result.Header.Get("Content-Type"))
+	assert.Contains(t, recorder.Body.String(), `"status":404`)
+}
+
 // replayingWriter is the wrapper a gzip-, timeout-, or envelope-style
 // middleware installs over the request's writer: it holds the status and the
 // body until the middleware unwinds, then replays both onto the writer it
