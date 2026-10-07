@@ -36,7 +36,8 @@ const stopDuringBootstrapRounds = 10
 // TestUnwindClosesAdmissionWhenTheStopPrecedesTheTaskRuntime pins -- so the
 // discriminating signal is the race detector: under `go test -race`, a build
 // without the lock reports a data race between this read and that write. Only
-// a -race run carries that signal; `make check` and CI test without it.
+// a -race run carries that signal: `make check` is race-free, and CI adds a
+// root-module race pass of its own.
 //
 // Being a race-detector test, it must arrange the one thing the detector needs:
 // no happens-before edge in either direction between the read and the write.

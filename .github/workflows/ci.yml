@@ -26,3 +26,10 @@ jobs:
 
       - name: Check all workspace modules
         run: make check
+
+      # The detector carries signals make check cannot: the bootstrap/stop
+      # publication races pinned in runtime only fail under -race. Scoped to
+      # the root module -- the module boundary already excludes every nested
+      # publishable module, so the step stays cheap.
+      - name: Race-test the root module
+        run: go test -race -count=1 ./...
