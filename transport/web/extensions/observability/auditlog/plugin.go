@@ -224,8 +224,14 @@ func (p *Plugin) Drain(ctx context.Context) error {
 }
 
 // Stop stops queue admission, drains accepted events within ctx's deadline,
-// then invokes the optional Sink Flusher. It is concurrent and idempotent, and
-// also drains a dispatcher that was constructed but never started.
+// then invokes the optional Sink Flusher. Every wait it performs is bounded by
+// the caller's ctx: the flush is additionally capped at sink_timeout, whichever
+// of the two comes first, and a worker that ctx expires on is cancelled rather
+// than awaited. A deadline the drain already spent therefore makes the flush a
+// best-effort call that a sink honoring its contract refuses at once, not one
+// granted a fresh budget detached from the caller. It is concurrent and
+// idempotent, and also drains a dispatcher that was constructed but never
+// started.
 func (p *Plugin) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -262,16 +268,22 @@ func (p *Plugin) stop(ctx context.Context, workerAccepted bool) error {
 	if state == nil {
 		return nil
 	}
-	// Runtime supplies a shared shutdown deadline. The additional timeout
-	// keeps programmatic Stop(context.Background()) bounded as well.
-	stopCtx, cancel := context.WithTimeout(ctx, state.config.sinkTimeout)
-	defer cancel()
 	var result error
 	if state.dispatch != nil {
-		result = state.dispatch.stopAndWait(stopCtx, workerAccepted, true)
+		// The caller's ctx bounds the drain; each sink write inside it is
+		// bounded by its own sink_timeout.
+		result = state.dispatch.stopAndWait(ctx, workerAccepted, true)
 	}
-	if flusher, ok := state.sink.(Flusher); ok && stopCtx.Err() == nil {
-		if err := callFlush(flusher, stopCtx); err != nil {
+	// The flush is capped at sink_timeout but derived from the caller's ctx, so
+	// it ends with the earlier of the two. It is still attempted when the drain
+	// above abandoned the queue -- a sink may hold buffered writes that only
+	// Flush can commit -- but then the caller's deadline is already spent and
+	// the sink is expected to refuse the cancelled context at once, instead of
+	// the flush buying Stop a fresh sink_timeout the caller never granted.
+	flushCtx, cancel := context.WithTimeout(ctx, state.config.sinkTimeout)
+	defer cancel()
+	if flusher, ok := state.sink.(Flusher); ok {
+		if err := callFlush(flusher, flushCtx); err != nil {
 			result = errors.Join(result, fmt.Errorf("auditlog: flush sink: %w", err))
 		}
 	}

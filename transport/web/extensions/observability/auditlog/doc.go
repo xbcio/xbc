@@ -44,6 +44,11 @@
 //
 // With async dispatch, shutdown is split in two: Drain runs after the Web
 // server has stopped serving and writes every queued event to the sink within
-// the drain budget, and Stop flushes the sink, abandoning whatever is still
-// queued once the shutdown budget is spent.
+// the drain budget; Stop then drains what is left within the caller's shutdown
+// deadline, cancels -- rather than waits for -- a worker that deadline expires
+// on, and attempts one final flush. The flush is capped at sink_timeout but
+// never outlives the caller's deadline, so a deadline the drain already spent
+// leaves it a best-effort call the sink is expected to refuse through the
+// cancelled context. Every individual sink write is bounded by sink_timeout
+// too.
 package auditlog

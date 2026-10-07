@@ -39,6 +39,7 @@ type asyncDispatcher struct {
 
 	cancelMu sync.Mutex
 	cancel   context.CancelFunc
+	canceled bool
 	dropped  atomic.Uint64
 }
 
@@ -57,7 +58,11 @@ func (d *asyncDispatcher) run(ctx context.Context) {
 	workerCtx, cancel := context.WithCancel(ctx)
 	d.cancelMu.Lock()
 	d.cancel = cancel
+	canceled := d.canceled
 	d.cancelMu.Unlock()
+	if canceled {
+		cancel()
+	}
 	defer cancel()
 	defer close(d.done)
 	for {
@@ -131,7 +136,10 @@ func (d *asyncDispatcher) submit(ctx context.Context, event Event) error {
 // stopAndWait closes admission and waits, within ctx, for every accepted event
 // to reach the sink. abandon decides what an expired ctx does to the events
 // still queued: Stop abandons them by cancelling the worker, while Drain only
-// stops waiting and leaves the worker writing for the Stop that follows.
+// stops waiting and leaves the worker writing for the Stop that follows. An
+// abandoned worker is left to unwind on its own cancellation instead of being
+// awaited, so the Flush that follows runs against a settled sink only when the
+// drain finished inside ctx; on a spent deadline it is a best-effort call.
 func (d *asyncDispatcher) stopAndWait(ctx context.Context, workerAccepted, abandon bool) error {
 	d.stopOnce.Do(func() {
 		d.admission.Lock()
@@ -151,7 +159,7 @@ func (d *asyncDispatcher) stopAndWait(ctx context.Context, workerAccepted, aband
 	case <-sendersDone:
 	case <-ctx.Done():
 		if abandon {
-			d.cancelWorker()
+			d.abandonWorker(ctx, workerAccepted)
 		}
 		return fmt.Errorf("auditlog: stop queue admission: %w", ctx.Err())
 	}
@@ -165,7 +173,7 @@ func (d *asyncDispatcher) stopAndWait(ctx context.Context, workerAccepted, aband
 		return nil
 	case <-ctx.Done():
 		if abandon {
-			d.cancelWorker()
+			d.abandonWorker(ctx, true)
 		}
 		return fmt.Errorf("auditlog: drain async queue: %w", ctx.Err())
 	}
@@ -187,8 +195,30 @@ func (d *asyncDispatcher) drainWithoutWorker(ctx context.Context) error {
 	}
 }
 
+// abandonWorker cancels the worker and waits for its exit only within ctx --
+// the deadline that abandoned the queue and is already spent by the time this
+// runs. The worker is told to stop rather than awaited to completion: the sink
+// contract requires every write to honor context cancellation, so a compliant
+// sink's worker exits at once, while one that ignores cancellation cannot hold
+// Stop past the caller's deadline. accepted is false for a dispatcher whose run
+// was never submitted, which has no worker to wait for.
+func (d *asyncDispatcher) abandonWorker(ctx context.Context, accepted bool) {
+	d.cancelWorker()
+	if !accepted {
+		return
+	}
+	select {
+	case <-d.done:
+	case <-ctx.Done():
+	}
+}
+
+// cancelWorker cancels the worker's context. It is safe whether or not run has
+// installed its cancel func yet: run consults canceled when it starts, so a
+// Stop that abandons before the worker is scheduled still ends it.
 func (d *asyncDispatcher) cancelWorker() {
 	d.cancelMu.Lock()
+	d.canceled = true
 	cancel := d.cancel
 	d.cancelMu.Unlock()
 	if cancel != nil {
