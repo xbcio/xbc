@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -32,9 +33,19 @@ type Client struct {
 	observer  Observer
 	queue     chan queuedDelivery
 	closing   chan struct{}
+	// logger is the runtime logger captured at Start; it defaults to a no-op
+	// so a drain that never saw a Start can still report what it discarded.
+	logger log.Logger
 
-	admissionMu    sync.Mutex
-	accepting      bool
+	admissionMu sync.Mutex
+	// accepting and deliverable split the two admission paths: drain closes
+	// accepting, which refuses Enqueue, while deliverable keeps synchronous
+	// Deliver calls open until stop closes it.
+	accepting   bool
+	deliverable bool
+	// senders counts Enqueue calls admitted but not yet in the queue; drain
+	// waits for it before closing the queue. active counts in-flight Deliver
+	// calls; stop waits for it after closing deliverable.
 	senders        sync.WaitGroup
 	active         sync.WaitGroup
 	started        atomic.Bool
@@ -45,10 +56,11 @@ type Client struct {
 	workers sync.WaitGroup
 
 	stopOnce sync.Once
+	stopped  chan struct{}
 	stopErr  error
 
 	// drainOnce starts the drain sequence shared by drain and stop; drained is
-	// closed once every accepted delivery has finished.
+	// closed once the queue has drained and every worker has exited.
 	drainOnce sync.Once
 	drained   chan struct{}
 }
@@ -62,21 +74,24 @@ func newClient(cfg Config, transport Transport, resolver Resolver, policy Endpoi
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	return &Client{
-		cfg:       cfg,
-		transport: transport,
-		policy:    policy,
-		observer:  observer,
-		queue:     make(chan queuedDelivery, cfg.QueueSize),
-		closing:   make(chan struct{}),
-		accepting: true,
-		runCtx:    runCtx,
-		cancel:    cancel,
+		cfg:         cfg,
+		transport:   transport,
+		policy:      policy,
+		observer:    observer,
+		queue:       make(chan queuedDelivery, cfg.QueueSize),
+		closing:     make(chan struct{}),
+		logger:      log.Nop(),
+		accepting:   true,
+		deliverable: true,
+		runCtx:      runCtx,
+		cancel:      cancel,
 	}
 }
 
 // Enqueue admits one defensive snapshot into the bounded worker queue. Block
 // mode waits for capacity, caller cancellation, or shutdown; reject mode
-// returns ErrQueueFull immediately when no slot is available.
+// returns ErrQueueFull immediately when no slot is available. Drain is what
+// refuses further Enqueue calls; Deliver stays available past it.
 func (c *Client) Enqueue(ctx context.Context, delivery Delivery) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -99,7 +114,7 @@ func (c *Client) Enqueue(ctx context.Context, delivery Delivery) error {
 			wipe(prepared.Secret)
 		}
 	}()
-	if !c.beginAdmission() {
+	if !c.beginEnqueue() {
 		return ErrClosed
 	}
 	defer c.senders.Done()
@@ -132,6 +147,8 @@ func (c *Client) Enqueue(ctx context.Context, delivery Delivery) error {
 }
 
 // Deliver performs one synchronous delivery with the configured retry policy.
+// It stays available through Drain, which only refuses Enqueue, and stops
+// being admitted once Stop begins.
 func (c *Client) Deliver(ctx context.Context, delivery Delivery) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -141,24 +158,33 @@ func (c *Client) Deliver(ctx context.Context, delivery Delivery) (Result, error)
 		return Result{DeliveryID: delivery.ID, Err: err}, err
 	}
 	defer wipe(prepared.Secret)
-	if !c.beginAdmission() {
+	if !c.beginDelivery() {
 		return Result{DeliveryID: prepared.ID, Err: ErrClosed}, ErrClosed
 	}
-	// Add before releasing the sender. finishClose waits for senders before
-	// active.Wait, so no Add can race the Wait.
-	c.active.Add(1)
-	c.senders.Done()
 	defer c.active.Done()
 	return c.execute(ctx, prepared)
 }
 
-func (c *Client) beginAdmission() bool {
+func (c *Client) beginEnqueue() bool {
 	c.admissionMu.Lock()
 	defer c.admissionMu.Unlock()
 	if !c.accepting {
 		return false
 	}
 	c.senders.Add(1)
+	return true
+}
+
+// beginDelivery counts the call as active while still holding the admission
+// lock, so stop -- which closes deliverable under the same lock before it
+// waits -- can never race an Add to active.
+func (c *Client) beginDelivery() bool {
+	c.admissionMu.Lock()
+	defer c.admissionMu.Unlock()
+	if !c.deliverable {
+		return false
+	}
+	c.active.Add(1)
 	return true
 }
 
@@ -403,25 +429,33 @@ func (c *Client) start(ctx *plugin.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	gate := ctx.TrafficGate()
+	if gate == nil {
+		return errors.New("webhook: Start requires a runtime traffic gate")
+	}
 
 	// Keep worker registration serialized with Stop. Add must never race a
 	// Wait, and a partially admitted Start remains owned for Stop to unwind.
 	c.admissionMu.Lock()
 	defer c.admissionMu.Unlock()
-	if !c.accepting {
+	if !c.accepting || !c.deliverable {
 		return ErrClosed
 	}
 	if c.started.Load() || c.startAttempted {
 		return errors.New("webhook: Start called more than once")
 	}
 	c.startAttempted = true
+	// Captured after every refusal above, under admissionMu, so the write is
+	// ordered before a drain that starts later and never happens for a Start
+	// the drain already closed.
+	c.logger = ctx.Log()
 
 	admitted := 0
 	for range c.cfg.Workers {
 		c.workers.Add(1)
 		if !ctx.GoCritical(func(taskCtx context.Context) {
 			defer c.workers.Done()
-			c.worker(taskCtx)
+			c.worker(taskCtx, gate)
 		}) {
 			c.workers.Done()
 			c.accepting = false
@@ -434,21 +468,36 @@ func (c *Client) start(ctx *plugin.Context) error {
 	return nil
 }
 
-func (c *Client) worker(taskCtx context.Context) {
+func (c *Client) worker(taskCtx context.Context, gate <-chan struct{}) {
 	ctx, cancel := context.WithCancel(taskCtx)
 	stop := context.AfterFunc(c.runCtx, cancel)
 	defer stop()
 	defer cancel()
+	// Hold every queued delivery until the runtime opens the traffic gate, so
+	// nothing is sent before every Plugin finished its traffic preparation. A
+	// drain that arrives first abandons the queue instead of consuming it; the
+	// drain sequence then reports each abandoned delivery as ErrClosed.
+	select {
+	case <-gate:
+	case <-c.closing:
+		return
+	case <-ctx.Done():
+		return
+	}
 	for item := range c.queue {
 		_, _ = c.execute(ctx, item.delivery)
 		wipe(item.delivery.Secret)
 	}
 }
 
-// drain closes admission and waits, within ctx, for every accepted delivery --
-// queued or in flight through Deliver -- to finish while the managed workers
-// are still live. It never cancels in-flight work: an expired drain only stops
-// waiting, and stop is what aborts whatever is left.
+// drain closes asynchronous admission and waits, within ctx, for the queued
+// deliveries already accepted to finish while the managed workers are still
+// live. A delivery a worker never consumed -- a worker that exits at the
+// traffic gate when the drain arrives first -- is wiped and reported to the
+// observer as ErrClosed, and the discarded count is logged, so no accepted
+// delivery is dropped silently. Synchronous Deliver stays available: it is the
+// caller's own bounded call, and refusing and waiting for those belongs to
+// stop. An expired drain only stops waiting; it never cancels in-flight work.
 func (c *Client) drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -474,41 +523,74 @@ func (c *Client) beginDrain() <-chan struct{} {
 		}
 		c.admissionMu.Unlock()
 		go func() {
-			// beginAdmission adds senders under admissionMu. Waiting for them
-			// before closing the queue prevents a send/close race. Deliver moves
-			// into active before releasing its sender slot, so active.Wait
-			// cannot race an Add.
+			// beginEnqueue adds senders under admissionMu. Waiting for them
+			// before closing the queue prevents a send/close race.
 			c.senders.Wait()
 			close(c.queue)
 			c.workers.Wait()
-			c.active.Wait()
+			// A worker that exited at the traffic gate leaves its accepted
+			// deliveries in the closed queue. Wipe their secrets like every
+			// other abandoned delivery, and report each one so an accepted
+			// Enqueue never disappears without a trace.
+			discarded := 0
+			for item := range c.queue {
+				wipe(item.delivery.Secret)
+				discarded++
+				c.observe(Result{DeliveryID: item.delivery.ID, Err: ErrClosed})
+			}
+			if discarded > 0 {
+				c.logger.Warn("webhook: drain discarded accepted deliveries", "count", discarded)
+			}
 			close(c.drained)
 		}()
 	})
 	return c.drained
 }
 
-// stop closes admission synchronously, drains accepted work while managed
-// workers are still live, and closes transport resources exactly once. It is
-// safe before Start, after partial worker admission, after drain, and on
-// repeated calls. It completes the drain itself when drain was skipped or ran
-// out of budget, so it stays correct whether or not drain ran.
+// stop refuses new Deliver calls, waits within ctx for the drain to complete
+// and for every in-flight delivery to finish, aborts whatever outlived the
+// budget, and closes transport resources exactly once. It is safe before
+// Start, after partial worker admission, after drain, and on repeated calls,
+// and it completes the drain itself when drain was skipped or ran out of
+// budget. A caller whose context expires stops waiting, aborts the work that
+// outlived its budget, and reports the context error, while the shared
+// shutdown still finishes for every other caller.
 func (c *Client) stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	c.stopOnce.Do(func() {
-		// Cancellation of the lifecycle budget aborts in-flight queued requests;
-		// the runtime still bounds this synchronous Stop if a dependency ignores
-		// cancellation.
-		stopCancellation := context.AfterFunc(ctx, c.cancel)
-		defer stopCancellation()
-
-		<-c.beginDrain()
-		c.cancel()
-		c.stopErr = closeIdleConnections(c.transport)
+		// Refusing admission under the same mutex that admits deliveries means
+		// shutdown finds every admitted call already counted in active.
+		c.admissionMu.Lock()
+		c.deliverable = false
+		c.admissionMu.Unlock()
+		c.stopped = make(chan struct{})
+		go c.shutdown()
 	})
-	return c.stopErr
+	select {
+	case <-c.stopped:
+		return c.stopErr
+	default:
+	}
+	select {
+	case <-c.stopped:
+		return c.stopErr
+	case <-ctx.Done():
+		c.cancel()
+		return fmt.Errorf("webhook: stop accepted deliveries: %w", ctx.Err())
+	}
+}
+
+// shutdown is the single teardown sequence behind stop: it finishes the drain,
+// waits for every admitted delivery, aborts whatever is left, and closes
+// transport resources once.
+func (c *Client) shutdown() {
+	<-c.beginDrain()
+	c.active.Wait()
+	c.cancel()
+	c.stopErr = closeIdleConnections(c.transport)
+	close(c.stopped)
 }
 
 func closeIdleConnections(transport Transport) (err error) {

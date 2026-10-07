@@ -154,8 +154,8 @@ func TestStopDeadlineCancelsInFlightWorkAndWakesBlockedProducer(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	if err := client.stop(ctx); err != nil {
-		t.Fatalf("stop() error = %v", err)
+	if err := client.stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stop() error = %v, want the caller's deadline", err)
 	}
 	select {
 	case err := <-producerDone:

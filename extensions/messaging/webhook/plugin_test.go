@@ -98,6 +98,69 @@ func TestClientStartHandlesManagedTaskAdmissionRejection(t *testing.T) {
 	})
 }
 
+// TestQueuedDeliveryWaitsForTrafficGate pins the startup contract: a delivery
+// enqueued before the runtime opens the traffic gate is held until every
+// Plugin finished its traffic preparation, then sent.
+func TestQueuedDeliveryWaitsForTrafficGate(t *testing.T) {
+	sent := make(chan struct{})
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		close(sent)
+		return testResponse(request, http.StatusNoContent, nil), nil
+	})
+	client := newClient(testConfig(), transport, nil, nil, nil)
+	host := newGatedTestRuntimeHost()
+	t.Cleanup(host.stopTasks)
+	if err := client.start(testPluginContext(host, plugin.DefaultInstance)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.stop(context.Background()) })
+
+	if err := client.Enqueue(context.Background(), testDelivery()); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	select {
+	case <-sent:
+		t.Fatal("queued delivery was sent before the traffic gate opened")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	host.openTraffic()
+	select {
+	case <-sent:
+	case <-time.After(time.Second):
+		t.Fatal("queued delivery was not sent after the traffic gate opened")
+	}
+}
+
+// TestDrainBeforeTrafficGateAbandonsQueuedWork covers the abort path: a worker
+// still waiting for the traffic gate exits on Drain instead of consuming the
+// queue, so a shutdown that begins before the application opened traffic does
+// not send what startup never released.
+func TestDrainBeforeTrafficGateAbandonsQueuedWork(t *testing.T) {
+	var calls atomic.Int32
+	client := newClient(testConfig(), roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return testResponse(request, http.StatusNoContent, nil), nil
+	}), nil, nil, nil)
+	host := newGatedTestRuntimeHost()
+	t.Cleanup(host.stopTasks)
+	if err := client.start(testPluginContext(host, plugin.DefaultInstance)); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Enqueue(context.Background(), testDelivery()); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	if err := client.drain(context.Background()); err != nil {
+		t.Fatalf("drain() error = %v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("a delivery queued before the traffic gate opened was sent anyway")
+	}
+	if err := client.stop(context.Background()); err != nil {
+		t.Fatalf("stop() error = %v", err)
+	}
+}
+
 type blockingCleanupTransport struct {
 	started     chan struct{}
 	release     chan struct{}
@@ -138,6 +201,10 @@ func (t *blockingCleanupTransport) unblock() {
 	t.releaseOnce.Do(func() { close(t.release) })
 }
 
+// TestClientStopDeadlineCancelsDrainAndSharesIdempotentResult pins the stop
+// budget: the caller whose context expires stops waiting, aborts the in-flight
+// delivery, and reports its own deadline, while every other stop call --
+// concurrent or later -- observes the one shared cleanup result.
 func TestClientStopDeadlineCancelsDrainAndSharesIdempotentResult(t *testing.T) {
 	transport := newBlockingCleanupTransport(true)
 	cfg := testConfig()
@@ -162,14 +229,18 @@ func TestClientStopDeadlineCancelsDrainAndSharesIdempotentResult(t *testing.T) {
 	go func() { results <- client.stop(stopCtx) }()
 	go func() { results <- client.stop(context.Background()) }()
 	first, second := <-results, <-results
-	if first == nil || first.Error() != "webhook: transport cleanup panicked" {
-		t.Fatalf("first shared stop error = %v", first)
+	deadlineErr, sharedErr := first, second
+	if !errors.Is(deadlineErr, context.DeadlineExceeded) {
+		deadlineErr, sharedErr = sharedErr, deadlineErr
 	}
-	if second != first {
-		t.Fatalf("concurrent Stop returned different errors: %p and %p", first, second)
+	if !errors.Is(deadlineErr, context.DeadlineExceeded) {
+		t.Fatalf("no stop reported its own deadline: %v and %v", first, second)
 	}
-	if later := client.stop(context.Background()); later != first {
-		t.Fatalf("later Stop error = %v, want shared %v", later, first)
+	if sharedErr == nil || sharedErr.Error() != "webhook: transport cleanup panicked" {
+		t.Fatalf("shared stop error = %v", sharedErr)
+	}
+	if later := client.stop(context.Background()); later != sharedErr {
+		t.Fatalf("later Stop error = %v, want shared %v", later, sharedErr)
 	}
 	if err := client.Enqueue(context.Background(), testDelivery()); !errors.Is(err, ErrClosed) {
 		t.Fatalf("Enqueue after Stop error = %v", err)

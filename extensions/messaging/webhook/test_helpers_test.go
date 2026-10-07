@@ -68,13 +68,23 @@ type testRuntimeHost struct {
 	taskCtx        context.Context
 	cancel         context.CancelFunc
 	trafficGate    chan struct{}
+	gateOnce       sync.Once
 	wg             sync.WaitGroup
 }
 
-func newTestRuntimeHost() *testRuntimeHost {
+func newTestRuntimeHost() *testRuntimeHost { return newTestRuntimeHostWithGate(true) }
+
+// newGatedTestRuntimeHost returns a host whose traffic gate starts closed, the
+// state a real runtime holds until every Plugin's traffic preparation
+// succeeds. openTraffic releases it.
+func newGatedTestRuntimeHost() *testRuntimeHost { return newTestRuntimeHostWithGate(false) }
+
+func newTestRuntimeHostWithGate(open bool) *testRuntimeHost {
 	ctx, cancel := context.WithCancel(context.Background())
 	trafficGate := make(chan struct{})
-	close(trafficGate)
+	if open {
+		close(trafficGate)
+	}
 	return &testRuntimeHost{
 		accepting:      true,
 		admissionLimit: -1,
@@ -82,6 +92,10 @@ func newTestRuntimeHost() *testRuntimeHost {
 		cancel:         cancel,
 		trafficGate:    trafficGate,
 	}
+}
+
+func (h *testRuntimeHost) openTraffic() {
+	h.gateOnce.Do(func() { close(h.trafficGate) })
 }
 
 func (h *testRuntimeHost) ExecutionContext() context.Context { return h.taskCtx }

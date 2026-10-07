@@ -52,11 +52,18 @@
 //	}
 //
 // Deliver applies retries synchronously. Enqueue uses a bounded queue and the
-// configured block or reject backpressure policy; asynchronous workers become
-// available only after OpenTraffic. Payload, response, retry, and request
-// limits are bounded. Drain rejects new deliveries and waits for accepted work
-// within the drain budget without cancelling it; Stop finishes that wait if
-// Drain did not, aborts whatever outlives the shutdown budget, and closes idle
+// configured block or reject backpressure policy; the queued workers wait for
+// XBC's global traffic gate before sending, so a delivery accepted during
+// startup is not dispatched until every Plugin finished its traffic
+// preparation. Payload, response, retry, and request limits are bounded. Drain
+// refuses further Enqueue calls and waits within the drain budget for the
+// queued deliveries without cancelling their workers. A worker that is still
+// waiting at the traffic gate when the drain arrives abandons its accepted
+// deliveries instead of collecting them: each is reported to the Observer with
+// ErrClosed and the discarded count is logged, so an accepted delivery is
+// never dropped silently. Synchronous Deliver stays available through Drain;
+// Stop then refuses further Deliver calls, waits for the calls already in
+// flight, aborts whatever outlives its own budget, and closes idle
 // connections.
 //
 // HTTPS is required by default. The default transport rejects private and
