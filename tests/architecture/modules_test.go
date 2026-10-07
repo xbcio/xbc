@@ -174,9 +174,10 @@ func TestArchWorkspaceModuleDiscoveryIgnoresCWDAndGOWORK(t *testing.T) {
 
 // archStableReleaseVersion accepts an exact release-tag-shaped semantic
 // version only. Pseudo-versions, prereleases, build metadata and the common
-// v0.0.0 placeholder are intentionally rejected. Whether that tag exists on
-// the remote is then proven by the release job with GOWORK=off; an ordinary
-// architecture test must not depend on network availability.
+// v0.0.0 placeholder are intentionally rejected. This only checks the
+// version string's shape; it does not prove the tag exists on the remote,
+// and no CI job does that proof today -- an ordinary architecture test must
+// not depend on network availability.
 func archStableReleaseVersion(version string) bool {
 	if version == "v0.0.0" || !strings.HasPrefix(version, "v") {
 		return false
