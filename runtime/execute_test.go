@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -27,6 +29,55 @@ func TestExecuteRejectsANilContextAndASecondExecution(t *testing.T) {
 	code, err = app.Execute(context.Background(), runtimeTestConfig(t, time.Second))
 	assert.Equal(t, 1, code)
 	require.EqualError(t, err, "xbc: App.Execute can only be called once")
+}
+
+// TestConcurrentExecuteCallsLetExactlyOneProceed pins the "only once" contract
+// against the race it actually has to survive: Execute called from several
+// goroutines at the same instant, not in sequence. executeMu guards the
+// executed flag, so one caller must observe false and own the run while every
+// other caller observes true and is rejected -- never two winners, and never
+// zero. The sequential test above exercises the same flag but cannot
+// distinguish "checked-then-set is correct" from "checked-then-set is racy but
+// never raced in practice"; only concurrent calls can.
+func TestConcurrentExecuteCallsLetExactlyOneProceed(t *testing.T) {
+	app := newRuntimeTestApp()
+	args := runtimeTestConfig(t, time.Second)
+
+	const callers = 8
+	var (
+		start   sync.WaitGroup
+		done    sync.WaitGroup
+		results = make([]runtimeTestResult, callers)
+	)
+	start.Add(1)
+	done.Add(callers)
+	for index := 0; index < callers; index++ {
+		go func(index int) {
+			defer done.Done()
+			start.Wait()
+			code, err := app.Execute(context.Background(), args)
+			results[index] = runtimeTestResult{code: code, err: err}
+		}(index)
+	}
+	start.Done()
+	done.Wait()
+
+	var winners, rejections int
+	for _, result := range results {
+		switch {
+		case result.err == nil:
+			t.Fatalf("every caller must fail against this empty composition, got a nil error with code %d", result.code)
+		case result.err.Error() == "xbc: App.Execute can only be called once":
+			rejections++
+		default:
+			winners++
+			assert.Equal(t, 1, result.code, "the composition is empty, so the winner also fails, just for a different reason")
+			assert.EqualError(t, result.err,
+				"xbc: no plugin was declared, nothing to do; compose Bundles explicitly or import an autoload leaf")
+		}
+	}
+	assert.Equal(t, 1, winners, "exactly one of the concurrent callers must have proceeded past the executed flag")
+	assert.Equal(t, callers-1, rejections, "every other concurrent caller must observe the already-executed flag")
 }
 
 func TestExecuteRefusesAnAlreadyCanceledCallerContext(t *testing.T) {
@@ -60,6 +111,69 @@ func TestCallerCancellationStopsTheRunWithoutOwningTheProcess(t *testing.T) {
 	require.NoError(t, completed.err, "caller cancellation is a clean stop, not a failure")
 	assert.Equal(t, 0, completed.code)
 	assert.Equal(t, stopReasonContext, app.currentStopReason())
+}
+
+// TestSignalRacingCallerCancellationUnwindsExactlyOnce is the signal/context
+// half of the "two independent shutdown triggers" contract that
+// TestConcurrentSignalAndCriticalFailureUnwindExactlyOnce pins for signal
+// versus a critical task. Here the second trigger is the caller's own context
+// instead: a real SIGTERM delivered through watchProcessSignals races a
+// cancellation of the parent context passed to execute, both arriving while
+// Stop is in flight for an already-running plugin.
+//
+// requestStop's own compare-and-swap on stopRequestedFlag is what has to
+// produce a single winner: both paths call requestStop, and only the first
+// one to acquire stateMu may set the flag, record the reason, and close
+// stopCh, exactly as the signal/critical-task race already pins. What this
+// test adds is that one of the two triggers is a real OS signal, delivered
+// through the same watchProcessSignals a production process registers, so
+// the race is exercised through signal.Notify's own delivery path rather
+// than through a direct requestStop call standing in for it.
+func TestSignalRacingCallerCancellationUnwindsExactlyOnce(t *testing.T) {
+	var stops atomic.Int32
+	stopEntered := make(chan struct{})
+	definition := plugin.Define("signal-vs-cancel", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
+		Stop: func(*runtimeTestValue, context.Context) error {
+			close(stopEntered)
+			stops.Add(1)
+			return nil
+		},
+	}})
+	app := newRuntimeTestApp(definition)
+
+	caller, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopSignals := watchProcessSignals(func() { app.requestStop(stopReasonSignal) }, func() {})
+	defer stopSignals()
+
+	result := make(chan runtimeTestResult, 1)
+	go func() {
+		code, err := app.execute(caller, runtimeTestConfig(t, time.Second), stopReasonContext)
+		result <- runtimeTestResult{code: code, err: err}
+	}()
+	awaitRuntimeTestReady(t, app)
+
+	var starter sync.WaitGroup
+	starter.Add(2)
+	go func() { defer starter.Done(); require.NoError(t, signalSelf(syscall.SIGTERM)) }()
+	go func() { defer starter.Done(); cancel() }()
+	starter.Wait()
+
+	completed := awaitRuntimeTestResult(t, result)
+	require.NoError(t, completed.err, "both triggers are a clean, operator- or caller-requested stop")
+	assert.Equal(t, 0, completed.code)
+	assert.Contains(t, []string{stopReasonSignal, stopReasonContext}, app.currentStopReason(),
+		"exactly one of the two racing triggers must own the shutdown reason")
+
+	select {
+	case <-stopEntered:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("Stop was never entered")
+	}
+	assert.Equal(t, int32(1), stops.Load(), "two concurrent shutdown triggers must not unwind the plugin twice")
 }
 
 // TestRequestStopCancelsExecutionBeforePublishingStop ensures all lifecycle
