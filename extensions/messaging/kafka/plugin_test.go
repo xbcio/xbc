@@ -405,6 +405,63 @@ func TestConcurrentStopCancelsHandlerAndSharesCloseError(t *testing.T) {
 	}
 }
 
+// TestStopReturnsAtDeadlineWhenAHandlerIgnoresCancellation covers the owner's
+// stop call: a handler that ignores its cancelled context extends the
+// once-guarded cleanup, but must not block the caller past its own deadline.
+// The cleanup keeps running in the background and its result stays observable
+// through a later stop.
+func TestStopReturnsAtDeadlineWhenAHandlerIgnoresCancellation(t *testing.T) {
+	reader := newFakeReader()
+	cfg := validConfig()
+	cfg.Consumers = map[string]ConsumerConfig{"jobs": consumerConfig(ErrorPolicyStop)}
+	client := managedClient(t, cfg, &fakeFactory{writer: &fakeWriter{}, readers: map[string]messageReader{"jobs": reader}, readerErr: map[string]error{}})
+	handlerStarted := make(chan struct{})
+	var startedOnce sync.Once
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	if err := client.RegisterHandler("jobs", HandlerFunc(func(context.Context, Message) error {
+		startedOnce.Do(func() { close(handlerStarted) })
+		<-release
+		return nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	host := newFakeHost()
+	defer host.close()
+	if err := client.start(runtimeContext(host, "default")); err != nil {
+		t.Fatal(err)
+	}
+	host.openTraffic()
+	reader.enqueue(Message{Offset: 1})
+	select {
+	case <-handlerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler was not called")
+	}
+
+	short, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- client.stop(short) }()
+	select {
+	case err := <-stopErr:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("stop() error = %v, want deadline while the handler ignores cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		// Unblock the handler so a run that waits for it can still report a
+		// failure instead of hanging until the test binary times out.
+		unblock()
+		t.Fatal("stop() did not return when its context expired")
+	}
+
+	unblock()
+	if err := client.stop(context.Background()); err != nil {
+		t.Fatalf("stop() after the handler returned error = %v, want the shared cleanup result", err)
+	}
+}
+
 func TestStopBeforeStartIsSafeAndIdempotent(t *testing.T) {
 	writer := &fakeWriter{}
 	client := managedClient(t, validConfig(), &fakeFactory{writer: writer})

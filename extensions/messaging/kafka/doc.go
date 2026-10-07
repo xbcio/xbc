@@ -49,7 +49,9 @@
 // stay observable. Drain stops each consumer fetching another message and waits
 // for the message it holds to be handled and committed, while production stays
 // open. Stop rejects production, cancels and joins consumers, then closes
-// readers and the producer.
+// readers and the producer. One cleanup runs for all callers, in the
+// background once it is started, so every Stop caller returns at its own
+// context deadline even when a handler has not yet returned.
 //
 // TLS supports private CAs and client certificates. SASL PLAIN or SCRAM is
 // accepted only with TLS. Keep credentials in secret-backed configuration and

@@ -444,13 +444,12 @@ func (c *Client) stop(ctx context.Context) error {
 		return nil
 	}
 	if owner {
-		c.finishStop(consumers, cancel, done)
-	} else {
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		go c.finishStop(consumers, cancel, done)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	c.stateMu.Lock()
 	err := c.stopErr
@@ -458,6 +457,10 @@ func (c *Client) stop(ctx context.Context) error {
 	return err
 }
 
+// finishStop runs the one cleanup sequence on the owner's behalf so the owner's
+// stop call can return at its own deadline instead of waiting for a handler
+// that ignores cancellation. It closes done when the cleanup completes, which
+// is what every caller's select waits on.
 func (c *Client) finishStop(consumers []*runningConsumer, cancel context.CancelFunc, done chan struct{}) {
 	if cancel != nil {
 		cancel()
