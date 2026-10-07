@@ -222,6 +222,11 @@ func (service *Service) openTraffic(ctx *plugin.Context) error {
 // detached from each caller's deadline, so a timed-out caller cannot poison a
 // later call. It is safe before Start, after a failed or partial Start, and
 // after traffic has opened.
+//
+// Service deliberately implements Stop alone, not plugin.Drainer; see the
+// "Shutdown" section in doc.go. Service's OpenTraffic hook makes it a member
+// of Unwind's ingress closure, so it is stopped in phase A and a Drain hook
+// would never be invoked for it -- Stop is the only shutdown hook that runs.
 func (service *Service) stop(ctx context.Context) error {
 	if service == nil {
 		return nil

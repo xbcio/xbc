@@ -72,8 +72,32 @@
 // construction fails clearly when none is present. Polling starts only after
 // all traffic preparation succeeds and XBC releases the global traffic gate.
 // Replicas use renewable leases, but delivery remains at least once, so
-// publishers and consumers must use Event.ID for idempotency. Shutdown stops
-// admission and waits for accepted inserts and worker activity to drain.
+// publishers and consumers must use Event.ID for idempotency.
+//
+// # Shutdown
+//
+// Service implements Stop only, not plugin.Drainer, and that is deliberate
+// rather than an omission: Service's Options[*Service].Lifecycle supplies
+// OpenTraffic, which makes it a real ingress instance -- it opens traffic to
+// release the worker's wait on the global traffic gate -- so Service is a
+// member of Unwind's ingress closure and is stopped in phase A, before any
+// Drain phase (phase B) runs at all. A Drain hook on an instance inside the
+// ingress closure is never invoked; phase A already stops it. Any dependent
+// that enqueues from its own Stop is also in the ingress closure, because
+// that closure is the transitive-dependents set over every TrafficOpener,
+// and such a dependent is stopped before Service in the same reverse start
+// order, giving it its chance to enqueue before Service closes admission.
+//
+// Stop itself still performs the two actions a Drain phase would: it closes
+// Enqueue and claim admission immediately, then waits for every event
+// accepted before that point and for the worker's active publish cycle to
+// finish, all detached from the caller's own deadline (see stopAdmission and
+// worker.requestStop) so one caller's timeout cannot cut the shared wait
+// short for a later caller. The database connection and configured Publisher
+// are released only once that wait completes. A caller whose own context
+// expires first gets back ctx.Err() without blocking further, but the
+// detached wait keeps running underneath and the plugin graph's shared
+// shutdown budget still bounds it.
 //
 // Event payloads and headers are persisted in the configured database. Protect
 // that database appropriately and avoid storing secrets or sensitive data that
