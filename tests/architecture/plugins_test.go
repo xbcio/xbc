@@ -213,8 +213,10 @@ func TestArchAutoloadMutationIsConfined(t *testing.T) {
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		require.NoError(t, walkErr)
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", "vendor":
+			// Tool droppings are skipped for the same reason as .git and vendor:
+			// nothing under them is compiled by any package pattern, so a guard
+			// on who may import plugin/autoload must not read them.
+			if archIgnoresDirectoryEntry(entry.Name()) || entry.Name() == "vendor" {
 				return filepath.SkipDir
 			}
 			return nil

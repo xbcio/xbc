@@ -35,6 +35,17 @@ func archProductionGoFilesInDir(t *testing.T, dir string) []string {
 	return files
 }
 
+// archIgnoresDirectoryEntry reports whether a directory entry is invisible to
+// the go tool's "..." wildcard patterns: names beginning with "." or "_" are
+// excluded from go build ./..., go test ./..., and go vet ./... expansion, so
+// an editor or tool dropping (.DS_Store, a scratch .omc directory) is not
+// repository structure and must not fail a guard whose subject is package
+// layout. An explicit path can still reach such a directory, but nothing in
+// this repository names one.
+func archIgnoresDirectoryEntry(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")
+}
+
 // archWebPackageExtensionPaths is the intentional set of lightweight Web
 // plugins grouped beneath extensions while remaining packages of the
 // transport/web module. Adding or removing one changes the Web runtime's
@@ -207,7 +218,7 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		"enginetest": true,
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || archIgnoresDirectoryEntry(entry.Name()) {
 			continue
 		}
 		assert.Truef(t, allowedDirectories[entry.Name()], "unexpected direct package directory transport/web/%s; Web plugins belong beneath transport/web/extensions, engine adapters beneath transport/web/engines", entry.Name())
@@ -230,6 +241,9 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	engineEntries, err := os.ReadDir(enginesRoot)
 	require.NoError(t, err, "reading Web engines root failed")
 	for _, entry := range engineEntries {
+		if archIgnoresDirectoryEntry(entry.Name()) {
+			continue
+		}
 		assert.Truef(t, entry.IsDir(), "unexpected non-directory transport/web/engines/%s; every engine adapter is its own directory", entry.Name())
 		_, err := os.Stat(filepath.Join(enginesRoot, entry.Name(), "go.mod"))
 		assert.NoErrorf(t, err, "engine adapter transport/web/engines/%s must be its own publishable module", entry.Name())
@@ -256,6 +270,9 @@ func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expecte
 	var actualGroups []string
 	var actualContractModules []string
 	for _, entry := range entries {
+		if archIgnoresDirectoryEntry(entry.Name()) {
+			continue
+		}
 		if !entry.IsDir() {
 			name := entry.Name()
 			if name == "go.mod" || strings.HasSuffix(name, ".go") {
@@ -302,6 +319,9 @@ func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expecte
 
 		leaves := 0
 		for _, entry := range groupEntries {
+			if archIgnoresDirectoryEntry(entry.Name()) {
+				continue
+			}
 			if !entry.IsDir() {
 				name := entry.Name()
 				if name == "go.mod" || strings.HasSuffix(name, ".go") {

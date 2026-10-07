@@ -70,7 +70,7 @@ func TestArchPluginContextIsBuiltOnlyByTheRuntime(t *testing.T) {
 // judges only what ships.
 func archAllProductionGoFiles(t *testing.T, root string) []string {
 	t.Helper()
-	skipped := map[string]bool{".git": true, ".claude": true, "testdata": true}
+	skipped := map[string]bool{"testdata": true}
 
 	var files []string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -79,7 +79,7 @@ func archAllProductionGoFiles(t *testing.T, root string) []string {
 		}
 		name := entry.Name()
 		if entry.IsDir() {
-			if path != root && (skipped[name] || strings.HasPrefix(name, ".")) {
+			if path != root && (skipped[name] || archIgnoresDirectoryEntry(name)) {
 				return fs.SkipDir
 			}
 			return nil
