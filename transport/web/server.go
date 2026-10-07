@@ -242,8 +242,18 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	// Router snapshots the handlers slice, so this must happen after every
 	// entry above is appended.
 	router := newRouter(engine, cfg.BasePath, handlers, routes, frozen, index)
+	// Each contributor registers against its own copy of the root Router. The
+	// copy shares the route table (routes, frozen, index), the engine, and the
+	// root chain, but keeps its own defaultPerm/defaultAuth -- a default is
+	// only meaningful scoped to the registrations that declared it (see the
+	// Router field comment), and Router.Perm/Router.Auth mutate the receiver.
+	// Handing every contributor the root itself would let the first plugin to
+	// call either method set a default for every plugin that registers after
+	// it: one plugin's public route would silently make another plugin's
+	// routes public, bypassing deny-by-default.
 	for _, entry := range s.routes {
-		entry.Value.RegisterRoutes(router)
+		contributor := *router
+		entry.Value.RegisterRoutes(&contributor)
 	}
 
 	ln := s.listener

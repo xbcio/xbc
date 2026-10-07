@@ -587,6 +587,72 @@ func TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator(t *testing.T)
 	assert.False(t, host.trafficReleased())
 }
 
+// TestContributorPolicyDefaultsDoNotLeakToLaterContributors pins the scope of
+// Router.Perm and Router.Auth to the contributor that declared them.
+// (*Server).Start chooses the Router every RouteContributor receives, so a
+// plugin that declares a group-level default for its own routes must not
+// thereby change the policy of routes registered later by a different plugin
+// -- a leak that would silently make another plugin's routes public, or
+// demand a permission it never declared. Both registration orders are
+// exercised because the leak is directional: only contributors that run after
+// the declaration could inherit it, so a single order would leave "the other
+// plugin happened to register first" as a way for isolation to look intact.
+func TestContributorPolicyDefaultsDoNotLeakToLaterContributors(t *testing.T) {
+	declaring := plugin.Entry[web.RouteContributor]{
+		Identity: plugin.Identity{Plugin: "declaring"},
+		Value: fakeRouteContributor{register: func(router *web.Router) {
+			router.Auth(web.Public()).Perm("declaring:use")
+			router.GET("/declared", func(context.Context, *web.Ctx) error { return nil })
+		}},
+	}
+	plain := plugin.Entry[web.RouteContributor]{
+		Identity: plugin.Identity{Plugin: "plain"},
+		Value: fakeRouteContributor{register: func(router *web.Router) {
+			router.GET("/plain", func(context.Context, *web.Ctx) error { return nil })
+		}},
+	}
+
+	for _, order := range []struct {
+		name    string
+		entries []plugin.Entry[web.RouteContributor]
+	}{
+		{name: "declaring contributor registers first", entries: []plugin.Entry[web.RouteContributor]{declaring, plain}},
+		{name: "plain contributor registers first", entries: []plugin.Entry[web.RouteContributor]{plain, declaring}},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			var catalog web.RouteCatalog
+			listener := fakeRouteCatalogListener{ready: func(ready web.RouteCatalog) error {
+				catalog = ready
+				return nil
+			}}
+			server, ctx, _ := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
+				routes: order.entries,
+				listeners: []plugin.Entry[web.RouteCatalogListener]{
+					{Identity: plugin.Identity{Plugin: "capture"}, Value: listener},
+				},
+			})
+			require.NoError(t, server.Start(ctx))
+			require.NoError(t, server.OpenTraffic(ctx))
+			require.NotNil(t, catalog)
+
+			declared, ok := catalog.Lookup(http.MethodGet, "/declared")
+			require.True(t, ok)
+			assert.Equal(t, "declaring:use", declared.Perm,
+				"a contributor's own .Perm default must still reach the routes it registers")
+			require.NotNil(t, declared.Auth)
+			assert.True(t, declared.Auth.IsPublic(),
+				"a contributor's own .Auth default must still reach the routes it registers")
+
+			plainRoute, ok := catalog.Lookup(http.MethodGet, "/plain")
+			require.True(t, ok)
+			assert.Empty(t, plainRoute.Perm,
+				"a default declared by one contributor must not reach routes registered by another")
+			assert.Nil(t, plainRoute.Auth,
+				"a route registered without .Auth must keep an absent policy, not inherit another contributor's public default")
+		})
+	}
+}
+
 // servingPingServer starts a server, prepares it, releases the runtime gate,
 // and returns the bound address once the managed serving task is answering.
 // Every drain assertion needs a server that is genuinely serving traffic, not
