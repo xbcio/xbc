@@ -27,9 +27,20 @@ jobs:
       - name: Check all workspace modules
         run: make check
 
-      # The detector carries signals make check cannot: the bootstrap/stop
-      # publication races pinned in runtime only fail under -race. Scoped to
-      # the root module -- the module boundary already excludes every nested
-      # publishable module, so the step stays cheap.
-      - name: Race-test the root module
-        run: go test -race -count=1 ./...
+      # Recent drain and shutdown fixes (auditlog, async, kafka, webhook) all
+      # landed in nested publishable modules, not the root one, so a race
+      # step scoped to the root module never ran them under -race. make
+      # test-race now covers every workspace module for the same reason
+      # make check already does.
+      - name: Race-test every workspace module
+        run: make test-race
+
+      # The ordering gate carries a signal make test-race cannot by itself:
+      # scheduling-dependent ordering regressions (reverse graph order, the
+      # ingress closure, the drain phase, a shared shutdown budget) can pass
+      # at -count=1 and only show up with repetition. It is its own step so a
+      # failure here reads as an ordering/drain regression rather than a
+      # generic test failure buried inside test-race's module-by-module
+      # output.
+      - name: Shutdown ordering and drain budget gate
+        run: make test-order

@@ -1,0 +1,68 @@
+#!/bin/sh
+# Run the shutdown-ordering gate -- -race -count=20 against every test whose
+# name matches "Shutdown|Unwind|Order|Drain" -- across every workspace module
+# that actually has a matching test. "make test-order" is the usual entry
+# point; this script exists separately so the module list and the go test
+# invocation stay in one reviewable place instead of being inlined into the
+# Makefile.
+#
+# The module list below is deliberately explicit, not every module in
+# go.work: it was built by running
+#   go test ./... -list 'Shutdown|Unwind|Order|Drain'
+# from each workspace module and keeping only the ones that printed a match.
+# A module with no matching test (for example extensions/coordination/raft,
+# or extensions/coordination/placement, whose shutdown tests are named after
+# lease renewal and handover rather than ordering or drain budgets) still
+# exits 0 under `go test -run` -- it only prints "no tests to run" -- so the
+# list is kept explicit for cost and signal focus instead: running the full
+# -race -count=20 pass against modules with no ordering-relevant test would
+# multiply build and run time for zero additional coverage. Re-run the -list
+# command above against the full go.work module set before trusting this
+# list after a drain- or ordering-relevant test is renamed or moved, and note
+# that the regex itself is a sampling net, not a complete one: a test such as
+# TestConcurrentExecuteCallsLetExactlyOneProceed in runtime/execute_test.go
+# exercises ordering-adjacent behavior under make test-race without matching
+# any of the four words.
+set -eu
+
+go_cmd=${GO:-go}
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+workspace=$repository_root/go.work
+if [ ! -f "$workspace" ]; then
+	echo "workspace not found: $workspace" >&2
+	exit 1
+fi
+
+# Relative to the repository root; resolved to an absolute path below.
+modules="
+.
+examples
+extensions/authentication
+extensions/concurrency/async
+extensions/reliability/health
+extensions/storage/elasticsearch
+extensions/jobs/asynq
+extensions/jobs/cron
+extensions/messaging/kafka
+extensions/messaging/outbox
+extensions/messaging/webhook
+transport/web
+transport/web/engines/gin
+transport/web/extensions/authorization/casbin
+transport/web/extensions/observability/tracing
+"
+
+count=0
+for module_dir in $modules; do
+	[ -n "$module_dir" ] || continue
+	abs_dir=$(CDPATH= cd -- "$repository_root/$module_dir" && pwd)
+	count=$((count + 1))
+	printf '\n==> %s: go test -race -count=20 -run "Shutdown|Unwind|Order|Drain" ./...\n' "$abs_dir"
+	(cd "$abs_dir" && GOWORK="$workspace" "$go_cmd" test ./... -race -count=20 -run 'Shutdown|Unwind|Order|Drain')
+done
+
+if [ "$count" -eq 0 ]; then
+	echo "no ordering-gate modules discovered" >&2
+	exit 1
+fi
