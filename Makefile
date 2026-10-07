@@ -3,15 +3,16 @@ GOFMT ?= gofmt
 MODULE_RUNNER := ./scripts/for-each-module
 ORDER_RUNNER := ./scripts/test-order-modules
 
-.PHONY: help fmt fmt-check vet test test-race test-order check
+.PHONY: help fmt fmt-check vet test test-race test-order check check-detached-manifests
 
 help:
 	@printf '%s\n' \
-		'make fmt        format all Go source files' \
-		'make check      format-check, vet, and test every workspace module' \
-		'make test       test every workspace module without cache' \
-		'make test-race  race-test every workspace module without cache' \
-		'make test-order race-test shutdown ordering/drain budgets at -count=20'
+		'make fmt                      format all Go source files' \
+		'make check                    format-check, vet, and test every workspace module' \
+		'make test                     test every workspace module without cache' \
+		'make test-race                race-test every workspace module without cache' \
+		'make test-order               race-test shutdown ordering/drain budgets at -count=20' \
+		'make check-detached-manifests verify each module resolves/verifies with GOWORK=off'
 
 fmt:
 	$(GOFMT) -w .
@@ -44,3 +45,6 @@ test-order:
 	GO="$(GO)" $(ORDER_RUNNER)
 
 check: fmt-check vet test
+
+check-detached-manifests:
+	./scripts/check-detached-manifests

@@ -44,3 +44,23 @@ jobs:
       # output.
       - name: Shutdown ordering and drain budget gate
         run: make test-order
+
+  detached-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955b # v4.3.0
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            go.sum
+            **/go.sum
+
+      # Each module must resolve and verify its own manifest with the
+      # workspace disabled, as a published consumer (without go.work) would
+      # see it. This does not require tags to exist yet.
+      - name: Check detached module manifests
+        run: ./scripts/check-detached-manifests
