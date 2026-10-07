@@ -40,17 +40,23 @@ func newRuntimeTestApp(definitions ...plugin.Definition) *App {
 	return app
 }
 
+// runtimeTestConfigContents is the quiet base configuration: no sinks, plus a
+// shutdown budget. It is shared so a fixture that has to deliver the same
+// configuration through another channel cannot drift from the file one.
+//
+// drain_timeout is left unset: it derives as 60% of whatever shutdownTimeout a
+// caller passes, which is always strictly smaller than shutdownTimeout, so this
+// fixture stays usable with any value a caller passes without having to spell
+// out an off switch. Tests of the drain phase itself configure it explicitly
+// instead of going through this helper.
+func runtimeTestConfigContents(shutdownTimeout time.Duration) string {
+	return "log:\n  console:\n    enabled: false\n  file:\n    enabled: false\nxbc:\n  shutdown_timeout: " + shutdownTimeout.String() + "\n"
+}
+
 func runtimeTestConfig(t *testing.T, shutdownTimeout time.Duration) []string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "application.yml")
-	// drain_timeout is left unset: it derives as 60% of whatever
-	// shutdownTimeout a caller passes, which is always strictly smaller than
-	// shutdownTimeout, so this fixture stays usable with any value a caller
-	// passes without having to spell out an off switch. Tests of the drain
-	// phase itself configure it explicitly instead of going through this
-	// helper.
-	contents := []byte("log:\n  console:\n    enabled: false\n  file:\n    enabled: false\nxbc:\n  shutdown_timeout: " + shutdownTimeout.String() + "\n")
-	require.NoError(t, os.WriteFile(path, contents, 0o600))
+	require.NoError(t, os.WriteFile(path, []byte(runtimeTestConfigContents(shutdownTimeout)), 0o600))
 	return []string{"--config", path}
 }
 
