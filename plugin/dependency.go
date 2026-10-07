@@ -64,38 +64,46 @@ type Optional[T any] struct{ token pluginmodel.InputToken }
 type Many[T any] struct{ token pluginmodel.InputToken }
 
 // RefTo creates an exact typed reference to key's default instance.
-func RefTo[T any](key Key) Ref[T] { return RefToInstance[T](key, DefaultInstance) }
+func RefTo[T any](key Key) Ref[T] { return refTo[T](key, DefaultInstance) }
 
 // RefToInstance creates an exact typed reference to one normalized instance.
 // The instance must be a name the configuration side would accept, so a typo is
 // rejected here rather than surfacing later as a missing exact producer. The
 // empty string stays valid and normalizes to the default instance.
-func RefToInstance[T any](key Key, instance string) Ref[T] {
+func RefToInstance[T any](key Key, instance string) Ref[T] { return refTo[T](key, instance) }
+
+// refTo is shared by RefTo and RefToInstance so both record the declaration
+// that called them: the two wrappers sit at the same depth above refTo, so one
+// depth reaches the caller for either.
+func refTo[T any](key Key, instance string) Ref[T] {
 	if instance != "" {
 		if err := pluginmodel.ValidateInstanceName(instance); err != nil {
 			panic("xbc: plugin.RefToInstance " + strings.TrimPrefix(err.Error(), "xbc: "))
 		}
 	}
-	return Ref[T]{token: newInputToken[T](pluginmodel.QueryRef, key, instance)}
+	return Ref[T]{token: newInputToken[T](pluginmodel.QueryRef, key, instance, 3)}
 }
 
 // RequireOne creates a query requiring exactly one exporter of T.
 func RequireOne[T any]() One[T] {
-	return One[T]{token: newInputToken[T](pluginmodel.QueryOne, "", DefaultInstance)}
+	return One[T]{token: newInputToken[T](pluginmodel.QueryOne, "", DefaultInstance, 2)}
 }
 
 // OptionalOne creates a query accepting zero or one exporter of T.
 func OptionalOne[T any]() Optional[T] {
-	return Optional[T]{token: newInputToken[T](pluginmodel.QueryOptional, "", DefaultInstance)}
+	return Optional[T]{token: newInputToken[T](pluginmodel.QueryOptional, "", DefaultInstance, 2)}
 }
 
 // Collect creates a query for every exporter of T.
 func Collect[T any]() Many[T] {
-	return Many[T]{token: newInputToken[T](pluginmodel.QueryMany, "", DefaultInstance)}
+	return Many[T]{token: newInputToken[T](pluginmodel.QueryMany, "", DefaultInstance, 2)}
 }
 
-func newInputToken[T any](kind pluginmodel.QueryKind, key Key, instance string) pluginmodel.InputToken {
-	return pluginmodel.NewInputToken(kind, typeOf[T](), pluginmodel.Key(key), instance, callerOrigin(2))
+// newInputToken takes the callerOrigin depth explicitly: the query constructors
+// call it directly, so 2 reaches their caller, while RefTo and RefToInstance
+// reach it one frame deeper through refTo and pass 3.
+func newInputToken[T any](kind pluginmodel.QueryKind, key Key, instance string, callerSkip int) pluginmodel.InputToken {
+	return pluginmodel.NewInputToken(kind, typeOf[T](), pluginmodel.Key(key), instance, callerOrigin(callerSkip))
 }
 
 func (input Ref[T]) inputToken() pluginmodel.InputToken      { return input.token }

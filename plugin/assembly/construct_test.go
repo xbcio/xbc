@@ -104,7 +104,53 @@ func TestRefBindsByKeyNotByImplementationType(t *testing.T) {
 	assert.Equal(t, "decoy", instance.Primary().(*store).Name())
 }
 
-func TestCollectBindsEveryExporterInGraphOrderAndToleratesNone(t *testing.T) {
+// TestCollectReportsExportersCanonicallyRatherThanInGraphOrder pins the order
+// Many[T] hands its entries back in when the two candidate orders differ.
+//
+// "alpha" depends on "beta", so construction must run beta first -- Plan.Order
+// and Plan.Contracts both say so. The collected slice is deliberately not that
+// order: it is ordered by CompareIdentity, so alpha comes first even though it
+// was constructed second. A reader who assumed graph order would get the
+// opposite slice.
+func TestCollectReportsExportersCanonicallyRatherThanInGraphOrder(t *testing.T) {
+	t.Parallel()
+	toBeta := plugin.RefTo[storeContract]("beta")
+	beta := storeDefinition("beta", plugin.SingleInstance)
+	alpha := plugin.Define("alpha", func(context plugin.BuildContext) (*store, error) {
+		return &store{name: toBeta.Get(context).Identity.String()}, nil
+	}, plugin.Options[*store]{
+		Inputs:  plugin.Inputs(toBeta),
+		Exports: plugin.Contracts(plugin.ExportAs(func(value *store) storeContract { return value })),
+	})
+	all := plugin.Collect[storeContract]()
+	var seen []string
+	collector := plugin.Define("collector", func(context plugin.BuildContext) (*validationValue, error) {
+		for _, entry := range all.Get(context) {
+			seen = append(seen, entry.Identity.Plugin.String())
+		}
+		return &validationValue{}, nil
+	}, plugin.Options[*validationValue]{Inputs: plugin.Inputs(all)})
+
+	plan, err := planFor(t, nil, alpha, beta, collector)
+	require.NoError(t, err)
+	betaIdentity := plugin.Identity{Plugin: "beta", Instance: plugin.DefaultInstance}
+	alphaIdentity := plugin.Identity{Plugin: "alpha", Instance: plugin.DefaultInstance}
+	assert.Equal(t, []plugin.Identity{
+		betaIdentity,
+		alphaIdentity,
+		{Plugin: "collector", Instance: plugin.DefaultInstance},
+	}, plan.Order(), "the dependency forces beta ahead of alpha in graph order")
+	assert.Equal(t, []plugin.Identity{betaIdentity, alphaIdentity},
+		plan.Contracts(reflect.TypeOf((*storeContract)(nil)).Elem()),
+		"the contract index is reordered into graph order")
+
+	_, err = Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alpha", "beta"}, seen,
+		"Many reports in CompareIdentity order, not construction order")
+}
+
+func TestCollectBindsEveryExporterAndToleratesNone(t *testing.T) {
 	t.Parallel()
 	all := plugin.Collect[storeContract]()
 	var seen []string

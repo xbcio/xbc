@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -170,6 +171,156 @@ func TestFreezeRejectsAStageDeclaredByBothTheTypeAndAnAdapter(t *testing.T) {
 	}
 }
 
+// Each type implements exactly one lifecycle stage, and only on its pointer
+// receiver. A factory returning the value boxes a value whose method set does
+// not reach the method, so the hook could only ever be skipped silently.
+type pointerInitValue struct{}
+
+func (*pointerInitValue) Init(*plugin.Context) error { return nil }
+
+type pointerMigrateValue struct{}
+
+func (*pointerMigrateValue) Migrate(*plugin.Context) error { return nil }
+
+type pointerStartValue struct{}
+
+func (*pointerStartValue) Start(*plugin.Context) error { return nil }
+
+type pointerOpenTrafficValue struct{}
+
+func (*pointerOpenTrafficValue) OpenTraffic(*plugin.Context) error { return nil }
+
+type pointerStopValue struct{}
+
+func (*pointerStopValue) Stop(context.Context) error { return nil }
+
+type pointerPreStopValue struct{}
+
+func (*pointerPreStopValue) PreStop(context.Context) error { return nil }
+
+type pointerDrainValue struct{}
+
+func (*pointerDrainValue) Drain(context.Context) error { return nil }
+
+func TestFreezeRejectsALifecycleStageImplementedOnlyOnThePointerType(t *testing.T) {
+	t.Parallel()
+	for name, testCase := range map[string]struct {
+		define func() plugin.Definition
+		stage  string
+	}{
+		"Init": {
+			define: func() plugin.Definition {
+				return plugin.Define("pointer", func(plugin.BuildContext) (pointerInitValue, error) {
+					return pointerInitValue{}, nil
+				})
+			},
+			stage: "Init",
+		},
+		"Migrate": {
+			define: func() plugin.Definition {
+				return plugin.Define("pointer", func(plugin.BuildContext) (pointerMigrateValue, error) {
+					return pointerMigrateValue{}, nil
+				})
+			},
+			stage: "Migrate",
+		},
+		"Start": {
+			define: func() plugin.Definition {
+				return plugin.Define("pointer", func(plugin.BuildContext) (pointerStartValue, error) {
+					return pointerStartValue{}, nil
+				})
+			},
+			stage: "Start",
+		},
+		"OpenTraffic": {
+			define: func() plugin.Definition {
+				return plugin.Define("pointer", func(plugin.BuildContext) (pointerOpenTrafficValue, error) {
+					return pointerOpenTrafficValue{}, nil
+				})
+			},
+			stage: "OpenTraffic",
+		},
+		"Stop": {
+			define: func() plugin.Definition {
+				return plugin.Define("pointer", func(plugin.BuildContext) (pointerStopValue, error) {
+					return pointerStopValue{}, nil
+				})
+			},
+			stage: "Stop",
+		},
+		"PreStop": {
+			define: func() plugin.Definition {
+				return plugin.Define("pointer", func(plugin.BuildContext) (pointerPreStopValue, error) {
+					return pointerPreStopValue{}, nil
+				})
+			},
+			stage: "PreStop",
+		},
+		"Drain": {
+			define: func() plugin.Definition {
+				return plugin.Define("pointer", func(plugin.BuildContext) (pointerDrainValue, error) {
+					return pointerDrainValue{}, nil
+				})
+			},
+			stage: "Drain",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			valueType := "assembly.pointer" + testCase.stage + "Value"
+			_, err := planFor(t, nil, testCase.define())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "primary type "+valueType+" declares the "+testCase.stage+" lifecycle stage only with a pointer receiver")
+			assert.Contains(t, err.Error(), "declare *"+valueType+" as the primary type or add a Lifecycle adapter for that stage")
+		})
+	}
+}
+
+// An adapter for a stage is a complete answer: it is the hook, so the
+// unreachable pointer-receiver method no longer matters. Freeze must accept
+// such a Definition and compile the adapter as the stage, rather than
+// rejecting the value primary and recommending the adapter it just refused.
+func TestFreezeAcceptsAnAdapterForAStageDeclaredOnlyOnThePointerType(t *testing.T) {
+	t.Parallel()
+	stopped := make(chan pointerStopValue, 1)
+	definition := plugin.Define("adapted", func(plugin.BuildContext) (pointerStopValue, error) {
+		return pointerStopValue{}, nil
+	}, plugin.Options[pointerStopValue]{Lifecycle: plugin.Lifecycle[pointerStopValue]{
+		Stop: func(value pointerStopValue, _ context.Context) error {
+			stopped <- value
+			return nil
+		},
+	}})
+
+	plan, err := planFor(t, nil, definition)
+	require.NoError(t, err, "the adapter covers the stage the value's method set cannot reach")
+	constructed, err := Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+	instance, ok := constructed.Instance(plugin.Identity{Plugin: "adapted"})
+	require.True(t, ok)
+	require.True(t, instance.HasStop(), "the adapter must compile into the Stop hook")
+
+	require.NoError(t, instance.StopBounded(context.Background(), time.Second))
+	select {
+	case value := <-stopped:
+		assert.Equal(t, instance.Primary(), value, "the adapter receives the boxed primary value")
+	default:
+		t.Fatal("the Stop adapter did not run")
+	}
+}
+
+func TestFreezeAcceptsLifecycleStagesReachableOnThePrimaryType(t *testing.T) {
+	t.Parallel()
+	value := plugin.Define("value", func(plugin.BuildContext) (dualLifecycleValue, error) {
+		return dualLifecycleValue{}, nil
+	})
+	pointer := plugin.Define("pointer", func(plugin.BuildContext) (*stagedValue, error) {
+		return &stagedValue{}, nil
+	})
+	_, err := planFor(t, nil, value, pointer)
+	require.NoError(t, err, "value receivers on a value primary and pointer receivers on a pointer primary both run")
+}
+
 func TestActivationAndEnabledFlagsDecideExpansion(t *testing.T) {
 	t.Parallel()
 	always := plugin.Define("always", func(plugin.BuildContext) (*validationValue, error) {
@@ -204,6 +355,81 @@ func TestActivationAndEnabledFlagsDecideExpansion(t *testing.T) {
 	}}, always)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "plugins.always.enabled must be boolean, got yes")
+}
+
+// TestMissingProducerFailureIsDeterministic pins that which input failure a
+// plan reports does not depend on map iteration order. Two consumers each
+// declare an input nothing satisfies, so exactly one of the two messages can
+// come out of one BuildPlan call -- and it must be the same one on every run,
+// or a doctor command and a startup failure would disagree about the same
+// composition from one attempt to the next.
+func TestMissingProducerFailureIsDeterministic(t *testing.T) {
+	t.Parallel()
+	consumer := func(key plugin.Key) plugin.Definition {
+		return plugin.Define(key, func(plugin.BuildContext) (*validationValue, error) {
+			return &validationValue{}, nil
+		}, plugin.Options[*validationValue]{Inputs: plugin.Inputs(plugin.RequireOne[coreContract]())})
+	}
+	alpha := consumer("alpha")
+	beta := consumer("beta")
+
+	first := ""
+	for run := 0; run < 50; run++ {
+		_, err := planFor(t, nil, alpha, beta)
+		require.Error(t, err)
+		if run == 0 {
+			first = err.Error()
+			continue
+		}
+		assert.Equal(t, first, err.Error(),
+			"the reported failure must not depend on map iteration order")
+	}
+	assert.Contains(t, first, "xbc: plugin alpha requires exactly one",
+		"consumers are visited in canonical identity order, so alpha fails first")
+}
+
+// TestAScalarSectionIsRejectedWithTheCorrectSpelling pins the diagnostic for
+// the mistake of writing the enable flag as the section's whole value:
+// "plugins.<key>: false" instead of "plugins.<key>.enabled: false".
+//
+// Left alone, the scalar surfaces as a bind failure that names no field
+// (mapstructure's "expected a map or struct, got bool") for a Definition with
+// a ConfigSpec, and as silence for one without -- Sub reports no map, so the
+// section reads as absent and the plugin stays enabled. The error therefore
+// states the spelling that works, and fires for every cardinality.
+func TestAScalarSectionIsRejectedWithTheCorrectSpelling(t *testing.T) {
+	t.Parallel()
+	type cfg struct {
+		Value string `yaml:"value"`
+	}
+	configured := plugin.DefineConfigured("configured", plugin.ConfigSpec[cfg]{
+		Defaults: func() cfg { return cfg{} },
+	}, func(plugin.BuildContext, cfg) (*validationValue, error) {
+		return &validationValue{}, nil
+	})
+	unconfigured := plugin.Define("unconfigured", func(plugin.BuildContext) (*validationValue, error) {
+		return &validationValue{}, nil
+	})
+	multi := plugin.Define("multi", func(plugin.BuildContext) (*validationValue, error) {
+		return &validationValue{}, nil
+	}, plugin.Options[*validationValue]{Instances: plugin.MultipleInstances})
+
+	for name, testCase := range map[string]struct {
+		definition plugin.Definition
+		key        plugin.Key
+	}{
+		"with a config schema":    {definition: configured, key: "configured"},
+		"without a config schema": {definition: unconfigured, key: "unconfigured"},
+		"multi-instance":          {definition: multi, key: "multi"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := planFor(t, map[string]any{"plugins": map[string]any{string(testCase.key): false}}, testCase.definition)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "plugins."+testCase.key.String()+" must be a mapping")
+			assert.Contains(t, err.Error(), "plugins."+testCase.key.String()+".enabled: false")
+		})
+	}
 }
 
 func TestMultiInstanceExpansionValidatesNamesAndSectionShape(t *testing.T) {

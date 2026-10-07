@@ -17,9 +17,30 @@ var (
 	closerType        = reflect.TypeOf((*plugin.Closer)(nil)).Elem()
 	preStopperType    = reflect.TypeOf((*plugin.PreStopper)(nil)).Elem()
 	drainerType       = reflect.TypeOf((*plugin.Drainer)(nil)).Elem()
+
+	// lifecycleStages pairs each stage's name with the interface that declares
+	// it and with the predicate that reports whether an adapter covers it, so
+	// pointer-only detection can name the offending stage -- and can tell a
+	// stage it must reject from one an adapter already supplies.
+	lifecycleStages = []struct {
+		name    string
+		iface   reflect.Type
+		covered func(pluginmodel.LifecycleAdapters) bool
+	}{
+		{"Init", initializerType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.Init != nil }},
+		{"Migrate", migratorType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.Migrate != nil }},
+		{"Start", runnerType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.Start != nil }},
+		{"OpenTraffic", trafficOpenerType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.OpenTraffic != nil }},
+		{"Stop", closerType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.Stop != nil }},
+		{"PreStop", preStopperType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.PreStop != nil }},
+		{"Drain", drainerType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.Drain != nil }},
+	}
 )
 
 func compileLifecycle(definition pluginmodel.DefinitionDescriptor) (lifecycleDescriptor, error) {
+	if err := rejectPointerOnlyLifecycle(definition); err != nil {
+		return lifecycleDescriptor{}, err
+	}
 	var descriptor lifecycleDescriptor
 	primary := definition.Primary
 	adapters := definition.Lifecycle
@@ -114,6 +135,33 @@ func compileLifecycle(definition pluginmodel.DefinitionDescriptor) (lifecycleDes
 		descriptor.drain = adapters.Drain
 	}
 	return descriptor, nil
+}
+
+// rejectPointerOnlyLifecycle refuses a Definition whose primary type reaches a
+// lifecycle stage only through its pointer and declares no adapter for that
+// stage. The runtime boxes the value the factory returns, and a value's method
+// set never contains a method declared with a pointer receiver, so the stage's
+// method could never run: every branch below tests the primary type, no branch
+// would compile the hook, and the stage would be skipped without a word. An
+// adapter for the same stage covers it completely -- the adapter is the hook
+// then, and the unreachable method is never consulted -- so only a stage no
+// adapter covers is rejected. Whether the author meant to return *T or to
+// adapt the stage is theirs to decide; silently skipping the hook is not a
+// choice freeze may make.
+func rejectPointerOnlyLifecycle(definition pluginmodel.DefinitionDescriptor) error {
+	pointer := reflect.PointerTo(definition.Primary)
+	for _, stage := range lifecycleStages {
+		if definition.Primary.Implements(stage.iface) || !pointer.Implements(stage.iface) {
+			continue
+		}
+		if stage.covered(definition.Lifecycle) {
+			continue
+		}
+		return fmt.Errorf(
+			"xbc: plugin %q primary type %s declares the %s lifecycle stage only with a pointer receiver, so the hook would never run: declare *%s as the primary type or add a Lifecycle adapter for that stage",
+			definition.Key, definition.Primary, stage.name, definition.Primary)
+	}
+	return nil
 }
 
 func duplicateLifecycle(definition pluginmodel.DefinitionDescriptor, stage string) error {

@@ -435,9 +435,10 @@ func groupWorkloads(
 //
 // workload is the reconciled membership: the Definition's own
 // Options[P].Workload when it named one, and otherwise the workload the
-// occurrence that introduced it carries. freezeBundles' call to
-// ValidateWorkloads has already rejected any occurrence where the two disagree,
-// so picking either one here cannot hide a conflict.
+// occurrence that introduced it carries. ValidateWorkloads has already
+// rejected any one occurrence whose two claims disagree, and requireSameWorkload
+// has rejected occurrences that do not reconcile alike, so picking either one
+// here cannot hide a conflict.
 type selectedDefinition struct {
 	descriptor pluginmodel.DefinitionDescriptor
 	selectedAt string
@@ -453,8 +454,17 @@ func freezeBundles(bundles []plugin.Bundle) ([]selectedDefinition, error) {
 			// Selecting the same Definition again is expected usage, not a
 			// mistake: an aggregate Bundle and an explicit selection overlap
 			// routinely. The first selection site is the one kept, so that a
-			// diagnostic names where the Definition entered the graph.
-			if _, repeated := byHandle[entry.Definition]; repeated {
+			// diagnostic names where the Definition entered the graph -- but
+			// only when the selections agree on the workload the Definition
+			// belongs to. Without that check one occurrence tagged by
+			// WorkloadOf and one left plain would resolve to whichever Bundle
+			// came first, letting a workload member escape its workload and run
+			// in every process, or vanish along with a workload this process
+			// does not carry.
+			if previous, repeated := byHandle[entry.Definition]; repeated {
+				if err := requireSameWorkload(previous, entry); err != nil {
+					return nil, err
+				}
 				continue
 			}
 			descriptor, ok := pluginmodel.DescribeDefinition(entry.Definition)
@@ -512,13 +522,45 @@ func freezeBundles(bundles []plugin.Bundle) ([]selectedDefinition, error) {
 // gathered it.
 //
 // pluginmodel.ValidateWorkloads has already rejected a Definition whose two
-// claims disagree, so this function never has to choose between conflicting
-// answers -- only between one answer and its absence.
+// claims disagree, and freezeBundles' requireSameWorkload has rejected two
+// occurrences that reconcile differently, so this function never has to choose
+// between conflicting answers -- only between one answer and its absence.
 func definitionWorkloadKey(descriptor pluginmodel.DefinitionDescriptor, entry pluginmodel.BundleEntry) plugin.WorkloadKey {
 	if descriptor.Workload != "" {
 		return descriptor.Workload
 	}
 	return entry.Workload
+}
+
+// requireSameWorkload rejects a Definition reached through several selections
+// that do not reconcile to one workload membership.
+//
+// The reconciliation is the same one definitionWorkloadKey performs for the
+// selection that is kept, so two occurrences that both land on one key -- the
+// ordinary aggregate-Bundle overlap -- pass even when only one of them carries
+// the tag. What is rejected is a genuine disagreement, most often one
+// occurrence tagged by WorkloadOf and another left plain: keeping the first
+// would silently tie the Definition's ownership to Bundle order. Both
+// selection sites are named because either one may be the one to change.
+func requireSameWorkload(previous, current pluginmodel.BundleEntry) error {
+	descriptor, _ := pluginmodel.DescribeDefinition(current.Definition)
+	previousWorkload := definitionWorkloadKey(descriptor, previous)
+	workload := definitionWorkloadKey(descriptor, current)
+	if previousWorkload == workload {
+		return nil
+	}
+	return fmt.Errorf(
+		"xbc: plugin %q is selected with conflicting workload ownership\n  first: %s (%s)\n  second: %s (%s)\n  a Definition belongs to one workload at every selection; declare the ownership once",
+		descriptor.Key, previous.Origin, workloadLabel(previousWorkload), current.Origin, workloadLabel(workload))
+}
+
+// workloadLabel names one side of a workload conflict in a diagnostic, spelling
+// out the absence of membership rather than leaving a blank.
+func workloadLabel(workload plugin.WorkloadKey) string {
+	if workload == "" {
+		return "no workload"
+	}
+	return fmt.Sprintf("workload %q", workload)
 }
 
 func validateDefinition(definition pluginmodel.DefinitionDescriptor) error {
@@ -697,6 +739,8 @@ func instanceConfigPath(definition pluginmodel.DefinitionDescriptor, identity pl
 func expandIdentities(definition pluginmodel.DefinitionDescriptor, env *config.Environment) ([]plugin.Identity, string, error) {
 	path := definitionPath(definition)
 	if definition.Cardinality == pluginmodel.SingleInstance {
+		// sectionEnabled makes the mapping check itself, so the
+		// single-instance path must not repeat it.
 		enabled, err := sectionEnabled(env, path)
 		if err != nil {
 			return nil, "", err
@@ -705,6 +749,11 @@ func expandIdentities(definition pluginmodel.DefinitionDescriptor, env *config.E
 			return nil, path + ".enabled is false", nil
 		}
 		return []plugin.Identity{{Plugin: plugin.Key(definition.Key), Instance: plugin.DefaultInstance}}, "", nil
+	}
+	// The multi-instance walk below reads the section directly rather than
+	// through sectionEnabled, so it makes the mapping check itself.
+	if err := requireSectionMapping(env, path); err != nil {
+		return nil, "", err
 	}
 	section := env.Sub(path)
 	if section == nil {
@@ -756,7 +805,36 @@ func expandIdentities(definition pluginmodel.DefinitionDescriptor, env *config.E
 	return identities, "", nil
 }
 
+// requireSectionMapping rejects a section that is present but is not a
+// mapping, which is the shape a reader produces by writing the enabled flag as
+// a bare value: "plugins.<key>: false" where they meant
+// "plugins.<key>.enabled: false".
+//
+// Without this check the mistake surfaces as a bind failure that names no
+// field for a Definition with a ConfigSpec, and as silence for one without:
+// Sub reports no map, so the section reads as absent and the plugin stays
+// enabled. The message therefore states the spelling that does disable it.
+func requireSectionMapping(env *config.Environment, path string) error {
+	value := env.Get(path)
+	if value == nil {
+		return nil
+	}
+	if _, mapping := value.(map[string]any); mapping {
+		return nil
+	}
+	return fmt.Errorf("xbc: %s must be a mapping, got %T; to disable it write %s.enabled: false", path, value, path)
+}
+
+// sectionEnabled reads the framework-owned enabled flag of one section,
+// rejecting a scalar section first: "plugins.<key>: false" is a misspelling of
+// "plugins.<key>.enabled: false", and without the check the section would read
+// as absent and the plugin would stay enabled with no diagnostic. Callers that
+// read a section directly instead of through here -- the multi-instance walk in
+// expandIdentities -- have to make that mapping check themselves.
 func sectionEnabled(env *config.Environment, path string) (bool, error) {
+	if err := requireSectionMapping(env, path); err != nil {
+		return false, err
+	}
 	if !env.Exists(path) {
 		return true, nil
 	}
@@ -900,15 +978,24 @@ type dependencyEdge struct {
 // carries no graph content: it is consulted only to explain a producer this
 // process does not have, so that an absence caused by placement is not
 // reported as an absence caused by the composition.
+//
+// Consumers are visited in canonical identity order. Several inputs can be
+// unresolvable in one composition, and resolution stops at the first failure,
+// so a map walk would report whichever failure the runtime happened to reach
+// first; ordering the walk makes the reported error the same on every run.
 func wireGraph(instances map[plugin.Identity]*plannedInstance, contracts map[reflect.Type][]plugin.Identity, unhosted unhostedIndex) ([]plugin.Identity, error) {
 	indegree := make(map[plugin.Identity]int, len(instances))
 	outgoing := make(map[plugin.Identity]map[plugin.Identity]struct{}, len(instances))
 	contractOf := make(map[dependencyEdge]reflect.Type)
+	consumers := make([]plugin.Identity, 0, len(instances))
 	for identity := range instances {
 		indegree[identity] = 0
 		outgoing[identity] = make(map[plugin.Identity]struct{})
+		consumers = append(consumers, identity)
 	}
-	for consumer, instance := range instances {
+	sortIdentities(consumers)
+	for _, consumer := range consumers {
+		instance := instances[consumer]
 		for _, token := range instance.plan.Inputs {
 			matches, err := resolveToken(consumer, instance.workload, token, instances, contracts, unhosted)
 			if err != nil {
@@ -942,10 +1029,9 @@ func wireGraph(instances map[plugin.Identity]*plannedInstance, contracts map[ref
 					outgoing[producer][consumer] = struct{}{}
 					indegree[consumer]++
 					// One consumer may reach the same producer through
-					// several tokens. The first one wins, which is stable
-					// even though the outer loop walks a map: every edge
-					// into this consumer is discovered while iterating this
-					// consumer's own ordered Inputs slice.
+					// several tokens. The first one wins, which is stable:
+					// every edge into this consumer is discovered while
+					// iterating this consumer's own ordered Inputs slice.
 					contractOf[dependencyEdge{producer: producer, consumer: consumer}] = token.Type
 				}
 			}

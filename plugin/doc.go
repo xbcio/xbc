@@ -30,8 +30,9 @@
 //	plugin.Identity{Plugin: "redis"}.String()                    // "redis"
 //
 // CompareIdentity orders identities canonically by (Key, normalized
-// instance); that order is what makes graph order and Many[T]'s collected
-// slice deterministic across runs.
+// instance). It is the tie-break that makes graph order deterministic across
+// runs, and it is the order in which Many[T] reports the exporters it
+// collected.
 //
 // # Declaring a Definition
 //
@@ -143,7 +144,8 @@
 // A factory's dependencies are typed Input tokens, not live lookups. Ref[T]
 // selects one exact (Key, Instance); One[T] requires exactly one exporter
 // of T anywhere in the graph; Optional[T] allows zero or one; Many[T]
-// collects every exporter as a deterministic, graph-ordered slice. Their
+// collects every exporter as a deterministic slice ordered by CompareIdentity,
+// not by graph position. Their
 // constructors — RefTo, RefToInstance, RequireOne, OptionalOne, Collect —
 // return immutable, reusable metadata with no per-App binding, so a token
 // is safe to declare once at package scope and read concurrently:
@@ -184,6 +186,13 @@
 // PreStopper, and Drainer. None is required, and P inherits none of them from
 // a base type — a bare struct with no methods is a perfectly valid,
 // lifecycle-free Plugin.
+//
+// Only P's own method set counts. The runtime owns the boxed value it got from
+// the factory and never takes its address, so a method declared with a pointer
+// receiver does not opt a value primary in. Freeze rejects such a Definition
+// unless a Lifecycle adapter covers that stage, and names the stage instead of
+// skipping the hook silently: return *T as the primary type to run
+// pointer-receiver methods, or adapt the stage below.
 //
 // When P should not implement a stage itself — a third-party type, or a
 // method you would rather keep unexported — supply a typed adapter on

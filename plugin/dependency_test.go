@@ -45,6 +45,24 @@ func TestTypedInputConstructorsCreateFinalDistinctQueries(t *testing.T) {
 	assert.Equal(t, pluginmodel.QueryMany, queries[4].Kind)
 }
 
+func TestInputConstructorsRecordTheDeclarationCallSite(t *testing.T) {
+	t.Parallel()
+	// RefTo used to record the frame inside RefToInstance, so its origin named
+	// this file's own wrapper instead of the caller. Every constructor has to
+	// answer with the declaration the application actually wrote.
+	origins := map[string]string{
+		"RefTo":         RefTo[io.Reader]("source").inputToken().Origin,
+		"RefToInstance": RefToInstance[io.Reader]("source", "readonly").inputToken().Origin,
+		"RequireOne":    RequireOne[io.Reader]().inputToken().Origin,
+		"OptionalOne":   OptionalOne[io.Reader]().inputToken().Origin,
+		"Collect":       Collect[io.Reader]().inputToken().Origin,
+	}
+	for name, origin := range origins {
+		assert.Contains(t, origin, "dependency_test.go:", "%s must name the declaring call site", name)
+		assert.NotContains(t, origin, "dependency.go:", "%s must not name an internal wrapper frame", name)
+	}
+}
+
 func TestRefToInstanceRejectsANameTheConfigurationSideWouldReject(t *testing.T) {
 	t.Parallel()
 	// The configuration side validates an instance name with the same rule, so a

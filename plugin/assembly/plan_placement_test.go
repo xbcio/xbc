@@ -275,6 +275,72 @@ func TestPlacementLayersWithPluginEnablementBothWays(t *testing.T) {
 	})
 }
 
+// TestPlacementRejectsWorkloadOwnershipThatDependsOnBundleOrder pins the one
+// composition shape where selecting the same Definition twice stops being
+// harmless: one occurrence tagged by WorkloadOf and another left plain.
+//
+// freezeBundles keeps the first occurrence of a Definition, so without the
+// conflict check the answer would be whichever Bundle the composition root
+// listed first. That is not a stable tie to leave unresolved: with the plain
+// occurrence first the member becomes unowned and runs in every process shape,
+// bypassing WithExclusiveProcess and WithReplicas; with the tagged occurrence
+// first the plain selection vanishes whenever this process does not carry the
+// workload. Both orders must therefore be refused, naming the two selection
+// sites.
+func TestPlacementRejectsWorkloadOwnershipThatDependsOnBundleOrder(t *testing.T) {
+	t.Parallel()
+	member := plugin.Define("member", func(plugin.BuildContext) (*validationValue, error) {
+		return &validationValue{}, nil
+	})
+	plain := plugin.BundleOf(member)
+	carried := plugin.WorkloadOf("sast", plugin.BundleOf(member))
+
+	for name, bundles := range map[string][]plugin.Bundle{
+		"plain selection first":    {plain, carried},
+		"workload selection first": {carried, plain},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := BuildPlan(PlanOptions{Bundles: bundles, Env: testEnvironment(t, nil)})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `plugin "member" is selected with conflicting workload ownership`)
+			assert.Contains(t, err.Error(), "first:")
+			assert.Contains(t, err.Error(), "second:")
+			assert.Contains(t, err.Error(), "declare the ownership once",
+				"the fix is stated, because neither selection site is wrong on its own")
+		})
+	}
+}
+
+// TestWorkloadOwnershipStaysLegalWhenEverySelectionReconcilesAlike is the
+// false-positive guard for the check above: a Definition that names its own
+// workload is consistent with an occurrence tagged for that same workload, and
+// two tagged occurrences of one workload are too. Neither may be read as a
+// conflict merely because the occurrences are not literally identical.
+func TestWorkloadOwnershipStaysLegalWhenEverySelectionReconcilesAlike(t *testing.T) {
+	t.Parallel()
+	declared := plugin.Define("member", func(plugin.BuildContext) (*validationValue, error) {
+		return &validationValue{}, nil
+	}, plugin.Options[*validationValue]{Workload: plugin.WorkloadKey("sast")})
+	plain := plugin.BundleOf(declared)
+	tagged := plugin.WorkloadOf("sast", plugin.BundleOf(declared))
+
+	for name, bundles := range map[string][]plugin.Bundle{
+		"plain selection first":    {plain, tagged},
+		"workload selection first": {tagged, plain},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := BuildPlan(PlanOptions{Bundles: bundles, Env: testEnvironment(t, nil)})
+			require.NoError(t, err)
+			workload, known := plan.WorkloadOf(plugin.Identity{Plugin: "member", Instance: plugin.DefaultInstance})
+			require.True(t, known)
+			assert.Equal(t, plugin.WorkloadKey("sast"), workload,
+				"the Definition's own declaration wins at either selection site")
+		})
+	}
+}
+
 // TestReadWorkloadSectionsBindsEachWorkloadsOwnSection covers the reader the
 // hosted set and the per-workload budget share. Every declared workload is
 // reported, including one whose section is absent: absence means enabled, the
@@ -313,6 +379,23 @@ func TestReadWorkloadSectionsBindsEachWorkloadsOwnSection(t *testing.T) {
 	empty, err := ReadWorkloadSections(nil, env)
 	require.NoError(t, err)
 	assert.Empty(t, empty)
+}
+
+// TestScalarWorkloadSectionIsRejectedWithTheCorrectSpelling is the same guard
+// on the other framework-owned section. ReadWorkloadSections reads a
+// workload's enabled flag through the same helper a plugin section uses, so
+// "workloads.<key>: false" earns the same clear message instead of a bind
+// failure that names no field.
+func TestScalarWorkloadSectionIsRejectedWithTheCorrectSpelling(t *testing.T) {
+	t.Parallel()
+	bundles := []plugin.Bundle{plugin.WorkloadOf("sast", plugin.BundleOf(plugin.Define("sast-worker", func(plugin.BuildContext) (*validationValue, error) {
+		return &validationValue{}, nil
+	})))}
+
+	_, err := ReadWorkloadSections(bundles, testEnvironment(t, map[string]any{"workloads": map[string]any{"sast": false}}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workloads.sast must be a mapping")
+	assert.Contains(t, err.Error(), "workloads.sast.enabled: false")
 }
 
 // TestWorkloadSectionsAreDeclaredOnlyWhenAWorkloadIsDeclared keeps the
