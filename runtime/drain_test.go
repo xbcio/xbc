@@ -122,6 +122,48 @@ func TestDrainRunsAfterIngressStopAndBeforeRemainingStops(t *testing.T) {
 		"the ingress closure is stopped first, then the drain phase runs, then the remaining Stop")
 }
 
+// TestDrainBudgetStartsWhenThePhaseBeginsEndToEnd pins at the runtime level
+// that drain_timeout is the drain phase's own budget: an ingress Stop in
+// phase A that outlasts drain_timeout must not spend it, so the Drain hook
+// still runs with close to its full budget, bounded only by the walk's
+// shutdown deadline. Before the phase deadline was derived inside phase B,
+// the slow ingress Stop consumed the entire drain budget and this drainer was
+// reported not-attempted without ever being called.
+func TestDrainBudgetStartsWhenThePhaseBeginsEndToEnd(t *testing.T) {
+	const (
+		drainTimeout    = 300 * time.Millisecond
+		ingressStopCost = 2 * drainTimeout
+	)
+	observation := &drainObservation{}
+	remaining := make(chan time.Duration, 1)
+	ingress := ingressLiveDefinition("ingress-slow-stop", func() { time.Sleep(ingressStopCost) })
+	drainer := drainLiveDefinition("drainer-live-budget", observation, func(ctx context.Context) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			remaining <- -1
+			return nil
+		}
+		remaining <- time.Until(deadline)
+		return nil
+	})
+
+	app := newRuntimeTestApp(ingress, drainer)
+	result := executeRuntimeTest(app, runtimeDrainConfig(t, drainTimeout, 2*time.Second)...)
+	awaitRuntimeTestReady(t, app)
+	require.True(t, app.requestStop(stopReasonSignal))
+	completed := awaitRuntimeTestResult(t, result)
+	require.NoError(t, completed.err)
+	require.Equal(t, 0, completed.code)
+
+	select {
+	case left := <-remaining:
+		assert.Greater(t, left, drainTimeout/2,
+			"the drain phase's budget must start when the phase begins: the slow ingress Stop must not spend it")
+	default:
+		t.Fatal("Drain was never called: the slow ingress Stop consumed the drain budget")
+	}
+}
+
 // TestDrainTimeoutZeroSkipsThePhaseEndToEnd pins the documented off switch at
 // the runtime level: the hook must not be called at all when drain_timeout is
 // 0s, exactly as pre_stop_timeout's off switch is pinned by

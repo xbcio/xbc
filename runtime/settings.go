@@ -89,7 +89,11 @@ type settings struct {
 	// DrainTimeout is the budget for the drain phase: every remaining
 	// (non-ingress) Drainer's Drain hook runs inside this one phase budget,
 	// sequentially in reverse start order, for the same reason PreStopTimeout
-	// and ShutdownTimeout are whole-phase rather than per-plugin.
+	// and ShutdownTimeout are whole-phase rather than per-plugin. The budget
+	// is measured from the moment the phase begins -- after the ingress
+	// closure has stopped -- not from the start of the shutdown walk, so a
+	// slow ingress Stop is bounded by ShutdownTimeout alone and cannot spend
+	// a budget meant for the drainers that follow it.
 	//
 	// Unlike PreStopTimeout, it is contained in ShutdownTimeout rather than
 	// accounted beside it: the drain phase runs between the ingress stop and

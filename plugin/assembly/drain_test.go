@@ -34,16 +34,18 @@ func (e *drainEvents) recorded() []string {
 
 // ingressValue is a TrafficOpener: its membership in Unwind's ingress closure
 // comes from implementing plugin.TrafficOpener directly, exactly as
-// web.Server's does in production.
+// web.Server's does in production. stopCost is what its Stop charges phase A.
 type ingressValue struct {
-	name   string
-	events *drainEvents
+	name     string
+	events   *drainEvents
+	stopCost time.Duration
 }
 
 func (value *ingressValue) Name() string                      { return value.name }
 func (value *ingressValue) OpenTraffic(*plugin.Context) error { return nil }
 func (value *ingressValue) Stop(context.Context) error {
 	value.events.record(value.name + ".Stop")
+	time.Sleep(value.stopCost)
 	return nil
 }
 
@@ -51,6 +53,21 @@ func ingressDefinition(key plugin.Key, events *drainEvents, dependencyRef plugin
 	return plugin.Define(key, func(context plugin.BuildContext) (*ingressValue, error) {
 		_ = dependencyRef.Get(context)
 		return &ingressValue{name: key.String(), events: events}, nil
+	}, plugin.Options[*ingressValue]{
+		Inputs: plugin.Inputs(dependencyRef),
+		Exports: plugin.Contracts(
+			plugin.ExportAs(func(value *ingressValue) storeContract { return value }),
+		),
+	})
+}
+
+// slowIngressDefinition is ingressDefinition with a Stop that costs stopCost
+// and keeps the rest of its shape identical, so a test can make phase A
+// outlast the drain phase's own budget without disturbing its fixture.
+func slowIngressDefinition(key plugin.Key, events *drainEvents, dependencyRef plugin.Ref[storeContract], stopCost time.Duration) plugin.Definition {
+	return plugin.Define(key, func(context plugin.BuildContext) (*ingressValue, error) {
+		_ = dependencyRef.Get(context)
+		return &ingressValue{name: key.String(), events: events, stopCost: stopCost}, nil
 	}, plugin.Options[*ingressValue]{
 		Inputs: plugin.Inputs(dependencyRef),
 		Exports: plugin.Contracts(
@@ -103,7 +120,7 @@ type drainValue struct {
 	name       string
 	events     *drainEvents
 	block      chan struct{}
-	drainFn    func()
+	drainFn    func(context.Context)
 	drainErr   error
 	drainPanic bool
 }
@@ -113,7 +130,7 @@ func (value *drainValue) Name() string { return value.name }
 func (value *drainValue) Drain(ctx context.Context) error {
 	value.events.record(value.name + ".Drain")
 	if value.drainFn != nil {
-		value.drainFn()
+		value.drainFn(ctx)
 	}
 	if value.block != nil {
 		<-ctx.Done()
@@ -129,7 +146,7 @@ func (value *drainValue) Stop(context.Context) error {
 	return nil
 }
 
-func drainDefinition(key plugin.Key, events *drainEvents, block chan struct{}, drainFn func()) plugin.Definition {
+func drainDefinition(key plugin.Key, events *drainEvents, block chan struct{}, drainFn func(context.Context)) plugin.Definition {
 	return plugin.Define(key, func(plugin.BuildContext) (*drainValue, error) {
 		return &drainValue{name: key.String(), events: events, block: block, drainFn: drainFn}, nil
 	}, plugin.Options[*drainValue]{})
@@ -149,13 +166,13 @@ type drainOnlyValue struct {
 	name    string
 	events  *drainEvents
 	block   chan struct{}
-	drainFn func()
+	drainFn func(context.Context)
 }
 
 func (value *drainOnlyValue) Drain(ctx context.Context) error {
 	value.events.record(value.name + ".Drain")
 	if value.drainFn != nil {
-		value.drainFn()
+		value.drainFn(ctx)
 	}
 	if value.block != nil {
 		<-value.block
@@ -163,7 +180,7 @@ func (value *drainOnlyValue) Drain(ctx context.Context) error {
 	return nil
 }
 
-func drainOnlyDefinition(key plugin.Key, events *drainEvents, block chan struct{}, drainFn func()) plugin.Definition {
+func drainOnlyDefinition(key plugin.Key, events *drainEvents, block chan struct{}, drainFn func(context.Context)) plugin.Definition {
 	return plugin.Define(key, func(plugin.BuildContext) (*drainOnlyValue, error) {
 		return &drainOnlyValue{name: key.String(), events: events, block: block, drainFn: drainFn}, nil
 	}, plugin.Options[*drainOnlyValue]{})
@@ -211,10 +228,8 @@ func TestUnwindWithDrainOrdersIngressThenDrainThenRemainingStops(t *testing.T) {
 
 	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	drainDeadline, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer drainCancel()
 
-	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, drainDeadline, 5*time.Second, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, 5*time.Second, nil)
 	require.NoError(t, err)
 
 	recorded := events.recorded()
@@ -276,10 +291,8 @@ func TestDrainerInsideTheIngressClosureIsOnlyStoppedNotDrained(t *testing.T) {
 
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	drainDeadline, drainCancel := context.WithTimeout(context.Background(), time.Second)
-	defer drainCancel()
 
-	_, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, drainDeadline, time.Second, nil)
+	_, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, time.Second, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"ingress-drainer.Stop"}, events.recorded(),
@@ -304,11 +317,9 @@ func TestDrainPhaseDeadlineTimesOutAndTheRestOfTheUnwindStillRuns(t *testing.T) 
 	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	const drainBudget = 100 * time.Millisecond
-	drainDeadline, drainCancel := context.WithTimeout(context.Background(), drainBudget)
-	defer drainCancel()
 
 	started := time.Now()
-	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, drainDeadline, drainBudget, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, drainBudget, nil)
 	elapsed := time.Since(started)
 
 	require.NoError(t, err, "a Drain timeout is recorded in the DrainReport but must not fail the unwind, exactly as an abandoned PreStop does not fail the run")
@@ -327,6 +338,57 @@ func TestDrainPhaseDeadlineTimesOutAndTheRestOfTheUnwindStillRuns(t *testing.T) 
 	assert.Equal(t, StopSkipped, stopped["stuck-drainer"])
 }
 
+// TestDrainBudgetStartsWhenThePhaseBegins pins that drain_timeout is the
+// drain phase's own budget, measured from the moment phase B begins rather
+// than from the start of the walk: an ingress Stop that outlasts the whole
+// drain budget must not spend it. Before the phase deadline was derived
+// inside phase B, the slow ingress Stop consumed the budget and this walk
+// reported the drainer not-attempted without ever calling it.
+func TestDrainBudgetStartsWhenThePhaseBegins(t *testing.T) {
+	t.Parallel()
+	events := &drainEvents{}
+	const (
+		drainBudget = 100 * time.Millisecond
+		stopCost    = 3 * drainBudget
+	)
+	remaining := make(chan time.Duration, 1)
+	db := plainDefinition("db", events)
+	ingress := slowIngressDefinition("slow-ingress", events, plugin.RefTo[storeContract]("db"), stopCost)
+	pool := drainOnlyDefinition("pool", events, nil, func(ctx context.Context) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			remaining <- -1
+			return
+		}
+		remaining <- time.Until(deadline)
+	})
+
+	constructed := drainConstructed(t, db, ingress, pool)
+
+	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, drainBudget, nil)
+	require.NoError(t, err)
+
+	require.Len(t, drainReport.Records, 1)
+	assert.Equal(t, DrainCompleted, drainReport.Records[0].Outcome,
+		"the drain phase must still run after an ingress Stop that outlasts its budget")
+	select {
+	case left := <-remaining:
+		assert.Greater(t, left, drainBudget/2,
+			"the phase's budget must start when the phase begins, not when the walk does")
+	default:
+		t.Fatal("Drain was never called: the slow ingress Stop consumed the drain budget")
+	}
+
+	stopped := map[plugin.Key]StopOutcome{}
+	for _, record := range report.Records {
+		stopped[record.Identity.Plugin] = record.Outcome
+	}
+	assert.Equal(t, StopCompleted, stopped["db"])
+	assert.Equal(t, StopSkipped, stopped["pool"], "the drain-only fixture declares no Stop hook")
+}
+
 // TestDrainTimeoutZeroNeverCallsDrainAndDoesNotStopSubsequentStops pins the
 // documented off switch: drainBudget of 0 skips phase B entirely, no Drain
 // hook runs, and the unwind still finishes every Stop.
@@ -334,14 +396,14 @@ func TestDrainTimeoutZeroNeverCallsDrainAndDoesNotStopSubsequentStops(t *testing
 	t.Parallel()
 	events := &drainEvents{}
 	called := false
-	drainer := drainOnlyDefinition("off-drainer", events, nil, func() { called = true })
+	drainer := drainOnlyDefinition("off-drainer", events, nil, func(context.Context) { called = true })
 	other := plainDefinition("other", events)
 
 	constructed := drainConstructed(t, drainer, other)
 
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	report, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, deadline, 0, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, 0, nil)
 	require.NoError(t, err)
 
 	assert.False(t, called, "drain_timeout 0s must not call the hook")
@@ -371,7 +433,7 @@ func TestDrainErrorAndPanicAreReportedAndDoNotStopSubsequentStops(t *testing.T) 
 
 	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, deadline, 5*time.Second, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, 5*time.Second, nil)
 	require.NoError(t, err, "a Drain failure or panic is recorded in the DrainReport but must not fail the unwind, exactly as PreStop's own failures do not fail the run")
 
 	outcomes := map[plugin.Key]DrainOutcome{}
@@ -402,7 +464,7 @@ func TestDrainRunsBeforeEveryStopWhenThereIsNoTrafficOpener(t *testing.T) {
 
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, deadline, time.Second, nil)
+	_, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, time.Second, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"solo-drainer.Drain", "solo-drainer.Stop"}, events.recorded(),
@@ -417,7 +479,7 @@ func TestDrainRunsBeforeEveryStopWhenThereIsNoTrafficOpener(t *testing.T) {
 func TestDrainOnANilConstructedIsANoOp(t *testing.T) {
 	t.Parallel()
 	var constructed *Constructed
-	report, drainReport, err := constructed.UnwindWithDrain(context.Background(), time.Second, context.Background(), time.Second, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(context.Background(), time.Second, time.Second, nil)
 	require.NoError(t, err)
 	assert.Empty(t, report.Records)
 	assert.True(t, drainReport.Empty())

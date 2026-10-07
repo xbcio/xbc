@@ -63,24 +63,20 @@ func (a *App) unwind(reason string) error {
 		deadline, cancel := context.WithTimeout(context.Background(), budget)
 		defer cancel()
 
-		// The drain phase's own deadline is derived from this same walk's
-		// deadline rather than from a fresh context.WithTimeout(Background()):
-		// drain_timeout is contained in shutdown_timeout (loadSettings rejects
-		// a drain_timeout that is not strictly smaller), so the phase must
-		// never outlive the walk that contains it. context.WithDeadline
-		// already picks the earlier of the two, which is exactly min(now +
-		// drain_timeout, the walk's own deadline).
+		// drain_timeout is the drain phase's own budget, and
+		// UnwindWithDrain derives the phase deadline from this walk's
+		// deadline at the moment phase B begins. Measuring the budget there
+		// is deliberate: the ingress closure's Stop (phase A) runs first and
+		// must not spend a budget that exists for the drainers that follow
+		// it. Deriving the deadline from the walk's own is what keeps
+		// drain_timeout contained in shutdown_timeout, which loadSettings
+		// enforces by rejecting a drain_timeout that is not strictly
+		// smaller.
 		drainBudget := a.settings.DrainTimeout
-		drainDeadline := deadline
-		var drainCancel context.CancelFunc = func() {}
-		if drainBudget > 0 {
-			drainDeadline, drainCancel = context.WithDeadline(deadline, time.Now().Add(drainBudget))
-		}
-		defer drainCancel()
 
 		var errs []error
 		if a.owned != nil {
-			report, drainReport, err := a.owned.UnwindWithDrain(deadline, budget, drainDeadline, drainBudget, func(identity plugin.Identity) error {
+			report, drainReport, err := a.owned.UnwindWithDrain(deadline, budget, drainBudget, func(identity plugin.Identity) error {
 				if a.tasks == nil {
 					return nil
 				}
@@ -405,10 +401,12 @@ func preStopTotalLabel(phase preStopPhase, budget time.Duration) string {
 }
 
 // stopWaitLabels renders how long the walk waited on each instance it actually
-// waited for, in reverse graph order. Skipped and not-attempted instances are
-// omitted rather than reported as "0s": nothing was waited for there, and a
-// zero would read as a Stop that returned instantly. The outcome decides that,
-// not the measured duration, so a genuinely instant Stop is still reported.
+// waited for, in the order the walk visited them: the ingress closure first,
+// then the remaining instances, each in reverse start order. Skipped and
+// not-attempted instances are omitted rather than reported as "0s": nothing
+// was waited for there, and a zero would read as a Stop that returned
+// instantly. The outcome decides that, not the measured duration, so a
+// genuinely instant Stop is still reported.
 func stopWaitLabels(report assembly.ShutdownReport) []string {
 	var labels []string
 	for _, record := range report.Records {
