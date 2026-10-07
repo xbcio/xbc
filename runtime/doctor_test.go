@@ -57,6 +57,25 @@ func TestDoctorInitializesNoLoggerAndEmitsNoLogLine(t *testing.T) {
 	assert.Contains(t, out, "diagnosed")
 }
 
+// TestDoctorRejectsEveryConfigurationARunRejects pins the validation half of
+// doctor's read-only contract, which the log section used to slip past: the log
+// enums are checked by log.Config.Normalize, and only log.Init called it, while
+// doctor deliberately never initializes a logger. An unusable log.level then
+// passed the very diagnostic an operator runs when they are unsure the
+// configuration is safe to start.
+func TestDoctorRejectsEveryConfigurationARunRejects(t *testing.T) {
+	app := newRuntimeTestApp()
+	args := append([]string{"doctor"}, "--config", writeRuntimeTestConfig(t,
+		"log:\n  level: verbose\nxbc:\n  shutdown_timeout: 1s\n"))
+
+	code, err := app.Execute(context.Background(), args)
+
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "log.level", "the diagnostic names the key to fix")
+	assert.Nil(t, app.plan, "the command fails while bootstrapping, before planning starts")
+}
+
 // TestDoctorReportsGraphInstancesSourcesAndDisableReasons covers the four
 // things doctor exists to answer, in one run, because a reader diagnosing "why
 // is my plugin off" needs them together.
@@ -222,8 +241,11 @@ func TestUnownedTopLevelKeyFailsBeforeAnythingIsConstructed(t *testing.T) {
 }
 
 // TestDoctorConstructsNothingAndLeavesNoGoroutine guards the rest of doctor's
-// read-only contract -- no connections, no goroutines, no listeners -- which
-// otherwise holds only because Execute happens to return before Construct. A
+// read-only contract -- nothing constructed, no goroutines, no listeners --
+// which otherwise holds only because Execute happens to return before
+// Construct. (The placement decision is the one consultation that can reach a
+// store; the runtime gives back what resolving it acquired before the command
+// returns, which TestDoctorGivesBackWhatPlacementAcquiredToAnswer pins.) A
 // later task appends its own section to doctor; this is what stops it quietly
 // dialling a database or spawning a collector and staying green.
 //

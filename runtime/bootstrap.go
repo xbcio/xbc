@@ -131,5 +131,13 @@ func bindLogging(env *config.Environment) (log.Config, error) {
 	if err := env.Bind(loggingSection, &cfg); err != nil {
 		return cfg, fmt.Errorf("xbc: failed to bind log configuration: %w", err)
 	}
+	// Normalize is what validates the log enums and fills the derived fields,
+	// and it is called here rather than left to log.Init because doctor never
+	// calls Init: a log.level no run would accept must not pass the diagnostic
+	// an operator runs when they are unsure the configuration is safe to act
+	// on. Init still calls it, which is harmless -- Normalize is idempotent.
+	if err := cfg.Normalize(); err != nil {
+		return cfg, fmt.Errorf("xbc: invalid log configuration: %w", err)
+	}
 	return cfg, nil
 }

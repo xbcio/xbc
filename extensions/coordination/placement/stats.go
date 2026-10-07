@@ -63,6 +63,11 @@ type Stats struct {
 	Instance string
 	// Standby reports that this process won no slot and is hosting only the
 	// plugins that belong to no workload.
+	//
+	// A process that won slots and then gave them back -- Release, on the paths
+	// that never construct the placement plugin -- is not reported as one. It
+	// took the role for as long as its decision held, and Standby describes the
+	// decision rather than the current held set.
 	Standby bool
 	// Held is every slot this process holds, ordered by workload then slot.
 	Held []Held
@@ -86,6 +91,7 @@ func (p *Placement) Stats() Stats {
 	p.mu.Lock()
 	decision := p.decision
 	resolved := p.resolved
+	released := p.released
 	instance := p.instance
 	held := append([]*heldSlot(nil), p.held...)
 	p.mu.Unlock()
@@ -93,7 +99,7 @@ func (p *Placement) Stats() Stats {
 	stats := Stats{
 		Source:        decision.Source,
 		Instance:      instance,
-		Standby:       resolved && len(held) == 0,
+		Standby:       resolved && !released && len(held) == 0,
 		RenewFailures: p.renewFailures.Load(),
 	}
 	now := time.Now()

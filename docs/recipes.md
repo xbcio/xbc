@@ -564,7 +564,7 @@ app, err := xbc.New(
 
 The `*placement.Placement` is both the decision and the plugin that keeps it alive, so it is passed to `WithPlacement` and its `Bundle()` is selected alongside the workloads. There is no placement constructor on the `xbc` facade itself: core's dependency closure excludes everything beneath `extensions/`, so the lease contract cannot be named there.
 
-That is one extra connection to the store, and it is the price of deciding the hosted set before the graph is built rather than during construction.
+That is one extra connection to the store, and it is the price of deciding the hosted set before the graph is built rather than during construction. Every command that builds a plan pays it, `doctor` included, and a command that returns without constructing a plugin gives the slots it won to answer straight back, so a diagnostic never holds the capacity its report was read from.
 
 Takeover is a restart, not a live handover. When a holder is lost, its slot does not become available until its lease expires, then a standby has to notice, and the process the supervisor starts has to come back up before the role is really served again:
 

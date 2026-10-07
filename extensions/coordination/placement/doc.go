@@ -36,6 +36,15 @@
 // That is the explicit cost of deciding placement before the graph; it buys the
 // absence of every mechanism a mid-graph placement decision would need.
 //
+// # Deciding without constructing
+//
+// A command that needs only the decision -- doctor, or a run whose plan fails
+// to build -- still wins its slots, because there is no other way to answer.
+// What it does not have is the Start/PreStop/Stop lifecycle that normally gives
+// them back, so Placement.Release exists for those paths: the runtime calls it
+// whenever a command returns before the plugin graph exists, and no slot
+// outlives the decision that needed it.
+//
 // # Soft placement
 //
 // A lost or unconfirmed renewal keeps the process hosting what it already

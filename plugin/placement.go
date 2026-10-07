@@ -1,5 +1,7 @@
 package plugin
 
+import "context"
+
 // Placement records the resolved hosting decision for one boot: which declared
 // workloads this process carries, and who decided. It is the answer to a
 // question that must be settled before the dependency graph is built, because
@@ -94,6 +96,34 @@ func (r PlacementRequest) Admits(key WorkloadKey) bool {
 // role cannot be decided must not guess, because every downstream decision --
 // doctor output, startup validation, exclusivity, snapshot diffing -- is
 // derived from the hosted set.
+//
+// A source that has to acquire something to answer -- a lease slot, a lock, a
+// reservation -- also implements PlacementReleaser, so the runtime can give
+// that claim back on the paths that never construct the plugin that would
+// otherwise release it.
 type PlacementSource interface {
 	Resolve(PlacementRequest) (Placement, error)
+}
+
+// PlacementReleaser is the optional second half of a PlacementSource: it gives
+// back whatever the source acquired while resolving.
+//
+// The runtime consults a source before it plans, and only the constructed
+// plugin graph owns what a decision acquired -- the lease source's slots are
+// released by its PreStop and Stop hooks. Doctor, a plan that fails to build, a
+// plan that enables nothing and a stop during planning all return without ever
+// constructing that graph, so the runtime calls Release on every such path
+// instead of leaving the claim to expire with its own lease. It is called even
+// when Resolve failed part-way or was never reached, so a release with nothing
+// to give back must be a no-op.
+//
+// Release must give back only what this process acquired, must be idempotent --
+// a later PreStop or Stop may release the same claim again -- and must work on
+// a run that is already stopping, because those are the paths that most need
+// it. The runtime supplies a context that does not inherit the run's
+// cancellation and bounds the call with a short deadline of its own, so a claim
+// the store does not confirm inside that budget is left to expire with its
+// lease rather than holding the command open.
+type PlacementReleaser interface {
+	Release(context.Context) error
 }

@@ -248,7 +248,7 @@ XBC_WORKLOADS_TRANSCODE_ENABLED=false XBC_WORKLOADS_INGEST_ENABLED=false \
   go run ./examples/workloads --config examples/workloads/application.yml
 ```
 
-`doctor` prints the decision instead of performing it — the placement source, each declared workload with whether this process carries it, and the Definitions belonging to none of them. Its `workload` rows are the quickest way to answer "what is this process actually for":
+`doctor` prints the resolved decision instead of running the process it describes — the placement source, each declared workload with whether this process carries it, and the Definitions belonging to none of them. Resolving is not entirely passive for a lease-backed source: it claims its slots to answer and gives them back before the command returns, so nothing is held past the report. Its `workload` rows are the quickest way to answer "what is this process actually for":
 
 ```
 workload ingest     hosted  replicas=4  plugins=1  max_goroutines=8

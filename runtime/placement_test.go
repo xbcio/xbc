@@ -1,11 +1,14 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -586,4 +589,310 @@ func workloadKeys(workloads []plugin.Workload) []plugin.WorkloadKey {
 		keys[index] = workload.Key
 	}
 	return keys
+}
+
+// ── releasing what a decision acquired ──────────────────────────────────────
+
+// claimingPlacement is a PlacementSource that claims something while it
+// resolves and only gives it back through Release -- the shape the lease source
+// has, where Resolve wins the slots and the constructed plugin's PreStop and
+// Stop hooks are what hand them back. claimed stands in for a held slot: it is
+// the observable the runtime's release on the pre-Construction paths exists to
+// clear.
+//
+// The state is atomic because the hand-off test drives a real Execute on
+// another goroutine while the test reads the claim.
+type claimingPlacement struct {
+	placement plugin.Placement
+
+	claimed  atomic.Bool
+	releases atomic.Int32
+}
+
+func (source *claimingPlacement) Resolve(plugin.PlacementRequest) (plugin.Placement, error) {
+	source.claimed.Store(true)
+	return source.placement, nil
+}
+
+func (source *claimingPlacement) Release(context.Context) error {
+	source.releases.Add(1)
+	source.claimed.Store(false)
+	return nil
+}
+
+// refusingReleasePlacement is a claimingPlacement whose handback always fails:
+// the lease store that refuses the release of what the decision won, which is
+// the failure doctor has no logger to warn about.
+type refusingReleasePlacement struct {
+	placement plugin.Placement
+	releases  atomic.Int32
+}
+
+func (source *refusingReleasePlacement) Resolve(plugin.PlacementRequest) (plugin.Placement, error) {
+	return source.placement, nil
+}
+
+func (source *refusingReleasePlacement) Release(context.Context) error {
+	source.releases.Add(1)
+	return errPlacementUnavailable
+}
+
+// stoppingPlacement is a PlacementSource that asks this run to stop while it
+// resolves, which is the timing a stop request arriving during planning has.
+// It drives the runtime's planning checkpoint -- ensureStarting("planning") --
+// from the one moment at which the source has already paid for its answer, and
+// it records whether the release it is handed still carried the cancelled run,
+// which is the state the release must not inherit.
+type stoppingPlacement struct {
+	placement plugin.Placement
+	stop      func()
+
+	releases          atomic.Int32
+	cancelledReleases atomic.Int32
+}
+
+func (source *stoppingPlacement) Resolve(plugin.PlacementRequest) (plugin.Placement, error) {
+	source.stop()
+	return source.placement, nil
+}
+
+func (source *stoppingPlacement) Release(ctx context.Context) error {
+	source.releases.Add(1)
+	if ctx.Err() != nil {
+		source.cancelledReleases.Add(1)
+	}
+	return nil
+}
+
+// placementUnwiredContract is exported by nothing in the compositions below,
+// which is how a plan failure is spelled: a required input with no producer
+// fails BuildPlan, after the placement decision has already been made.
+type placementUnwiredContract interface{ Unwired() }
+
+// TestDoctorGivesBackWhatPlacementAcquiredToAnswer pins the read-only command's
+// boundary with the source it consults. Doctor has to resolve the hosted set to
+// report it, and for a lease source resolving is winning: the slots are taken
+// while the answer is produced, and nothing is constructed to own them, so the
+// runtime must give them back before the command returns. Otherwise a
+// diagnostic would hold cluster capacity until each lease expired.
+func TestDoctorGivesBackWhatPlacementAcquiredToAnswer(t *testing.T) {
+	source := &claimingPlacement{placement: plugin.Placement{
+		Source: "lease",
+		Hosted: []plugin.WorkloadKey{"sca"},
+	}}
+	app, err := New(WithBundles(placementTestBundles()...), WithPlacement(source))
+	require.NoError(t, err)
+
+	out := runDoctor(t, app, runtimeTestConfig(t, time.Second)...)
+
+	assert.Contains(t, out, "hosted   sca",
+		"the report is still produced from the decision the source made")
+	assert.False(t, source.claimed.Load(),
+		"doctor constructs nothing, so nothing owns the claim resolving made")
+	assert.Equal(t, int32(1), source.releases.Load(),
+		"the release is attempted exactly once")
+}
+
+// TestDoctorReportsAPlacementReleaseThatDidNotComplete pins doctor's one
+// surface for a failure the run path would log. Doctor runs against a no-op
+// logger, so a lease store that refuses the handback would otherwise leave the
+// claim to expire with nothing said about it. The note lands in the report and
+// names that outcome; the command's own result is untouched, which runDoctor
+// asserts by requiring exit code 0 and no error.
+func TestDoctorReportsAPlacementReleaseThatDidNotComplete(t *testing.T) {
+	source := &refusingReleasePlacement{placement: plugin.Placement{
+		Source: "lease",
+		Hosted: []plugin.WorkloadKey{"sca"},
+	}}
+	app, err := New(WithBundles(placementTestBundles()...), WithPlacement(source))
+	require.NoError(t, err)
+
+	out := runDoctor(t, app, runtimeTestConfig(t, time.Second)...)
+
+	assert.Contains(t, out, "hosted   sca",
+		"the report is still produced from the decision the source made")
+	assert.Contains(t, out, "placement release",
+		"the failure is reported where a logger-less command can carry it")
+	assert.Contains(t, out, errPlacementUnavailable.Error(),
+		"the store's own failure is what the note hands to the operator")
+	assert.Contains(t, out, "expires with its own lease ttl",
+		"the note says what becomes of the claim that was not given back")
+	assert.Equal(t, int32(1), source.releases.Load(),
+		"the release is still attempted exactly once")
+}
+
+// TestAPlanFailureGivesBackWhatPlacementAcquired covers the other pre-construct
+// exit: the source answered and won its claim, and the plan built from that
+// answer then failed. Construct never runs, so the release cannot be left to
+// the plugin graph.
+func TestAPlanFailureGivesBackWhatPlacementAcquired(t *testing.T) {
+	needsAnUnwiredContract := plugin.Define("needs-an-unwired-contract",
+		func(plugin.BuildContext) (*runtimeTestValue, error) { return &runtimeTestValue{}, nil },
+		plugin.Options[*runtimeTestValue]{Inputs: plugin.Inputs(plugin.RequireOne[placementUnwiredContract]())},
+	)
+	source := &claimingPlacement{placement: plugin.Placement{
+		Source: "lease",
+		Hosted: []plugin.WorkloadKey{"sca"},
+	}}
+	app, err := New(WithBundles(
+		append(placementTestBundles(), plugin.BundleOf(needsAnUnwiredContract))...,
+	), WithPlacement(source))
+	require.NoError(t, err)
+
+	code, err := app.Execute(context.Background(), runtimeTestConfig(t, time.Second))
+
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "found none",
+		"the failure is the unwired required input, not placement")
+	assert.False(t, source.claimed.Load(),
+		"a plan that never reaches Construct owes the claim back")
+	assert.Equal(t, int32(1), source.releases.Load())
+	assert.Nil(t, app.owned)
+}
+
+// TestAConstructionFailureGivesBackWhatPlacementAcquired covers the boundary
+// from the failed side: Construct was attempted and did not succeed, so no
+// plugin owns the claim yet and the release still owes it back.
+func TestAConstructionFailureGivesBackWhatPlacementAcquired(t *testing.T) {
+	refusesToBuild := plugin.Define("refuses-to-build",
+		func(plugin.BuildContext) (*runtimeTestValue, error) {
+			return nil, errors.New("factory refuses")
+		})
+	source := &claimingPlacement{placement: plugin.Placement{
+		Source: "lease",
+		Hosted: []plugin.WorkloadKey{"sca"},
+	}}
+	app, err := New(WithBundles(
+		append(placementTestBundles(), plugin.BundleOf(refusesToBuild))...,
+	), WithPlacement(source))
+	require.NoError(t, err)
+
+	code, err := app.Execute(context.Background(), runtimeTestConfig(t, time.Second))
+
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "factory refuses")
+	assert.False(t, source.claimed.Load(),
+		"a construction that did not succeed leaves the claim to the runtime")
+	assert.Equal(t, int32(1), source.releases.Load())
+	assert.Nil(t, app.owned)
+}
+
+// TestARefusedDecisionGivesBackWhatPlacementAcquired covers the source that
+// answered and was refused. The runtime rejects the decision after the source
+// has already paid for it, so the release cannot be left to the answer's
+// consumer: there will not be one.
+func TestARefusedDecisionGivesBackWhatPlacementAcquired(t *testing.T) {
+	source := &claimingPlacement{placement: plugin.Placement{
+		Source: "lease",
+		Hosted: []plugin.WorkloadKey{"undeclared"},
+	}}
+	app, err := New(WithBundles(placementTestBundles()...), WithPlacement(source))
+	require.NoError(t, err)
+
+	code, err := app.Execute(context.Background(), runtimeTestConfig(t, time.Second))
+
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not declare")
+	assert.False(t, source.claimed.Load(),
+		"an answer the runtime refuses is still the source's claim until it is released")
+	assert.Equal(t, int32(1), source.releases.Load())
+}
+
+// TestANothingEnabledPlanGivesBackWhatPlacementAcquired covers the pre-construct
+// exit that never reaches Construct because there is no graph to construct:
+// placement carried no workload and the composition declared nothing beside
+// them, so the plan is empty and the run is refused by errNothingEnabled. The
+// release remains the only thing that gives the claim back.
+func TestANothingEnabledPlanGivesBackWhatPlacementAcquired(t *testing.T) {
+	source := &claimingPlacement{placement: plugin.Placement{
+		Source: "lease",
+	}}
+	app, err := New(WithBundles(
+		plugin.WorkloadOf("sca", plugin.BundleOf(
+			plugin.Define("sca-worker", func(plugin.BuildContext) (*runtimeTestValue, error) {
+				return &runtimeTestValue{}, nil
+			}),
+		), plugin.WithReplicas(2)),
+	), WithPlacement(source))
+	require.NoError(t, err)
+
+	code, err := app.Execute(context.Background(), runtimeTestConfig(t, time.Second))
+
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not carried by this process",
+		"the failure is the empty plan, not placement")
+	assert.False(t, source.claimed.Load(),
+		"a plan that enables nothing owes the claim back")
+	assert.Equal(t, int32(1), source.releases.Load())
+	assert.Nil(t, app.owned, "nothing is constructed when the plan enables nothing")
+}
+
+// TestAStopDuringPlanningGivesBackWhatPlacementAcquired covers the exit whose
+// shape depends on when the stop lands: the source answered and was paid for,
+// the plan built from that answer, and the run was refused at the planning
+// checkpoint -- before Construct, so the plugin graph never had the claim to
+// own. The release has to work on a run whose context the stop already
+// cancelled, which is exactly the case releasePlacement drops that cancellation
+// for.
+func TestAStopDuringPlanningGivesBackWhatPlacementAcquired(t *testing.T) {
+	source := &stoppingPlacement{placement: plugin.Placement{
+		Source: "lease",
+		Hosted: []plugin.WorkloadKey{"sca"},
+	}}
+	app, err := New(WithBundles(placementTestBundles()...), WithPlacement(source))
+	require.NoError(t, err)
+	source.stop = func() { app.requestStop(stopReasonSignal) }
+
+	code, err := app.Execute(context.Background(), runtimeTestConfig(t, time.Second))
+
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aborting planning phase",
+		"the refusal is the planning checkpoint that follows the decision")
+	assert.Equal(t, int32(1), source.releases.Load(),
+		"the claim is given back exactly once even though the stop cancelled the run")
+	assert.Zero(t, source.cancelledReleases.Load(),
+		"the release runs on a context detached from the stop that cancelled the run, or a store would fail it on its first call")
+	assert.Nil(t, app.owned, "the stop is honoured before anything is constructed")
+}
+
+// TestASuccessfulConstructTakesOwnershipOfTheClaim is the other half of the
+// boundary. Once Construct succeeds the plugin graph owns what the source
+// acquired -- the placement plugin's PreStop and Stop hooks are what release it
+// -- so the runtime must not take the claim back behind the plugin's back, at
+// any point in the run.
+func TestASuccessfulConstructTakesOwnershipOfTheClaim(t *testing.T) {
+	definition := plugin.Define("carried", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
+	}})
+	source := &claimingPlacement{placement: plugin.Placement{
+		Source: "lease",
+		Hosted: []plugin.WorkloadKey{"sca"},
+	}}
+	app, err := New(WithBundles(
+		plugin.WorkloadOf("sca", plugin.BundleOf(definition), plugin.WithReplicas(2)),
+	), WithPlacement(source))
+	require.NoError(t, err)
+	app.ready = make(chan struct{})
+
+	result := executeRuntimeTest(app, runtimeTestConfig(t, time.Second)...)
+	awaitRuntimeTestReady(t, app)
+
+	assert.True(t, source.claimed.Load(),
+		"the constructed plugin owns the claim once Construct has succeeded")
+	assert.Zero(t, source.releases.Load(),
+		"the runtime does not release a claim a constructed plugin owns")
+
+	app.requestStop(stopReasonSignal)
+	completed := awaitRuntimeTestResult(t, result)
+	require.NoError(t, completed.err)
+	assert.Equal(t, 0, completed.code)
+	assert.Zero(t, source.releases.Load(),
+		"the release stays with the plugin for the whole run")
 }

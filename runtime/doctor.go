@@ -44,6 +44,14 @@ const doctorInstanceLabelWidth = len("selected at")
 // settings and from the pure resolvers beside them, which is the whole reason
 // doctor can be run against a configuration whose side effects are exactly what
 // an operator is unsure about.
+//
+// The placement decision is the one thing the command reaches for rather than
+// reads: it is resolved before planning, so a source that claims capacity to
+// answer -- the lease source -- does contact its store. Whatever such a source
+// acquires is transient: nothing here constructs a plugin to own it, and the
+// runtime gives it back before the command returns (see releasePlacement), so
+// no claim outlives the report that needed it -- and a handback the store
+// refused is printed below the report (see reportDoctorPlacementRelease).
 func (a *App) reportDoctor(plan *assembly.Plan, migrate bool) {
 	out := a.diagnostics()
 
@@ -70,6 +78,29 @@ func (a *App) reportDoctor(plan *assembly.Plan, migrate bool) {
 
 	fmt.Fprintln(out, "migration")
 	fmt.Fprintf(out, "  this run would migrate: %t\n", migrate)
+}
+
+// reportDoctorPlacementRelease writes the failure the run path would warn
+// about: the release of what the placement source acquired to answer this
+// diagnostic could not be confirmed by its store.
+//
+// It is a report of its own rather than a placement note because of when it
+// becomes known: the release is attempted by the deferred call that runs after
+// the report has been written, so there is no placement section left to append
+// to. Doctor is the one command that must not install a logger, which is why
+// the warning cannot reach the operator any other way -- and without it a claim
+// the command took would be left to expire with nothing said about it.
+//
+// The command's own result is untouched: the diagnosis is complete whether or
+// not the handback was, the exit code stays what it would have been, and the
+// error itself is echoed as the store reported it, so the operator can tell a
+// refused handover from an unreachable one.
+func (a *App) reportDoctorPlacementRelease(err error) {
+	out := a.diagnostics()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "placement release")
+	fmt.Fprintf(out, "  failed   %v\n", err)
+	fmt.Fprintln(out, "  the claim taken to answer this diagnostic expires with its own lease ttl")
 }
 
 // reportDoctorConfiguration names where configuration came from and which roots

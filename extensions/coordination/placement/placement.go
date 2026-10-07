@@ -183,7 +183,10 @@ func (config *options) validate() error {
 //
 // It implements plugin.PlacementSource, so the runtime asks it which workloads
 // this process carries; it is also the Definition behind Bundle, so the same
-// value renews those slots under Start and gives them back under PreStop.
+// value renews those slots under Start and gives them back under PreStop. A
+// command that returns before that plugin exists -- doctor, a plan failure --
+// gives the slots back through plugin.PlacementReleaser instead, which is
+// Release.
 type Placement struct {
 	locker       lease.Locker
 	prefix       string
@@ -203,6 +206,11 @@ type Placement struct {
 	decision plugin.Placement
 	admitted []plugin.Workload
 	held     []*heldSlot
+	// released reports that Release has confirmed giving back a slot this
+	// process won for its decision. It exists for Stats: once held is emptied,
+	// "resolved and holding nothing" describes both a standby and a process that
+	// took the role and handed it back, and only the first is a standby.
+	released bool
 	// instance is the process identity the resolving request carried, kept so
 	// Stats can label this process's slots with it. It is written once, by the
 	// round that resolves, under mu.
@@ -236,7 +244,10 @@ type Placement struct {
 	renewFailures atomic.Uint64
 }
 
-var _ plugin.PlacementSource = (*Placement)(nil)
+var (
+	_ plugin.PlacementSource   = (*Placement)(nil)
+	_ plugin.PlacementReleaser = (*Placement)(nil)
+)
 
 // New builds the lease-backed placement for this process and installs it.
 //
@@ -356,6 +367,38 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 	p.decision = decision
 	p.resolved = true
 	return decision, nil
+}
+
+// Release gives back every slot this process won for a decision that no
+// constructed plugin took ownership of.
+//
+// The runtime calls it when a command returns between Resolve and a successful
+// Construct -- doctor, a plan that fails to build, an answer the runtime
+// refuses, a stop during planning -- paths on which no constructed plugin owns
+// the slots. Without it those paths would hold cluster capacity until each
+// lease expired, which is the opposite of what a read-only diagnostic is for.
+//
+// It is idempotent and safe beside the plugin's own release: a slot the store
+// has already taken back is dropped from this process's report of what it
+// holds, and a later PreStop or Stop then finds nothing left to give.
+//
+// It reuses the handback discipline, because the path that most needs it is a
+// run that was already asked to stop: the release is taken on a context that
+// does not inherit the caller's cancellation, under a budget in its place
+// (handBack explains why). A slot the store does not confirm stays owed and is
+// reported through the error; a command on its way out has nothing left to
+// retry it with, so such a slot expires with its ttl.
+func (p *Placement) Release(callerCtx context.Context) error {
+	if callerCtx == nil {
+		callerCtx = context.Background()
+	}
+	slots := p.releasable()
+	_, err := p.handBack(callerCtx, slots)
+	// Whatever the store confirmed is dropped before the error is returned, so
+	// a caller that logs the failure is still looking at a process whose own
+	// report agrees with the store about what it holds.
+	p.forgetReleased()
+	return err
 }
 
 // claimant names who holds a slot, preferring the process over the token.
@@ -599,6 +642,38 @@ func (p *Placement) releasable() []*heldSlot {
 	slots := make([]*heldSlot, 0, len(p.held)+len(p.handback))
 	slots = append(slots, p.held...)
 	return append(slots, p.handback...)
+}
+
+// forgetReleased drops the slots the store has confirmed it took back, so this
+// process's own report -- the held gauge, the readiness probe, Stats -- stops
+// claiming capacity it no longer has. A slot whose release failed is kept, so
+// the Stop backstop can still find it.
+//
+// It is separate from the release itself because the two are read by different
+// things: the release is about the store, and this is about what the process
+// says about itself afterwards. Dropping a slot this process held also records
+// that decision's claim as released, which is what keeps Stats from reporting a
+// former holder as a standby once held is emptied.
+func (p *Placement) forgetReleased() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	before := len(p.held)
+	p.held = keepUnreleased(p.held)
+	p.handback = keepUnreleased(p.handback)
+	if len(p.held) < before {
+		p.released = true
+	}
+}
+
+// keepUnreleased filters a slot list down to the slots still owed to the store.
+func keepUnreleased(slots []*heldSlot) []*heldSlot {
+	kept := slots[:0]
+	for _, slot := range slots {
+		if !slot.snapshot().released {
+			kept = append(kept, slot)
+		}
+	}
+	return kept
 }
 
 // stopRequested reports, without blocking, that this placement must stop

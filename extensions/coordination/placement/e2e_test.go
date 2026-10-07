@@ -272,6 +272,78 @@ func TestAStandbyStartsReadyWithOnlyTheUnownedPlugins(t *testing.T) {
 	assert.Equal(t, 0, run.code)
 }
 
+// unwiredContract is exported by nothing in the compositions below, which is
+// how a plan failure is spelled: a required input with no producer is rejected
+// by BuildPlan, after the placement decision is already made.
+type unwiredContract interface{ Unwired() }
+
+// planFailingBundle declares the Definition that fails a build plan, so the
+// slot a lease-backed placement won for the decision has no graph to belong to.
+func planFailingBundle() plugin.Bundle {
+	return plugin.BundleOf(plugin.Define("e2e-unwired",
+		func(plugin.BuildContext) (*probePlugin, error) { return &probePlugin{}, nil },
+		plugin.Options[*probePlugin]{Inputs: plugin.Inputs(plugin.RequireOne[unwiredContract]())},
+	))
+}
+
+// TestDoctorGivesBackTheSlotItWonToAnswer drives the read-only command through a
+// real lease-backed placement. Doctor has to resolve the hosted set to report
+// it, and resolving wins the slot; nothing is constructed to own it, so the
+// runtime must hand it back before the command returns. A diagnostic that left
+// the slot to expire with its ttl would consume capacity for a process that
+// never serves anything.
+func TestDoctorGivesBackTheSlotItWonToAnswer(t *testing.T) {
+	server, client := newMiniredis(t)
+	hosting, err := placement.New(newLocker(t, client), placement.WithRenewInterval(50*time.Millisecond))
+	require.NoError(t, err)
+
+	var instances atomic.Int32
+	app, err := xbc.New(xbc.WithPlacement(hosting), xbc.WithBundles(
+		hosting.Bundle(),
+		unownedBundle("e2e-unowned", make(chan struct{}), &instances),
+		workloadBundle(e2eWorkloadKey, make(chan struct{}), &instances),
+	))
+	require.NoError(t, err)
+
+	code, err := app.Execute(context.Background(), []string{"doctor", "--config", appConfig(t)})
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.False(t, server.Exists(e2eSlotKey),
+		"the slot won to answer must be given back before doctor returns")
+	assert.Empty(t, hosting.Stats().Held,
+		"the process reports holding nothing after the release")
+	assert.Zero(t, instances.Load(), "doctor still constructs nothing")
+}
+
+// TestAFailedPlanLeavesTheWonSlotHeldNowhere is the other pre-construct exit an
+// operator meets: the placement decision is made and its slot is won, and the
+// graph the decision describes then fails to build. No plugin ever starts, so
+// no PreStop or Stop will give the slot back and the runtime has to.
+func TestAFailedPlanLeavesTheWonSlotHeldNowhere(t *testing.T) {
+	server, client := newMiniredis(t)
+	hosting, err := placement.New(newLocker(t, client), placement.WithRenewInterval(50*time.Millisecond))
+	require.NoError(t, err)
+
+	var instances atomic.Int32
+	app, err := xbc.New(xbc.WithPlacement(hosting), xbc.WithBundles(
+		hosting.Bundle(),
+		workloadBundle(e2eWorkloadKey, make(chan struct{}), &instances),
+		planFailingBundle(),
+	))
+	require.NoError(t, err)
+
+	code, err := app.Execute(context.Background(), []string{"--config", appConfig(t)})
+
+	require.Error(t, err)
+	assert.Equal(t, 1, code)
+	assert.Contains(t, err.Error(), "found none", "the failure is the unwired input, not placement")
+	assert.False(t, server.Exists(e2eSlotKey),
+		"a plan that never reaches construction must not leave the won slot held")
+	assert.Empty(t, hosting.Stats().Held)
+	assert.Zero(t, instances.Load(), "nothing is constructed when the plan fails")
+}
+
 // TestAnUnreachableLeaseStoreFailsStartupWithActionableText pins the cold-start
 // rule at the level an operator meets it. Falling back to hosting every
 // workload would make the process shape depend on store availability -- doctor
