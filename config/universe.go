@@ -391,9 +391,16 @@ type envCandidate struct {
 	typ         reflect.Type
 	expressible bool
 	hint        string // set when the shape cannot be expressed at this spelling
+	// declared marks a candidate whose spelling is a leaf the section declares
+	// outright -- a typed section's leaf or toggle, or an instanced section's
+	// own enabled flag -- rather than an instance name inferred from the
+	// variable. A hint is never declared: the unusable spelling it warns about
+	// must not outrank the instance reading the same variable carries.
+	declared bool
 	// section and instance are set only for a path inside a SectionInstanced
 	// section, and only when the instance name was discovered from the
-	// variable name. They carry what checkInstanceCollision needs.
+	// variable name: a non-empty instance is exactly an inferred reading.
+	// They carry what checkInstanceCollision needs.
 	section  string
 	instance string
 }
@@ -403,8 +410,9 @@ type envCandidate struct {
 // but matches no field, or whose shape has no unambiguous single-variable
 // spelling, is an error rather than a silent no-op.
 //
-// existing is the tree merged from the lower layers, consulted only to reject
-// an instance name that would fork rather than override. It may be nil.
+// existing is the tree merged from the lower layers, consulted to arbitrate an
+// inferred instance reading: whether the instance is already declared, and
+// whether it would fork a declared instance it cannot spell. It may be nil.
 func (u *Universe) envOverlay(prefix string, environ []string, existing *koanf.Koanf) (map[string]any, error) {
 	values := make(map[string]any)
 	var failures []error
@@ -427,6 +435,9 @@ func (u *Universe) envOverlay(prefix string, environ []string, existing *koanf.K
 				name, prefix, strings.Join(u.roots, ", ")))
 			continue
 		}
+		// A declared sibling must not hide an instance the lower layers
+		// already declare; see preferDeclaredCandidates.
+		candidates = preferDeclaredCandidates(candidates, existing)
 		if err := checkInstanceCollision(name, candidates, existing); err != nil {
 			failures = append(failures, err)
 			continue
@@ -605,18 +616,64 @@ func (u *Universe) resolve(prefix, name string) ([]envCandidate, bool) {
 	return candidates, claimed
 }
 
+// preferDeclaredCandidates drops a candidate whose instance name was inferred
+// from the variable when the same variable also names a declared leaf or
+// toggle. An instanced section reads the segment before a leaf suffix as an
+// instance name, so a declared sibling whose own spelling matches the variable
+// would otherwise make XBC_PLUGINS_REDIS_LEASE_ENABLED ambiguous between
+// plugins.redis-lease.enabled and instance "lease" of plugins.redis. The
+// declared spelling is the one an operator wrote and the one a schema answers
+// for, so it wins; the inferred reading still applies when nothing declared
+// matches, which is the only way an ENV-only named instance is expressible. A
+// hint is never declared, so the unusable spelling it warns about cannot
+// suppress an instance reading the same variable carries.
+//
+// One inferred candidate survives beside a declared spelling: the instance it
+// names is already declared in the lower layers, so the variable is at least
+// as likely aimed at that instance as at the sibling. Keeping it makes
+// interpret report the ambiguity instead of the variable being silently
+// redirected. existing may be nil, which declares nothing.
+func preferDeclaredCandidates(candidates []envCandidate, existing *koanf.Koanf) []envCandidate {
+	declared := false
+	for _, candidate := range candidates {
+		if candidate.declared {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return candidates
+	}
+	kept := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.declared || candidate.instanceIsDeclared(existing) {
+			kept = append(kept, candidate)
+		}
+	}
+	return kept
+}
+
+// instanceIsDeclared reports whether an inferred candidate names an instance
+// the lower configuration layers already declare under its section.
+func (candidate envCandidate) instanceIsDeclared(existing *koanf.Koanf) bool {
+	if candidate.instance == "" || existing == nil {
+		return false
+	}
+	return declaredInstances(existing, candidate.section)[candidate.instance]
+}
+
 // matchTyped reports whether tail names something the section owns, which is
 // what lets a collapsed root claim a variable only by matching it.
 func (section resolvedSection) matchTyped(tail string, add func(envCandidate)) bool {
 	matched := false
 	for _, item := range section.leaves {
 		if tail == item.suffix {
-			add(envCandidate{path: section.Path + "." + item.path, typ: item.typ, expressible: item.expressible})
+			add(envCandidate{path: section.Path + "." + item.path, typ: item.typ, expressible: item.expressible, declared: true})
 			matched = true
 		}
 	}
 	if section.Toggle && tail == "ENABLED" {
-		add(envCandidate{path: section.Path + "." + enabledKey, typ: boolType, expressible: true})
+		add(envCandidate{path: section.Path + "." + enabledKey, typ: boolType, expressible: true, declared: true})
 		matched = true
 	}
 	return matched
@@ -625,7 +682,7 @@ func (section resolvedSection) matchTyped(tail string, add func(envCandidate)) b
 func (section resolvedSection) matchInstanced(sectionPrefix, tail string, add func(envCandidate)) bool {
 	matched := false
 	if section.Toggle && tail == "ENABLED" {
-		add(envCandidate{path: section.Path + "." + enabledKey, typ: boolType, expressible: true})
+		add(envCandidate{path: section.Path + "." + enabledKey, typ: boolType, expressible: true, declared: true})
 		matched = true
 	}
 	if section.Toggle {

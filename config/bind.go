@@ -43,14 +43,18 @@ func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...str
 	// been allocated. Prepare temporary pointers for decoding, then restore
 	// those whose inline schema had no file value so absent subtrees stay nil.
 	temporaryInlinePointers := prepareInlinePointers(root, schema.Root, section)
+	// A map or slice the source supplies replaces the target's pre-filled
+	// value rather than merging into it; scalar pre-fills stay untouched.
+	zeroSourceCollections(root, section)
 
 	decoderConfig := &mapstructure.DecoderConfig{
 		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			rejectFractionalFloat,
+			textFromNumber,
 			mapstructure.StringToTimeDurationHookFunc(),
 			mapstructure.TextUnmarshallerHookFunc(),
 		),
-		WeaklyTypedInput: true,
-		SquashTagOption:  "inline",
+		SquashTagOption: "inline",
 	}
 	unmarshalErr := k.UnmarshalWithConf(path, out, koanf.UnmarshalConf{
 		Tag:           "yaml",
@@ -98,12 +102,164 @@ func bind(k *koanf.Koanf, path string, out any, envPrefix string, allowed ...str
 		if !ok {
 			return fmt.Errorf("xbc: cannot locate configuration field %s", item.Path)
 		}
+		if !field.IsZero() {
+			// The caller pre-filled this field (a plugin's ConfigSpec.Defaults,
+			// typically). A pre-filled value is a decision the tag must not
+			// overwrite, so the tag only supplies a value where the target is
+			// still its zero value.
+			continue
+		}
 		if err := setScalar(field, item.Type, item.Default); err != nil {
 			return fmt.Errorf("xbc: field %s default tag %q cannot be parsed as %s: %w", item.Path, item.Default, item.Type, err)
 		}
 	}
 
 	return nil
+}
+
+// zeroSourceCollections clears every map and slice the source section
+// supplies, at any depth, so that decoding writes those values whole instead
+// of merging them into what the caller pre-filled. Without it a user map
+// keeps default keys it never mentioned -- an asynq "queues: {critical: 6}"
+// would still carry the default "default" queue -- and a struct slice reuses
+// pre-filled elements, so each decoded element inherits default fields the
+// user left out. Scalars are deliberately left alone: their pre-filled values
+// remain the caller's defaults.
+func zeroSourceCollections(target reflect.Value, source any) {
+	for target.IsValid() && (target.Kind() == reflect.Pointer || target.Kind() == reflect.Interface) {
+		if target.IsNil() {
+			// Nothing is pre-filled below a nil pointer; the decoder allocates a
+			// fresh subtree, so there is no merge to undo.
+			return
+		}
+		target = target.Elem()
+	}
+	if !target.IsValid() || target.Kind() != reflect.Struct {
+		return
+	}
+	sourceMap, ok := stringMapValue(reflect.ValueOf(source))
+	if !ok {
+		return
+	}
+
+	structType := target.Type()
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+		name, inline, skip := yamlField(field)
+		if skip {
+			continue
+		}
+		fieldValue := target.Field(i)
+		if inline {
+			// An inline embedded struct shares the enclosing map's keys.
+			zeroSourceCollections(fieldValue, source)
+			continue
+		}
+		child, found := mapField(sourceMap, name)
+		if !found {
+			continue
+		}
+		childValue := dereferenceValue(child)
+		if !childValue.IsValid() {
+			continue
+		}
+		fieldType := dereference(field.Type)
+		if isCollectionKind(fieldType) && isCollectionKind(childValue.Type()) {
+			fieldValue.SetZero()
+			continue
+		}
+		if isStructSchema(fieldType) {
+			zeroSourceCollections(fieldValue, childValue.Interface())
+		}
+	}
+}
+
+func dereferenceValue(value reflect.Value) reflect.Value {
+	for value.IsValid() && (value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface) {
+		if value.IsNil() {
+			return reflect.Value{}
+		}
+		value = value.Elem()
+	}
+	return value
+}
+
+func isCollectionKind(typ reflect.Type) bool {
+	switch typ.Kind() {
+	case reflect.Map, reflect.Slice, reflect.Array:
+		return true
+	default:
+		return false
+	}
+}
+
+// textFromNumber converts an integer source into the text of a string-kind
+// type that parses its own syntax (encoding.TextUnmarshaler). An unquoted YAML
+// integer such as xbc.runtime.max_procs: 4 is a number, while the field owning
+// the key is deliberately a text type whose parser produces the diagnostic for
+// every spelling of the setting, and the decimal spelling is exactly what the
+// user wrote. A plain string field is not text of this kind and still refuses
+// a number, as do booleans, whose only weak spellings ("1", "0") are not
+// something anyone wrote.
+func textFromNumber(from reflect.Type, to reflect.Type, data any) (any, error) {
+	target := to
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	if target.Kind() != reflect.String {
+		return data, nil
+	}
+	if !target.Implements(textUnmarshalerType) && !reflect.PointerTo(target).Implements(textUnmarshalerType) {
+		return data, nil
+	}
+	switch from.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(reflect.ValueOf(data).Int(), 10), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return strconv.FormatUint(reflect.ValueOf(data).Uint(), 10), nil
+	default:
+		return data, nil
+	}
+}
+
+// rejectFractionalFloat refuses a fractional or out-of-range float offered
+// for an integer field. mapstructure would truncate 2.9 to 2 and wrap a large
+// value silently; strict binding must neither. YAML numbers reach a schema
+// through this path, while environment values are parsed into their final
+// type before decoding and never take it.
+func rejectFractionalFloat(from reflect.Type, to reflect.Type, data any) (any, error) {
+	if from.Kind() != reflect.Float32 && from.Kind() != reflect.Float64 {
+		return data, nil
+	}
+	target := to
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	signed := true
+	switch target.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		signed = false
+	default:
+		return data, nil
+	}
+
+	text := strconv.FormatFloat(reflect.ValueOf(data).Float(), 'f', -1, 64)
+	if signed {
+		value, err := strconv.ParseInt(text, 10, target.Bits())
+		if err != nil {
+			return nil, fmt.Errorf("%v is not a whole number that fits %s", data, target)
+		}
+		return value, nil
+	}
+	value, err := strconv.ParseUint(text, 10, target.Bits())
+	if err != nil {
+		return nil, fmt.Errorf("%v is not a whole number that fits %s", data, target)
+	}
+	return value, nil
 }
 
 func allowedPathSet(paths []string) (map[string]struct{}, error) {

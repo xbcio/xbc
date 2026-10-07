@@ -15,10 +15,14 @@ import (
 // Options carries every knob Load needs to locate and assemble the
 // configuration tree.
 type Options struct {
-	File      string         // --config; when non-empty the file MUST exist
-	Profile   string         // --profile or XBC_PROFILE
-	EnvPrefix string         // "XBC_"; names the environment layer and later Bind calls
-	Overrides map[string]any // flat dotted-path -> value, e.g. from --set flags
+	File      string // --config; when non-empty the file MUST exist
+	Profile   string // --profile or XBC_PROFILE
+	EnvPrefix string // "XBC_"; names the environment layer and later Bind calls
+	// Overrides merges flat dotted-path -> value between the files and the
+	// environment layer. Strict binding applies no weak typing, so a value
+	// must already have the type of the field it lands in: a string assembled
+	// from text does not coerce into an int, nor a scalar into a list.
+	Overrides map[string]any
 	// Universe declares who owns which configuration path. When it is nil no
 	// environment layer is merged and no ownership check runs, which is what
 	// an embedding caller that assembles its own tree wants. The runtime

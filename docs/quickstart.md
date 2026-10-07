@@ -153,10 +153,15 @@ An explicit `--config <path>` must exist. Add `--profile prod` to merge an optio
 
 For a normally executed XBC application, precedence from lowest to highest is:
 
-1. Go struct `default` tags
-2. Base YAML
-3. Profile YAML
-4. Environment variables
+1. Go struct `default` tags, which fill a field only while it is still at its zero value
+2. The non-zero values `ConfigSpec.Defaults` pre-fills
+3. Base YAML
+4. Profile YAML
+5. Environment variables
+
+A map or list written in the configuration replaces a pre-filled value rather than merging into it: a `queues` map a plugin pre-fills with `{default: 1}` becomes exactly the keys the file writes. Scalars are decoded without coercion, so a fractional number for an integer field, a quoted numeric string, or a boolean where a string is expected fails startup instead of being truncated or rewritten into a value nobody wrote. A list is not widened from a single scalar either: `skip_paths: /healthz` where a list field is expected fails startup rather than becoming a one-element list — write `skip_paths: ["/healthz"]`.
+
+Two rules matter when authoring a plugin's `Config` struct. A `default` tag inside a pointer sub-struct allocates that sub-struct even when the user configured nothing, so a `required` field inside it would fail for every user who left the optional block out — validate such a block conditionally in `Prepare` instead. And a `default` tag never overwrites a value `Defaults` pre-filled; it supplies a value only where the field is still at its zero value.
 
 YAML strings do not expand `${VAR}`. Supply deployment values through environment variables or an application-owned secret provider instead.
 

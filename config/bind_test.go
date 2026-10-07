@@ -300,3 +300,197 @@ func TestBindEnvBeatsOverridesOnSameKey(t *testing.T) {
 	require.NoError(t, bind(k, "plugins.gorm.default", &cfg, "XBC_"))
 	require.Equal(t, 77, cfg.MaxOpenConn, "When ENV and embedder Overrides collide on the same key, ENV wins")
 }
+
+// collectionsItem and collectionsConfig mimic a plugin whose ConfigSpec
+// pre-fills a map and a struct slice, the shapes a user value must replace
+// whole rather than merge into.
+type collectionsItem struct {
+	Name    string `yaml:"name"`
+	Timeout int    `yaml:"timeout"`
+}
+
+type collectionsConfig struct {
+	Queues map[string]int    `yaml:"queues"`
+	Items  []collectionsItem `yaml:"items"`
+}
+
+// TestBindUserMapReplacesPreFilledDefaults pins replace semantics for maps.
+// The merge mapstructure performs by default would keep pre-filled keys the
+// user never mentioned -- the reason an asynq "queues: {critical: 6}" could
+// not remove the default "default" queue.
+func TestBindUserMapReplacesPreFilledDefaults(t *testing.T) {
+	env, err := NewEnvironment(map[string]any{
+		"service": map[string]any{
+			"queues": map[string]any{"critical": 6},
+		},
+	}, "")
+	require.NoError(t, err)
+
+	config := collectionsConfig{Queues: map[string]int{"default": 1}}
+	require.NoError(t, env.Bind("service", &config))
+
+	assert.Equal(t, map[string]int{"critical": 6}, config.Queues,
+		"a map written by the user replaces the pre-filled one; default keys must not survive the merge")
+	assert.Equal(t, map[string]int{"critical": 6}, env.Get("service.queues"))
+}
+
+// TestBindEmptyUserMapReplacesPreFilledDefaults is the same rule at its
+// boundary: an explicitly written empty map clears the pre-filled keys rather
+// than being ignored because it has no entries to merge.
+func TestBindEmptyUserMapReplacesPreFilledDefaults(t *testing.T) {
+	env, err := NewEnvironment(map[string]any{
+		"service": map[string]any{
+			"queues": map[string]any{},
+		},
+	}, "")
+	require.NoError(t, err)
+
+	config := collectionsConfig{Queues: map[string]int{"default": 1}}
+	require.NoError(t, env.Bind("service", &config))
+
+	assert.Empty(t, config.Queues, "an empty user map is an intent to clear, not a no-op")
+}
+
+// TestBindUserStructSliceDoesNotInheritDefaultElements pins replace semantics
+// for struct slices. Reusing a pre-filled element would leave fields the user
+// never wrote -- the element is decoded into, not replaced -- so each decoded
+// element must start from its zero value.
+func TestBindUserStructSliceDoesNotInheritDefaultElements(t *testing.T) {
+	env, err := NewEnvironment(map[string]any{
+		"service": map[string]any{
+			"items": []any{map[string]any{"name": "from-file"}},
+		},
+	}, "")
+	require.NoError(t, err)
+
+	config := collectionsConfig{Items: []collectionsItem{{Name: "default", Timeout: 30}}}
+	require.NoError(t, env.Bind("service", &config))
+
+	require.Len(t, config.Items, 1)
+	assert.Equal(t, "from-file", config.Items[0].Name)
+	assert.Zero(t, config.Items[0].Timeout,
+		"a decoded element must be fresh, not a pre-filled default element with the user's fields written over it")
+}
+
+// TestBindCollectionsTheSourceOmitsKeepTheirPreFilledValue guards the other
+// half of replace semantics: a collection is replaced only when the source
+// actually supplies it, so a value the caller pre-filled and the configuration
+// never mentions survives the bind.
+func TestBindCollectionsTheSourceOmitsKeepTheirPreFilledValue(t *testing.T) {
+	env, err := NewEnvironment(map[string]any{
+		"service": map[string]any{
+			"queues": map[string]any{"critical": 6},
+		},
+	}, "")
+	require.NoError(t, err)
+
+	config := collectionsConfig{Queues: map[string]int{"default": 1}, Items: []collectionsItem{{Name: "kept"}}}
+	require.NoError(t, env.Bind("service", &config))
+
+	assert.Equal(t, []collectionsItem{{Name: "kept"}}, config.Items,
+		"a slice the source does not mention keeps the pre-filled value")
+}
+
+// TestBindRejectsFractionalFloatForIntegerField pins the strict scalar rule:
+// mapstructure truncates a fractional float into an integer field, silently
+// turning 2.9 into 2. A whole number in range is still accepted.
+func TestBindRejectsFractionalFloatForIntegerField(t *testing.T) {
+	env, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"max_open_conn": 2.9},
+	}, "")
+	require.NoError(t, err)
+
+	var config gormLikeConfig
+	err = env.Bind("service", &config)
+	require.Error(t, err, "A fractional value must not be truncated into an integer field")
+	assert.Contains(t, err.Error(), "whole number")
+	assert.Zero(t, config.MaxOpenConn, "the rejected value must not be truncated into the field")
+
+	whole, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"max_open_conn": 3.0},
+	}, "")
+	require.NoError(t, err)
+	var accepted gormLikeConfig
+	require.NoError(t, whole.Bind("service", &accepted), "a whole number that fits the field is not lossy")
+	assert.Equal(t, 3, accepted.MaxOpenConn)
+}
+
+// TestBindRejectsScalarTypeCoercions pins the removals of WeaklyTypedInput:
+// a bool offered for a string field, and a quoted token offered for an
+// integer field, are configuration mistakes rather than values to coerce.
+func TestBindRejectsScalarTypeCoercions(t *testing.T) {
+	boolForString, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"dsn": true},
+	}, "")
+	require.NoError(t, err)
+	var config gormLikeConfig
+	require.Error(t, boolForString.Bind("service", &config),
+		"true must not silently become the string \"1\"")
+
+	for _, token := range []string{"0x10", "0755", "not-a-number"} {
+		quoted, err := NewEnvironment(map[string]any{
+			"service": map[string]any{"max_open_conn": token},
+		}, "")
+		require.NoError(t, err)
+		var coerced gormLikeConfig
+		require.Error(t, quoted.Bind("service", &coerced),
+			"the quoted token %q must not be rewritten into an integer", token)
+	}
+}
+
+// textSetting is the shape the runtime's xbc.runtime settings use: a
+// string-kind type that parses its own syntax, so its spelling is meaningful
+// and its parser owns every diagnostic for the key.
+type textSetting string
+
+func (v *textSetting) UnmarshalText(text []byte) error {
+	*v = textSetting(text)
+	return nil
+}
+
+type textSettingConfig struct {
+	MaxProcs textSetting `yaml:"max_procs"`
+	Label    string      `yaml:"label"`
+}
+
+// TestBindConvertsNumbersForTextUnmarshalingFieldsOnly pins the one integer
+// conversion strict binding keeps. An unquoted YAML integer for a field whose
+// type parses its own text is the spelling an operator wrote, so it reaches
+// UnmarshalText as its decimal text; a plain string field still refuses the
+// number rather than inventing a spelling nobody wrote.
+func TestBindConvertsNumbersForTextUnmarshalingFieldsOnly(t *testing.T) {
+	env, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"max_procs": 4},
+	}, "")
+	require.NoError(t, err)
+
+	var config textSettingConfig
+	require.NoError(t, env.Bind("service", &config))
+	require.Equal(t, textSetting("4"), config.MaxProcs)
+
+	plain, err := NewEnvironment(map[string]any{
+		"service": map[string]any{"label": 4},
+	}, "")
+	require.NoError(t, err)
+	var refused textSettingConfig
+	require.Error(t, plain.Bind("service", &refused),
+		"a plain string field must not silently accept a number")
+}
+
+// TestBindDefaultTagDoesNotOverwriteAPreFilledValue pins the precedence a
+// ConfigSpec.Defaults value has over a struct default tag: the tag supplies a
+// value only where the target is still its zero value.
+func TestBindDefaultTagDoesNotOverwriteAPreFilledValue(t *testing.T) {
+	k := koanf.New(".")
+
+	prefilled := gormLikeConfig{MaxOpenConn: 42}
+	require.NoError(t, bind(k, "", &prefilled, "XBC_"))
+	require.Equal(t, 42, prefilled.MaxOpenConn,
+		"a value the caller pre-filled is a decision the default tag must not overwrite")
+	require.Equal(t, 5*time.Second, prefilled.ConnTimeout,
+		"a field still at its zero value falls back to its default tag")
+
+	zero := gormLikeConfig{}
+	require.NoError(t, bind(k, "", &zero, "XBC_"))
+	require.Equal(t, 10, zero.MaxOpenConn, "the zero value is what a default tag fills")
+}

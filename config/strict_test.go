@@ -155,6 +155,47 @@ func TestBindPointerSubtreeAllocatesWhenEnvHits(t *testing.T) {
 	assert.Equal(t, 10, config.Pool.Limit)
 }
 
+type requiredSubConfig struct {
+	Addr string `yaml:"addr" validate:"required"`
+	Port int    `yaml:"port" default:"8080"`
+}
+
+type optionalSubRoot struct {
+	Sub *requiredSubConfig `yaml:"sub"`
+}
+
+// TestBindDefaultInsidePointerSubtreeMaterializesTheBlock pins the trap the
+// package documentation warns plugin authors about. A default tag inside a
+// pointer sub-struct makes Bind allocate that sub-struct even when the user
+// configured nothing, so a required field inside it fails for a user who
+// simply did not configure the optional block. The behavior is deliberate --
+// the tag cannot apply without the block existing -- and authors are told to
+// validate such a block conditionally in Prepare instead.
+func TestBindDefaultInsidePointerSubtreeMaterializesTheBlock(t *testing.T) {
+	env, err := NewEnvironment(nil, "")
+	require.NoError(t, err)
+
+	var config optionalSubRoot
+	require.NoError(t, env.Bind("service", &config))
+	require.NotNil(t, config.Sub, "a default tag inside the block forces it to exist")
+	assert.Equal(t, 8080, config.Sub.Port)
+
+	err = Validate(&config, "service")
+	require.Error(t, err, "required inside the materialized block fails although the user configured nothing")
+	assert.Contains(t, err.Error(), "service.sub.addr")
+
+	type noDefaults struct {
+		Name string `yaml:"name" validate:"required"`
+	}
+	empty, err := NewEnvironment(nil, "")
+	require.NoError(t, err)
+	var untouched struct {
+		Sub *noDefaults `yaml:"sub"`
+	}
+	require.NoError(t, empty.Bind("service", &untouched))
+	assert.Nil(t, untouched.Sub, "without a default tag the block stays absent and required inside it is not reached")
+}
+
 func TestValidateUsesPointerSubtreeYAMLPath(t *testing.T) {
 	config := pointerRootConfig{Pool: &pointerPoolConfig{Limit: 0}}
 	err := Validate(&config, "plugins.database")

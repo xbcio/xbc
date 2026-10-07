@@ -303,6 +303,114 @@ func TestEnvironmentLayerRejectsShapesItCannotExpress(t *testing.T) {
 	}
 }
 
+// TestEnvironmentLayerPrefersADeclaredSiblingOverAnInstanceReading reproduces
+// the shape redis.Bundle() declares: an instanced section beside hyphenated
+// siblings ("plugins.redis" with "plugins.redis-health" and
+// "plugins.redis-lease"). An instanced section discovers an instance name in
+// the segment before a leaf suffix, so XBC_PLUGINS_REDIS_LEASE_ENABLED matched
+// both plugins.redis-lease.enabled and instance "lease" of plugins.redis and
+// was reported as ambiguous -- which made the sibling impossible to toggle
+// from the environment. The declared spelling wins; the instance reading still
+// applies when no declared section matches.
+func TestEnvironmentLayerPrefersADeclaredSiblingOverAnInstanceReading(t *testing.T) {
+	universe, err := NewUniverse(
+		Section{Path: "plugins", Owner: "the assembly layer", Kind: SectionNamespace},
+		Section{Path: "plugins.redis", Owner: `plugin "redis"`, Kind: SectionInstanced, Schema: reflect.TypeOf(storeSection{}), Toggle: true},
+		Section{Path: "plugins.redis-health", Owner: `plugin "redis-health"`, Kind: SectionTyped, Toggle: true},
+		Section{Path: "plugins.redis-lease", Owner: `plugin "redis-lease"`, Kind: SectionTyped, Toggle: true,
+			Schema: reflect.TypeOf(struct {
+				Instance string `yaml:"instance"`
+			}{})},
+	)
+	require.NoError(t, err)
+
+	values, err := universe.envOverlay(DefaultEnvPrefix, []string{
+		"XBC_PLUGINS_REDIS_LEASE_ENABLED=true",
+		"XBC_PLUGINS_REDIS_HEALTH_ENABLED=false",
+		"XBC_PLUGINS_REDIS_PRIMARY_DSN=redis:6379",
+	}, nil)
+	require.NoError(t, err, "a declared sibling must be reachable from the environment")
+	require.Equal(t, true, values["plugins.redis-lease.enabled"])
+	require.Equal(t, false, values["plugins.redis-health.enabled"])
+	require.Equal(t, "redis:6379", values["plugins.redis.primary.dsn"],
+		"the instance reading still applies where no declared section matches")
+	require.NotContains(t, values, "plugins.redis.lease.enabled")
+	require.NotContains(t, values, "plugins.redis.health.enabled")
+	require.Len(t, values, 3, "each variable must set exactly the path it declares")
+}
+
+// TestEnvironmentLayerPrefersADeclaredLeafOverAnInstanceReading is the same
+// rule for an ordinary leaf of the sibling: the parent would read
+// XBC_PLUGINS_REDIS_LEASE_DSN as instance "lease" of plugins.redis, and the
+// declared plugin.redis-lease owns that spelling instead.
+func TestEnvironmentLayerPrefersADeclaredLeafOverAnInstanceReading(t *testing.T) {
+	universe, err := NewUniverse(
+		Section{Path: "plugins", Owner: "the assembly layer", Kind: SectionNamespace},
+		Section{Path: "plugins.redis", Owner: `plugin "redis"`, Kind: SectionInstanced, Schema: reflect.TypeOf(storeSection{}), Toggle: true},
+		Section{Path: "plugins.redis-lease", Owner: `plugin "redis-lease"`, Kind: SectionTyped, Schema: reflect.TypeOf(storeSection{})},
+	)
+	require.NoError(t, err)
+
+	values, err := universe.envOverlay(DefaultEnvPrefix, []string{"XBC_PLUGINS_REDIS_LEASE_DSN=cache:6379"}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "cache:6379", values["plugins.redis-lease.dsn"])
+	require.NotContains(t, values, "plugins.redis.lease.dsn")
+}
+
+// TestEnvironmentLayerKeepsAnInferredCandidateForADeclaredInstance draws the
+// boundary of the declared-spelling preference. The preference exists so that
+// XBC_PLUGINS_REDIS_LEASE_ENABLED reaches a declared plugins.redis-lease
+// beside an instanced plugins.redis; but when the lower layers themselves
+// declare plugins.redis.lease, the same variable is at least as likely aimed
+// at that instance, and silently redirecting it to the sibling would discard
+// the override it was written to perform. Both readings survive, so interpret
+// reports the ambiguity instead of the variable being applied to one of them.
+func TestEnvironmentLayerKeepsAnInferredCandidateForADeclaredInstance(t *testing.T) {
+	universe, err := NewUniverse(
+		Section{Path: "plugins", Owner: "the assembly layer", Kind: SectionNamespace},
+		Section{Path: "plugins.redis", Owner: `plugin "redis"`, Kind: SectionInstanced, Schema: reflect.TypeOf(storeSection{}), Toggle: true},
+		Section{Path: "plugins.redis-lease", Owner: `plugin "redis-lease"`, Kind: SectionTyped, Toggle: true},
+	)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeYAML(t, filepath.Join(dir, "application.yml"),
+		"plugins:\n  redis:\n    lease:\n      pool_size: 3\n")
+	t.Setenv("XBC_PLUGINS_REDIS_LEASE_ENABLED", "true")
+
+	_, _, err = loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: universe})
+	require.Error(t, err, "a variable aimed at a declared instance must not be redirected to a declared sibling")
+	require.Contains(t, err.Error(), "XBC_PLUGINS_REDIS_LEASE_ENABLED")
+	require.Contains(t, err.Error(), "ambiguous")
+	require.Contains(t, err.Error(), "plugins.redis-lease.enabled", "the declared sibling must be named")
+	require.Contains(t, err.Error(), "plugins.redis.lease.enabled", "the declared instance must be named")
+}
+
+// TestEnvironmentLayerHintDoesNotSuppressAnInstanceReading pins the other half
+// of the preference rule: a hint candidate is not a declared spelling. When a
+// variable spells both a leaf of the instanced section itself -- which an
+// instance must address, so the candidate only carries the hint saying so --
+// and an instance reading of a shorter leaf, the hint must not win and answer
+// for the variable alone. Both readings survive to interpret, which reports
+// the ambiguity rather than a spelling that could never be applied.
+func TestEnvironmentLayerHintDoesNotSuppressAnInstanceReading(t *testing.T) {
+	universe, err := NewUniverse(
+		Section{Path: "plugins", Owner: "the assembly layer", Kind: SectionNamespace},
+		Section{Path: "plugins.store", Owner: `plugin "store"`, Kind: SectionInstanced, Schema: reflect.TypeOf(struct {
+			Addr     string `yaml:"addr"`
+			PeerAddr string `yaml:"peer_addr"`
+		}{})},
+	)
+	require.NoError(t, err)
+
+	_, err = universe.envOverlay(DefaultEnvPrefix, []string{"XBC_PLUGINS_STORE_PEER_ADDR=:6379"}, nil)
+	require.Error(t, err, "a hint spelling must not discard the instance reading the same variable carries")
+	require.Contains(t, err.Error(), "ambiguous")
+	require.Contains(t, err.Error(), "plugins.store.peer.addr", "the instance reading must be named")
+	require.Contains(t, err.Error(), "plugins.store.peer_addr", "the unusable spelling must be named too")
+}
+
 func TestEnvironmentLayerReportsAmbiguityRatherThanGuessing(t *testing.T) {
 	universe, err := NewUniverse(
 		Section{Path: "plugins", Owner: "the assembly layer", Kind: SectionNamespace},
