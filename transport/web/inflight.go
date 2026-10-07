@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"runtime"
 	"strconv"
 	"sync/atomic"
 
@@ -237,22 +236,23 @@ func (g *inFlightGate) handler(logger log.Logger) Handler {
 
 // resolveMaxInFlight turns web.max_in_flight into the ceiling the gate enforces.
 // A positive value is what the operator asked for, verbatim. Zero -- the default
-// -- derives the ceiling from GOMAXPROCS, which is how much work this process
-// can actually run at once, so a deployment that never configures the key still
-// gets a finite ceiling instead of an unbounded one.
+// -- means no ceiling was chosen, so the fixed defaultMaxInFlight applies: a
+// finite ceiling that does not follow the processor count, because the requests
+// this gate bounds are mostly IO-bound. A request waiting on a database, an
+// upstream call or a lock holds no processor, so a CPU-derived ceiling refuses
+// traffic the instance could comfortably serve -- a two-core pod would turn
+// away its third concurrent request, probes included. It is still a finite
+// ceiling rather than an unbounded one, and a deployment that knows its
+// per-request memory and dependency capacity should set the key explicitly
+// instead of relying on it.
 //
-// The derivation belongs here rather than in an init function because the
-// runtime applies its own GOMAXPROCS during bootstrap (cgroup-aware), and this
-// runs in (*Server).Start, after it: the number read is the one the process is
-// really running under, not the host's core count.
-//
-// Config.Validate rejects a negative value before Start, and GOMAXPROCS is never
-// below one, so the result is always a usable ceiling.
+// Config.Validate rejects a negative value before Start, and the default is
+// always positive, so the result is always a usable ceiling.
 func resolveMaxInFlight(configured int) int {
 	if configured > 0 {
 		return configured
 	}
-	return runtime.GOMAXPROCS(0)
+	return defaultMaxInFlight
 }
 
 // renderInFlightGate renders the gate for an operator: the ceiling in force,
@@ -260,10 +260,10 @@ func resolveMaxInFlight(configured int) int {
 // so far. Start logs it once the gate is assembled, where the count is
 // necessarily zero; the live reading for an operator afterwards is
 // Server.InFlightStats.
-func renderInFlightGate(stats InFlightStats, derived bool) string {
+func renderInFlightGate(stats InFlightStats, defaulted bool) string {
 	origin := "web.max_in_flight"
-	if derived {
-		origin = "derived from GOMAXPROCS"
+	if defaulted {
+		origin = "default"
 	}
 	return fmt.Sprintf(
 		"web: in-flight gate limit=%d (%s) retry_after=%ds rejections=%d",
@@ -282,7 +282,8 @@ func renderInFlightGate(stats InFlightStats, derived bool) string {
 // approached.
 //
 // The zero value is the honest answer before Start has assembled a gate, and
-// Limit is the effective ceiling -- the derived one when web.max_in_flight is 0.
+// Limit is the effective ceiling -- the fixed default one when
+// web.max_in_flight is 0.
 type InFlightStats struct {
 	Limit      int
 	InFlight   int

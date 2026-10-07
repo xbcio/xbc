@@ -1,7 +1,6 @@
 package web
 
 import (
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,35 +34,35 @@ func TestInFlightGateAdmitsUpToItsLimitAndRefusesWithoutBlocking(t *testing.T) {
 		"every admitted request must be matched by exactly one release")
 }
 
-// TestResolveMaxInFlightIsPositiveAndDerivesFromGOMAXPROCS pins both halves of
-// the default. Zero is the documented "derive it" value rather than "no limit"
-// or "refuse everything", and a configured value is used verbatim -- including
-// one that differs from what the process could run at once, since an operator
+// TestResolveMaxInFlightIsPositiveAndUsesTheFixedDefault pins both halves of
+// the default. Zero is the documented "use the built-in default" value rather
+// than "no limit" or "refuse everything", that default is a fixed cap rather
+// than one that follows the processor count, and a configured value is used
+// verbatim -- including one that differs from the default, since an operator
 // who names a ceiling owns that choice.
-func TestResolveMaxInFlightIsPositiveAndDerivesFromGOMAXPROCS(t *testing.T) {
-	assert.Equal(t, runtime.GOMAXPROCS(0), resolveMaxInFlight(0),
-		"the zero default is GOMAXPROCS, which is what this process can actually run at once")
-	assert.GreaterOrEqual(t, resolveMaxInFlight(0), 1,
-		"a derived ceiling of zero would make the process permanently unavailable")
+func TestResolveMaxInFlightIsPositiveAndUsesTheFixedDefault(t *testing.T) {
+	assert.Equal(t, defaultMaxInFlight, resolveMaxInFlight(0),
+		"the zero default must be the fixed, CPU-independent ceiling")
+	assert.Positive(t, resolveMaxInFlight(0),
+		"a resolved ceiling of zero would make the process permanently unavailable")
 
 	assert.Equal(t, 7, resolveMaxInFlight(7))
-	assert.Equal(t, runtime.GOMAXPROCS(0)+1, resolveMaxInFlight(runtime.GOMAXPROCS(0)+1),
-		"a configured ceiling above the core count is still honoured verbatim")
+	assert.Equal(t, defaultMaxInFlight+1, resolveMaxInFlight(defaultMaxInFlight+1),
+		"a configured ceiling above the default is still honoured verbatim")
 }
 
 // TestRenderInFlightGateReportsTheOperatorsNumbers pins the startup line's
 // content. It is the only place a deployment learns which ceiling is in force
 // and where it came from, so the two origins must not render identically.
 func TestRenderInFlightGateReportsTheOperatorsNumbers(t *testing.T) {
-	derived := renderInFlightGate(InFlightStats{Limit: 8}, true)
-	assert.Contains(t, derived, "limit=8")
-	assert.Contains(t, derived, "GOMAXPROCS")
-	assert.Contains(t, derived, "retry_after=1s")
+	defaulted := renderInFlightGate(InFlightStats{Limit: 8}, true)
+	assert.Contains(t, defaulted, "limit=8 (default)")
+	assert.Contains(t, defaulted, "retry_after=1s")
 
 	configured := renderInFlightGate(InFlightStats{Limit: 8, Rejections: 3}, false)
-	assert.Contains(t, configured, "web.max_in_flight")
+	assert.Contains(t, configured, "limit=8 (web.max_in_flight)")
 	assert.Contains(t, configured, "rejections=3")
-	assert.NotContains(t, configured, "GOMAXPROCS")
+	assert.NotContains(t, configured, "(default)")
 }
 
 // TestSaturationIsReportedOnceAtEachEdgeOfAnEpisode pins the state machine that

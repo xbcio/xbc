@@ -124,7 +124,8 @@ web:
   base_path: "/api/v1"
   # Process-wide admission ceiling. Requests beyond it are refused with 503 and
   # Retry-After before any handler runs, rather than queued. 0, the default,
-  # derives the ceiling from GOMAXPROCS.
+  # applies a fixed ceiling of 1024 concurrent requests, independent of
+  # xbc.runtime.max_procs: the ceiling counts requests, not runnable goroutines.
   max_in_flight: 0
   shutdown:
     # Default is 0s. Keep the listener up after cancellation so /readyz can

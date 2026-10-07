@@ -35,13 +35,13 @@ func TestConfigUsesProductionHTTPAndPayloadDefaults(t *testing.T) {
 	assert.Equal(t, int64(8<<20), cfg.MaxMultipartMemory)
 	assert.Empty(t, cfg.TrustedProxies)
 	assert.Zero(t, cfg.Shutdown.PreDrainDelay, "pre-drain is explicit opt-in")
-	assert.Zero(t, cfg.MaxInFlight, "the admission ceiling is derived from GOMAXPROCS unless a deployment sets one")
+	assert.Zero(t, cfg.MaxInFlight, "zero means the fixed default ceiling; a deployment sets a positive value to replace it")
 }
 
 // TestMaxInFlightBindsFromTheWebSection pins the configuration key itself. The
 // field is the only thing the ceiling can be read from, so a rename that
 // silently stops binding would leave every deployment that sets it running at
-// the derived limit instead -- a behaviour change with no error attached.
+// the default limit instead -- a behaviour change with no error attached.
 func TestMaxInFlightBindsFromTheWebSection(t *testing.T) {
 	environment, err := config.NewEnvironment(map[string]any{
 		"web": map[string]any{"max_in_flight": 64},

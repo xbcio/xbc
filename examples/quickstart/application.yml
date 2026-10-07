@@ -86,8 +86,11 @@ web:
   # only turns a fast refusal into a slow one. It is deliberately not
   # configurable per route or per plugin: a per-plugin ceiling cannot bound the
   # sum an instance accepts, which is the quantity that decides whether the
-  # instance survives its traffic. 0, the default, derives the ceiling from
-  # GOMAXPROCS, so it follows xbc.runtime.max_procs above.
+  # instance survives its traffic. 0, the default, applies a fixed ceiling of
+  # 1024 concurrent requests. It counts requests, not runnable goroutines: a
+  # request waiting on a database or an upstream holds no CPU, so size the key
+  # from this service's memory and dependency budget rather than from
+  # xbc.runtime.max_procs above, and set it explicitly when 1024 is wrong.
   max_in_flight: 0
   shutdown:
     # Default is 0s. Keep the listener up after cancellation so /readyz can

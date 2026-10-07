@@ -17,6 +17,10 @@ const (
 	defaultMaxHeaderBytes      = 1 << 20 // 1 MiB
 	defaultMaxRequestBodyBytes = 10 << 20
 	defaultMaxMultipartMemory  = 8 << 20
+	// defaultMaxInFlight is the admission ceiling applied when web.max_in_flight
+	// is left unset. It counts requests rather than runnable goroutines, so it
+	// is deliberately independent of the processor count; see resolveMaxInFlight.
+	defaultMaxInFlight = 1024
 )
 
 // Config is Web's root-level "web" configuration section. The process-wide
@@ -31,11 +35,15 @@ const (
 // ceiling still limits the complete request.
 //
 // MaxInFlight is the process-wide admission ceiling: the number of requests the
-// Server serves at once. Zero -- the default -- derives it from GOMAXPROCS when
-// the Server starts, so a deployment that never mentions the key still gets a
-// finite ceiling. A positive value is the ceiling verbatim. The gate it feeds
-// is assembled by the Server rather than contributed, so the limit cannot be
-// removed by leaving a plugin out; see inflight.go.
+// Server serves at once. Zero -- the default -- applies a fixed cap of 1024
+// requests, deliberately measured in requests rather than processors: the bound
+// exists to stop a process accumulating unbounded concurrent work, while a
+// request waiting on a database, an upstream call or a lock holds no processor
+// at all, so an IO-bound instance can comfortably serve far more requests than
+// it has cores. A positive value is the ceiling verbatim; size it from the
+// deployment's own memory and dependency budget when the fixed default is wrong
+// for it. The gate it feeds is assembled by the Server rather than contributed,
+// so the limit cannot be removed by leaving a plugin out; see inflight.go.
 //
 // WriteTimeout is one deadline for a whole response, which is the right shape
 // for request/response traffic and the wrong shape for a response with no known

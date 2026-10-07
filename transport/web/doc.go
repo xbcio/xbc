@@ -150,8 +150,13 @@
 // refused with 503 and a Retry-After header before any handler or contributed
 // middleware runs, rather than being queued. It is a process property and never
 // a per-route or per-plugin one, because a per-plugin ceiling cannot bound the
-// sum an instance accepts. Zero, the default, derives the ceiling from
-// GOMAXPROCS, so it follows the processor count the runtime installed.
+// sum an instance accepts. Zero, the default, applies a fixed default of 1024
+// concurrent requests that is deliberately independent of the processor count:
+// a request waiting on a database or an upstream holds no processor, so an
+// IO-bound instance can serve far more requests than it has cores, and a
+// CPU-derived ceiling would refuse traffic it could comfortably handle. Size the
+// key from the deployment's own memory and dependency budget where the default
+// is wrong for it.
 //
 // TrustedProxies is empty by default, so forwarded headers such as
 // X-Forwarded-For cannot influence the engine's client address. Configure only
@@ -170,9 +175,13 @@
 // The responses the framework generates itself -- 404, 405 and 413 -- travel
 // through the complete global middleware chain rather than answering ahead of
 // it, so they are access-logged, carry a request id, and receive CORS and
-// security headers like any other response. For 413 that also means a protected
-// route answers an unauthenticated oversized request with 401: the body limit is
-// the innermost framework stage, behind authentication.
+// security headers like any other response. A request whose path differs from
+// a registered route only by a trailing slash is one of those unmatched
+// paths: it receives the 404 Problem Detail through the chain rather than an
+// engine-owned redirect, which would answer ahead of every stage above. For
+// 413 that also means a protected route answers an unauthenticated oversized
+// request with 401: the body limit is the innermost framework stage, behind
+// authentication.
 //
 // Handle and AbortError resolve failures through the active mapper chain, which
 // also receives errors the engine adapter collected from native middleware

@@ -217,31 +217,21 @@ func TestInFlightGateRefusesBeyondItsCeiling(t *testing.T) {
 	}
 }
 
-// TestZeroMaxInFlightBehavesLikeTheDerivedCeiling pins the default: an unset
-// key derives the ceiling from GOMAXPROCS, and deriving it is not a special
-// mode -- the gate assembled around the derived value admits and refuses exactly
-// as one configured with that value explicitly does.
-func TestZeroMaxInFlightBehavesLikeTheDerivedCeiling(t *testing.T) {
-	derived := runtime.GOMAXPROCS(0)
-	require.Positive(t, derived)
+// TestZeroMaxInFlightAppliesTheFixedDefault pins the default: an unset key
+// applies the fixed, CPU-independent ceiling instead of following the processor
+// count, so a small instance does not refuse the IO-bound traffic this
+// framework expects -- a request waiting on a database or an upstream holds no
+// processor, and a GOMAXPROCS-derived cap would turn away a two-core pod's
+// third concurrent request, probes included.
+func TestZeroMaxInFlightAppliesTheFixedDefault(t *testing.T) {
+	// Mirrors the unexported defaultMaxInFlight in config.go as a literal: the
+	// assertion has to pin the number itself, and reading the package constant
+	// would make it hold by construction even if the default changed.
+	const fixedDefault = 1024
 
-	for _, test := range []struct {
-		name       string
-		configured int
-	}{
-		{"derived", 0},
-		{"configured to the derived value", derived},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := startBlockedServer(t, blockedConfig(t, test.configured), serverInputs{})
-			require.Equal(t, derived, fixture.server.InFlightStats().Limit)
-
-			pressure := runBlockedRequests(t, fixture, derived+1)
-			assert.Equal(t, derived, pressure.admitted)
-			assert.Equal(t, 1, pressure.refused, "the derived ceiling must refuse the request past it")
-			assert.LessOrEqual(t, pressure.peak, int64(derived))
-		})
-	}
+	fixture := startBlockedServer(t, blockedConfig(t, 0), serverInputs{})
+	assert.Equal(t, fixedDefault, fixture.server.InFlightStats().Limit,
+		"the unset ceiling is fixed and must not follow the processor count")
 }
 
 // TestInFlightPressureLeavesNoGoroutineBehind pins the other half of the gate's
