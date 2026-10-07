@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
 )
@@ -224,7 +225,7 @@ func TestCtxSetGetRoundTripsRequestScopedValues(t *testing.T) {
 func TestCtxPrincipalReusesCurrentPrincipal(t *testing.T) {
 	engine := enginetest.New()
 	engine.Use(func(_ context.Context, c *web.Ctx) error {
-		if !web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "jwt"}) {
+		if !web.SetPrincipal(c, authentication.Principal{Subject: "alice", AuthMethod: "jwt"}) {
 			t.Fatalf("expected SetPrincipal to accept a valid principal")
 		}
 		c.Next()

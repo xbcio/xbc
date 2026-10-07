@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/xbcio/xbc/extensions/authentication"
 )
 
 // textContentType is the media type Ctx.String renders with, matching what
@@ -281,7 +283,7 @@ func (c *Ctx) Get(key string) (any, bool) {
 // Principal returns the verified identity published by an upstream
 // authentication plugin, if any. It reuses CurrentPrincipal so Ctx does not
 // duplicate principal storage or copy semantics.
-func (c *Ctx) Principal() (Principal, bool) {
+func (c *Ctx) Principal() (authentication.Principal, bool) {
 	return CurrentPrincipal(c)
 }
 

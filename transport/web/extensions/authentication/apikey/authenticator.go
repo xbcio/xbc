@@ -187,7 +187,7 @@ func (p *Plugin) Authenticate(
 	if stored.AppID != "" {
 		attributes["app_id"] = stored.AppID
 	}
-	return authentication.Accepted(web.Principal{
+	return authentication.Accepted(authentication.Principal{
 		Subject:    stored.Subject,
 		AuthMethod: string(Scheme),
 		Attributes: attributes,

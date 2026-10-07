@@ -11,7 +11,7 @@
 //	func newTenancy(memberships map[string]map[string]bool) *tenant.Plugin {
 //		resolver := tenant.ResolverFunc(func(
 //			ctx context.Context,
-//			principal web.Principal,
+//			principal authentication.Principal,
 //			requestedID string,
 //		) (tenant.Tenant, bool, error) {
 //			if err := ctx.Err(); err != nil {

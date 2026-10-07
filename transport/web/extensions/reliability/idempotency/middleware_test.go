@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
 )
@@ -34,7 +35,7 @@ func engineFor(p *Plugin, route web.RouteInfo, handler web.Handler) *enginetest.
 	engine.Handle(route.Method, route.Path, []web.Handler{
 		func(_ context.Context, c *web.Ctx) error {
 			c.Set(currentRouteKeyForTest, route)
-			web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "test"})
+			web.SetPrincipal(c, authentication.Principal{Subject: "alice", AuthMethod: "test"})
 			c.Next()
 			return nil
 		},
@@ -176,6 +177,72 @@ func TestQueryAndPrincipalScopeArePartOfSemantics(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("calls = %d", calls.Load())
+	}
+}
+
+// TestNoPrincipalRequestWithIdempotencyKeyIsRefused locks the fixed semantics:
+// idempotency requires a caller identity to scope a stored response to. A
+// request that carries the Idempotency-Key header but reaches this middleware
+// with no published Principal (an exempt/public route, or an
+// authenticated-without-principal caller) is refused before the store is ever
+// touched -- it must not share a storageKey with, or be able to replay, any
+// other caller's response. This replaces the pre-existing "locks the defect"
+// test: see the authentication-model-gaps plan's Out of Scope table and this
+// batch's roadmap entry for the prior collapse this closes.
+func TestNoPrincipalRequestWithIdempotencyKeyIsRefused(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	var calls atomic.Int32
+	engine := enginetest.New()
+	engine.Handle(route.Method, route.Path, []web.Handler{
+		func(_ context.Context, c *web.Ctx) error {
+			c.Set(currentRouteKeyForTest, route)
+			// Deliberately no web.SetPrincipal call: this is the no-principal
+			// path (exempt route, or an authenticated-without-principal caller).
+			c.Next()
+			return nil
+		},
+		p.Handler(),
+		func(_ context.Context, c *web.Ctx) error {
+			calls.Add(1)
+			c.Status(http.StatusNoContent)
+			return nil
+		},
+	})
+	// Two unrelated subjectless callers presenting the very same key must both
+	// be refused outright, not folded into one storage slot or allowed to
+	// replay each other's response.
+	first := perform(engine, "shared-key", `{}`)
+	second := perform(engine, "shared-key", `{}`)
+	if first.Code != http.StatusForbidden || second.Code != http.StatusForbidden {
+		t.Fatalf("first=%d second=%d, want both refused", first.Code, second.Code)
+	}
+	if replayed := second.Result().Header.Get("Idempotency-Replayed"); replayed != "" || calls.Load() != 0 {
+		t.Fatalf("replayed=%q calls=%d, want no replay and no handler execution", replayed, calls.Load())
+	}
+}
+
+// TestNoPrincipalRequestWithoutIdempotencyKeyIsUnaffected locks that the new
+// refusal is scoped to requests that actually carry the header: a route that
+// is not marked Route.Idempotent, or one where the caller sent no
+// Idempotency-Key, behaves exactly as it did before a Principal existed at
+// all -- idempotency never requires authentication by itself, only when a
+// client opts into the idempotent-request contract.
+func TestNoPrincipalRequestWithoutIdempotencyKeyIsUnaffected(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	engine := enginetest.New()
+	engine.Handle(route.Method, route.Path, []web.Handler{
+		func(_ context.Context, c *web.Ctx) error {
+			c.Set(currentRouteKeyForTest, route)
+			c.Next()
+			return nil
+		},
+		p.Handler(),
+		noContent,
+	})
+	if got := perform(engine, "", "").Code; got != http.StatusBadRequest {
+		t.Fatalf("no-key request = %d, want the pre-existing missing-key rejection", got)
 	}
 }
 

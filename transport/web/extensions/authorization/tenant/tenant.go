@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 )
 
@@ -23,13 +24,13 @@ type Tenant struct {
 // supplied. Implementations must never treat requestedID itself as proof of
 // membership. found=false means the principal has no unambiguous selection.
 type Resolver interface {
-	ResolveTenant(ctx context.Context, principal web.Principal, requestedID string) (resolved Tenant, found bool, err error)
+	ResolveTenant(ctx context.Context, principal authentication.Principal, requestedID string) (resolved Tenant, found bool, err error)
 }
 
 // ResolverFunc adapts a function to Resolver.
-type ResolverFunc func(context.Context, web.Principal, string) (Tenant, bool, error)
+type ResolverFunc func(context.Context, authentication.Principal, string) (Tenant, bool, error)
 
-func (f ResolverFunc) ResolveTenant(ctx context.Context, principal web.Principal, requestedID string) (Tenant, bool, error) {
+func (f ResolverFunc) ResolveTenant(ctx context.Context, principal authentication.Principal, requestedID string) (Tenant, bool, error) {
 	if f == nil {
 		return Tenant{}, false, errors.New("tenant: nil resolver function")
 	}

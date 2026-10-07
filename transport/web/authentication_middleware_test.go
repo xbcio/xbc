@@ -118,6 +118,250 @@ func runThroughAuth(
 	return recorder
 }
 
+// TestAuthenticationMiddlewareHonorsDeclaredArbitrationOrder pins that
+// arbitration order comes from web.security.schemes alone, never from
+// plugin.Entry.Identity.Plugin -- the key plugin.Collect sorts by
+// (CompareIdentity, alphabetical). Renaming a plugin only changes that key; it
+// must never silently change which authenticator wins. The two entries below
+// are deliberately constructed so every signal an implementation might
+// mistakenly consult -- input slice order, and plugin key alphabetical order
+// -- agrees with each other and disagrees with the declared schemes: entry
+// order is alpha-then-zeta, Identity.Plugin is "alpha" < "zeta" alphabetically,
+// yet web.security.schemes declares "zeta" before "alpha". Only the declared
+// list determines Schemes(), so this fails before the fix (which read
+// plugin.Collect's already-sorted order) under either wrong signal, and would
+// keep failing if a future change swapped back to keying off Identity.Plugin
+// under any name.
+func TestAuthenticationMiddlewareHonorsDeclaredArbitrationOrder(t *testing.T) {
+	t.Parallel()
+
+	zeta := &stubAuth{scheme: "zeta", result: authentication.Rejected("zeta rejects")}
+	alpha := &stubAuth{scheme: "alpha", result: authentication.Rejected("alpha rejects")}
+
+	middleware, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{
+			Default: web.SecurityDeny,
+			Schemes: []authentication.Scheme{"zeta", "alpha"},
+		},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "alpha"}, Value: alpha},
+			{Identity: plugin.Identity{Plugin: "zeta"}, Value: zeta},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewAuthenticationMiddleware() error = %v", err)
+	}
+	if err := middleware.RoutesReady(web.NewRouteCatalog(nil)); err != nil {
+		t.Fatalf("RoutesReady() error = %v", err)
+	}
+	if got, want := middleware.Schemes(), []authentication.Scheme{"zeta", "alpha"}; !equalSchemes(got, want) {
+		t.Fatalf("Schemes() = %v, want %v (declared order, not alphabetical)", got, want)
+	}
+}
+
+func TestAuthenticationMiddlewareRequiresSchemesForMultipleAuthenticators(t *testing.T) {
+	t.Parallel()
+
+	_, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{Default: web.SecurityDeny},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "alpha"}, Value: &stubAuth{scheme: "alpha"}},
+			{Identity: plugin.Identity{Plugin: "zeta"}, Value: &stubAuth{scheme: "zeta"}},
+		},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("NewAuthenticationMiddleware() error = nil, want an error naming both schemes")
+	}
+	if !strings.Contains(err.Error(), "alpha") || !strings.Contains(err.Error(), "zeta") {
+		t.Fatalf("NewAuthenticationMiddleware() error = %q, want it to list both registered schemes", err)
+	}
+}
+
+// TestAuthenticationMiddlewareRejectsDuplicateRegisteredScheme is the
+// regression lock for a collapse in newAuthenticationMiddleware's byScheme
+// map: two authenticators registering the same scheme must fail startup by
+// name, not silently drop one authenticator (last one wins, in plugin-key
+// order -- the very dependency this file exists to remove). Both call sites
+// below only reach that map-build step with two entries sharing one scheme,
+// which is sufficient to reproduce the collapse regardless of whether
+// schemes is declared.
+func TestAuthenticationMiddlewareRejectsDuplicateRegisteredScheme(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with schemes declared", func(t *testing.T) {
+		t.Parallel()
+		_, err := web.NewAuthenticationMiddleware(
+			web.SecurityConfig{Default: web.SecurityDeny, Schemes: []authentication.Scheme{"jwt"}},
+			[]plugin.Entry[authentication.Authenticator]{
+				{Identity: plugin.Identity{Plugin: "jwt-a"}, Value: &stubAuth{scheme: "jwt"}},
+				{Identity: plugin.Identity{Plugin: "jwt-b"}, Value: &stubAuth{scheme: "jwt"}},
+			},
+			nil,
+		)
+		if err == nil {
+			t.Fatal("NewAuthenticationMiddleware() error = nil, want an error naming both plugin identities")
+		}
+		if !strings.Contains(err.Error(), "jwt-a") || !strings.Contains(err.Error(), "jwt-b") {
+			t.Fatalf("NewAuthenticationMiddleware() error = %q, want it to name both plugin identities", err)
+		}
+	})
+
+	t.Run("with schemes omitted", func(t *testing.T) {
+		t.Parallel()
+		_, err := web.NewAuthenticationMiddleware(
+			web.SecurityConfig{Default: web.SecurityDeny},
+			[]plugin.Entry[authentication.Authenticator]{
+				{Identity: plugin.Identity{Plugin: "jwt-a"}, Value: &stubAuth{scheme: "jwt"}},
+				{Identity: plugin.Identity{Plugin: "jwt-b"}, Value: &stubAuth{scheme: "jwt"}},
+			},
+			nil,
+		)
+		if err == nil {
+			t.Fatal("NewAuthenticationMiddleware() error = nil, want an error naming both plugin identities")
+		}
+		if !strings.Contains(err.Error(), "jwt-a") || !strings.Contains(err.Error(), "jwt-b") {
+			t.Fatalf("NewAuthenticationMiddleware() error = %q, want it to name both plugin identities", err)
+		}
+	})
+}
+
+func TestAuthenticationMiddlewareAllowsOmittedSchemesForSingleAuthenticator(t *testing.T) {
+	t.Parallel()
+
+	_, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{Default: web.SecurityDeny},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "jwt"}, Value: &stubAuth{scheme: "jwt"}},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("NewAuthenticationMiddleware() error = %v, want nil: a single authenticator has no arbitration to order", err)
+	}
+}
+
+func TestAuthenticationMiddlewareRejectsInconsistentDeclaredSchemes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		schemes []authentication.Scheme
+		wantErr string
+	}{
+		{
+			name:    "missing a registered scheme",
+			schemes: []authentication.Scheme{"alpha"},
+			wantErr: "missing registered scheme",
+		},
+		{
+			name:    "unknown scheme",
+			schemes: []authentication.Scheme{"alpha", "zeta", "mtls"},
+			wantErr: "unknown scheme",
+		},
+		{
+			name:    "duplicate scheme",
+			schemes: []authentication.Scheme{"alpha", "alpha"},
+			wantErr: "more than once",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := web.NewAuthenticationMiddleware(
+				web.SecurityConfig{Default: web.SecurityDeny, Schemes: test.schemes},
+				[]plugin.Entry[authentication.Authenticator]{
+					{Identity: plugin.Identity{Plugin: "alpha"}, Value: &stubAuth{scheme: "alpha"}},
+					{Identity: plugin.Identity{Plugin: "zeta"}, Value: &stubAuth{scheme: "zeta"}},
+				},
+				nil,
+			)
+			if err == nil {
+				t.Fatalf("NewAuthenticationMiddleware() error = nil, want substring %q", test.wantErr)
+			}
+			if !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("NewAuthenticationMiddleware() error = %q, want substring %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func equalSchemes(got, want []authentication.Scheme) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestAuthenticationMiddlewarePermitsAuthenticatedWithoutPrincipal(t *testing.T) {
+	t.Parallel()
+
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/orders"}
+	middleware := buildTestAuthMiddleware(
+		t,
+		web.SecurityConfig{Default: web.SecurityDeny},
+		[]web.RouteInfo{route},
+		authentication.Presented("signature"),
+		&stubAuth{scheme: "jwt", result: authentication.AcceptedWithoutPrincipal()},
+	)
+
+	engine := enginetest.New()
+	engine.Use(recordRoute(route))
+	engine.Use(middleware.Handler())
+
+	var hadPrincipal, exempt bool
+	engine.GET("/orders", func(_ context.Context, c *web.Ctx) error {
+		_, hadPrincipal = web.CurrentPrincipal(c)
+		exempt = web.AuthenticationExempt(c)
+		c.Status(http.StatusOK)
+		return nil
+	})
+
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/orders", nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: AcceptedWithoutPrincipal must permit the request", recorder.Code, http.StatusOK)
+	}
+	if hadPrincipal {
+		t.Fatal("CurrentPrincipal() present, want absent: no placeholder principal must be published")
+	}
+	if exempt {
+		t.Fatal("AuthenticationExempt() = true, want false: authenticated-without-principal is not an exemption")
+	}
+}
+
+// TestAuthenticationMiddlewareRejectsAcceptedWithWrongPrincipalType is the
+// regression lock for AcceptedWithoutPrincipal's sibling path: an ordinary
+// Accepted result whose principal is not a authentication.Principal must still fail
+// closed with 500, exactly as before this task. AcceptedWithoutPrincipal must
+// not weaken that detection for the unrelated ResultStatusAuthenticated path.
+func TestAuthenticationMiddlewareRejectsAcceptedWithWrongPrincipalType(t *testing.T) {
+	t.Parallel()
+
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/orders"}
+	middleware := buildTestAuthMiddleware(
+		t,
+		web.SecurityConfig{Default: web.SecurityDeny},
+		[]web.RouteInfo{route},
+		authentication.Presented("token"),
+		&stubAuth{scheme: "jwt", result: authentication.Accepted("not-a-web-principal")},
+	)
+
+	got := runThroughAuth(t, middleware, route, true)
+	if got.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", got.Code, http.StatusInternalServerError)
+	}
+}
+
 func TestAuthenticationMiddlewarePassesUnmatchedRouteWithoutResolving(t *testing.T) {
 	t.Parallel()
 
@@ -210,7 +454,7 @@ func TestAuthenticationMiddlewarePublishesPrincipalOnce(t *testing.T) {
 		authentication.Presented("token"),
 		&stubAuth{
 			scheme: "jwt",
-			result: authentication.Accepted(web.Principal{Subject: "u-1", AuthMethod: "jwt"}),
+			result: authentication.Accepted(authentication.Principal{Subject: "u-1", AuthMethod: "jwt"}),
 		},
 	)
 
@@ -218,7 +462,7 @@ func TestAuthenticationMiddlewarePublishesPrincipalOnce(t *testing.T) {
 	engine.Use(recordRoute(route))
 	engine.Use(middleware.Handler())
 
-	var seen web.Principal
+	var seen authentication.Principal
 	var found bool
 	engine.GET("/orders", func(_ context.Context, c *web.Ctx) error {
 		seen, found = web.CurrentPrincipal(c)
@@ -285,7 +529,7 @@ func TestAuthenticationMiddlewarePublishesExemptSignalToDownstream(t *testing.T)
 		authentication.Presented("token"),
 		&stubAuth{
 			scheme: "jwt",
-			result: authentication.Accepted(web.Principal{Subject: "u-1", AuthMethod: "jwt"}),
+			result: authentication.Accepted(authentication.Principal{Subject: "u-1", AuthMethod: "jwt"}),
 		},
 	)
 
@@ -542,7 +786,7 @@ func TestAuthenticationFailureKeepsCauseOutOfResponse(t *testing.T) {
 		web.SecurityConfig{Default: web.SecurityDeny},
 		[]web.RouteInfo{route},
 		authentication.Presented("token"),
-		// A principal that is not a web.Principal: the manager accepts it, the
+		// A principal that is not a authentication.Principal: the manager accepts it, the
 		// middleware cannot publish it, and the resulting error names the type.
 		&stubAuth{scheme: "jwt", result: authentication.Accepted("not-a-web-principal")},
 	)
@@ -553,7 +797,7 @@ func TestAuthenticationFailureKeepsCauseOutOfResponse(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
 	}
 	body := response.Body.String()
-	if strings.Contains(body, "web.Principal") || strings.Contains(body, "not-a-web-principal") {
+	if strings.Contains(body, "authentication.Principal") || strings.Contains(body, "not-a-web-principal") {
 		t.Fatalf(
 			"response body = %q, must not describe the internal cause: the response is fixed "+
 				"for every cause so it cannot be used as an oracle",
@@ -563,7 +807,7 @@ func TestAuthenticationFailureKeepsCauseOutOfResponse(t *testing.T) {
 	if !strings.Contains(body, "authentication_failed") {
 		t.Fatalf("response body = %q, want the generic authentication_failed problem", body)
 	}
-	if logged := logger.rendered(); !strings.Contains(logged, "want web.Principal") {
+	if logged := logger.rendered(); !strings.Contains(logged, "want authentication.Principal") {
 		t.Fatalf(
 			"log = %q, want the full cause: this one is framework-built and safe, "+
 				"so eliding it would leave the failure undiagnosable",

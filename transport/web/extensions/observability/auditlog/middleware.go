@@ -9,6 +9,18 @@ import (
 	"github.com/xbcio/xbc/transport/web"
 )
 
+// observe is auditlog's single middleware handler. It deliberately does not
+// require, or even check for, a published authentication.Principal: unlike
+// tenant and idempotency -- which each gate access or a stored side effect on
+// caller identity and so declare authentication.RequiresPrincipal -- auditlog
+// is an observability sidecar that must keep recording every request Web
+// actually serves, authenticated or not. A missing Principal here is recorded
+// as an empty Subject/AuthMethod rather than skipped or refused; see
+// TestNoPrincipalRequestRecordsEmptySubject. Its Order (PhaseObserve) is also
+// deliberately placed before PhaseAuth rather than pinned after it: the hard
+// phase boundary wraps authentication inside this handler's own deferred
+// closure, so a rejected credential, an exempt route, or a panic are all still
+// observed with the request's final outcome.
 func (p *Plugin) observe(_ context.Context, c *web.Ctx) error {
 	state := p.state.Load()
 	if state == nil {

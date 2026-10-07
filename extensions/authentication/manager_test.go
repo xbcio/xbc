@@ -542,6 +542,94 @@ func TestInvalidClosedResultsAreOperationalFailures(t *testing.T) {
 	})
 }
 
+// TestAcceptedWithoutPrincipalIsAnAuthenticatedSuccessState pins the second
+// closed success state: a verified request that intentionally carries no user
+// principal (gateway signature, service-to-service call). It must pass
+// validateAuthenticatorResult, report Authenticated() true, and report
+// Principal() as (nil, false) -- distinguishing it requires checking
+// Authenticated() separately, since Principal()'s ok alone cannot tell
+// "authenticated, no principal" apart from "not authenticated".
+func TestAcceptedWithoutPrincipalIsAnAuthenticatedSuccessState(t *testing.T) {
+	t.Parallel()
+
+	authenticator := &stubAuthenticator{scheme: schemeJWT, result: AcceptedWithoutPrincipal()}
+	manager := newTestManager(t, []Scheme{schemeJWT}, authenticator)
+
+	result, err := manager.Authenticate(
+		context.Background(),
+		DefaultSelection(),
+		CredentialSourceFunc(func(context.Context, Scheme) (CredentialResult, error) {
+			return Presented("token"), nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Authenticate() error = %v, want nil", err)
+	}
+	if !result.Authenticated() {
+		t.Fatal("Authenticated() = false, want true for AcceptedWithoutPrincipal")
+	}
+	if principal, ok := result.Principal(); ok || principal != nil {
+		t.Fatalf("Principal() = (%v, %v), want (nil, false)", principal, ok)
+	}
+	if scheme, ok := result.Scheme(); !ok || scheme != schemeJWT {
+		t.Fatalf("Scheme() = (%q, %v), want (%q, true): the effective scheme must still be attached", scheme, ok, schemeJWT)
+	}
+}
+
+// TestAcceptedNilPrincipalRemainsAnOperationalFailure is the regression lock
+// for Accepted(nil): it must keep failing closed as an operational error, not
+// silently become equivalent to AcceptedWithoutPrincipal. Only the latter's
+// dedicated constructor may express an intentional absence of a principal.
+func TestAcceptedNilPrincipalRemainsAnOperationalFailure(t *testing.T) {
+	t.Parallel()
+
+	authenticator := &stubAuthenticator{scheme: schemeJWT, result: Accepted(nil)}
+	manager := newTestManager(t, []Scheme{schemeJWT}, authenticator)
+
+	_, err := manager.Authenticate(
+		context.Background(),
+		DefaultSelection(),
+		CredentialSourceFunc(func(context.Context, Scheme) (CredentialResult, error) {
+			return Presented("token"), nil
+		}),
+	)
+	if !errors.Is(err, ErrInvalidAuthenticatorResult) {
+		t.Fatalf("Authenticate() error = %v, want ErrInvalidAuthenticatorResult", err)
+	}
+}
+
+// TestAcceptedWithoutPrincipalTerminatesOrderedArbitration pins first-
+// applicable semantics for the no-principal success state: it must stop the
+// scan over later schemes exactly like an ordinary authenticated result,
+// never fall into firstRejection and let the manager try the next scheme.
+func TestAcceptedWithoutPrincipalTerminatesOrderedArbitration(t *testing.T) {
+	t.Parallel()
+
+	first := &stubAuthenticator{scheme: schemeAPIKey, result: AcceptedWithoutPrincipal()}
+	second := &stubAuthenticator{scheme: schemeJWT, result: Accepted("jwt-user")}
+	manager := newTestManager(t, []Scheme{schemeAPIKey, schemeJWT}, first, second)
+
+	result, err := manager.Authenticate(
+		context.Background(),
+		SelectSchemes(schemeAPIKey, schemeJWT),
+		CredentialSourceFunc(func(_ context.Context, scheme Scheme) (CredentialResult, error) {
+			return Presented("token"), nil
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Authenticate() error = %v, want nil", err)
+	}
+	if !result.Authenticated() {
+		t.Fatal("Authenticated() = false, want true")
+	}
+	if scheme, _ := result.Scheme(); scheme != schemeAPIKey {
+		t.Fatalf("Scheme() = %q, want %q: the first scheme's success must win", scheme, schemeAPIKey)
+	}
+	if second.calls != 0 {
+		t.Fatalf("second authenticator calls = %d, want 0: arbitration must stop at the first success", second.calls)
+	}
+}
+
 func TestSchemeValidationAndRestrictiveDefaults(t *testing.T) {
 	t.Parallel()
 

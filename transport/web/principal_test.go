@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
 )
@@ -17,7 +18,7 @@ func principalCtx() *web.Ctx {
 func TestPrincipalRoundTripUsesDefensiveAttributeCopies(t *testing.T) {
 	c := principalCtx()
 	attributes := map[string]any{"role": "admin"}
-	assert.True(t, web.SetPrincipal(c, web.Principal{
+	assert.True(t, web.SetPrincipal(c, authentication.Principal{
 		Subject:    " alice ",
 		AuthMethod: " jwt ",
 		Attributes: attributes,
@@ -37,9 +38,9 @@ func TestPrincipalRoundTripUsesDefensiveAttributeCopies(t *testing.T) {
 }
 
 func TestSetPrincipalRejectsMissingIdentity(t *testing.T) {
-	assert.False(t, web.SetPrincipal(nil, web.Principal{Subject: "alice"}))
+	assert.False(t, web.SetPrincipal(nil, authentication.Principal{Subject: "alice"}))
 	c := principalCtx()
-	assert.False(t, web.SetPrincipal(c, web.Principal{Subject: "  "}))
+	assert.False(t, web.SetPrincipal(c, authentication.Principal{Subject: "  "}))
 	_, ok := web.CurrentPrincipal(c)
 	assert.False(t, ok)
 }

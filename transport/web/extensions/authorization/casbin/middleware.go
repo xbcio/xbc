@@ -11,7 +11,19 @@ import (
 // Handler implements web.Middleware.
 func (p *Plugin) Handler() web.Handler { return p.authorize }
 
-// Order implements web.Middleware.
+// Order implements web.Middleware. casbin deliberately does not also declare
+// authentication.RequiresPrincipal, unlike tenant and idempotency: its actual
+// identity dependency is SubjectResolver, not authentication.Principal
+// specifically (see WithSubjectResolver and
+// TestInjectedResolverDoesNotRequireJWTOrPrincipal), and an injected resolver
+// may source a verified subject from somewhere other than Web's built-in
+// authentication middleware entirely. This After already orders casbin behind
+// whatever the framework's own authentication middleware resolved for this
+// request -- including the no-Principal AuthenticationExempt and
+// AcceptedWithoutPrincipal outcomes authorize checks below -- which is the
+// whole of what casbin needs from authentication ordering; adding the marker
+// would additionally claim a coupling to the Principal contract that the
+// resolver abstraction exists to avoid.
 func (p *Plugin) Order() web.Order {
 	return web.Order{
 		Phase: web.PhaseAuth,

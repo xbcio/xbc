@@ -9,7 +9,7 @@ import (
 )
 
 // Claims is the map of verified JWT claims returned by Authenticate and
-// published as web.Principal.Attributes.
+// published as authentication.Principal.Attributes.
 type Claims = jwtlib.MapClaims
 
 var errInvalidToken = errors.New("jwt: invalid token")

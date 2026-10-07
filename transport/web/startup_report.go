@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -58,6 +59,20 @@ func renderRouteTable(routes []RouteInfo) string {
 	return b.String()
 }
 
+// renderAuthenticationOrder prints the manager's effective authentication-
+// domain order -- the actual arbitration order, taken from Manager.Schemes(),
+// not web.security.schemes verbatim. This is the configuration web.security.schemes
+// just made explicit (see newAuthenticationMiddleware); printing it alongside
+// the route table and policy decisions keeps every application-level security
+// decision visible in one place rather than leaving the newest one hidden.
+func renderAuthenticationOrder(schemes []authentication.Scheme) string {
+	parts := make([]string, len(schemes))
+	for i, scheme := range schemes {
+		parts[i] = string(scheme)
+	}
+	return fmt.Sprintf("web: authentication arbitration order: %s", strings.Join(parts, " -> "))
+}
+
 // renderPublicEndpoints lists every route that resolved to permit and reports
 // the count. When defaultPermit is true the global fallback is fail-open,
 // which deserves a prominent warning because every uncovered route is public.
@@ -81,7 +96,14 @@ func renderPublicEndpoints(routes []RouteInfo, defaultPermit bool) string {
 
 // renderPolicyDecisions renders the per-route effective policy table so an
 // operator can see which tier decided each route's authentication requirement.
-func renderPolicyDecisions(decisions []policyDecision) string {
+//
+// defaultSchemes is the manager's effective default selection (Manager.
+// Schemes() filtered to the registered defaults), used to label a route whose
+// effective policy resolved through the manager's default selection rather
+// than an explicit scheme list -- Selection.Schemes() returns nil for that
+// case by design (see Selection.UsesDefault), so without this the row would
+// otherwise be mislabeled "deny" even though the route authenticates.
+func renderPolicyDecisions(decisions []policyDecision, defaultSchemes []authentication.Scheme) string {
 	methodWidth := 0
 	pathWidth := 0
 	for _, d := range decisions {
@@ -96,14 +118,25 @@ func renderPolicyDecisions(decisions []policyDecision) string {
 	fmt.Fprintf(&b, "web: policy decisions (%d)", len(decisions))
 	for i, d := range decisions {
 		outcome := "deny"
-		if d.policy.permit {
+		switch {
+		case d.policy.permit:
 			outcome = "permit"
-		} else if schemes := d.policy.selection.Schemes(); len(schemes) > 0 {
-			parts := make([]string, len(schemes))
-			for j, s := range schemes {
+		case len(d.policy.selection.Schemes()) > 0:
+			parts := make([]string, len(d.policy.selection.Schemes()))
+			for j, s := range d.policy.selection.Schemes() {
 				parts[j] = string(s)
 			}
 			outcome = strings.Join(parts, ",")
+		case d.policy.selection.UsesDefault() && len(defaultSchemes) > 0:
+			// Selection.Schemes() returns nil for the default selection by
+			// design: effective defaults belong to Manager, not Selection.
+			// Without this branch a route that authenticates through the
+			// manager's default scheme set would be mislabeled "deny".
+			parts := make([]string, len(defaultSchemes))
+			for j, s := range defaultSchemes {
+				parts[j] = string(s)
+			}
+			outcome = "authenticate(default: " + strings.Join(parts, ",") + ")"
 		}
 		tier := fmt.Sprintf("(%s", d.policy.tier)
 		if d.policy.ruleIndex >= 0 {

@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/extensions/authentication"
 )
 
 func TestPluginInitFailureAndDuplicateLifecycle(t *testing.T) {
@@ -37,7 +37,7 @@ func TestPluginInitFailureAndDuplicateLifecycle(t *testing.T) {
 
 func TestConcurrentInitPublishesExactlyOneImmutableState(t *testing.T) {
 	var resolverCalls atomic.Int32
-	resolver := ResolverFunc(func(context.Context, web.Principal, string) (Tenant, bool, error) {
+	resolver := ResolverFunc(func(context.Context, authentication.Principal, string) (Tenant, bool, error) {
 		resolverCalls.Add(1)
 		return Tenant{ID: "acme"}, true, nil
 	})
@@ -65,10 +65,10 @@ func TestConcurrentInitPublishesExactlyOneImmutableState(t *testing.T) {
 
 func TestResolverFuncPropagatesErrors(t *testing.T) {
 	want := errors.New("lookup unavailable")
-	resolver := ResolverFunc(func(context.Context, web.Principal, string) (Tenant, bool, error) {
+	resolver := ResolverFunc(func(context.Context, authentication.Principal, string) (Tenant, bool, error) {
 		return Tenant{}, false, want
 	})
-	_, _, err := resolver.ResolveTenant(context.Background(), web.Principal{Subject: "alice"}, "acme")
+	_, _, err := resolver.ResolveTenant(context.Background(), authentication.Principal{Subject: "alice"}, "acme")
 	if !errors.Is(err, want) {
 		t.Fatalf("ResolverFunc error=%v", err)
 	}

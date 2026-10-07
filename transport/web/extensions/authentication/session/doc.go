@@ -9,7 +9,7 @@
 // session is a credential extractor and authenticator, not a middleware: it
 // plugs into the Web transport's built-in authentication middleware, which is
 // the only place a credential extractor runs. The session's stored attributes
-// travel as web.Principal.Attributes, alongside its opaque ID under the
+// travel as authentication.Principal.Attributes, alongside its opaque ID under the
 // "session_id" key:
 //
 //	func profile(ctx context.Context, c *web.Ctx) error {

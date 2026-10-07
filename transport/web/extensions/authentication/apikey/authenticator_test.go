@@ -427,9 +427,9 @@ func TestPluginAuthenticateAcceptsValidCredentialAndPublishesPrincipal(t *testin
 	if !ok {
 		t.Fatal("Principal() ok = false")
 	}
-	typed, ok := principal.(web.Principal)
+	typed, ok := principal.(authentication.Principal)
 	if !ok {
-		t.Fatalf("principal type = %T, want web.Principal", principal)
+		t.Fatalf("principal type = %T, want authentication.Principal", principal)
 	}
 	if typed.Subject != "service:payments" || typed.AuthMethod != "apikey" ||
 		typed.Attributes["role"] != "writer" || typed.Attributes["credential_id"] != "payments" ||

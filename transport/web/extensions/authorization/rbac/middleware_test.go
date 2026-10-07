@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	businessrbac "github.com/xbcio/xbc/extensions/authorization/rbac"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
@@ -64,7 +65,7 @@ func TestRequireAllUsesOnlyCurrentPrincipalAndAllowsAuthorizedRequest(t *testing
 	}
 
 	requestContext := context.WithValue(context.Background(), middlewareContextKey{}, "request")
-	response, reached := serveRBAC(t, RequireAll(manager, permissions...), &web.Principal{Subject: "alice", AuthMethod: "test"}, requestContext, "")
+	response, reached := serveRBAC(t, RequireAll(manager, permissions...), &authentication.Principal{Subject: "alice", AuthMethod: "test"}, requestContext, "")
 	if response.Code != http.StatusNoContent || !reached {
 		t.Fatalf("response = %d body=%q reached=%v", response.Code, response.Body.String(), reached)
 	}
@@ -87,7 +88,7 @@ func TestRequireAnyDelegatesAnyAndDefensivelyCopiesPermissions(t *testing.T) {
 	handler := RequireAny(manager, permissions...)
 	permissions[0] = businessrbac.Permission{Object: "mutated", Action: "delete"}
 
-	response, reached := serveRBAC(t, handler, &web.Principal{Subject: "alice"}, context.Background(), "")
+	response, reached := serveRBAC(t, handler, &authentication.Principal{Subject: "alice"}, context.Background(), "")
 	if response.Code != http.StatusNoContent || !reached {
 		t.Fatalf("response = %d body=%q reached=%v", response.Code, response.Body.String(), reached)
 	}
@@ -114,7 +115,7 @@ func TestRequireAnyReturnsForbiddenOnDenial(t *testing.T) {
 		allFunc: func(context.Context, string, ...businessrbac.Permission) (bool, error) { return false, nil },
 		anyFunc: func(context.Context, string, ...businessrbac.Permission) (bool, error) { return false, nil },
 	}
-	response, reached := serveRBAC(t, RequireAny(manager, businessrbac.Permission{Object: "reports"}), &web.Principal{Subject: "bob"}, context.Background(), "")
+	response, reached := serveRBAC(t, RequireAny(manager, businessrbac.Permission{Object: "reports"}), &authentication.Principal{Subject: "bob"}, context.Background(), "")
 	assertProblem(t, response, http.StatusForbidden, "forbidden")
 	if reached {
 		t.Fatal("denied request reached endpoint")
@@ -127,7 +128,7 @@ func TestRequireAllSendsManagerErrorsThroughSafeBoundary(t *testing.T) {
 		allFunc: func(context.Context, string, ...businessrbac.Permission) (bool, error) { return false, managerErr },
 		anyFunc: func(context.Context, string, ...businessrbac.Permission) (bool, error) { return false, managerErr },
 	}
-	response, reached := serveRBAC(t, RequireAll(manager, businessrbac.Permission{Object: "reports"}), &web.Principal{Subject: "alice"}, context.Background(), "")
+	response, reached := serveRBAC(t, RequireAll(manager, businessrbac.Permission{Object: "reports"}), &authentication.Principal{Subject: "alice"}, context.Background(), "")
 	assertProblem(t, response, http.StatusInternalServerError, "internal_server_error")
 	if reached || strings.Contains(response.Body.String(), "password") || strings.Contains(response.Body.String(), "secret") {
 		t.Fatalf("unsafe error response body=%q reached=%v", response.Body.String(), reached)
@@ -138,7 +139,7 @@ func TestRequireAllTreatsNilAndTypedNilManagersAsInternalErrors(t *testing.T) {
 	var typedNil *middlewareManager
 	for name, manager := range map[string]businessrbac.Manager{"nil": nil, "typed nil": typedNil} {
 		t.Run(name, func(t *testing.T) {
-			response, reached := serveRBAC(t, RequireAll(manager, businessrbac.Permission{Object: "reports"}), &web.Principal{Subject: "alice"}, context.Background(), "")
+			response, reached := serveRBAC(t, RequireAll(manager, businessrbac.Permission{Object: "reports"}), &authentication.Principal{Subject: "alice"}, context.Background(), "")
 			assertProblem(t, response, http.StatusInternalServerError, "internal_server_error")
 			if reached {
 				t.Fatal("invalid Manager request reached endpoint")
@@ -147,7 +148,7 @@ func TestRequireAllTreatsNilAndTypedNilManagersAsInternalErrors(t *testing.T) {
 	}
 }
 
-func serveRBAC(t *testing.T, middleware web.Handler, principal *web.Principal, requestContext context.Context, authorization string) (*httptest.ResponseRecorder, bool) {
+func serveRBAC(t *testing.T, middleware web.Handler, principal *authentication.Principal, requestContext context.Context, authorization string) (*httptest.ResponseRecorder, bool) {
 	t.Helper()
 	engine := enginetest.New()
 	engine.Use(web.OnError())

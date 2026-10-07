@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
@@ -27,11 +28,11 @@ func TestOrdinaryImportExposesOnlyExplicitCanonicalComposition(t *testing.T) {
 // if any of these seven helpers ever regresses back to taking *gin.Context,
 // this file stops compiling instead of silently drifting.
 var (
-	_ func(*web.Ctx, web.ProblemDetail)    = web.AbortProblem
-	_ func(*web.Ctx, web.ProblemDetail)    = web.WriteProblem
-	_ func(*web.Ctx, web.Principal) bool   = web.SetPrincipal
-	_ func(*web.Ctx) (web.Principal, bool) = web.CurrentPrincipal
-	_ func(*web.Ctx) (web.RouteInfo, bool) = web.CurrentRoute
-	_ func(*web.Ctx) bool                  = web.AuthenticationExempt
-	_ func(*web.Ctx, error)                = web.AbortError
+	_ func(*web.Ctx, web.ProblemDetail)               = web.AbortProblem
+	_ func(*web.Ctx, web.ProblemDetail)               = web.WriteProblem
+	_ func(*web.Ctx, authentication.Principal) bool   = web.SetPrincipal
+	_ func(*web.Ctx) (authentication.Principal, bool) = web.CurrentPrincipal
+	_ func(*web.Ctx) (web.RouteInfo, bool)            = web.CurrentRoute
+	_ func(*web.Ctx) bool                             = web.AuthenticationExempt
+	_ func(*web.Ctx, error)                           = web.AbortError
 )

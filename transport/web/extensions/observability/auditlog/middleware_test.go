@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
 )
@@ -42,7 +43,7 @@ func auditEngine(p *Plugin, route web.RouteInfo, handler web.Handler) *enginetes
 		},
 		p.Handler(),
 		func(_ context.Context, c *web.Ctx) error {
-			web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "apikey"})
+			web.SetPrincipal(c, authentication.Principal{Subject: "alice", AuthMethod: "apikey"})
 			c.Next()
 			return nil
 		},
@@ -157,6 +158,64 @@ func TestConcurrentRequestsAreRaceSafe(t *testing.T) {
 	events, _ := sink.snapshot()
 	if len(events) != 100 {
 		t.Fatalf("events = %d", len(events))
+	}
+}
+
+// TestNoPrincipalRequestRecordsEmptySubject locks a deliberate decision, not a
+// defect: observe reads the principal with `principal, _ :=
+// web.CurrentPrincipal(c)` and never checks web.AuthenticationExempt, so a
+// request with no published Principal (an exempt/public route, a rejected
+// credential, or an authenticated-without-principal caller) records an empty
+// Subject and AuthMethod rather than being skipped or refused. auditlog is an
+// observability sidecar, not an authorization gate: it must keep recording
+// every request Web actually serves, including every shape of unauthenticated
+// one, or an operator loses visibility into exactly the traffic -- failed
+// logins, scans against public routes -- audit logs exist to surface. This is
+// why auditlog does not declare authentication.RequiresPrincipal: unlike
+// tenant, idempotency, and casbin, it has no per-request check that a missing
+// Principal should fail, so the marker would misstate its contract. Its Order
+// (PhaseObserve, numerically before PhaseAuth) is also deliberately the
+// opposite of a RequiresPrincipal pin: the hard phase boundary wraps
+// authentication inside auditlog's own handler, so its deferred recording
+// closure always observes the final outcome, authenticated or not, including
+// a panic or an authentication rejection.
+func TestNoPrincipalRequestRecordsEmptySubject(t *testing.T) {
+	sink := &memorySink{}
+	p := initialized(t, sink, nil)
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/exempt"}
+	engine := enginetest.New()
+	engine.Handle(route.Method, route.Path, []web.Handler{
+		func(_ context.Context, c *web.Ctx) error {
+			c.Set(currentRouteKeyForTest, route)
+			// Deliberately no web.SetPrincipal call: this is the no-principal
+			// path (exempt route, or an authenticated-without-principal caller).
+			c.Next()
+			return nil
+		},
+		p.Handler(),
+		noContent,
+	})
+	engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/exempt", nil))
+	events, _ := sink.snapshot()
+	if len(events) != 1 {
+		t.Fatalf("events = %d", len(events))
+	}
+	if event := events[0]; event.Subject != "" || event.AuthMethod != "" {
+		t.Fatalf("event = %#v, want empty Subject/AuthMethod (auditlog records every request; see observe's doc comment)", event)
+	}
+}
+
+// TestPluginDoesNotDeclareRequiresPrincipal locks the decision in observe's
+// doc comment: *Plugin must not implement authentication.RequiresPrincipal.
+// auditlog has no per-request check that fails or skips recording when a
+// Principal is missing -- it must keep observing every request Web actually
+// serves -- so the marker would misstate its contract. If a future change
+// makes *Plugin implement RequiresPrincipal, this test is the one to update
+// deliberately alongside the doc comments on observe and the package.
+func TestPluginDoesNotDeclareRequiresPrincipal(t *testing.T) {
+	var value any = (*Plugin)(nil)
+	if _, ok := value.(authentication.RequiresPrincipal); ok {
+		t.Fatal("*Plugin must not implement authentication.RequiresPrincipal; see observe's doc comment")
 	}
 }
 

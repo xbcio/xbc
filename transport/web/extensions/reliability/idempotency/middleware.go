@@ -14,8 +14,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 )
+
+// Plugin declares authentication.RequiresPrincipal at compile time. idempotency
+// does not otherwise import the authentication package, so it satisfies the
+// interface structurally; without this assertion, an upstream rename of the
+// marker method would silently unbind it and this package would still build.
+var _ authentication.RequiresPrincipal = (*Plugin)(nil)
 
 // Handler implements web.Middleware.
 func (p *Plugin) Handler() web.Handler { return p.handle }
@@ -25,6 +32,17 @@ func (p *Plugin) Handler() web.Handler { return p.handle }
 func (p *Plugin) Order() web.Order {
 	return web.Order{Phase: web.PhaseBusiness}
 }
+
+// RequiresPrincipal declares that this middleware cannot usefully run before
+// an identity is published, which makes the framework pin it after the
+// authentication middleware automatically. The PhaseBusiness/PhaseAuth hard
+// boundary already guarantees this ordering; this marker documents the
+// dependency at the type level too, matching tenant's own assertion (casbin
+// and auditlog deliberately do not declare it -- both must keep serving
+// requests that carry no principal). It does not change per-route behavior:
+// a route not marked Route.Idempotent, or one that resolved to permit, still
+// never reaches the no-Principal refusal in handle.
+func (*Plugin) RequiresPrincipal() {}
 
 func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	route, found := web.CurrentRoute(c)
@@ -38,6 +56,19 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		abortJSON(c, http.StatusBadRequest, "invalid_idempotency_key")
 		return nil
 	}
+	principal, hasPrincipal := web.CurrentPrincipal(c)
+	if !hasPrincipal {
+		// A stored response is keyed and fingerprinted by caller identity (see
+		// requestFingerprint and digestParts below). Without a Principal there is
+		// no caller identity to scope the key to, so two unrelated callers reusing
+		// the same Idempotency-Key value would share one storage slot and one
+		// could replay the other's response. The request never reaches
+		// state.store below: refusing here, before Acquire, is what keeps an
+		// identity-less caller from ever occupying or reading a slot in the
+		// store's namespace.
+		abortJSON(c, http.StatusForbidden, "idempotency_requires_principal")
+		return nil
+	}
 	body, err := readBody(c.Request(), state.config.maxRequestBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
@@ -47,7 +78,6 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		}
 		return nil
 	}
-	principal, _ := web.CurrentPrincipal(c)
 	rawQuery := ""
 	contentType := ""
 	if c.Request().URL != nil {

@@ -30,8 +30,16 @@ const (
 // neither an explicit rule nor a route-level policy covers a route, so adopting
 // this configuration never silently closes routes that plugins declared public.
 type SecurityConfig struct {
-	Default  SecurityDefault `yaml:"default"  default:"deny"`
-	Policies []PolicyRule    `yaml:"policies"`
+	Default SecurityDefault `yaml:"default"  default:"deny"`
+
+	// Schemes is the application-declared arbitration order for authentication.
+	// Manager evaluates schemes first-applicable in exactly this order, so the
+	// order is a security decision: a scheme that must win over another must be
+	// written before it. It must be a full permutation of the registered
+	// authenticators; the server rejects a partial or unknown list at startup.
+	Schemes []authentication.Scheme `yaml:"schemes"`
+
+	Policies []PolicyRule `yaml:"policies"`
 }
 
 // PolicyRule is one ordered matching rule. Rules are evaluated in declaration
@@ -60,6 +68,7 @@ func (c SecurityConfig) normalize() SecurityConfig {
 	if c.Default == "" {
 		c.Default = SecurityDeny
 	}
+	c.Schemes = append([]authentication.Scheme(nil), c.Schemes...)
 	c.Policies = append([]PolicyRule(nil), c.Policies...)
 	return c
 }
@@ -71,6 +80,17 @@ func (c SecurityConfig) Validate() error {
 	case SecurityDeny, SecurityPermit:
 	default:
 		return fmt.Errorf("web: security default must be \"deny\" or \"permit\", got %q", c.Default)
+	}
+
+	seenScheme := make(map[authentication.Scheme]struct{}, len(c.Schemes))
+	for i, scheme := range c.Schemes {
+		if err := scheme.Validate(); err != nil {
+			return fmt.Errorf("web: security schemes has an invalid scheme at index %d: %w", i, err)
+		}
+		if _, duplicate := seenScheme[scheme]; duplicate {
+			return fmt.Errorf("web: security schemes has a duplicate scheme %q at index %d", scheme, i)
+		}
+		seenScheme[scheme] = struct{}{}
 	}
 
 	for i, rule := range c.Policies {

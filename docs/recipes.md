@@ -28,7 +28,17 @@ plugins:
     request_id_header: "X-Request-ID"
 ```
 
-Authentication is performed once by the framework's built-in authentication middleware; plugins contribute `authentication.Authenticator` and `web.CredentialExtractor` implementations but do not intercept requests themselves. Route access is decided by a three-tier precedence model: an explicit `web.security` policy rule (tier 1) overrides a route's `.Auth()` declaration (tier 2), and the global `web.security.default` (factory setting `deny`) covers routes that neither tier addresses. Protected routes receive the shared `web.Principal`, which lets audit records correlate the principal, route name, request ID, status code, and duration.
+Authentication is performed once by the framework's built-in authentication middleware; plugins contribute `authentication.Authenticator` and `web.CredentialExtractor` implementations but do not intercept requests themselves. Route access is decided by a three-tier precedence model: an explicit `web.security` policy rule (tier 1) overrides a route's `.Auth()` declaration (tier 2), and the global `web.security.default` (factory setting `deny`) covers routes that neither tier addresses. Protected routes receive the shared `authentication.Principal`, which lets audit records correlate the principal, route name, request ID, status code, and duration.
+
+When a request's selection admits more than one scheme, which authenticator gets to try first is a security decision, not an implementation detail: it determines which credential wins when a client presents more than one. `web.security.schemes` makes that order an explicit, application-declared list rather than letting it fall out of registration or plugin-key order:
+
+```yaml
+web:
+  security:
+    schemes: ["jwt", "apikey"]
+```
+
+An application with two or more registered authenticators must declare `schemes` as a full permutation of their scheme names, or startup fails with `web.security.schemes must declare the arbitration order`; a missing, unknown, or duplicate entry fails startup the same way, naming the mistake. An application with exactly one registered authenticator may omit `schemes` entirely -- there is no arbitration to order.
 
 For high-volume or dynamic credentials, inject an API-key repository instead of repeatedly editing static YAML.
 
@@ -67,6 +77,8 @@ plugins:
 ```
 
 An idempotency key is not an authentication credential. Gateways and logs should not record unbounded request bodies or sensitive headers.
+
+A stored response is keyed and fingerprinted by the authenticated Principal's Subject, so idempotent routes require an authenticated caller: a request carrying the `Idempotency-Key` header without a published Principal is refused with `403 idempotency_requires_principal` before the store is ever touched -- including on a public route marked `.Idempotent()`. A request without the header never reaches that refusal: a route marked `.Idempotent()` answers a missing or malformed header with `400 invalid_idempotency_key` exactly as it did before this rule, and the middleware does not act on any other route at all.
 
 ## Persistent Casbin policy with multi-replica synchronization
 

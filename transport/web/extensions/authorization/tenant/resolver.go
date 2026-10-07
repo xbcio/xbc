@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/extensions/authentication"
 )
 
 type principalResolver struct {
 	cfg normalizedConfig
 }
 
-func (r principalResolver) ResolveTenant(ctx context.Context, principal web.Principal, requestedID string) (Tenant, bool, error) {
+func (r principalResolver) ResolveTenant(ctx context.Context, principal authentication.Principal, requestedID string) (Tenant, bool, error) {
 	if ctx == nil {
 		return Tenant{}, false, tenantError("resolver context cannot be nil")
 	}

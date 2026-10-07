@@ -75,9 +75,24 @@ func TestSecurityConfigValidate(t *testing.T) {
 			wantErr: `default must be "deny" or "permit"`,
 		},
 		{
+			name: "duplicate scheme in schemes is rejected",
+			config: SecurityConfig{
+				Schemes: []authentication.Scheme{"jwt", "jwt"},
+			},
+			wantErr: "duplicate scheme",
+		},
+		{
+			name: "invalid scheme in schemes is rejected",
+			config: SecurityConfig{
+				Schemes: []authentication.Scheme{"JWT"},
+			},
+			wantErr: "invalid scheme",
+		},
+		{
 			name: "valid configuration passes",
 			config: SecurityConfig{
 				Default: SecurityDeny,
+				Schemes: []authentication.Scheme{"jwt", "session"},
 				Policies: []PolicyRule{
 					{Match: "GET /health", Permit: true},
 					{Match: "/api/**", Authenticate: []authentication.Scheme{"jwt", "session"}},

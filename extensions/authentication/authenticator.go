@@ -173,8 +173,13 @@ type Authenticator interface {
 type ResultStatus uint8
 
 const (
-	// ResultStatusAuthenticated means verification succeeded.
+	// ResultStatusAuthenticated means verification succeeded and produced a
+	// principal.
 	ResultStatusAuthenticated ResultStatus = iota + 1
+	// ResultStatusAuthenticatedWithoutPrincipal means verification succeeded
+	// but the request carries no user principal -- see
+	// AcceptedWithoutPrincipal.
+	ResultStatusAuthenticatedWithoutPrincipal
 	// ResultStatusRejected means authentication did not produce a principal.
 	ResultStatusRejected
 )
@@ -184,6 +189,8 @@ func (s ResultStatus) String() string {
 	switch s {
 	case ResultStatusAuthenticated:
 		return "authenticated"
+	case ResultStatusAuthenticatedWithoutPrincipal:
+		return "authenticated-without-principal"
 	case ResultStatusRejected:
 		return "rejected"
 	default:
@@ -233,9 +240,19 @@ type Result struct {
 
 // Accepted creates a successful Authenticator outcome. A nil or typed-nil
 // principal is invalid and Manager reports it as an operational authenticator
-// failure.
+// failure. Accepted(nil) is always an error for this reason: only
+// AcceptedWithoutPrincipal expresses an intentional absence of a principal.
 func Accepted(principal any) Result {
 	return Result{status: ResultStatusAuthenticated, principal: principal}
+}
+
+// AcceptedWithoutPrincipal reports a verified request that carries no user
+// principal -- a gateway signature or service-to-service call whose caller is
+// trusted but is not a natural person. Transports publish no principal for
+// this outcome, so authorization that requires a subject will still refuse.
+// Accepted(nil) remains an error: only this constructor expresses intent.
+func AcceptedWithoutPrincipal() Result {
+	return Result{status: ResultStatusAuthenticatedWithoutPrincipal}
 }
 
 // Rejected creates an ordinary invalid-credential Authenticator outcome.
@@ -269,13 +286,20 @@ func rejectedAuthenticatorResult(reason SafeReason, challenge Challenge) Result 
 // is rejected by Manager when returned by an Authenticator.
 func (r Result) Status() ResultStatus { return r.status }
 
-// Authenticated reports whether the result contains an authenticated principal.
-func (r Result) Authenticated() bool { return r.status == ResultStatusAuthenticated }
+// Authenticated reports whether the result is either of the two authenticated
+// outcomes, with or without a principal.
+func (r Result) Authenticated() bool {
+	return r.status == ResultStatusAuthenticated || r.status == ResultStatusAuthenticatedWithoutPrincipal
+}
 
 // Rejected reports whether the result is an ordinary, non-operational rejection.
 func (r Result) Rejected() bool { return r.status == ResultStatusRejected }
 
-// Principal returns the authenticated principal, if any.
+// Principal returns the authenticated principal, if any. It returns (nil,
+// false) for ResultStatusAuthenticatedWithoutPrincipal: that status is a
+// successful authentication, but Authenticated() must be checked separately
+// from Principal()'s ok to tell "authenticated, no principal" apart from "not
+// authenticated".
 func (r Result) Principal() (any, bool) {
 	if r.status != ResultStatusAuthenticated {
 		return nil, false

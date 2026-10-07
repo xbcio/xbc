@@ -365,8 +365,11 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 	}
 	logger.Info(renderRouteTable(catalog.All()))
 	if authenticator != nil {
+		if schemes := authenticator.manager.Schemes(); len(schemes) > 0 {
+			logger.Info(renderAuthenticationOrder(schemes))
+		}
 		logger.Info(renderPublicEndpoints(authenticator.publicRoutes(), authenticator.permitAll))
-		logger.Info(renderPolicyDecisions(authenticator.decisions()))
+		logger.Info(renderPolicyDecisions(authenticator.decisions(), authenticator.manager.DefaultSchemes()))
 	}
 
 	s.mu.Lock()

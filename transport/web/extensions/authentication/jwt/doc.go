@@ -6,7 +6,7 @@
 // into the Web transport's built-in authentication middleware, which is the
 // only place the live request is available. Configure plugins.jwt.secret with at
 // least 32 bytes, enable the autoload package, and read the identity that
-// middleware publishes. Verified claims travel as web.Principal.Attributes:
+// middleware publishes. Verified claims travel as authentication.Principal.Attributes:
 //
 //	func profile(_ context.Context, c *web.Ctx) error {
 //		principal, ok := web.CurrentPrincipal(c)

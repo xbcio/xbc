@@ -230,9 +230,9 @@ func TestPluginExtractCredentialFeedsAuthenticateWithTheExactCookieValue(t *test
 	if !ok {
 		t.Fatal("Principal() ok = false")
 	}
-	typed, ok := principal.(web.Principal)
+	typed, ok := principal.(authentication.Principal)
 	if !ok {
-		t.Fatalf("principal type = %T, want web.Principal", principal)
+		t.Fatalf("principal type = %T, want authentication.Principal", principal)
 	}
 	if typed.Subject != "carol" || typed.Attributes["session_id"] != id {
 		t.Fatalf("principal = %#v, want subject %q and session_id %q", typed, "carol", id)
@@ -287,9 +287,9 @@ func TestPluginAuthenticateAcceptsValidSessionAndPublishesPrincipal(t *testing.T
 	if !ok {
 		t.Fatal("Principal() ok = false")
 	}
-	typed, ok := principal.(web.Principal)
+	typed, ok := principal.(authentication.Principal)
 	if !ok {
-		t.Fatalf("principal type = %T, want web.Principal", principal)
+		t.Fatalf("principal type = %T, want authentication.Principal", principal)
 	}
 	if typed.Subject != "alice" || typed.AuthMethod != "session" ||
 		typed.Attributes["role"] != "admin" || typed.Attributes["session_id"] != id {
@@ -334,9 +334,9 @@ func TestPluginAuthenticateAcceptsSessionWithNilAttributes(t *testing.T) {
 	if !ok {
 		t.Fatal("Principal() ok = false")
 	}
-	typed, ok := principal.(web.Principal)
+	typed, ok := principal.(authentication.Principal)
 	if !ok {
-		t.Fatalf("principal type = %T, want web.Principal", principal)
+		t.Fatalf("principal type = %T, want authentication.Principal", principal)
 	}
 	if typed.Subject != "dave" || typed.Attributes["session_id"] != id || len(typed.Attributes) != 1 {
 		t.Fatalf("principal = %#v, want only session_id set", typed)

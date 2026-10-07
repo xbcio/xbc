@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
@@ -22,7 +22,7 @@ func defaultPrincipalResolver(t *testing.T) principalResolver {
 
 func TestPrincipalResolverSelectsOnlyVerifiedMemberships(t *testing.T) {
 	resolver := defaultPrincipalResolver(t)
-	principal := web.Principal{
+	principal := authentication.Principal{
 		Subject: "alice",
 		Attributes: map[string]any{
 			"tenant_id":  "primary",
@@ -59,7 +59,7 @@ func TestPrincipalResolverAutoSelectsExactlyOneTenant(t *testing.T) {
 		"list":   {"tenant_ids": []string{"acme"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			resolved, found, err := resolver.ResolveTenant(context.Background(), web.Principal{Subject: "alice", Attributes: attributes}, "")
+			resolved, found, err := resolver.ResolveTenant(context.Background(), authentication.Principal{Subject: "alice", Attributes: attributes}, "")
 			if err != nil || !found || resolved.ID != "acme" {
 				t.Fatalf("resolved=%#v found=%v err=%v", resolved, found, err)
 			}
@@ -73,7 +73,7 @@ func TestPrincipalResolverAutoSelectsExactlyOneTenant(t *testing.T) {
 		t.Fatal(err)
 	}
 	withoutAuto := principalResolver{cfg: normalized}
-	if _, found, err := withoutAuto.ResolveTenant(context.Background(), web.Principal{Subject: "alice", Attributes: map[string]any{"tenant_id": "acme"}}, ""); err != nil || found {
+	if _, found, err := withoutAuto.ResolveTenant(context.Background(), authentication.Principal{Subject: "alice", Attributes: map[string]any{"tenant_id": "acme"}}, ""); err != nil || found {
 		t.Fatalf("AutoSelectSingle=false found=%v err=%v", found, err)
 	}
 }
@@ -90,21 +90,21 @@ func TestPrincipalResolverRejectsMalformedVerifiedFactsAndCancellation(t *testin
 	}
 	for name, attributes := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, _, err := resolver.ResolveTenant(context.Background(), web.Principal{Subject: "alice", Attributes: attributes}, ""); err == nil {
+			if _, _, err := resolver.ResolveTenant(context.Background(), authentication.Principal{Subject: "alice", Attributes: attributes}, ""); err == nil {
 				t.Fatal("malformed principal facts accepted")
 			}
 		})
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := resolver.ResolveTenant(ctx, web.Principal{Subject: "alice"}, ""); !errors.Is(err, context.Canceled) {
+	if _, _, err := resolver.ResolveTenant(ctx, authentication.Principal{Subject: "alice"}, ""); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled ResolveTenant error=%v", err)
 	}
-	if _, _, err := resolver.ResolveTenant(nil, web.Principal{Subject: "alice"}, ""); err == nil {
+	if _, _, err := resolver.ResolveTenant(nil, authentication.Principal{Subject: "alice"}, ""); err == nil {
 		t.Fatal("nil context accepted")
 	}
 	var nilResolver ResolverFunc
-	if _, _, err := nilResolver.ResolveTenant(context.Background(), web.Principal{Subject: "alice"}, ""); err == nil {
+	if _, _, err := nilResolver.ResolveTenant(context.Background(), authentication.Principal{Subject: "alice"}, ""); err == nil {
 		t.Fatal("nil ResolverFunc accepted")
 	}
 }

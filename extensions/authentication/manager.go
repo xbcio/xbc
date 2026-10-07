@@ -272,7 +272,8 @@ func (m *Manager) Authenticate(
 				validationErr,
 			)
 		}
-		if authenticatorResult.status == ResultStatusAuthenticated {
+		if authenticatorResult.status == ResultStatusAuthenticated ||
+			authenticatorResult.status == ResultStatusAuthenticatedWithoutPrincipal {
 			authenticatorResult.scheme = entry.scheme
 			return authenticatorResult, nil
 		}
@@ -389,6 +390,11 @@ func validateAuthenticatorResult(result Result) error {
 	switch result.status {
 	case ResultStatusAuthenticated:
 		if isNilLike(result.principal) || result.rejection != 0 || result.scheme != "" ||
+			result.reason != "" || len(result.challenges) != 0 {
+			return ErrInvalidAuthenticatorResult
+		}
+	case ResultStatusAuthenticatedWithoutPrincipal:
+		if result.principal != nil || result.rejection != 0 || result.scheme != "" ||
 			result.reason != "" || len(result.challenges) != 0 {
 			return ErrInvalidAuthenticatorResult
 		}

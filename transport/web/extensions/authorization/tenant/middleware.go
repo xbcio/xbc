@@ -58,17 +58,24 @@ func (p *Plugin) resolve(_ context.Context, c *web.Ctx) error {
 	}
 	principal, ok := web.CurrentPrincipal(c)
 	if !ok {
-		// Reachable in production: an unmatched route (404/405). The
-		// authentication middleware passes those straight through without
-		// marking them exempt or publishing a principal, and Server splices
-		// the global chain -- including this one -- into the NoRoute and
-		// NoMethod chains. There is no handler behind an unmatched path to
-		// protect, so proceeding here is correct: it leaves the response to
-		// Web's own 404/405 instead of manufacturing a 403 for a route that
-		// does not exist. This is a deliberate divergence from casbin, which turns
-		// the same case into 403 via its own `!found` guard on CurrentRoute
-		// (see the comment there).
-		c.Next()
+		// A real route (CurrentRoute hits) but no principal can now mean two
+		// things: an unmatched route (404/405), or a request the authentication
+		// middleware let through via AcceptedWithoutPrincipal (trusted but not a
+		// natural person -- a gateway signature, a service-to-service call).
+		// Being authenticated and being exempt from a subject requirement are
+		// different facts: an unmatched route is still passed through, since
+		// there is no handler behind it to protect and manufacturing a 403 for a
+		// nonexistent route would be wrong. A real route with no subject cannot
+		// resolve a tenant, so it is refused -- this is the only path this task
+		// adds, and it closes what would otherwise be a tenant-isolation bypass
+		// for an authenticated-without-principal caller. The web.CurrentRoute
+		// check mirrors casbin's own `!found` guard (see the comment there), so
+		// the two extensions no longer diverge on this branch.
+		if _, found := web.CurrentRoute(c); !found {
+			c.Next()
+			return nil
+		}
+		forbidden(c)
 		return nil
 	}
 	state := p.state.Load()

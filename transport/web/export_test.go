@@ -59,6 +59,17 @@ type AuthenticationMiddleware = authenticationMiddleware
 // NewAuthenticationMiddleware is the constructor (*Server).Start calls.
 var NewAuthenticationMiddleware = newAuthenticationMiddleware
 
+// Schemes returns the manager's registered schemes in authentication-domain
+// order, so a test can assert that declared order -- not plugin-key
+// alphabetical order -- governs arbitration. Nil when no authenticator is
+// registered, mirroring (*authentication.Manager).Schemes on a nil receiver.
+func (m *authenticationMiddleware) Schemes() []authentication.Scheme {
+	if m == nil || m.manager == nil {
+		return nil
+	}
+	return m.manager.Schemes()
+}
+
 // Credential collection. NewRequestCredentialSource returns the unexported
 // per-request adapter; a test holds it through the authentication.CredentialSource
 // interface it satisfies.

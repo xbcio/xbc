@@ -80,7 +80,7 @@ func (p *Plugin) Authenticate(
 			authentication.Challenge(runtime.scheme),
 		), nil
 	}
-	return authentication.Accepted(web.Principal{
+	return authentication.Accepted(authentication.Principal{
 		Subject:    subject,
 		AuthMethod: string(Scheme),
 		Attributes: map[string]any(claims),

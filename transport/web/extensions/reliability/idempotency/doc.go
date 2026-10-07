@@ -33,6 +33,16 @@
 // body replays the stored response; reusing a key for a different fingerprint
 // returns a conflict. NewMemoryStore is suitable only for a single process.
 //
+// A stored response is keyed and fingerprinted by the authenticated
+// Principal's Subject, so a request carrying the Idempotency-Key header
+// without a published Principal is refused with 403 idempotency_requires_principal
+// before the store is ever touched: without a caller identity to scope the key
+// to, two unrelated callers reusing the same header value would otherwise
+// share one storage slot. A request without the header never reaches that
+// refusal: a route marked Route.Idempotent answers a missing or malformed
+// header with 400 invalid_idempotency_key exactly as it did before this rule,
+// and the middleware does not act on any other route at all.
+//
 // Importing this package has no registration side effects. Import
 // github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency/autoload for
 // process-wide composition, or use Definition/Bundle with a private assembly.

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
 )
@@ -31,7 +32,7 @@ func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
 	allowed := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"},
 		func(c *web.Ctx) {
-			web.SetPrincipal(c, web.Principal{Subject: "alice", AuthMethod: "jwt"})
+			web.SetPrincipal(c, authentication.Principal{Subject: "alice", AuthMethod: "jwt"})
 		},
 	)
 	if allowed.Code != http.StatusNoContent {
@@ -41,7 +42,7 @@ func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
 	denied := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"},
 		func(c *web.Ctx) {
-			web.SetPrincipal(c, web.Principal{Subject: "bob", AuthMethod: "jwt"})
+			web.SetPrincipal(c, authentication.Principal{Subject: "bob", AuthMethod: "jwt"})
 		},
 	)
 	assertForbidden(t, denied)
@@ -73,7 +74,7 @@ func TestRouteDeclaredPublicButNotExemptStillEnforces(t *testing.T) {
 	publicPolicy := web.Public()
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/login", Auth: &publicPolicy, Perm: "reports:read"},
-		func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "bob"}) },
+		func(c *web.Ctx) { web.SetPrincipal(c, authentication.Principal{Subject: "bob"}) },
 	)
 	assertForbidden(t, response)
 }
@@ -95,7 +96,7 @@ func TestProtectedRoutesFailClosed(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var before func(*web.Ctx)
 			if test.principal {
-				before = func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) }
+				before = func(c *web.Ctx) { web.SetPrincipal(c, authentication.Principal{Subject: "alice"}) }
 			}
 			response := requestThroughOptionalRoute(p, test.route, before)
 			assertForbidden(t, response)
@@ -120,7 +121,7 @@ func TestMissingCurrentRouteFailsClosedEvenWhenMissingPermissionIsAllowed(t *tes
 		cfg.MissingPermission = MissingPermissionAllow
 	})
 	response := requestThroughOptionalRoute(p, nil, func(c *web.Ctx) {
-		web.SetPrincipal(c, web.Principal{Subject: "alice"})
+		web.SetPrincipal(c, authentication.Principal{Subject: "alice"})
 	})
 	assertForbidden(t, response)
 }
@@ -131,7 +132,7 @@ func TestMissingPermissionCanBeExplicitlyAllowedAfterAuthentication(t *testing.T
 	})
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/profile"}
 	withPrincipal := requestThroughCasbin(p, route, func(c *web.Ctx) {
-		web.SetPrincipal(c, web.Principal{Subject: "alice"})
+		web.SetPrincipal(c, authentication.Principal{Subject: "alice"})
 	})
 	if withPrincipal.Code != http.StatusNoContent {
 		t.Fatalf("explicit allow status = %d, body = %s", withPrincipal.Code, withPrincipal.Body.String())
@@ -146,14 +147,14 @@ func TestPathMethodConventionUsesRouteTemplateAndMethod(t *testing.T) {
 	})
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports/:id"},
-		func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) },
+		func(c *web.Ctx) { web.SetPrincipal(c, authentication.Principal{Subject: "alice"}) },
 	)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("path_method status = %d, body = %s", response.Code, response.Body.String())
 	}
 	assertForbidden(t, requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodDelete, Path: "/reports/:id"},
-		func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) },
+		func(c *web.Ctx) { web.SetPrincipal(c, authentication.Principal{Subject: "alice"}) },
 	))
 }
 
@@ -190,7 +191,7 @@ func TestMiddlewareReadsRouteMetadataPerRequest(t *testing.T) {
 	p, _ := initializedPlugin(t, func(cfg *Config) {
 		cfg.Policy = "p, alice, reports:read"
 	})
-	principal := func(c *web.Ctx) { web.SetPrincipal(c, web.Principal{Subject: "alice"}) }
+	principal := func(c *web.Ctx) { web.SetPrincipal(c, authentication.Principal{Subject: "alice"}) }
 
 	missingPerm := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports"}, principal,
@@ -262,6 +263,22 @@ func muxPattern(path string) string {
 		}
 	}
 	return strings.Join(segments, "/")
+}
+
+// TestPluginDoesNotDeclareRequiresPrincipal locks the decision in Order's doc
+// comment: *Plugin must not implement authentication.RequiresPrincipal.
+// casbin's actual identity dependency is SubjectResolver, which an injected
+// resolver may satisfy from a source other than authentication.Principal
+// entirely (see TestInjectedResolverDoesNotRequireJWTOrPrincipal); declaring
+// the marker would wrongly couple every casbin configuration, including one
+// using a custom resolver, to Web's Principal contract. If a future change
+// makes *Plugin implement RequiresPrincipal, this test is the one to update
+// deliberately alongside the Order doc comment and casbin's package doc.
+func TestPluginDoesNotDeclareRequiresPrincipal(t *testing.T) {
+	var value any = (*Plugin)(nil)
+	if _, ok := value.(authentication.RequiresPrincipal); ok {
+		t.Fatal("*Plugin must not implement authentication.RequiresPrincipal; see Order's doc comment")
+	}
 }
 
 func assertForbidden(t *testing.T, recorder *httptest.ResponseRecorder) {

@@ -89,7 +89,7 @@ func (p *Plugin) Authenticate(
 		attributes = make(map[string]any, 1)
 	}
 	attributes["session_id"] = value.ID
-	return authentication.Accepted(web.Principal{
+	return authentication.Accepted(authentication.Principal{
 		Subject:    value.Subject,
 		AuthMethod: string(Scheme),
 		Attributes: attributes,

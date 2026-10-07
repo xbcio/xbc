@@ -638,6 +638,7 @@
         },
         "Security": {
           "Default": "deny",
+          "Schemes": null,
           "Policies": null
         },
         "Recovery": {

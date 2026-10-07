@@ -34,6 +34,7 @@ use (
 	./extensions/messaging/outbox
 	./extensions/messaging/webhook
 	./scripts/plugin-snapshots
+	./tests/composition
 	./transport/web
 	./transport/web/engines/gin
 	./transport/web/extensions/authentication/jwt

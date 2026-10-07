@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/plugin"
@@ -123,11 +124,56 @@ func newAuthenticationMiddleware(
 		return middleware, nil
 	}
 
-	ordered := make([]authentication.Authenticator, len(authenticators))
-	schemes := make([]authentication.Scheme, len(authenticators))
-	for i, entry := range authenticators {
-		ordered[i] = entry.Value
-		schemes[i] = entry.Value.Scheme()
+	// Authentication order is a security decision and is never inferred from
+	// construction, bundle, or plugin-key order: plugin.Collect returns
+	// authenticators sorted by CompareIdentity (plugin key alphabetical order),
+	// and renaming a plugin must not silently change which scheme wins when two
+	// are both presented. With a single registered authenticator there is no
+	// arbitration to order, so schemes may be omitted.
+	//
+	// Two authenticators registering the same scheme must fail here, not
+	// silently collapse: byScheme is a map, and if a later entry overwrote an
+	// earlier one unchecked, startup would succeed with one authenticator
+	// silently dropped -- in plugin-key order, the very dependency on renaming
+	// this validation exists to prevent. NewManager cannot catch this itself:
+	// by the time ordered/schemes are built from declared, below, the
+	// collapse has already happened and the duplicate is gone.
+	byScheme := make(map[authentication.Scheme]authentication.Authenticator, len(authenticators))
+	byIdentity := make(map[authentication.Scheme]plugin.Identity, len(authenticators))
+	registered := make([]authentication.Scheme, 0, len(authenticators))
+	for _, entry := range authenticators {
+		scheme := entry.Value.Scheme()
+		if previous, exists := byIdentity[scheme]; exists {
+			return nil, fmt.Errorf(
+				"xbc: scheme %q is registered by both %s and %s; "+
+					"only one authenticator may register a given scheme",
+				scheme, previous, entry.Identity,
+			)
+		}
+		byScheme[scheme] = entry.Value
+		byIdentity[scheme] = entry.Identity
+		registered = append(registered, scheme)
+	}
+
+	declared := security.Schemes
+	if len(declared) == 0 {
+		if len(authenticators) >= 2 {
+			return nil, fmt.Errorf(
+				"xbc: web.security.schemes must declare the arbitration order for %d registered "+
+					"authenticators (%s); authentication order is a security decision and is never inferred",
+				len(authenticators), formatSchemeList(registered),
+			)
+		}
+		declared = registered
+	} else if err := validateDeclaredSchemes(declared, registered); err != nil {
+		return nil, err
+	}
+
+	ordered := make([]authentication.Authenticator, len(declared))
+	schemes := make([]authentication.Scheme, len(declared))
+	for i, scheme := range declared {
+		ordered[i] = byScheme[scheme]
+		schemes[i] = scheme
 	}
 	// DefaultSchemes is every registered scheme on purpose. Under
 	// "default: deny" a route that no rule covers resolves through the manager's
@@ -143,6 +189,55 @@ func newAuthenticationMiddleware(
 	}
 	middleware.manager = manager
 	return middleware, nil
+}
+
+// validateDeclaredSchemes checks that declared is a full permutation of
+// registered: no missing, unknown, or duplicate scheme. Each failure names its
+// own diagnosis so a configuration mistake is immediately actionable rather
+// than requiring the operator to diff two scheme lists by hand.
+func validateDeclaredSchemes(declared, registered []authentication.Scheme) error {
+	registeredSet := make(map[authentication.Scheme]struct{}, len(registered))
+	for _, scheme := range registered {
+		registeredSet[scheme] = struct{}{}
+	}
+
+	seen := make(map[authentication.Scheme]struct{}, len(declared))
+	for _, scheme := range declared {
+		if _, duplicate := seen[scheme]; duplicate {
+			return fmt.Errorf(
+				"xbc: web.security.schemes declares %q more than once; registered schemes: %s",
+				scheme, formatSchemeList(registered),
+			)
+		}
+		seen[scheme] = struct{}{}
+		if _, known := registeredSet[scheme]; !known {
+			return fmt.Errorf(
+				"xbc: web.security.schemes declares unknown scheme %q; registered schemes: %s",
+				scheme, formatSchemeList(registered),
+			)
+		}
+	}
+	for _, scheme := range registered {
+		if _, declared := seen[scheme]; !declared {
+			return fmt.Errorf(
+				"xbc: web.security.schemes is missing registered scheme %q; it must declare a full "+
+					"permutation of the registered authenticators: %s",
+				scheme, formatSchemeList(registered),
+			)
+		}
+	}
+	return nil
+}
+
+// formatSchemeList renders a scheme list for a diagnostic, comma-separated and
+// without quoting -- the error strings around it already supply quotes where a
+// single scheme name is being named.
+func formatSchemeList(schemes []authentication.Scheme) string {
+	parts := make([]string, len(schemes))
+	for i, scheme := range schemes {
+		parts[i] = string(scheme)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // Order places authentication in PhaseAuth. The Server additionally pins this
@@ -239,15 +334,28 @@ func (m *authenticationMiddleware) Handler() Handler {
 		}
 
 		if result.Authenticated() {
+			if result.Status() == authentication.ResultStatusAuthenticatedWithoutPrincipal {
+				// A verified request with no user principal (gateway signature,
+				// service-to-service call). Publishing no principal is the whole
+				// point of this outcome -- a placeholder Subject would pollute
+				// tenant resolution, authorization, and audit logs with a value
+				// nobody chose. Being authenticated and being exempt from a
+				// subject requirement are different facts: this branch must not
+				// call markAuthenticationExempt, or authorization middleware that
+				// trusts the exempt signal would wrongly treat this request as
+				// not requiring a subject-based check at all.
+				c.Next()
+				return nil
+			}
 			principal, ok := result.Principal()
 			if !ok {
 				abortAuthenticationFailure(c, errors.New("xbc: authenticated result carried no principal"))
 				return nil
 			}
-			typed, ok := principal.(Principal)
+			typed, ok := principal.(authentication.Principal)
 			if !ok || !SetPrincipal(c, typed) {
 				abortAuthenticationFailure(c, fmt.Errorf(
-					"xbc: authenticator returned %T, want web.Principal", principal,
+					"xbc: authenticator returned %T, want authentication.Principal", principal,
 				))
 				return nil
 			}

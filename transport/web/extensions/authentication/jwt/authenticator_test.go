@@ -140,9 +140,9 @@ func TestPluginAuthenticateAcceptsValidTokenAndPublishesPrincipal(t *testing.T) 
 	if !ok {
 		t.Fatal("Principal() ok = false")
 	}
-	typed, ok := principal.(web.Principal)
+	typed, ok := principal.(authentication.Principal)
 	if !ok {
-		t.Fatalf("principal type = %T, want web.Principal", principal)
+		t.Fatalf("principal type = %T, want authentication.Principal", principal)
 	}
 	if typed.Subject != "alice" || typed.AuthMethod != "jwt" || typed.Attributes["role"] != "admin" {
 		t.Fatalf("principal = %#v", typed)

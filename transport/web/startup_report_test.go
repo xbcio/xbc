@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/ordering"
 )
@@ -116,7 +117,7 @@ func TestRenderPolicyDecisionsNamesTheDecidingTier(t *testing.T) {
 			route:  RouteInfo{Method: http.MethodGet, Path: "/orders"},
 			policy: effectivePolicy{tier: tierDefault, ruleIndex: -1},
 		},
-	})
+	}, []authentication.Scheme{"jwt"})
 
 	for _, want := range []string{"/metrics", "application-rule", "/orders", "default"} {
 		if !strings.Contains(got, want) {
@@ -125,5 +126,32 @@ func TestRenderPolicyDecisionsNamesTheDecidingTier(t *testing.T) {
 	}
 	if strings.Contains(got, "rule -1") {
 		t.Fatal("report must not print a rule number for a decision no rule made")
+	}
+}
+
+// TestRenderPolicyDecisionsLabelsDefaultTierAuthenticationNotDeny pins the fix
+// for a route that authenticates through the manager's default selection
+// (tierDefault, permit false): Selection.Schemes() returns nil for a default
+// selection by design, so without defaultSchemes the row previously fell
+// through to the literal "deny" even though the route actually authenticates.
+func TestRenderPolicyDecisionsLabelsDefaultTierAuthenticationNotDeny(t *testing.T) {
+	t.Parallel()
+
+	got := renderPolicyDecisions([]policyDecision{
+		{
+			route: RouteInfo{Method: http.MethodGet, Path: "/orders"},
+			policy: effectivePolicy{
+				tier:      tierDefault,
+				ruleIndex: -1,
+				selection: authentication.DefaultSelection(),
+			},
+		},
+	}, []authentication.Scheme{"jwt", "apikey"})
+
+	if !strings.Contains(got, "jwt") || !strings.Contains(got, "apikey") {
+		t.Fatalf("report = %q, want it to name the default schemes jwt and apikey", got)
+	}
+	if strings.Contains(got, "-> deny") {
+		t.Fatalf("report = %q, must not label a default-tier authenticated route \"deny\"", got)
 	}
 }
