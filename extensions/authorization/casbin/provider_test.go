@@ -225,7 +225,7 @@ func buildProviderPluginForTest(t *testing.T, cfg Config, adapter *testAdapter, 
 	if err != nil {
 		t.Fatalf("normalizeConfig() error = %v", err)
 	}
-	p, err := newProviderPlugin(normalized, &testAdapterProvider{adapter: adapter}, factory, nil)
+	p, err := newProviderPlugin(normalized, &testAdapterProvider{adapter: adapter}, factory)
 	if err != nil {
 		t.Fatalf("newProviderPlugin() error = %v", err)
 	}
@@ -631,7 +631,7 @@ func TestProviderConstructionRejectsNilCapabilities(t *testing.T) {
 		{name: "adapter", provider: &testAdapterProvider{}, want: "nil adapter"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := newProviderPlugin(normalized, test.provider, nil, nil)
+			_, err := newProviderPlugin(normalized, test.provider, nil)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("newProviderPlugin() error = %v, want %q", err, test.want)
 			}

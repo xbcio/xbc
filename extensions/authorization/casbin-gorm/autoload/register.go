@@ -4,8 +4,8 @@
 package autoload
 
 import (
+	casbingorm "github.com/xbcio/xbc/extensions/authorization/casbin-gorm"
 	"github.com/xbcio/xbc/plugin/autoload"
-	casbingorm "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-gorm"
 )
 
 func init() {

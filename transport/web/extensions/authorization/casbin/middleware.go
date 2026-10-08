@@ -5,25 +5,26 @@ import (
 	"net/http"
 	"strings"
 
+	casbincore "github.com/xbcio/xbc/extensions/authorization/casbin"
 	"github.com/xbcio/xbc/transport/web"
 )
 
 // Handler implements web.Middleware.
 func (p *Plugin) Handler() web.Handler { return p.authorize }
 
-// Order implements web.Middleware. casbin deliberately does not also declare
-// authentication.RequiresPrincipal, unlike tenant and idempotency: its actual
-// identity dependency is SubjectResolver, not authentication.Principal
-// specifically (see WithSubjectResolver and
+// Order implements web.Middleware. casbin-http deliberately does not also
+// declare authentication.RequiresPrincipal, unlike tenant and idempotency:
+// its actual identity dependency is SubjectResolver, not
+// authentication.Principal specifically (see WithSubjectResolver and
 // TestInjectedResolverDoesNotRequireJWTOrPrincipal), and an injected resolver
 // may source a verified subject from somewhere other than Web's built-in
-// authentication middleware entirely. This After already orders casbin behind
-// whatever the framework's own authentication middleware resolved for this
-// request -- including the no-Principal AuthenticationExempt and
-// AcceptedWithoutPrincipal outcomes authorize checks below -- which is the
-// whole of what casbin needs from authentication ordering; adding the marker
-// would additionally claim a coupling to the Principal contract that the
-// resolver abstraction exists to avoid.
+// authentication middleware entirely. This After already orders the
+// middleware behind whatever the framework's own authentication middleware
+// resolved for this request -- including the no-Principal AuthenticationExempt
+// and AcceptedWithoutPrincipal outcomes authorize checks below -- which is the
+// whole of what route enforcement needs from authentication ordering; adding
+// the marker would additionally claim a coupling to the Principal contract
+// that the resolver abstraction exists to avoid.
 func (p *Plugin) Order() web.Order {
 	return web.Order{
 		Phase: web.PhaseAuth,
@@ -59,6 +60,15 @@ func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
 	}
 	state := p.state
 
+	enforcer, active := state.provider.Enforcer()
+	if !active || enforcer == nil {
+		// The engine reports itself unavailable after its own Stop, so a
+		// middleware that outlives the engine fails closed here instead of
+		// enforcing against a torn-down policy source.
+		forbidden(c)
+		return nil
+	}
+
 	subject, ok := state.resolver.ResolveSubject(c)
 	subject = strings.TrimSpace(subject)
 	if !ok || subject == "" {
@@ -67,8 +77,8 @@ func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
 	}
 
 	var request []any
-	switch state.cfg.requestConvention {
-	case ConventionRoutePermission:
+	switch state.convention {
+	case casbincore.ConventionRoutePermission:
 		permission := strings.TrimSpace(route.Perm)
 		if permission == "" {
 			if state.cfg.missingPermission == MissingPermissionAllow {
@@ -79,7 +89,7 @@ func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
 			return nil
 		}
 		request = []any{subject, permission}
-	case ConventionPathMethod:
+	case casbincore.ConventionPathMethod:
 		object := strings.TrimSpace(route.Path)
 		action := strings.ToUpper(strings.TrimSpace(route.Method))
 		if object == "" || action == "" {
@@ -87,14 +97,11 @@ func (p *Plugin) authorize(_ context.Context, c *web.Ctx) error {
 			return nil
 		}
 		request = []any{subject, object, action}
-	default:
-		forbidden(c)
-		return nil
 	}
 
-	allowed, err := state.enforcer.Enforce(request...)
+	allowed, err := enforcer.Enforce(request...)
 	if err != nil {
-		state.logger.Error("casbin: authorization evaluation failed",
+		state.logger.Error("casbin-http: authorization evaluation failed",
 			"method", route.Method, "path", route.Path, "error", err)
 		forbidden(c)
 		return nil

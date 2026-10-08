@@ -17,18 +17,22 @@ import (
 var _ authentication.RequiresPrincipal = (*Plugin)(nil)
 
 // casbinKey mirrors the stable plugin.Key identity owned by the optional
-// authorization/casbin plugin beneath the optional transport/web/extensions
-// namespace. tenant is a transport/web built-in and must not import that
-// extension module to preserve module boundaries, so the identity is
-// duplicated here as a typed constant. The reference stays soft: a custom
-// authorization stack remains valid when casbin is absent.
-const casbinKey plugin.Key = "casbin"
+// route-authorization middleware beneath the optional
+// transport/web/extensions namespace. That middleware is keyed "casbin-http"
+// since the policy engine it enforces became a protocol-neutral plugin of its
+// own under the key "casbin"; this constant names the Web middleware, which is
+// the only one of the two that occupies a place in the middleware order.
+// tenant is a transport/web built-in and must not import that extension module
+// to preserve module boundaries, so the identity is duplicated here as a typed
+// constant. The reference stays soft: a custom authorization stack remains
+// valid when casbin-http is absent.
+const casbinKey plugin.Key = "casbin-http"
 
 // Handler returns the middleware handler.
 func (p *Plugin) Handler() web.Handler { return p.resolve }
 
 // Order places tenant resolution after the authentication middleware and
-// before Casbin.
+// before the Casbin route-authorization middleware.
 func (*Plugin) Order() web.Order {
 	return web.Order{
 		Phase:  web.PhaseAuth,

@@ -82,7 +82,7 @@ A stored response is keyed and fingerprinted by the authenticated Principal's Su
 
 ## Persistent Casbin policy with multi-replica synchronization
 
-The base `casbin` extension reads static policy from inline content or a file. A service that must manage roles and permissions at runtime should explicitly compose `gorm.Bundle()`, `casbin-gorm.Bundle()`, `casbin-redis.Bundle()`, `casbin.Bundle()`, and the protocol-neutral `rbac.Bundle()` from `github.com/xbcio/xbc/extensions/authorization/rbac`. Connect capabilities by exact plugin key and instance:
+The Casbin integration is two independently selectable products. `github.com/xbcio/xbc/extensions/authorization/casbin` (key `casbin`) is the protocol-neutral engine: it reads static policy from inline content or a file, owns the adapter and watcher providers, and exports `rbac.Backend` and `EnforcerProvider` for callers with no HTTP surface at all. `github.com/xbcio/xbc/transport/web/extensions/authorization/casbin` (key `casbin-http`) is the Web middleware that enforces the engine on matched routes, and its `Bundle()` includes the engine. A service that must manage roles and permissions at runtime should explicitly compose `gorm.Bundle()`, `casbin-gorm.Bundle()`, `casbin-redis.Bundle()`, `casbinhttp.Bundle()`, and the protocol-neutral `rbac.Bundle()` from `github.com/xbcio/xbc/extensions/authorization/rbac`. Connect capabilities by exact plugin key and instance:
 
 ```yaml
 plugins:
@@ -129,6 +129,12 @@ plugins:
       plugin: casbin-redis
       instance: policy
 
+  # The Web face of the engine: without a section of its own the middleware is
+  # dormant and every matched route is served unauthorized. A service that only
+  # manages policy through rbac.Manager omits this section.
+  casbin-http:
+    missing_permission: deny
+
   rbac:
     backend:
       plugin: casbin
@@ -138,7 +144,7 @@ plugins:
 
 `casbin-gorm` defaults to `migrate: false` and never runs AutoMigrate implicitly during construction. When enabled, migration occurs only in XBC's Migrate stage. Casbin first loads policy at Start, after the table can exist. External-adapter mode enables AutoSave, so `AddPolicy`, role-relation changes, and filtered removals persist to the database. The Redis Watcher propagates changes to other replicas. The watcher owns its Redis clients; the named `gorm` plugin continues to own the GORM connection pool.
 
-`github.com/xbcio/xbc/extensions/authorization/rbac` is a protocol-neutral application plugin with its own Definition, Config, Manager, Backend, Permission model, and autoload adapter. Application code should depend on `rbac.Manager` for administrator checks, AND/OR authorization, role and permission queries, and replacement or deletion of direct relations. The Casbin extension supplies its Backend. Depend directly on `casbin.EnforcerProvider` only for migrations or Casbin-specific advanced operations.
+`github.com/xbcio/xbc/extensions/authorization/rbac` is a protocol-neutral application plugin with its own Definition, Config, Manager, Backend, Permission model, and autoload adapter. Application code should depend on `rbac.Manager` for administrator checks, AND/OR authorization, role and permission queries, and replacement or deletion of direct relations. The Casbin engine supplies its Backend. Depend directly on the engine's `casbin.EnforcerProvider` only for migrations or Casbin-specific advanced operations.
 
 `github.com/xbcio/xbc/transport/web/extensions/authorization/rbac` is not a plugin. It is a thin adapter from `web.CurrentPrincipal` to `rbac.Manager` and supplies only `RequireAll` and `RequireAny`. Apply those functions explicitly to routes or groups. It owns no Definition, Config, Backend, or autoload registration and contributes no global authorization chain. If a concrete ABAC requirement emerges, it should be designed as a separate business plugin parallel to RBAC with its own transport adapters; XBC does not reserve placeholder ABAC directories or APIs.
 

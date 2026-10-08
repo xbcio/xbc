@@ -1,4 +1,4 @@
-module github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-gorm
+module github.com/xbcio/xbc/extensions/authorization/casbin-gorm
 
 go 1.25.0
 

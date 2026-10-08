@@ -4,6 +4,9 @@ import (
 	"github.com/xbcio/xbc/extensions/authorization/rbac"
 	"github.com/xbcio/xbc/plugin"
 
+	casbincore "github.com/xbcio/xbc/extensions/authorization/casbin"
+	casbingorm "github.com/xbcio/xbc/extensions/authorization/casbin-gorm"
+	casbinredis "github.com/xbcio/xbc/extensions/authorization/casbin-redis"
 	"github.com/xbcio/xbc/extensions/concurrency/async"
 	"github.com/xbcio/xbc/extensions/coordination/placement"
 	"github.com/xbcio/xbc/extensions/coordination/raft"
@@ -23,9 +26,7 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/jwt"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/session"
-	"github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
-	casbingorm "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-gorm"
-	casbinredis "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-redis"
+	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
 	"github.com/xbcio/xbc/transport/web/extensions/authorization/tenant"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/auditlog"
@@ -69,6 +70,9 @@ import (
 var bundleProviders = []func() plugin.Bundle{
 	async.Bundle,
 	asynq.Bundle,
+	casbincore.Bundle,
+	casbingorm.Bundle,
+	casbinredis.Bundle,
 	corehealth.Bundle,
 	cron.Bundle,
 	elasticsearch.Bundle,
@@ -87,12 +91,10 @@ var bundleProviders = []func() plugin.Bundle{
 	apikey.Bundle,
 	auditlog.Bundle,
 	biz.Bundle,
+	casbinhttp.Bundle,
 	cors.Bundle,
 	gzip.Bundle,
 	health.Bundle,
-	casbin.Bundle,
-	casbingorm.Bundle,
-	casbinredis.Bundle,
 	idempotency.Bundle,
 	jwt.Bundle,
 	metrics.Bundle,

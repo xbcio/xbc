@@ -4,9 +4,9 @@ import (
 	"reflect"
 	"testing"
 
+	casbinredis "github.com/xbcio/xbc/extensions/authorization/casbin-redis"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/autoload"
-	casbinredis "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-redis"
 )
 
 func TestOrdinaryImportDefinitionAndBundleHaveNoAutoloadSideEffect(t *testing.T) {

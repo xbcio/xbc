@@ -123,14 +123,13 @@ func effectiveConfigPath(descriptor pluginmodel.DefinitionDescriptor) string {
 // schema requires for a stable, unambiguous identity across packages that
 // could share a short name.
 //
-// Contract types are normally interfaces, which are always named, but at
-// least one plugin in this repository (transport/web/extensions/authorization/casbin)
-// exports a concrete pointer type as an additional contract. Pointer types
-// are themselves unnamed (PkgPath and Name are both empty), so this walks
-// through any leading pointer indirection and qualifies the pointed-to named
-// type instead, falling back to Type.String() only for the remaining
-// unnamed-type shapes (slices, maps, funcs, ...) that do not occur among
-// today's contracts or config types.
+// Contract types are normally interfaces, which are always named, but the
+// snapshot schema requires the same stable identity for the other shapes a
+// contract or config type may take. Pointer types are themselves unnamed
+// (PkgPath and Name are both empty), so this walks through any leading pointer
+// indirection and qualifies the pointed-to named type instead, falling back to
+// Type.String() only for the remaining unnamed-type shapes (slices, maps,
+// funcs, ...) that do not occur among today's contracts or config types.
 func qualifiedTypeName(t reflect.Type) string {
 	depth := 0
 	for t.Kind() == reflect.Pointer {

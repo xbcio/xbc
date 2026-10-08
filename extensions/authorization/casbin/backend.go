@@ -25,12 +25,28 @@ var _ rbac.Backend = (*Plugin)(nil)
 // Capabilities describes the model shape and persistent mutation support of
 // this Plugin. Inline and file-backed policy sources are intentionally
 // reported as read-only even though Casbin can mutate their in-memory model.
+//
+// The description is a snapshot taken at construction, not a live read: the
+// enforcer's model is unsynchronized with the reloads that replace it
+// (SyncedEnforcer.GetModel returns the field LoadPolicy swaps under its own
+// lock), and its shape cannot change -- a reload copies the base model and
+// replaces only its policies -- so re-reading it per call would add a race
+// against a periodic reload, a watcher notification, or an explicit
+// LoadPolicy without ever adding information.
 func (p *Plugin) Capabilities() rbac.Capabilities {
 	if p == nil || p.state == nil || p.state.enforcer == nil {
 		return rbac.Capabilities{}
 	}
+	return p.state.capabilities
+}
 
-	enforcer := p.state.enforcer
+// describeCapabilities derives the snapshot Capabilities reports. It runs
+// during construction, while the enforcer is still owned by exactly one
+// goroutine, and must never be called from a request path.
+func describeCapabilities(cfg normalizedConfig, enforcer *casbinlib.SyncedEnforcer) rbac.Capabilities {
+	if enforcer == nil {
+		return rbac.Capabilities{}
+	}
 	m := enforcer.GetModel()
 	capabilities := rbac.Capabilities{
 		RequestFields:  assertionFields(m, "r", "r"),
@@ -38,7 +54,7 @@ func (p *Plugin) Capabilities() rbac.Capabilities {
 		GroupingFields: assertionFields(m, "g", "g"),
 	}
 	adapter := enforcer.GetAdapter()
-	if p.state.cfg.adapter.enabled() && !isNil(adapter) {
+	if cfg.adapter.enabled() && !isNil(adapter) {
 		_, capabilities.Mutable = adapter.(persist.BatchAdapter)
 		_, capabilities.FilteredPolicyReplace = adapter.(persist.UpdatableAdapter)
 	}
@@ -401,6 +417,12 @@ func (p *Plugin) rbacEnforcer(ctx context.Context, mutable, filteredReplace bool
 	return p.state.enforcer, nil
 }
 
+// requireBatchAdapter verifies the enforcer carries an adapter that supports
+// batch policy additions. Reading the adapter here takes no lock, which is
+// sound only because the reference is fixed at construction: SetAdapter is
+// called while the enforcer is built (policy.go) and never afterwards, so
+// nothing can race this read. A future runtime adapter swap would have to
+// revisit this and Capabilities' snapshot together.
 func requireBatchAdapter(enforcer *casbinlib.SyncedEnforcer) error {
 	adapter := enforcer.GetAdapter()
 	if isNil(adapter) {

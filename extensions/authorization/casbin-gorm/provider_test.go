@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xbcio/xbc/config"
+	casbinplugin "github.com/xbcio/xbc/extensions/authorization/casbin"
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/assembly"
-	casbinplugin "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )

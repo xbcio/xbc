@@ -4,8 +4,8 @@
 package autoload
 
 import (
+	casbinredis "github.com/xbcio/xbc/extensions/authorization/casbin-redis"
 	"github.com/xbcio/xbc/plugin/autoload"
-	casbinredis "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-redis"
 )
 
 func init() { autoload.Declare(casbinredis.Bundle()) }

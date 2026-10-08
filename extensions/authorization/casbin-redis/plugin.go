@@ -1,8 +1,8 @@
 package casbinredis
 
 import (
+	xbccasbin "github.com/xbcio/xbc/extensions/authorization/casbin"
 	"github.com/xbcio/xbc/plugin"
-	xbccasbin "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
 )
 
 // Key is this plugin's stable configuration and dependency identity.

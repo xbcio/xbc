@@ -19,7 +19,7 @@ import (
 	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/jwt"
-	"github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
+	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
 	"github.com/xbcio/xbc/transport/web/extensions/authorization/tenant"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/auditlog"
 )
@@ -195,6 +195,9 @@ func composeServer(t *testing.T, sink *recordingSink, securityPolicies []web.Pol
 			"casbin": map[string]any{
 				"policy": "p, alice, reports:read\np, carol, reports:read",
 			},
+			"casbin-http": map[string]any{
+				"missing_permission": "deny",
+			},
 		},
 		"web": map[string]any{
 			"addr": "127.0.0.1:0",
@@ -223,7 +226,7 @@ func composeServer(t *testing.T, sink *recordingSink, securityPolicies []web.Pol
 		jwt.Bundle(),
 		apikey.Bundle(),
 		tenant.Bundle(),
-		casbin.Bundle(),
+		casbinhttp.Bundle(),
 		plugin.BundleOf(probeDefinition),
 		plugin.BundleOf(plugin.Define(
 			"composition-e2e-auditlog",
@@ -433,4 +436,24 @@ func TestCompositionE2EPublicRestrictedAndSchemeArbitration(t *testing.T) {
 		defer resp.Body.Close()
 		require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
+}
+
+// TestTenantOrdersBeforeTheCasbinMiddlewareItNames is the cross-module pin for
+// a soft ordering edge neither module can prove alone. tenant is a
+// transport/web built-in and must not import the extension module that owns
+// the casbin-http middleware, so it duplicates the plugin key as a typed
+// constant, and web.Prefer degrades silently: if the two strings drift,
+// ordering falls back to lexicographic tie-break, which sorts tenant after
+// casbin-http -- tenant resolution would run after route authorization instead
+// of before it -- with no compile error and no failing test in either module.
+// This module imports both, so it is the only place the identities can be
+// compared.
+func TestTenantOrdersBeforeTheCasbinMiddlewareItNames(t *testing.T) {
+	before := (&tenant.Plugin{}).Order().Before
+	require.Len(t, before, 1, "tenant must declare exactly one ordering preference")
+	require.Equal(t, casbinhttp.Key, before[0].Key(),
+		"tenant's optional ordering target must be the key the casbin-http middleware actually registers")
+	require.Empty(t, before[0].InstanceName(), "the preference targets the default instance, not a named one")
+	require.False(t, before[0].Required(),
+		"the preference must stay soft: a custom authorization stack without casbin-http remains valid")
 }

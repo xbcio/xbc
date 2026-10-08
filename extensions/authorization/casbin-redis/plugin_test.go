@@ -6,8 +6,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
+	xbccasbin "github.com/xbcio/xbc/extensions/authorization/casbin"
 	pluginmodel "github.com/xbcio/xbc/plugin/model"
-	xbccasbin "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
 )
 
 func TestDefinitionIsCanonicalAndExportsWatcherFactory(t *testing.T) {

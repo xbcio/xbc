@@ -55,9 +55,8 @@
       "config_path": "plugins.casbin",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/authorization/rbac.Backend",
-        "github.com/xbcio/xbc/transport/web.Middleware",
-        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.EnforcerProvider"
+        "github.com/xbcio/xbc/extensions/authorization/casbin.EnforcerProvider",
+        "github.com/xbcio/xbc/extensions/authorization/rbac.Backend"
       ]
     },
     {
@@ -65,7 +64,15 @@
       "config_path": "plugins.casbin-gorm",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.AdapterProvider"
+        "github.com/xbcio/xbc/extensions/authorization/casbin.AdapterProvider"
+      ]
+    },
+    {
+      "key": "casbin-http",
+      "config_path": "plugins.casbin-http",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
       ]
     },
     {
@@ -73,7 +80,7 @@
       "config_path": "plugins.casbin-redis",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.WatcherFactory"
+        "github.com/xbcio/xbc/extensions/authorization/casbin.WatcherFactory"
       ]
     },
     {

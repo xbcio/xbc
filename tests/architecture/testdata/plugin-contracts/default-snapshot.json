@@ -89,7 +89,7 @@
     },
     {
       "key": "casbin",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/authorization/casbin.Config",
       "defaults": {
         "Model": "",
         "ModelFile": "",
@@ -104,13 +104,12 @@
           "Instance": ""
         },
         "RequestConvention": "route_permission",
-        "MissingPermission": "deny",
         "ReloadInterval": 0
       }
     },
     {
       "key": "casbin-gorm",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-gorm.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/authorization/casbin-gorm.Config",
       "defaults": {
         "DBInstance": "default",
         "Table": "casbin_rule",
@@ -119,8 +118,15 @@
       }
     },
     {
+      "key": "casbin-http",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.Config",
+      "defaults": {
+        "MissingPermission": "deny"
+      }
+    },
+    {
       "key": "casbin-redis",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-redis.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/authorization/casbin-redis.Config",
       "defaults": {
         "Mode": "standalone",
         "Addrs": [

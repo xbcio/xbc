@@ -544,42 +544,66 @@ func TestArchModulesThatDoNotComposeWebDoNotCompileItIn(t *testing.T) {
 		"the per-module closures contributed almost no non-standard-library dependencies, so the scan read far less than the modules it claims to cover")
 }
 
-// TestArchProtocolNeutralExtensionsNeverComposeTheWebStack states the same
-// invariant for the extension namespace without the exemption above.
-//
-// This is not redundant with the previous guard, it is the half that guard
-// cannot provide. There, a module that imports the Web transport exempts
-// itself, which is correct for an aggregate that means to compose it and is
-// exactly the wrong answer for a capability module that does not: an
+// TestArchModulesOutsideTheWebZonesNeverComposeTheWebStack is the default-deny
+// half of the pair above. There, a module that imports the Web transport
+// exempts itself, which is correct for an aggregate that means to compose it
+// and exactly the wrong answer for a capability module that does not: an
 // `extensions/*` module that started importing the Web transport would go
-// quiet rather than red. The extension namespace is where the plan's original
-// property lives -- a protocol-neutral capability must be selectable without
-// inheriting a transport -- so it is asserted unconditionally.
-func TestArchProtocolNeutralExtensionsNeverComposeTheWebStack(t *testing.T) {
-	checked := 0
+// quiet rather than red.
+//
+// This guard instead names the zones in which compiling the Web stack in is
+// deliberate -- transport/web itself, and the examples, tests, and scripts
+// aggregates that compose Web Bundles to exercise or describe the framework --
+// and asserts the property for every other module go.work joins. The default
+// is therefore denial: a newly added module is covered the moment it is listed
+// in go.work, and making it Web-aware requires placing it in one of these
+// zones on purpose. The excluded namespaces are the ones the repository
+// otherwise keeps protocol-neutral, which is where the plan's property lives:
+// a capability must be selectable without inheriting a transport.
+func TestArchModulesOutsideTheWebZonesNeverComposeTheWebStack(t *testing.T) {
+	webZones := []string{"transport/web", "examples", "tests", "scripts"}
+
+	zoneOf := func(relative string) string {
+		for _, zone := range webZones {
+			if archPathAtOrBelow(relative, zone) {
+				return zone
+			}
+		}
+		return ""
+	}
+
+	covered := 0
+	zoneHits := make(map[string]int, len(webZones))
 	for _, dir := range archWorkspaceModuleDirs(t) {
 		relative := archRepositoryRelative(t, dir)
-		if !strings.HasPrefix(relative, "extensions/") {
+		if zone := zoneOf(relative); zone != "" {
+			zoneHits[zone]++
 			continue
 		}
-		checked++
+		covered++
 		closure := archModuleClosure(t, dir)
 		assert.Falsef(t, archModuleComposesWebStack(closure),
-			"module %s is part of the protocol-neutral extension namespace but imports the Web transport; a capability module must be selectable by a non-Web service", relative)
+			"module %s sits outside the Web zones %v but imports the Web transport; only a module that means to compose the Web stack may do so, and everything else must be selectable by a non-Web service",
+			relative, webZones)
 		for _, dep := range archModuleForeignDependencies(closure) {
 			if archIsStdlib(dep) {
 				continue
 			}
 			for _, forbidden := range []string{archTransportNamespace, archGinModulePath} {
 				if archPathAtOrBelow(dep, forbidden) {
-					t.Errorf("module %s is part of the protocol-neutral extension namespace, yet its production closure contains %q; protocol-neutral capabilities must compile without a transport",
+					t.Errorf("module %s sits outside the Web zones, yet its production closure contains %q; protocol-neutral modules must compile without a transport",
 						relative, dep)
 				}
 			}
 		}
 	}
-	require.NotZero(t, checked,
-		"no workspace module sits in the extensions namespace, so this guard read nothing; the namespace was renamed or go.work stopped listing it")
+
+	require.NotZero(t, covered,
+		"every workspace module fell inside a Web zone, so this guard read nothing; either the zones grew to cover the whole workspace or go.work stopped listing the capability modules")
+	for _, zone := range webZones {
+		assert.NotZero(t, zoneHits[zone],
+			"no workspace module sits in zone %q, so its exemption was never exercised and a zone list with a renamed or misplaced entry would pass unnoticed", zone)
+	}
 }
 
 // ── guard 7: designated leaf packages are stdlib-only ──────────────────

@@ -17,6 +17,9 @@ use (
 	.
 	./examples
 	./extensions/authentication
+	./extensions/authorization/casbin
+	./extensions/authorization/casbin-gorm
+	./extensions/authorization/casbin-redis
 	./extensions/authorization/rbac
 	./extensions/concurrency/async
 	./extensions/coordination/lease
@@ -40,8 +43,6 @@ use (
 	./transport/web/extensions/authentication/jwt
 	./transport/web/extensions/authentication/session
 	./transport/web/extensions/authorization/casbin
-	./transport/web/extensions/authorization/casbin-gorm
-	./transport/web/extensions/authorization/casbin-redis
 	./transport/web/extensions/authorization/rbac
 	./transport/web/extensions/openapi/swag
 	./transport/web/extensions/observability/metrics

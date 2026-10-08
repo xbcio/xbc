@@ -16,12 +16,12 @@ import (
 	gormlib "gorm.io/gorm"
 
 	"github.com/xbcio/xbc"
+	casbincore "github.com/xbcio/xbc/extensions/authorization/casbin"
+	casbingorm "github.com/xbcio/xbc/extensions/authorization/casbin-gorm"
+	casbinredis "github.com/xbcio/xbc/extensions/authorization/casbin-redis"
 	"github.com/xbcio/xbc/extensions/authorization/rbac"
 	gormplugin "github.com/xbcio/xbc/extensions/storage/gorm"
 	"github.com/xbcio/xbc/plugin"
-	casbinplugin "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
-	casbingorm "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-gorm"
-	casbinredis "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-redis"
 )
 
 const stackWait = 5 * time.Second
@@ -46,7 +46,7 @@ func (probe *stackProbe) start(ctx *plugin.Context) error {
 }
 
 func stackProbeBundle(ready chan<- stackHandles) plugin.Bundle {
-	enforcerProvider := plugin.RefTo[casbinplugin.EnforcerProvider](casbinplugin.Key)
+	enforcerProvider := plugin.RefTo[casbincore.EnforcerProvider](casbincore.Key)
 	manager := plugin.RefTo[rbac.Manager](rbac.Key)
 	database := plugin.RefToInstance[*gormlib.DB](gormplugin.Key, plugin.DefaultInstance)
 	definition := plugin.Define(
@@ -95,7 +95,7 @@ func startStack(t *testing.T, configPath string, migrate bool) *runningStack {
 		gormplugin.Bundle(),
 		casbingorm.Bundle(),
 		casbinredis.Bundle(),
-		casbinplugin.Bundle(),
+		casbincore.Bundle(),
 		rbac.Bundle(),
 		stackProbeBundle(ready),
 	))

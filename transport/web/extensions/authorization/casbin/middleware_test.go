@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/xbcio/xbc/extensions/authentication"
+	casbincore "github.com/xbcio/xbc/extensions/authorization/casbin"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
 )
@@ -25,9 +27,9 @@ const currentRouteKeyForTest = "xbc/web.currentRoute"
 const authenticationExemptKeyForTest = "xbc/transport/web.authenticationExempt"
 
 func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
-	p, _ := initializedPlugin(t, func(cfg *Config) {
+	p, _ := initializedPlugin(t, func(cfg *casbincore.Config) {
 		cfg.Policy = "p, alice, reports:read"
-	})
+	}, nil)
 
 	allowed := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"},
@@ -49,7 +51,7 @@ func TestAuthorizationUsesCurrentRoutePermissionAndPrincipal(t *testing.T) {
 }
 
 func TestExemptRouteBypassesSubjectAndPolicy(t *testing.T) {
-	p, _ := initializedPlugin(t, nil)
+	p, _ := initializedPlugin(t, nil, nil)
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/login"},
 		func(c *web.Ctx) { c.Set(authenticationExemptKeyForTest, true) },
@@ -68,9 +70,9 @@ func TestExemptRouteBypassesSubjectAndPolicy(t *testing.T) {
 // route.Auth.IsPublic() instead of web.AuthenticationExempt would let this
 // request through with 204 instead of 403.
 func TestRouteDeclaredPublicButNotExemptStillEnforces(t *testing.T) {
-	p, _ := initializedPlugin(t, func(cfg *Config) {
+	p, _ := initializedPlugin(t, func(cfg *casbincore.Config) {
 		cfg.Policy = "p, alice, reports:read"
-	})
+	}, nil)
 	publicPolicy := web.Public()
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/login", Auth: &publicPolicy, Perm: "reports:read"},
@@ -80,9 +82,9 @@ func TestRouteDeclaredPublicButNotExemptStillEnforces(t *testing.T) {
 }
 
 func TestProtectedRoutesFailClosed(t *testing.T) {
-	p, _ := initializedPlugin(t, func(cfg *Config) {
+	p, _ := initializedPlugin(t, func(cfg *casbincore.Config) {
 		cfg.Policy = "p, alice, reports:read"
-	})
+	}, nil)
 	tests := []struct {
 		name      string
 		route     *web.RouteInfo
@@ -117,7 +119,7 @@ func TestProtectedRoutesFailClosed(t *testing.T) {
 // MissingPermissionAllow takes the c.Next() branch and this request would
 // incorrectly succeed with 204 instead of 403.
 func TestMissingCurrentRouteFailsClosedEvenWhenMissingPermissionIsAllowed(t *testing.T) {
-	p, _ := initializedPlugin(t, func(cfg *Config) {
+	p, _ := initializedPlugin(t, nil, func(cfg *Config) {
 		cfg.MissingPermission = MissingPermissionAllow
 	})
 	response := requestThroughOptionalRoute(p, nil, func(c *web.Ctx) {
@@ -127,7 +129,7 @@ func TestMissingCurrentRouteFailsClosedEvenWhenMissingPermissionIsAllowed(t *tes
 }
 
 func TestMissingPermissionCanBeExplicitlyAllowedAfterAuthentication(t *testing.T) {
-	p, _ := initializedPlugin(t, func(cfg *Config) {
+	p, _ := initializedPlugin(t, nil, func(cfg *Config) {
 		cfg.MissingPermission = MissingPermissionAllow
 	})
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/profile"}
@@ -141,10 +143,10 @@ func TestMissingPermissionCanBeExplicitlyAllowedAfterAuthentication(t *testing.T
 }
 
 func TestPathMethodConventionUsesRouteTemplateAndMethod(t *testing.T) {
-	p, _ := initializedPlugin(t, func(cfg *Config) {
-		cfg.RequestConvention = ConventionPathMethod
+	p, _ := initializedPlugin(t, func(cfg *casbincore.Config) {
+		cfg.RequestConvention = casbincore.ConventionPathMethod
 		cfg.Policy = "p, alice, /reports/:id, GET"
-	})
+	}, nil)
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodGet, Path: "/reports/:id"},
 		func(c *web.Ctx) { web.SetPrincipal(c, authentication.Principal{Subject: "alice"}) },
@@ -164,9 +166,9 @@ func TestInjectedResolverDoesNotRequireJWTOrPrincipal(t *testing.T) {
 		calls.Add(1)
 		return "service-account", true
 	})
-	p, _ := initializedPlugin(t, func(cfg *Config) {
+	p, _ := initializedPlugin(t, func(cfg *casbincore.Config) {
 		cfg.Policy = "p, service-account, jobs:run"
-	}, WithSubjectResolver(resolver))
+	}, nil, WithSubjectResolver(resolver))
 	response := requestThroughCasbin(p,
 		web.RouteInfo{Method: http.MethodPost, Path: "/jobs", Perm: "jobs:run"}, nil,
 	)
@@ -178,19 +180,146 @@ func TestInjectedResolverDoesNotRequireJWTOrPrincipal(t *testing.T) {
 	}
 }
 
+// TestEngineStoppedFailsClosedWhileMiddlewareIsLive pins the provider-side
+// shutdown path. The engine and the middleware have independent lifecycles: a
+// service may stop enforcing HTTP routes while rbac.Backend callers elsewhere
+// are still shutting down, and the engine is then inactive first. Enforcer()
+// reports that, and the middleware must deny every matched route rather than
+// enforce against a torn-down policy source.
+func TestEngineStoppedFailsClosedWhileMiddlewareIsLive(t *testing.T) {
+	p, engine := initializedPlugin(t, func(cfg *casbincore.Config) {
+		cfg.Policy = "p, alice, reports:read"
+	}, nil)
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"}
+	principal := func(c *web.Ctx) {
+		web.SetPrincipal(c, authentication.Principal{Subject: "alice"})
+	}
+
+	if response := requestThroughCasbin(p, route, principal); response.Code != http.StatusNoContent {
+		t.Fatalf("pre-Stop status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if err := engine.Stop(context.Background()); err != nil {
+		t.Fatalf("engine Stop() error = %v", err)
+	}
+	if _, active := engine.Enforcer(); active {
+		t.Fatal("engine.Enforcer() still reports an active enforcer after Stop")
+	}
+	assertForbidden(t, requestThroughCasbin(p, route, principal))
+}
+
+// TestDisagreeingProviderDeclarationFailsClosed pins the cost of trusting a
+// provider's declared convention. A provider that declares path_method while
+// its enforcer's model has two request fields makes every Enforce call fail
+// with a request-size error; the middleware logs it and denies. Trusting the
+// declaration is deliberate -- verifying it by reading the model would
+// reintroduce the reload race the provider contract exists to remove -- so the
+// property this test pins is that such a provider can only ever deny, never
+// admit a request or panic. The same engine and policy, reached through an
+// honest provider, is admitted, which is what makes the denial meaningful.
+func TestDisagreeingProviderDeclarationFailsClosed(t *testing.T) {
+	engineCfg := casbincore.DefaultConfig()
+	engineCfg.Policy = "p, alice, reports:read"
+	engine, err := casbincore.New(engineCfg)
+	if err != nil {
+		t.Fatalf("casbincore.New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+	enforcer, active := engine.Enforcer()
+	if !active || enforcer == nil {
+		t.Fatal("engine did not hand out an enforcer")
+	}
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"}
+	principal := func(c *web.Ctx) {
+		web.SetPrincipal(c, authentication.Principal{Subject: "alice"})
+	}
+
+	honest, err := New(foreignProvider{enforcer: enforcer, active: true, convention: casbincore.ConventionRoutePermission}, DefaultConfig())
+	if err != nil {
+		t.Fatalf("New(honest provider) error = %v", err)
+	}
+	if response := requestThroughCasbin(honest, route, principal); response.Code != http.StatusNoContent {
+		t.Fatalf("honest provider status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	lying, err := New(foreignProvider{enforcer: enforcer, active: true, convention: casbincore.ConventionPathMethod}, DefaultConfig())
+	if err != nil {
+		t.Fatalf("New(lying provider) error = %v", err)
+	}
+	assertForbidden(t, requestThroughCasbin(lying, route, principal))
+}
+
+// TestRequestPathDoesNotReadTheEnforcerModel is the -race guard for the
+// convention lookup. SyncedEnforcer.GetModel returns the model field that
+// LoadPolicy replaces under its own lock, so resolving the convention from the
+// model on every request races any concurrent reload: the engine's periodic
+// reload, a watcher notification, or an explicit LoadPolicy such as the one
+// driven here. The middleware instead takes the convention once, at
+// construction, from the provider that validated it; with the model read
+// removed from authorize, this test observes only completed policy states.
+// Reintroducing a per-request GetModel() call makes the race detector flag the
+// reload goroutine against the request loop -- so this guard is meaningful
+// under -race (make test-race); without it the test only re-checks that
+// allow/deny outcomes stay stable while the policy reloads.
+func TestRequestPathDoesNotReadTheEnforcerModel(t *testing.T) {
+	p, engine := initializedPlugin(t, func(cfg *casbincore.Config) {
+		cfg.Policy = "p, alice, reports:read"
+	}, nil)
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"}
+	principal := func(c *web.Ctx) {
+		web.SetPrincipal(c, authentication.Principal{Subject: "alice"})
+	}
+	other := func(c *web.Ctx) {
+		web.SetPrincipal(c, authentication.Principal{Subject: "bob"})
+	}
+
+	stopReload := make(chan struct{})
+	reloadErr := make(chan error, 1)
+	var reloads sync.WaitGroup
+	reloads.Add(1)
+	go func() {
+		defer reloads.Done()
+		for {
+			select {
+			case <-stopReload:
+				return
+			default:
+			}
+			if err := engine.LoadPolicy(); err != nil {
+				reloadErr <- err
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		allowed := requestThroughCasbin(p, route, principal)
+		if allowed.Code != http.StatusNoContent {
+			t.Fatalf("request %d: allowed status = %d, body = %s", i, allowed.Code, allowed.Body.String())
+		}
+		assertForbidden(t, requestThroughCasbin(p, route, other))
+	}
+	close(stopReload)
+	reloads.Wait()
+	select {
+	case err := <-reloadErr:
+		t.Fatalf("engine.LoadPolicy() error = %v", err)
+	default:
+	}
+}
+
 func TestDefaultResolverIgnoresUnverifiedAuthorizationHeader(t *testing.T) {
-	p, _ := initializedPlugin(t, func(cfg *Config) {
+	p, _ := initializedPlugin(t, func(cfg *casbincore.Config) {
 		cfg.Policy = "p, attacker, reports:read"
-	})
+	}, nil)
 	route := web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"}
 	response := requestThroughOptionalRouteWithHeader(p, &route, nil, "Bearer unverified.attacker.token")
 	assertForbidden(t, response)
 }
 
 func TestMiddlewareReadsRouteMetadataPerRequest(t *testing.T) {
-	p, _ := initializedPlugin(t, func(cfg *Config) {
+	p, _ := initializedPlugin(t, func(cfg *casbincore.Config) {
 		cfg.Policy = "p, alice, reports:read"
-	})
+	}, nil)
 	principal := func(c *web.Ctx) { web.SetPrincipal(c, authentication.Principal{Subject: "alice"}) }
 
 	missingPerm := requestThroughCasbin(p,
@@ -202,6 +331,32 @@ func TestMiddlewareReadsRouteMetadataPerRequest(t *testing.T) {
 	)
 	if withPerm.Code != http.StatusNoContent {
 		t.Fatalf("second request status = %d, body = %s", withPerm.Code, withPerm.Body.String())
+	}
+}
+
+// TestStopFailsClosedAndLeavesTheEngineRunning pins the split's shutdown
+// contract from the middleware side: after Stop every matched route is denied
+// from the first request on, and the engine the middleware consumed is still
+// active -- rbac.Backend callers and other consumers may outlive this
+// middleware, so its Stop must not deactivate the enforcer it only borrowed.
+func TestStopFailsClosedAndLeavesTheEngineRunning(t *testing.T) {
+	p, engine := initializedPlugin(t, func(cfg *casbincore.Config) {
+		cfg.Policy = "p, alice, reports:read"
+	}, nil)
+	route := web.RouteInfo{Method: http.MethodGet, Path: "/reports", Perm: "reports:read"}
+	principal := func(c *web.Ctx) {
+		web.SetPrincipal(c, authentication.Principal{Subject: "alice"})
+	}
+
+	if response := requestThroughCasbin(p, route, principal); response.Code != http.StatusNoContent {
+		t.Fatalf("pre-Stop status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	assertForbidden(t, requestThroughCasbin(p, route, principal))
+	if _, ok := engine.Enforcer(); !ok {
+		t.Fatal("the middleware's Stop must not deactivate the engine it consumes")
 	}
 }
 

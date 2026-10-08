@@ -1,4 +1,4 @@
-module github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-redis
+module github.com/xbcio/xbc/extensions/authorization/casbin-redis
 
 go 1.25.0
 

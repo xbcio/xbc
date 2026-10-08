@@ -31,10 +31,24 @@ import (
 // such an import resolves through go.work alone and breaks the moment the module
 // is consumed from outside this repository.
 //
-// The two members are the shared vocabularies that make the rest of the
-// namespace composable, and they earn the exemption on the same ground: a
-// consumer depends on their types, never on a runtime they provide.
+// The members are the shared vocabularies that make the rest of the namespace
+// composable, and they earn the exemption on the same ground: a consumer
+// depends on their types, never on a runtime they provide.
 //
+//   - authorization/casbin publishes the engine SPI -- AdapterProvider,
+//     WatcherFactory, and the request-convention constants -- that its adapter
+//     and watcher provider modules implement or name. Those modules are
+//     themselves listed in this namespace, so without this entry the namespace
+//     could not contain a policy backend at all: the provider plugs into the
+//     engine by definition. Like reliability/health, only the types cross the
+//     edge; an adapter module never composes the engine's Bundle or Definition,
+//     and the engine's own Definition is selected separately at the
+//     composition root.
+//   - authorization/rbac publishes the Backend contract that the Casbin engine
+//     implements and exports, and the Manager vocabulary applications depend
+//     on. The engine names rbac.Backend to satisfy it; it never composes
+//     rbac.Bundle(), and rbac's Definition is selected separately at the
+//     composition root, so the same types-not-runtime ground applies.
 //   - coordination/lease is a contract module (see archContractModules): two
 //     interfaces over the standard library, owning no Definition, Config, or
 //     Bundle. TestArchContractModulesOwnNoDefinitionConfigOrBundle is what makes
@@ -53,6 +67,8 @@ import (
 // unexercised target is what TestArchExtensionSharedVocabularyIsExercised
 // refuses. Adding a member here is an architecture decision, and a one-line one.
 var archExtensionSharedVocabularyModules = []string{
+	"extensions/authorization/casbin",
+	"extensions/authorization/rbac",
 	"extensions/coordination/lease",
 	"extensions/reliability/health",
 }

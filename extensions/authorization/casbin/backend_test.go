@@ -297,7 +297,7 @@ func startedBackendPlugin(t *testing.T, adapter persist.Adapter, watcher persist
 	if watcher != nil {
 		factory = &testWatcherFactory{results: []watcherResult{{watcher: watcher}}}
 	}
-	p, err := newProviderPlugin(normalized, &testAdapterProvider{adapter: adapter}, factory, nil)
+	p, err := newProviderPlugin(normalized, &testAdapterProvider{adapter: adapter}, factory)
 	if err != nil {
 		t.Fatalf("newProviderPlugin() error = %v", err)
 	}
@@ -363,6 +363,69 @@ func TestBackendCapabilitiesUseActualModelAndAdapter(t *testing.T) {
 	})
 }
 
+// TestBackendCallsAreRaceFreeWhileThePolicyReloads is the -race guard for the
+// Capabilities snapshot. Every Backend call reports the model's r/p/g field
+// counts, and SyncedEnforcer.GetModel is unsynchronized with the LoadPolicy
+// that replaces the model, so re-reading it per call races the engine's
+// periodic reload, a watcher notification, or an explicit LoadPolicy such as
+// the one driven here. The snapshot taken at construction is sound because a
+// reload copies the base model and replaces only its policies, so the shape
+// cannot change; this test overlaps Authorize and Capabilities with a reload
+// loop to keep that property pinned. Meaningful under -race:
+// reintroducing a per-call GetModel() makes the detector flag the reload
+// goroutine against the request loop.
+func TestBackendCallsAreRaceFreeWhileThePolicyReloads(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.RequestConvention = ConventionPathMethod
+	cfg.Policy = "p, alice, /reports, GET"
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	stopReload := make(chan struct{})
+	reloadErr := make(chan error, 1)
+	var reloads sync.WaitGroup
+	reloads.Add(1)
+	go func() {
+		defer reloads.Done()
+		for {
+			select {
+			case <-stopReload:
+				return
+			default:
+			}
+			if err := p.LoadPolicy(); err != nil {
+				reloadErr <- err
+				return
+			}
+		}
+	}()
+
+	ctx := context.Background()
+	permission := rbac.Permission{Object: "/reports", Action: "GET"}
+	for i := 0; i < 200; i++ {
+		allowed, err := p.Authorize(ctx, "alice", permission)
+		if err != nil || !allowed {
+			t.Fatalf("Authorize(alice) = (%v, %v), want (true, nil)", allowed, err)
+		}
+		denied, err := p.Authorize(ctx, "bob", permission)
+		if err != nil || denied {
+			t.Fatalf("Authorize(bob) = (%v, %v), want (false, nil)", denied, err)
+		}
+		if got, want := p.Capabilities(), (rbac.Capabilities{RequestFields: 3, PolicyFields: 3, GroupingFields: 2}); got != want {
+			t.Fatalf("Capabilities() = %+v, want %+v", got, want)
+		}
+	}
+	close(stopReload)
+	reloads.Wait()
+	select {
+	case err := <-reloadErr:
+		t.Fatalf("LoadPolicy() error = %v", err)
+	default:
+	}
+}
+
 func TestBackendRejectsIncompatibleModelShapes(t *testing.T) {
 	tests := []struct {
 		name string
@@ -379,7 +442,6 @@ func TestBackendRejectsIncompatibleModelShapes(t *testing.T) {
 			cfg: Config{
 				Model:             wrongPolicyShapeModel,
 				RequestConvention: ConventionPathMethod,
-				MissingPermission: MissingPermissionDeny,
 			},
 			want: rbac.Capabilities{RequestFields: 3, PolicyFields: 2, GroupingFields: 2},
 		},
@@ -388,7 +450,6 @@ func TestBackendRejectsIncompatibleModelShapes(t *testing.T) {
 			cfg: Config{
 				Model:             wrongGroupingShapeModel,
 				RequestConvention: ConventionPathMethod,
-				MissingPermission: MissingPermissionDeny,
 			},
 			want: rbac.Capabilities{RequestFields: 3, PolicyFields: 3, GroupingFields: 3},
 		},

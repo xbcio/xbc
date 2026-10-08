@@ -1,17 +1,30 @@
 // Package casbin provides route-aware authorization for XBC's Web transport.
 //
+// This package is the Web half of a pair. The policy engine -- model, policy
+// sources, adapter and watcher providers, periodic reload, and the
+// rbac.Backend and EnforcerProvider contracts -- lives in the protocol-neutral
+// github.com/xbcio/xbc/extensions/authorization/casbin, whose plugin key is
+// "casbin". This package is a middleware plugin keyed "casbin-http" that
+// consumes that engine's EnforcerProvider and owns no enforcer itself: a
+// non-Web service composes the engine without any HTTP surface, and this
+// middleware's Stop fails matched routes closed without stopping the engine
+// other consumers may still be using.
+//
 // By default a protected route is authorized with its RouteInfo.Perm value and
 // the verified subject published by the framework's built-in authentication
-// middleware through web.SetPrincipal. Applications can
-// instead select the path_method convention or inject a SubjectResolver for a
-// different, already-verified identity source. This package never parses
-// credentials or unverified bearer tokens itself.
+// middleware through web.SetPrincipal. Applications can instead use the
+// engine's path_method convention -- the middleware derives once, at
+// construction, which request tuple to evaluate from the model the engine
+// built -- or inject a SubjectResolver for a different, already-verified
+// identity source. This package never parses credentials or unverified bearer
+// tokens itself.
 //
 // # Usage
 //
-// Mark protected routes with permissions and grant those permissions in the
-// Casbin policy. The secure default denies a protected route whose permission
-// is missing:
+// Compose the middleware bundle, which includes the engine, and configure both
+// products. Mark protected routes with permissions and grant those permissions
+// in the Casbin policy. The secure default denies a protected route whose
+// permission is missing:
 //
 //	func (*Orders) RegisterRoutes(r *web.Router) {
 //		r.GET("/orders", func(ctx context.Context, c *web.Ctx) error {
@@ -20,11 +33,10 @@
 //		}).Name("orders.list").Perm("orders:read")
 //	}
 //
-//	func newAuthorizer() (*casbin.Plugin, error) {
-//		cfg := casbin.DefaultConfig()
-//		cfg.Policy = "p, user:42, orders:read"
-//		return casbin.New(cfg)
-//	}
+//	plugins:
+//	  casbin:
+//	    policy: "p, user:42, orders:read"
+//	  casbin-http: {}
 //
 // The default resolver obtains user:42 only from web.CurrentPrincipal, which
 // must have been populated by verified upstream authentication. A custom
@@ -32,10 +44,8 @@
 // from an unverified header or bearer token.
 //
 // For persistent policy and multi-instance synchronization, compose adapter
-// and watcher provider plugins and select their exact instances in Casbin's
-// configuration. The adapter provider owns schema migration and its backing
-// connection; the watcher factory creates a watcher that Casbin owns until
-// shutdown:
+// and watcher provider plugins from the neutral module and select their exact
+// instances in the engine's configuration:
 //
 //	plugins:
 //	  casbin-gorm:
@@ -49,22 +59,14 @@
 //	    watcher:
 //	      plugin: casbin-redis
 //	      instance: events
+//	  casbin-http: {}
 //
 // Provider references are resolved through Definition/Bundle composition, not
-// casbin.New. Business authorization code should depend on rbac.Manager, which
-// provides validated, backend-neutral RBAC checks and management semantics on
-// top of this package's rbac.Backend export. Advanced migration and diagnostic
-// code that genuinely needs Casbin-specific APIs may instead depend on
-// EnforcerProvider and call Enforcer to obtain the live
-// *casbin.SyncedEnforcer; it must not retain the enforcer after lifecycle
-// shutdown or publish it as process-global state. An external adapter is
-// attached without loading during construction so migrations can run first;
-// Start opens and attaches the
-// watcher, then performs the initial policy load. External adapters use
-// Casbin autosave, while inline/file sources remain read-only with autosave
-// disabled.
-//
-// Importing this package has no registration side effects. Import
-// github.com/xbcio/xbc/transport/web/extensions/authorization/casbin/autoload for process-wide
-// composition, or use Definition/Bundle with a private assembly.
+// through a constructor. The engine's package documentation covers its
+// configuration, its rbac.Backend export, and the enforcer's advanced
+// EnforcerProvider API. Importing this package has no registration side
+// effects. Import
+// github.com/xbcio/xbc/transport/web/extensions/authorization/casbin/autoload
+// for process-wide composition, or use Definition/Bundle with a private
+// assembly.
 package casbin

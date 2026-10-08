@@ -5,13 +5,12 @@ import (
 	"sync"
 	"testing"
 
-	casbincore "github.com/xbcio/xbc/extensions/authorization/casbin"
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
 
 // testHost is a minimal plugin.RuntimeHost sufficient to exercise start/Stop
-// in isolation from the real runtime.
+// and the managed periodic reload task in isolation from the real runtime.
 type testHost struct {
 	taskCtx context.Context
 	cancel  context.CancelFunc
@@ -59,32 +58,18 @@ func testContext(host plugin.RuntimeHost) *plugin.Context {
 	return plugin.NewRuntimeContext(host, plugin.Identity{Plugin: Key, Instance: "default"})
 }
 
-// initializedPlugin builds an engine from engineMutate, wraps it in the
-// middleware built from httpMutate, starts the middleware against a fresh
-// testHost, and registers cleanup for both. The engine is returned so tests
-// can assert on what the middleware did or did not do to it.
-func initializedPlugin(t *testing.T, engineMutate func(*casbincore.Config), httpMutate func(*Config), options ...Option) (*Plugin, *casbincore.Plugin) {
+// initializedPlugin constructs a Plugin from DefaultConfig (optionally
+// mutated), starts it against a fresh testHost, and registers cleanup.
+func initializedPlugin(t *testing.T, mutate func(*Config)) (*Plugin, *testHost) {
 	t.Helper()
-
-	engineCfg := casbincore.DefaultConfig()
-	if engineMutate != nil {
-		engineMutate(&engineCfg)
-	}
-	engine, err := casbincore.New(engineCfg)
-	if err != nil {
-		t.Fatalf("casbincore.New() error = %v", err)
-	}
-	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
-
 	cfg := DefaultConfig()
-	if httpMutate != nil {
-		httpMutate(&cfg)
+	if mutate != nil {
+		mutate(&cfg)
 	}
-	p, err := New(engine, cfg, options...)
+	p, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-
 	host := newTestHost()
 	if err := p.start(testContext(host)); err != nil {
 		host.close()
@@ -94,5 +79,5 @@ func initializedPlugin(t *testing.T, engineMutate func(*casbincore.Config), http
 		_ = p.Stop(context.Background())
 		host.close()
 	})
-	return p, engine
+	return p, host
 }

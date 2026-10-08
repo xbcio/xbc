@@ -2,12 +2,13 @@ package casbin
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/xbcio/xbc/extensions/authorization/rbac"
+	casbinlib "github.com/casbin/casbin/v2"
+
+	casbincore "github.com/xbcio/xbc/extensions/authorization/casbin"
 	"github.com/xbcio/xbc/plugin"
 	pluginmodel "github.com/xbcio/xbc/plugin/model"
 	"github.com/xbcio/xbc/transport/web"
@@ -30,34 +31,29 @@ func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
 	}
 }
 
-func TestDefinitionExportsMiddlewareAndEnforcerContracts(t *testing.T) {
+// TestDefinitionExportsExactlyTheWebMiddlewareContract pins the split's
+// boundary from the middleware side. This product contributes route
+// enforcement and nothing else: EnforcerProvider and rbac.Backend belong to
+// the neutral engine (see extensions/authorization/casbin), and re-exporting
+// either here would put the policy backend back on the Web stack's contract
+// surface.
+func TestDefinitionExportsExactlyTheWebMiddlewareContract(t *testing.T) {
 	descriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(Definition()))
 	if !ok {
 		t.Fatal("Definition() returned a zero handle")
 	}
 
-	want := map[reflect.Type]bool{
-		reflect.TypeOf((*web.Middleware)(nil)).Elem():   false,
-		reflect.TypeOf((*EnforcerProvider)(nil)).Elem(): false,
-		reflect.TypeOf((*rbac.Backend)(nil)).Elem():     false,
+	want := reflect.TypeOf((*web.Middleware)(nil)).Elem()
+	if len(descriptor.Contracts) != 1 {
+		t.Fatalf("Definition declares %d contracts, want exactly 1 (web.Middleware): %+v", len(descriptor.Contracts), descriptor.Contracts)
 	}
-	for _, contract := range descriptor.Contracts {
-		if _, expected := want[contract.Type]; expected {
-			want[contract.Type] = true
-		}
-	}
-	for contract, found := range want {
-		if !found {
-			t.Errorf("Definition contracts %+v do not export %v", descriptor.Contracts, contract)
-		}
+	if got := descriptor.Contracts[0].Type; got != want {
+		t.Fatalf("Definition contracts = %v, want %v", got, want)
 	}
 }
 
 func TestNewAppliesDefaultsAndMiddlewareContract(t *testing.T) {
-	p, err := New(DefaultConfig())
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	p, _ := initializedPlugin(t, nil, nil)
 	if p.Order().Phase != web.PhaseAuth {
 		t.Fatalf("Order().Phase = %v, want PhaseAuth", p.Order().Phase)
 	}
@@ -92,48 +88,127 @@ func TestOrderRequiresAuthenticationMiddleware(t *testing.T) {
 	}
 }
 
-func TestNewBuildsEnforcerImmediatelyAndStopDeactivatesIt(t *testing.T) {
-	p, err := New(DefaultConfig())
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	enforcer, ok := p.Enforcer()
-	if !ok || enforcer == nil {
-		t.Fatal("New() did not build an active enforcer")
-	}
+func TestNewRejectsMissingEnforcerProvider(t *testing.T) {
+	t.Parallel()
 
-	host := newTestHost()
-	if err := p.start(testContext(host)); err != nil {
-		t.Fatalf("start() error = %v", err)
-	}
-	if err := p.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop() error = %v", err)
-	}
-	host.close()
-	if _, ok := p.Enforcer(); ok {
-		t.Fatal("Enforcer remained active after Stop")
+	if _, err := New(nil, DefaultConfig()); err == nil || !strings.Contains(err.Error(), "enforcer provider") {
+		t.Fatalf("New(nil provider) error = %v, want enforcer provider rejection", err)
 	}
 }
 
-func TestNewRejectsInvalidModelFile(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.ModelFile = "missing-model.conf"
-	if _, err := New(cfg); err == nil || !strings.Contains(err.Error(), "model_file") {
-		t.Fatalf("New() error = %v, want model_file failure", err)
+// foreignProvider lets a test act as an EnforcerProvider the neutral engine
+// never built, which is exactly the case New's construction-time checks exist
+// to judge.
+type foreignProvider struct {
+	enforcer   *casbinlib.SyncedEnforcer
+	active     bool
+	convention casbincore.RequestConvention
+}
+
+func (f foreignProvider) Enforcer() (*casbinlib.SyncedEnforcer, bool) { return f.enforcer, f.active }
+
+func (f foreignProvider) RequestConvention() casbincore.RequestConvention { return f.convention }
+
+var _ casbincore.EnforcerProvider = foreignProvider{}
+
+// TestNewRejectsStoppedEngine pins the provider-side half of construction:
+// EnforcerProvider reports no active enforcer once the engine's Stop has run,
+// and a middleware built against that provider could never enforce anything,
+// so New refuses it instead of producing a plugin that 403s every route.
+func TestNewRejectsStoppedEngine(t *testing.T) {
+	t.Parallel()
+
+	engine, err := casbincore.New(casbincore.DefaultConfig())
+	if err != nil {
+		t.Fatalf("casbincore.New() error = %v", err)
+	}
+	if err := engine.Stop(context.Background()); err != nil {
+		t.Fatalf("engine Stop() error = %v", err)
 	}
 
-	cfg.ModelFile = ""
-	p, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New() with corrected config error = %v", err)
+	if _, err := New(engine, DefaultConfig()); err == nil || !strings.Contains(err.Error(), "no active enforcer") {
+		t.Fatalf("New(stopped engine) error = %v, want no-active-enforcer rejection", err)
 	}
-	if _, ok := p.Enforcer(); !ok {
-		t.Fatal("New() with corrected config did not build an active enforcer")
+}
+
+// TestNewRejectsUnsupportedRequestConvention pins the other construction
+// refusal. The engine never reports a convention outside its own two, so only
+// a foreign EnforcerProvider can declare something else -- and the middleware
+// must refuse it at construction rather than leave every matched request to
+// deny itself at runtime through an empty request tuple. The zero value is the
+// realistic form: an implementation that never filled the method in.
+func TestNewRejectsUnsupportedRequestConvention(t *testing.T) {
+	t.Parallel()
+
+	engine, err := casbincore.New(casbincore.DefaultConfig())
+	if err != nil {
+		t.Fatalf("casbincore.New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+	enforcer, active := engine.Enforcer()
+	if !active || enforcer == nil {
+		t.Fatal("engine did not hand out an enforcer")
+	}
+
+	for _, convention := range []casbincore.RequestConvention{"", "scope_based"} {
+		provider := foreignProvider{enforcer: enforcer, active: true, convention: convention}
+		if _, err := New(provider, DefaultConfig()); err == nil || !strings.Contains(err.Error(), "unsupported request convention") {
+			t.Fatalf("New(convention %q) error = %v, want unsupported-convention rejection", convention, err)
+		}
+	}
+}
+
+// TestNewAcceptsAProvidersDeclaredConvention pins the positive half: the
+// middleware trusts a foreign provider's reported convention rather than
+// re-deriving it from the enforcer's model, which is unsynchronized with
+// reloads. The enforcer here is the engine's default (route_permission) while
+// the provider reports path_method, and the middleware must believe the
+// provider -- the engine's guarantee that the two agree does not extend to
+// foreign implementations, and reading the model to check would reintroduce
+// exactly the race this contract removes.
+func TestNewAcceptsAProvidersDeclaredConvention(t *testing.T) {
+	t.Parallel()
+
+	engine, err := casbincore.New(casbincore.DefaultConfig())
+	if err != nil {
+		t.Fatalf("casbincore.New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+	enforcer, _ := engine.Enforcer()
+
+	p, err := New(foreignProvider{enforcer: enforcer, active: true, convention: casbincore.ConventionPathMethod}, DefaultConfig())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if p.state.convention != casbincore.ConventionPathMethod {
+		t.Fatalf("state.convention = %q, want the provider's declared value", p.state.convention)
+	}
+}
+
+func TestNewRejectsInvalidConfig(t *testing.T) {
+	t.Parallel()
+
+	engine, err := casbincore.New(casbincore.DefaultConfig())
+	if err != nil {
+		t.Fatalf("casbincore.New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+
+	cfg := DefaultConfig()
+	cfg.MissingPermission = "ignore"
+	if _, err := New(engine, cfg); err == nil || !strings.Contains(err.Error(), "missing_permission") {
+		t.Fatalf("New() error = %v, want missing_permission failure", err)
 	}
 }
 
 func TestLifecycleOperationErrorsAndIdempotentStop(t *testing.T) {
-	p, err := New(DefaultConfig())
+	engine, err := casbincore.New(casbincore.DefaultConfig())
+	if err != nil {
+		t.Fatalf("casbincore.New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+
+	p, err := New(engine, DefaultConfig())
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -154,11 +229,8 @@ func TestLifecycleOperationErrorsAndIdempotentStop(t *testing.T) {
 	if err := p.Stop(context.Background()); err != nil {
 		t.Fatalf("second Stop() error = %v", err)
 	}
-	if !errors.Is(p.LoadPolicy(), ErrStopped) {
-		t.Fatalf("LoadPolicy() after Stop = %v, want ErrStopped", p.LoadPolicy())
-	}
-	if err := p.start(testContext(host)); !errors.Is(err, ErrStopped) {
-		t.Fatalf("start() after Stop = %v, want ErrStopped", err)
+	if err := p.start(testContext(host)); err == nil {
+		t.Fatal("start() after Stop error = nil")
 	}
 	host.close()
 }

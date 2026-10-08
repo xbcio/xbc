@@ -5,10 +5,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	casbingorm "github.com/xbcio/xbc/extensions/authorization/casbin-gorm"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/assembly"
 	defaultautoload "github.com/xbcio/xbc/plugin/autoload"
-	casbingorm "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin-gorm"
 )
 
 func TestImportDeclaresCasbinGORMBundle(t *testing.T) {
