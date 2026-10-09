@@ -54,31 +54,66 @@ end
 return {value}
 `)
 
-var redisRotateScript = goredis.NewScript(`
+// Rotation runs as three steps that each address exactly one key, rather than
+// one script over both the old and the replacement key. A Redis cluster
+// refuses a multi-key script whose keys hash to different slots (CROSSSLOT),
+// and session keys carry no hash tag, so the two-key form would make rotation
+// the one operation that only works on a standalone deployment. The sources are
+// constants so a test can assert that every step stays single-key.
+//
+// The price is that the sequence is no longer atomic, and the window is worth
+// naming: between step 2 and step 3 the old and the replacement ID are both
+// valid, and two callers rotating the same ID concurrently with different
+// replacements can both succeed, each receiving only the replacement it minted
+// itself. Step 1 fails safe -- the old ID is what stops being accepted -- so an
+// ID that was rotated away never comes back. Step 2 is idempotent when it is
+// handed the exact value it already installed, which is what lets a retry
+// finish a rotation whose step 3 did not run.
+const (
+	// Step 1 checks the old ID and prunes it when its absolute lifetime has
+	// passed. 1 means the sequence may proceed, 0 means the old ID is gone.
+	redisRotateValidateSource = `
 if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
-if redis.call('EXISTS', KEYS[2]) == 1 then return -1 end
-local absolute = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
-if not absolute or absolute <= now then
+local absolute = tonumber(redis.call('HGET', KEYS[1], 'absolute'))
+local now = tonumber(ARGV[1])
+if not absolute or absolute - now < 1 then
   redis.call('DEL', KEYS[1])
   return 0
+end
+return 1
+`
+	// Step 2 installs the replacement unless its key is taken: 1 when the
+	// replacement is in place (including the exact value this run would have
+	// written), -1 when a different session already holds the ID.
+	redisRotateInstallSource = `
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  if redis.call('HGET', KEYS[1], 'value') == ARGV[1] then
+    return 1
+  end
+  return -1
 end
 local lease = tonumber(ARGV[4])
-local remaining = absolute - now
+local remaining = tonumber(ARGV[2]) - tonumber(ARGV[3])
 if remaining < lease then lease = remaining end
-if lease < 1 then
-  redis.call('DEL', KEYS[1])
-  return 0
-end
-redis.call('HSET', KEYS[2], 'value', ARGV[1], 'absolute', ARGV[2], 'touched', ARGV[3])
-redis.call('PEXPIRE', KEYS[2], lease)
-redis.call('DEL', KEYS[1])
+redis.call('HSET', KEYS[1], 'value', ARGV[1], 'absolute', ARGV[2], 'touched', ARGV[3])
+redis.call('PEXPIRE', KEYS[1], lease)
 return 1
-`)
+`
+)
 
-// RedisStore is a distributed Store. Lua scripts make idle renewal and ID
-// rotation atomic across application replicas. The Redis client remains owned
-// by the base Redis plugin and is never closed here.
+var (
+	redisRotateValidateScript = goredis.NewScript(redisRotateValidateSource)
+	redisRotateInstallScript  = goredis.NewScript(redisRotateInstallSource)
+)
+
+// RedisStore is a distributed Store. Lua scripts make idle renewal atomic
+// across application replicas. The Redis client remains owned by the base Redis
+// plugin and is never closed here.
+//
+// It addresses whatever topology that client was configured for: every script
+// below touches exactly one key, which is what a cluster client requires.
+// Rotation is the operation that had to give something up for this: see the
+// sequence documented on Rotate.
 type RedisStore struct {
 	client goredis.UniversalClient
 	prefix string
@@ -206,6 +241,21 @@ func (s *RedisStore) Touch(ctx context.Context, id string, idleTTL, minInterval 
 	return value, true, nil
 }
 
+// Rotate installs replacement and retires oldID as a sequence of three
+// single-key steps: validate the old ID, install the replacement, delete the
+// old ID. The step sources above state why the sequence replaced one atomic
+// script and what the window between the last two steps means.
+//
+// Each error names the step that stopped the sequence. A failed first or second
+// step leaves the old ID in place, so the caller may retry; a failed third step
+// reports an error even though the replacement is installed, and retrying with
+// the identical replacement finishes the sequence because the install step
+// accepts the value it already wrote.
+//
+// A replacement already past its absolute lifetime is installed with a
+// non-positive lease and does not survive the install step: the sequence still
+// reports success, the old ID is still retired, and the caller is left with no
+// usable session, as MemoryStore leaves it with a record that Get prunes.
 func (s *RedisStore) Rotate(ctx context.Context, oldID string, replacement Session, idleTTL time.Duration) error {
 	if err := contextError(ctx); err != nil {
 		return err
@@ -222,20 +272,31 @@ func (s *RedisStore) Rotate(ctx context.Context, oldID string, replacement Sessi
 	if err != nil {
 		return err
 	}
-	result, err := redisRotateScript.Run(ctx, s.client, []string{s.key(oldID), s.key(replacement.ID)}, payload, replacement.ExpiresAt.UnixMilli(), now.UnixMilli(), durationMillis(idleTTL)).Int64()
+
+	valid, err := redisRotateValidateScript.Run(ctx, s.client, []string{s.key(oldID)}, now.UnixMilli()).Int64()
 	if err != nil {
 		return fmt.Errorf("session: Redis rotate: %w", err)
 	}
-	switch result {
-	case 1:
-		return nil
-	case 0:
+	if valid != 1 {
 		return ErrNotFound
+	}
+
+	installed, err := redisRotateInstallScript.Run(ctx, s.client, []string{s.key(replacement.ID)}, payload, replacement.ExpiresAt.UnixMilli(), now.UnixMilli(), durationMillis(idleTTL)).Int64()
+	if err != nil {
+		return fmt.Errorf("session: Redis rotate: %w", err)
+	}
+	switch installed {
 	case -1:
 		return ErrAlreadyExists
+	case 1:
 	default:
 		return errors.New("session: Redis rotate returned an invalid result")
 	}
+
+	if err := s.client.Del(ctx, s.key(oldID)).Err(); err != nil {
+		return fmt.Errorf("session: Redis rotate: %w", err)
+	}
+	return nil
 }
 
 func (s *RedisStore) Delete(ctx context.Context, id string) error {

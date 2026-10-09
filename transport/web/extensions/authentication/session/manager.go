@@ -16,7 +16,9 @@ import (
 
 // Manager is the handler-facing session API. Create and Rotate return the
 // value whose opaque ID should be installed with SetCookie. Rotate preserves
-// the original absolute lifetime and atomically revokes the previous ID.
+// the original absolute lifetime and revokes the previous ID; RedisStore.Rotate
+// documents the window in which both IDs remain valid while a rotation is in
+// flight.
 type Manager interface {
 	Create(ctx context.Context, subject string, attributes map[string]any) (Session, error)
 	Rotate(ctx context.Context, id string) (Session, error)
