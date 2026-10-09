@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc"
+	"github.com/xbcio/xbc/config"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -81,6 +82,63 @@ func TestPublicAPIValidatesAComposition(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, code)
 	assert.Equal(t, int32(1), factories.Load(), "validate constructs the graph it validates")
+}
+
+// TestPublicAPIRunsAConsumerCommand is the same external posture for the
+// command seam: a composition root reaches WithCommand through the facade, the
+// command reads the merged configuration through the exported Environment, and
+// the plugins the application composed are not constructed for it. The argument
+// after the name is deliberately flag-shaped, because a command owning its own
+// flag namespace is the part of the signature an external caller cannot infer.
+func TestPublicAPIRunsAConsumerCommand(t *testing.T) {
+	var (
+		factories atomic.Int32
+		runs      atomic.Int32
+	)
+	definition := plugin.Define("public-api-fixture", func(plugin.BuildContext) (*int, error) {
+		factories.Add(1)
+		value := 1
+		return &value, nil
+	})
+
+	var (
+		seenMode string
+		seenArgs []string
+	)
+	app, err := xbc.New(
+		xbc.WithBundles(plugin.BundleOf(definition)),
+		xbc.WithCommand("maintenance", "run one-off maintenance", func(_ context.Context, env *config.Environment, args []string) error {
+			runs.Add(1)
+			seenMode, _ = env.Get("app.maintenance.mode").(string)
+			seenArgs = append([]string(nil), args...)
+			return nil
+		}),
+	)
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "application.yml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+log:
+  console:
+    enabled: false
+  file:
+    enabled: false
+app:
+  maintenance:
+    mode: verify
+`), 0o600))
+
+	code, err := app.Execute(context.Background(), []string{
+		"--config", path, "maintenance", "--dry-run",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, int32(1), runs.Load())
+	assert.Equal(t, "verify", seenMode, "the merged configuration reaches the command")
+	assert.Equal(t, []string{"--dry-run"}, seenArgs,
+		"the argument after the name is the command's own, not the runtime's")
+	assert.Zero(t, factories.Load(),
+		"a command must not construct the plugins it shares a process with")
 }
 
 // TestPublicRunAcceptsExplicitComposition pins Run's signature from the

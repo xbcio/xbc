@@ -45,6 +45,7 @@ package xbc
 import (
 	"context"
 
+	"github.com/xbcio/xbc/config"
 	"github.com/xbcio/xbc/plugin"
 	appruntime "github.com/xbcio/xbc/runtime"
 )
@@ -105,6 +106,28 @@ func WithPlacement(source PlacementSource) Option { return appruntime.WithPlacem
 // declared workloads configuration enables. It contacts nothing and never
 // fails.
 func StaticPlacement() PlacementSource { return appruntime.StaticPlacement() }
+
+// WithCommand registers a subcommand of the application's own: "xbc <name>
+// [args...]" runs run instead of booting, which is how a service carries its
+// one-off management commands without a second binary.
+//
+// The command runs once configuration has been loaded and logging installed,
+// and before anything else a boot does. It is handed the merged configuration
+// -- every layer, with the same strict decoding a plugin's input gets -- and can
+// rely on nothing having been planned, constructed, migrated, placed, or
+// listened on; a command that needs a database opens and closes its own
+// connection. It exits 0 when it returns nil and 1 with the error it returned.
+//
+// A command belongs to the process the other Options compose: the
+// configuration universe it reads is built from the same Bundles, so a section
+// a plugin owns decodes here too. The flags shared with a boot -- --config and
+// --profile -- precede the command's name, and everything after the name
+// reaches run as it was written, so a command's flag namespace is its own. A
+// name the runtime owns -- "migrate", "doctor", "validate" -- or one already
+// registered is refused by New.
+func WithCommand(name, usage string, run func(context.Context, *config.Environment, []string) error) Option {
+	return appruntime.WithCommand(name, usage, run)
+}
 
 // New creates an App the caller executes itself, without loading
 // configuration or constructing resources. It owns no process facility: use it

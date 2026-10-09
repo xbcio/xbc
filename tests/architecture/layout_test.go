@@ -368,17 +368,18 @@ func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expecte
 
 // TestArchRootPublicAPIIsFrozen keeps the application-facing facade narrow.
 // Runtime and assembly implementation stay behind the application-facing
-// facade; importing the root package must expose only the eleven entry-point
+// facade; importing the root package must expose only the twelve entry-point
 // symbols below.
 //
 // The set below is deliberately tiny and should stay that way: an application
 // calls Run, an embedding host calls New and App.Execute, a test supplies its
 // own explicit composition through WithBundles, an application that wants a
-// documented product baseline selects it through WithStarter, and a deployment
+// documented product baseline selects it through WithStarter, a deployment
 // whose roles are assigned by placement names its source through WithPlacement
-// -- with StaticPlacement as the default it may also write down explicitly.
-// Adding to it is a real API decision and must be a deliberate edit to this
-// list, not a side effect of a rename.
+// -- with StaticPlacement as the default it may also write down explicitly --
+// and an application that carries one-off commands of its own registers them
+// through WithCommand. Adding to it is a real API decision and must be a
+// deliberate edit to this list, not a side effect of a rename.
 //
 // A lease-backed PlacementSource is deliberately NOT among these. Constructing
 // one needs the lease contract, which lives beneath extensions, and core's
@@ -406,6 +407,7 @@ func TestArchRootPublicAPIIsFrozen(t *testing.T) {
 		"Starter",
 		"StaticPlacement",
 		"WithBundles",
+		"WithCommand",
 		"WithPlacement",
 		"WithStarter",
 	}
