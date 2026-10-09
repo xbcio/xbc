@@ -516,6 +516,13 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 	misses := append([]MiddlewareOrderMiss(nil), s.misses...)
 	listeners := append([]plugin.Entry[RouteCatalogListener](nil), s.listeners...)
 	authenticator := s.authentication
+	// The address the management listener is bound to, not the configured
+	// spelling: the report says "bound", so what it names has to be the port a
+	// scrape can actually reach. Empty when no management plane is configured.
+	managementAddr := ""
+	if s.managementLn != nil {
+		managementAddr = s.managementLn.Addr().String()
+	}
 	s.mu.Unlock()
 
 	catalog, err := freezeRoutes(router, authenticator, listeners)
@@ -527,7 +534,7 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 	if ctx != nil {
 		logger = ctx.Log()
 	}
-	renderStartupReport(logger, s.cfg, ordered, misses, catalog, authenticator)
+	renderStartupReport(logger, s.cfg, managementAddr, ordered, misses, catalog, authenticator)
 
 	s.mu.Lock()
 	s.catalog = catalog
@@ -560,7 +567,10 @@ func (s *Server) Preflight(ctx *plugin.Context) error {
 	if err != nil {
 		return err
 	}
-	renderStartupReport(ctx.Log(), pipeline.cfg, pipeline.ordered, pipeline.misses, catalog, pipeline.authentication)
+	// Empty: this report never bound the management listener, and the report
+	// says so instead of naming an address it is not serving (see
+	// renderManagementPlane).
+	renderStartupReport(ctx.Log(), pipeline.cfg, "", pipeline.ordered, pipeline.misses, catalog, pipeline.authentication)
 	return nil
 }
 
@@ -595,7 +605,13 @@ func freezeRoutes(router *Router, authenticator *authenticationMiddleware, liste
 // route falls under. OpenTraffic prints it just before the gate opens; Preflight
 // prints the same report for a process that will never serve, because the
 // decision an operator reads is the same decision either way.
-func renderStartupReport(logger log.Logger, cfg Config, ordered []plugin.Entry[Middleware], misses []MiddlewareOrderMiss, catalog RouteCatalog, authenticator *authenticationMiddleware) {
+//
+// managementAddr says which of the two it is, and travels only into
+// renderManagementPlane: a boot's listener is open when the report is written,
+// so it passes the address it bound, while a validate run binds nothing and
+// passes empty. That difference is one the report has to state rather than
+// leave to the reader to infer from the command.
+func renderStartupReport(logger log.Logger, cfg Config, managementAddr string, ordered []plugin.Entry[Middleware], misses []MiddlewareOrderMiss, catalog RouteCatalog, authenticator *authenticationMiddleware) {
 	if line := renderTLS(cfg.TLS); line != "" {
 		logger.Info(line)
 	}
@@ -606,6 +622,9 @@ func renderStartupReport(logger log.Logger, cfg Config, ordered []plugin.Entry[M
 		logger.Info(renderSoftMisses(misses))
 	}
 	logger.Info(renderRouteTable(catalog.All()))
+	if line := renderManagementPlane(cfg.Management, catalog.All(), managementAddr); line != "" {
+		logger.Info(line)
+	}
 	if authenticator != nil {
 		if schemes := authenticator.manager.Schemes(); len(schemes) > 0 {
 			logger.Info(renderAuthenticationOrder(schemes))

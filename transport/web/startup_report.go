@@ -56,6 +56,7 @@ func renderRouteTable(routes []RouteInfo) string {
 	for i, route := range routes {
 		fmt.Fprintf(&b, "\n  %d. %-*s  %s", i+1, methodWidth, route.Method, route.Path)
 		b.WriteString(mountedMark(route))
+		b.WriteString(managementMark(route))
 	}
 	return b.String()
 }

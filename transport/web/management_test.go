@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -91,10 +92,14 @@ func TestManagementRouteStaysOnTheServingListenerWithoutAManagementAddress(t *te
 	server, ctx, host := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
 		routes: []plugin.Entry[web.RouteContributor]{managementContributor("/-/metrics")},
 	})
+	capture := &captureLogger{}
+	host.logger = capture
 
 	require.NoError(t, server.Start(ctx))
 	require.NoError(t, server.OpenTraffic(ctx))
 	assert.Empty(t, server.ManagementAddr(), "no management address is configured, so there is no second listener")
+	assert.NotContains(t, strings.Join(capture.infos(), "\n"), "management listener",
+		"a default deployment's report must not mention a listener it does not have")
 
 	host.releaseTraffic()
 	waitForServing(t, server.Addr(), "/ping")
@@ -109,6 +114,29 @@ func TestManagementRouteStaysOnTheServingListenerWithoutAManagementAddress(t *te
 	assert.True(t, tasks[0].critical)
 }
 
+// TestManagementListenerWithoutRoutesSaysSoInTheReport covers the report's
+// third state: an address configured, a listener bound, and nothing registered
+// to serve on it. It is a composition an operator reaches by configuring the
+// address before wiring the endpoint plugins, and the report is the only place
+// that difference shows up -- the listener itself looks healthy either way.
+func TestManagementListenerWithoutRoutesSaysSoInTheReport(t *testing.T) {
+	server, ctx, host := newPingServer(t, managementConfig(), serverInputs{})
+	capture := &captureLogger{}
+	host.logger = capture
+
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+	host.releaseTraffic()
+
+	managementAddr := server.ManagementAddr()
+	require.NotEmpty(t, managementAddr)
+	waitForServing(t, managementAddr, "/anything")
+
+	assert.Contains(t, strings.Join(capture.infos(), "\n"),
+		"web: management listener "+managementAddr+" (bound; no routes registered)",
+		"an empty management plane must be stated, not left to be inferred from an empty table")
+}
+
 // TestManagementListenerServesItsOwnPlane is the wiring test: with an address
 // configured, the route declared through the plane view is served by the second
 // listener and by nothing else, while the serving listener keeps serving exactly
@@ -120,6 +148,8 @@ func TestManagementListenerServesItsOwnPlane(t *testing.T) {
 	server, ctx, host := newPingServer(t, managementConfig(), serverInputs{
 		routes: []plugin.Entry[web.RouteContributor]{managementContributor("/-/metrics")},
 	})
+	capture := &captureLogger{}
+	host.logger = capture
 
 	require.NoError(t, server.Start(ctx))
 	require.NoError(t, server.OpenTraffic(ctx))
@@ -128,6 +158,12 @@ func TestManagementListenerServesItsOwnPlane(t *testing.T) {
 	managementAddr := server.ManagementAddr()
 	require.NotEmpty(t, managementAddr, "a configured management address must be bound")
 	require.NotEqual(t, servingAddr, managementAddr, "the planes must not share one listener")
+
+	report := strings.Join(capture.infos(), "\n")
+	assert.Contains(t, report, "web: management listener "+managementAddr+" (bound; 1 row marked [management])",
+		"the report must name the bound address and the plane decision, not the configured spelling")
+	assert.Regexp(t, `(?m)^\s+\d+\.\s+GET\s+/-/metrics\s+\[management\]$`, report,
+		"the row must carry the plane mark so a reader does not take it for a serving route")
 
 	host.releaseTraffic()
 	waitForServing(t, servingAddr, "/ping")
@@ -410,7 +446,10 @@ func TestMountedManagementSubtreeIsServedOnlyOnTheManagementListener(t *testing.
 // address is already held by this test, so a Preflight that listened on it
 // would fail with an address-in-use error instead of returning. It also proves
 // the management engine the report needs is built -- and its routes registered
-// -- without a socket.
+// -- without a socket, and pins how the report says so: "configured, not bound
+// by this report" is the whole difference between this output and a boot's, and
+// an operator pasting a validate output into a ticket has to be able to tell
+// the two apart.
 func TestPreflightDoesNotBindTheManagementAddress(t *testing.T) {
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -418,14 +457,20 @@ func TestPreflightDoesNotBindTheManagementAddress(t *testing.T) {
 
 	cfg := managementConfig()
 	cfg.Management.Addr = held.Addr().String()
-	server, ctx, _ := newPingServer(t, cfg, serverInputs{
+	server, ctx, host := newPingServer(t, cfg, serverInputs{
 		routes: []plugin.Entry[web.RouteContributor]{managementContributor("/-/metrics")},
 	})
+	capture := &captureLogger{}
+	host.logger = capture
 
 	require.NoError(t, server.Preflight(ctx),
 		"a Preflight that bound the configured management address would fail here with an address-in-use error")
 	assert.Empty(t, server.ManagementAddr(), "Preflight must leave the Server unstarted")
 	assert.Empty(t, server.Addr())
+
+	assert.Contains(t, strings.Join(capture.infos(), "\n"),
+		"web: management listener "+held.Addr().String()+" (configured, not bound by this report; 1 row marked [management])",
+		"the validate report must state the decision it validated without reading as evidence the port is served")
 }
 
 // TestManagementListenerTerminatesTLSWithTheSameCertificate pins the TLS half
