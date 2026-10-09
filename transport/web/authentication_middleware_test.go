@@ -242,6 +242,49 @@ func TestAuthenticationMiddlewareAllowsOmittedSchemesForSingleAuthenticator(t *t
 	}
 }
 
+// TestAuthenticationMiddlewareRejectsDeclaredSchemesWithoutAuthenticators
+// locks the boundary between the two zero-authenticator configurations. A
+// service whose routes are all permitted is legitimate and must construct with
+// no authenticator at all; declaring a scheme order in that same service is
+// not, because nothing can honour it -- and the zero-authenticator path is the
+// one place the registered-scheme check cannot run, since the registered set is
+// empty and every declared scheme is therefore unknown by construction.
+func TestAuthenticationMiddlewareRejectsDeclaredSchemesWithoutAuthenticators(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rejects a declared scheme", func(t *testing.T) {
+		t.Parallel()
+		_, err := web.NewAuthenticationMiddleware(
+			web.SecurityConfig{Default: web.SecurityDeny, Schemes: []authentication.Scheme{"jwt"}},
+			nil,
+			nil,
+		)
+		if err == nil {
+			t.Fatal("NewAuthenticationMiddleware() error = nil, want an error naming the declared scheme")
+		}
+		if !strings.Contains(err.Error(), `"jwt"`) {
+			t.Fatalf("NewAuthenticationMiddleware() error = %q, want it to name scheme \"jwt\"", err)
+		}
+		// The diagnosis has to state that there is no registry to check
+		// against, not only which name failed: an operator reading "unknown
+		// scheme" would otherwise look for a typo in the name.
+		if !strings.Contains(err.Error(), "registered schemes: (none)") {
+			t.Fatalf("NewAuthenticationMiddleware() error = %q, want it to report an empty registry", err)
+		}
+	})
+
+	t.Run("allows an omitted scheme order", func(t *testing.T) {
+		t.Parallel()
+		if _, err := web.NewAuthenticationMiddleware(
+			web.SecurityConfig{Default: web.SecurityDeny},
+			nil,
+			nil,
+		); err != nil {
+			t.Fatalf("NewAuthenticationMiddleware() error = %v, want nil: a permit-only service registers no authenticator", err)
+		}
+	})
+}
+
 func TestAuthenticationMiddlewareRejectsInconsistentDeclaredSchemes(t *testing.T) {
 	t.Parallel()
 

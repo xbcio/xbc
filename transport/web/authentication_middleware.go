@@ -120,7 +120,15 @@ func newAuthenticationMiddleware(
 	if len(authenticators) == 0 {
 		// NewManager rejects an empty authenticator set. A service whose
 		// endpoints are all permitted is still legitimate, so leave manager nil
-		// and let RoutesReady fail if any route actually needs one.
+		// and let RoutesReady fail if any route actually needs one. Declaring a
+		// scheme order is not part of that legitimate case: nothing here can
+		// honour it, so every declared scheme is by construction unregistered
+		// and the configuration is refused rather than ignored. web.security is
+		// always read -- the Server owns that section and is constructed in
+		// every role -- so "this role does not read the key" cannot apply.
+		if len(security.Schemes) > 0 {
+			return nil, validateDeclaredSchemes(security.Schemes, nil)
+		}
 		return middleware, nil
 	}
 
@@ -233,6 +241,12 @@ func validateDeclaredSchemes(declared, registered []authentication.Scheme) error
 // without quoting -- the error strings around it already supply quotes where a
 // single scheme name is being named.
 func formatSchemeList(schemes []authentication.Scheme) string {
+	if len(schemes) == 0 {
+		// Reachable from newAuthenticationMiddleware's zero-authenticator path,
+		// where the registry being reported on is empty and "registered
+		// schemes: " would read as a truncated message rather than a diagnosis.
+		return "(none)"
+	}
 	parts := make([]string, len(schemes))
 	for i, scheme := range schemes {
 		parts[i] = string(scheme)
