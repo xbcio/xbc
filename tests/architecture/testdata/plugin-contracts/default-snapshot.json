@@ -650,6 +650,19 @@
         },
         "Recovery": {
           "Stack": true
+        },
+        "Management": {
+          "Addr": "",
+          "AllowRemote": false
+        },
+        "TLS": {
+          "CertFile": "",
+          "KeyFile": "",
+          "MinVersion": "1.2",
+          "ClientCAFile": "",
+          "ClientAuth": "none",
+          "CipherSuites": null,
+          "ReloadInterval": 0
         }
       }
     },
