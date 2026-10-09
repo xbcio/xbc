@@ -548,8 +548,9 @@ func TestOpenTrafficReturnsRouteFreezeErrorWithoutNotifyingListeners(t *testing.
 // fail startup in the RoutesReady phase instead of serving it.
 //
 // newPingServer cannot be reused here: it forces Security.Default = permit,
-// which is exactly the tier under test. RoutesReady runs only inside
-// OpenTraffic, so Start alone must still succeed -- asserting that separately is
+// which is exactly the tier under test. RoutesReady runs only from the
+// traffic-preparation path -- OpenTraffic, and Preflight for the validate
+// command -- so Start alone must still succeed; asserting that separately is
 // what keeps this test honest about which phase produces the failure.
 func TestOpenTrafficFailsWhenARouteFallsToDenyWithoutAuthenticator(t *testing.T) {
 	cfg := web.DefaultConfig()

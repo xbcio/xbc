@@ -422,7 +422,10 @@ Adding a `web:` section to a service that selected no transport fails startup by
 ```sh
 go run ./examples/worker --config examples/worker/application.yml
 go run ./examples/worker doctor --config examples/worker/application.yml
+go run ./examples/worker validate --config examples/worker/application.yml
 ```
+
+`validate` is worth more on this shape than it looks: a background service has no route table to check, so what it exercises is the plugins' real `Init` and `Stop` -- the connection, the client, the credential -- and it exits afterwards, turning a misconfiguration into an exit code instead of a service that starts and immediately dies.
 
 ## Hosting a subset of workloads
 
@@ -989,3 +992,39 @@ unowned             plugins=14
 `selected at` is the `BundleOf` call that first introduced the Definition, as an absolute `file:line`. For a plugin selected through an aggregate such as `prelude.Bundle()`, that site is the owning package's own `Bundle()` rather than the aggregate, because that is where the Definition entered a Bundle; for an application plugin it is the application's own file. Selecting the same Definition twice -- an aggregate plus an explicit selection -- stays legal and is not reported as a conflict; the first selection wins and is the one printed. Selections that disagree on workload ownership are the exception: a Definition tagged by a workload at one selection and left plain at another fails planning with `conflicting workload ownership`, naming both selection points, rather than letting Bundle order decide the membership. Two *different* Definitions claiming one key is the real conflict, and that fails planning with both declaration and selection sites named.
 
 Like the rest of `doctor`, this section prints only identities, contract type names, and source locations. Reading it constructs no plugin and starts no goroutine. The one thing `doctor` does reach for is the placement decision, which it resolves before planning: a lease source reads its store and wins its slots there, and the runtime gives them back before the command returns -- the acquisition is transient, and nothing it claims outlives the report that needed it.
+## Reading the startup report
+
+Before it releases the traffic gate, a successful start prints the assembled request pipeline and the decision behind every route. The `validate` subcommand prints the same report for the same composition without binding a listener, so the decision can be read -- and a mistake found -- from a process that serves nothing:
+
+```sh
+go run ./examples/quickstart validate --config examples/quickstart/application.yml
+```
+
+The policy table is the one to read when asking what an unauthenticated caller can actually reach:
+
+```
+INFO web: route table (7)
+  1. GET   /api/v1/hello
+  2. POST  /api/v1/hello
+  ...
+INFO web: public endpoints (7)
+  1. GET   /api/v1/hello
+  ...
+INFO web: policy decisions (7)
+  1. GET   /api/v1/hello         -> permit    (route)
+  6. GET   /api/v1/docs          -> permit    (application-rule, rule 0)
+```
+
+Each policy row names the outcome and, in parentheses, the tier that decided it: `route` is the route's own `.Auth()` declaration, `application-rule` a rule from `web.security.policies` (`rule N` is that rule's index there), `default` the `web.security.default` fallback. The outcome is `permit`, `deny`, the scheme names the route authenticates with, or `authenticate(default: ...)` when the route resolves through the authenticator manager's own default selection rather than an explicit list. `public endpoints` lists every route that resolved to `permit` -- that is, every route served without authentication -- and warns there when `web.security.default` is `permit`, because a fail-open fallback makes every uncovered route public. `authentication arbitration order` appears when authenticators are registered, and prints the order actually in effect rather than the configured list.
+
+This report is the only place route-level policy is visible, and the reason is structural: a route is contributed by its plugin during `Start`, and its decision needs the registered authenticators, so both exist only after construction. The start and `validate` are therefore the two commands that print it, and they print the same one: `validate` runs the identical assembly and stops before the listener. `doctor` deliberately constructs nothing, so it validates the configuration's shape -- `web.security.default` must be `deny` or `permit`, and every rule must be well-formed -- and reports the graph without ever printing a route table. Every check that needs the registered authenticators runs in that startup path instead, before the gate opens or the `validate` report is printed: a declared `web.security.schemes` order with no authenticator registered is refused, and so is a route that requires authentication with none available. Both fail the command rather than appearing as rows in the table above, which is the point -- a policy mistake fails the process instead of being served.
+
+
+A `validate` run has its own pair, measured from the same anchor -- the moment argument parsing succeeded -- rather than from a gate release, so the two totals are comparable across commands. It closes with the always-on line, and at debug it lists one line per instance whose `Preflight` hook ran, which is the only stage the command runs beyond construction:
+
+```
+INFO  xbc: application validation finished  instances=14 validation=8.203ms
+DEBUG xbc: validation timings, total 8.203ms
+  web                          Preflight 7.912ms
+```
+

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -205,6 +206,42 @@ func TestStartupTimingsAttributeASlowBootToItsPhaseAndPlugin(t *testing.T) {
 	require.NoError(t, awaitRuntimeTestResult(t, result).err)
 }
 
+// TestValidationTimingsAttributeASlowValidateToItsPluginStage is the same
+// measurement for the command that stops at validation: the hook is the only
+// work validate does beyond construction, so a slow Preflight must reach both
+// the total an operator reads and the per-stage breakdown they read it against.
+// A real run is used for the same reason as above -- a mis-anchored total or a
+// stage timed around the wrong call only fails against the live wiring.
+func TestValidationTimingsAttributeASlowValidateToItsPluginStage(t *testing.T) {
+	definition := plugin.Define("slow-preflight", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Preflight: func(*runtimeTestValue, *plugin.Context) error {
+			time.Sleep(startupProbe)
+			return nil
+		},
+	}})
+
+	app := newRuntimeTestApp(definition)
+	result := executeRuntimeTest(app, append([]string{"validate"}, runtimeTestConfig(t, time.Second)...)...)
+	completed := awaitRuntimeTestResult(t, result)
+	require.NoError(t, completed.err)
+	require.Equal(t, 0, completed.code)
+
+	assert.GreaterOrEqual(t, app.validation, startupProbe,
+		"the reported total covers the hook that was slow")
+	instance, ok := app.owned.Instance(plugin.Identity{Plugin: "slow-preflight", Instance: plugin.DefaultInstance})
+	require.True(t, ok)
+	stages := make(map[assembly.Stage]time.Duration)
+	for _, timing := range instance.Timings() {
+		stages[timing.Stage] = timing.Duration
+	}
+	assert.GreaterOrEqual(t, stages[assembly.StagePreflight], startupProbe,
+		"the plugin and the stage inside it are both named")
+	assert.Zero(t, app.startup.total,
+		"validate never fills the boot measurement: the two numbers describe different commands")
+}
+
 // TestReportStartedStatesHowLongTheBootTook pins the always-on half. The
 // breakdown is debug-only, so this one field is all an operator has on a
 // default-configured production boot, and it must be there even when nothing
@@ -225,6 +262,31 @@ func TestReportStartedStatesHowLongTheBootTook(t *testing.T) {
 	assert.Equal(t, "info", entry.level)
 	assert.Equal(t, "812ms", entry.fields()["startup"],
 		"a boot duration is reported as a duration, not as a nanosecond count")
+}
+
+// TestReportValidatedStatesHowLongValidationTook pins the always-on half of the
+// validate command's report, the counterpart of the released-gate line: a CI job
+// or a pre-deployment check gets one line saying how many instances were
+// checked and how long it took, whatever the log level, because the breakdown
+// below it costs a plugin count and stays at debug.
+func TestReportValidatedStatesHowLongValidationTook(t *testing.T) {
+	definition := plugin.Define("validated", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+
+	app := newRuntimeTestApp(definition)
+	capture := ownUnderCapture(t, app)
+	app.validation = 640 * time.Millisecond
+
+	app.reportValidated(app.owned.Instances())
+
+	require.Len(t, capture.entries, 1)
+	entry := capture.entries[0]
+	assert.Equal(t, "info", entry.level, "finishing validation is the command's normal outcome")
+	assert.Equal(t, "xbc: application validation finished", entry.msg)
+	assert.EqualValues(t, 1, entry.fields()["instances"])
+	assert.Equal(t, "640ms", entry.fields()["validation"],
+		"a validation duration is reported as a duration, not as a nanosecond count")
 }
 
 // TestStartupTimingsBreakdownNamesEveryStageThatRan proves the debug entry
@@ -279,6 +341,64 @@ func TestStartupTimingsAreNotBuiltWhenDebugIsOff(t *testing.T) {
 	assert.Empty(t, capture.entries)
 }
 
+// TestReportValidationTimingsNameOnlyWhatValidateRan pins the debug entry:
+// one line per instance whose Preflight hook ran, and nothing for an instance
+// that declared none. Preflight is the only stage validate runs of its own, so
+// the boot report's other stages are deliberately absent rather than printed as
+// zero -- a line here says "this plugin cost this much to check", and an
+// instance with nothing to check has nothing to say.
+func TestReportValidationTimingsNameOnlyWhatValidateRan(t *testing.T) {
+	preflighting := plugin.Define("preflighting", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Init:      func(*runtimeTestValue, *plugin.Context) error { return nil },
+		Preflight: func(*runtimeTestValue, *plugin.Context) error { return nil },
+	}})
+	plain := plugin.Define("plain", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Init: func(*runtimeTestValue, *plugin.Context) error { return nil },
+	}})
+
+	app := newRuntimeTestApp(preflighting, plain)
+	capture := ownUnderCapture(t, app)
+	require.NoError(t, app.preflightAll(app.owned.Instances()))
+	app.validation = 3 * time.Second
+
+	app.reportValidationTimings(app.owned.Instances())
+
+	require.Len(t, capture.entries, 1, "the whole breakdown is one record, so it cannot interleave")
+	entry := capture.entries[0]
+	assert.Equal(t, "debug", entry.level, "a normal validation must not spend a warning on its own timings")
+	assert.Contains(t, entry.msg, "total 3s")
+	assert.Contains(t, entry.msg, "preflighting")
+	assert.Contains(t, entry.msg, "Preflight ")
+	assert.NotContains(t, entry.msg, "plain",
+		"an instance that declared no Preflight hook contributes no line")
+	assert.NotContains(t, entry.msg, "Init ",
+		"construction is measured by the boot report; it is not validate's own stage")
+}
+
+// TestValidationTimingsAreNotBuiltWhenDebugIsOff is the cost guard for the
+// validate breakdown, matching the boot one: its size follows the plugin count,
+// so a production logger set to info must not pay for a string it discards.
+func TestValidationTimingsAreNotBuiltWhenDebugIsOff(t *testing.T) {
+	definition := plugin.Define("quiet-preflight", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Preflight: func(*runtimeTestValue, *plugin.Context) error { return nil },
+	}})
+
+	app := newRuntimeTestApp(definition)
+	capture := ownUnderCapture(t, app)
+	app.logger = &levelledCapture{captureLogger: capture, enabled: log.InfoLevel}
+	app.validation = time.Second
+
+	app.reportValidationTimings(app.owned.Instances())
+
+	assert.Empty(t, capture.entries)
+}
+
 // levelledCapture is a captureLogger that answers Enabled honestly, which the
 // plain recorder deliberately does not.
 type levelledCapture struct {
@@ -287,3 +407,87 @@ type levelledCapture struct {
 }
 
 func (l *levelledCapture) Enabled(level log.Level) bool { return level >= l.enabled }
+
+// startOneResidentTaskUnderBudget composes one workload-scoped plugin whose
+// Start submits a single process-lifetime task, spells the workload's budget
+// out in the configuration bootstrap reads, and runs the Start phase with a
+// recording logger, returning what that phase logged.
+//
+// The phases are driven by hand the way this package's other report tests drive
+// them, because the warning under test is emitted from inside the Start phase
+// and a full run installs a logger of its own. Everything else is real: the
+// limit comes from the workloads root, and the attribution and the hosted set
+// come from the plan this composition built.
+func startOneResidentTaskUnderBudget(t *testing.T, budget string) (*captureLogger, *App) {
+	t.Helper()
+	definition := plugin.Define("dispatcher", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Start: func(_ *runtimeTestValue, ctx *plugin.Context) error {
+			ctx.GoCritical(func(taskCtx context.Context) { <-taskCtx.Done() })
+			return nil
+		},
+	}})
+
+	app := newApp([]plugin.Bundle{
+		plugin.WorkloadOf("sast", plugin.BundleOf(definition), plugin.WithReplicas(1)),
+	})
+	plan, capture := planUnderCapture(t, app, "workloads:\n  sast:\n    max_goroutines: "+budget+"\n")
+	app.plan = plan
+	owned, err := assembly.Construct(plan, assembly.ConstructOptions{
+		ShutdownTimeout: app.settings.ShutdownTimeout,
+		// The submission under test goes through Context, so the Context must be
+		// the runtime's own host: the same adapter a run installs, or Start would
+		// receive no Context at all and the workload would never be charged.
+		ContextFactory: func(identity plugin.Identity, logger log.Logger) *plugin.Context {
+			return plugin.NewRuntimeContext(hostAdapter{app: app, logger: logger}, identity)
+		},
+	})
+	require.NoError(t, err)
+	app.owned = owned
+
+	require.NoError(t, app.startAll(owned.Instances()))
+	// The resident task runs until its plugin's tasks are torn down; draining is
+	// what the drain phase would do with it, and it is what keeps this test from
+	// leaving a goroutine behind.
+	t.Cleanup(func() {
+		app.tasks.closeAdmission()
+		require.NoError(t, app.tasks.drainRemaining(context.Background()))
+	})
+	return capture, app
+}
+
+// TestAWorkloadWhoseBudgetStartSpendsIsReported is the only signal an operator
+// gets for the silent half of the budget. An admission waits for a unit instead
+// of refusing, so a workload whose own process-lifetime tasks have filled its
+// limit never runs the queue delivery or the pooled task that was meant to
+// charge it, and nothing anywhere says so.
+//
+// The check runs at the end of Start, so the test asserts on what that phase
+// logged rather than on a separately invoked report: deleting the call would
+// leave a budget with no diagnostic at all.
+func TestAWorkloadWhoseBudgetStartSpendsIsReported(t *testing.T) {
+	capture, _ := startOneResidentTaskUnderBudget(t, "1")
+
+	require.Len(t, capture.entries, 1, "one saturated workload is one record")
+	entry := capture.entries[0]
+	assert.Equal(t, "warn", entry.level, "a workload with nothing left to admit is not a routine fact")
+	assert.Equal(t, "xbc: workload goroutine budget fully held at the end of start; an admission for it waits until a held unit comes free", entry.msg)
+
+	fields := entry.fields()
+	assert.Equal(t, "sast", fields["workload"], "the workload is named, which is the field an operator acts on")
+	assert.Equal(t, 1, fields["limit"])
+	assert.Equal(t, 1, fields["running"],
+		"the count says whether the limit is the problem or the workload's own start-up work is")
+}
+
+// TestAWorkloadWithBudgetToSpareIsNotReported is the other half of the
+// contract: the ordinary configuration -- a workload whose resident work leaves
+// room for whatever arrives through admission -- must boot without saying
+// anything, or readers learn to ignore the line that matters.
+func TestAWorkloadWithBudgetToSpareIsNotReported(t *testing.T) {
+	capture, _ := startOneResidentTaskUnderBudget(t, "2")
+
+	assert.Empty(t, capture.entries,
+		"a workload with a unit to spare is the ordinary case and is not reported")
+}

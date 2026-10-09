@@ -419,6 +419,7 @@ func (value *stagedValue) record(stage string) error {
 
 func (value *stagedValue) Init(*plugin.Context) error        { return value.record("init") }
 func (value *stagedValue) Migrate(*plugin.Context) error     { return value.record("migrate") }
+func (value *stagedValue) Preflight(*plugin.Context) error   { return value.record("preflight") }
 func (value *stagedValue) Start(*plugin.Context) error       { return value.record("start") }
 func (value *stagedValue) OpenTraffic(*plugin.Context) error { return value.record("open") }
 func (value *stagedValue) Stop(context.Context) error        { return value.record("stop") }
@@ -455,12 +456,14 @@ func TestLifecycleStagesAreInvokedThroughTheCompiledDescriptor(t *testing.T) {
 	require.NotNil(t, instance.Context())
 	assert.Equal(t, "staged", instance.Context().Name())
 	assert.True(t, instance.HasMigration())
+	assert.True(t, instance.HasPreflight())
 	assert.True(t, instance.HasStart())
 	assert.True(t, instance.HasTrafficPreparation())
 	assert.True(t, instance.HasStop())
 	assert.True(t, instance.HasPreStop())
 
 	require.NoError(t, instance.InvokeMigration())
+	require.NoError(t, instance.InvokePreflight())
 	require.NoError(t, instance.InvokeStart())
 	require.NoError(t, instance.InvokeTrafficPreparation())
 	outcome, _, err := instance.InvokePreStop(context.Background(), time.Second)
@@ -469,7 +472,7 @@ func TestLifecycleStagesAreInvokedThroughTheCompiledDescriptor(t *testing.T) {
 	require.NoError(t, instance.StopBounded(context.Background(), time.Second))
 
 	require.NoError(t, instance.StopBounded(context.Background(), time.Second))
-	assert.Equal(t, []string{"init", "migrate", "start", "open", "prestop", "stop"}, stages, "Stop runs at most once")
+	assert.Equal(t, []string{"init", "migrate", "preflight", "start", "open", "prestop", "stop"}, stages, "Stop runs at most once")
 }
 
 func TestAbsentLifecycleStagesAreReportedAndSkipped(t *testing.T) {
@@ -485,12 +488,14 @@ func TestAbsentLifecycleStagesAreReportedAndSkipped(t *testing.T) {
 	require.True(t, ok)
 
 	assert.False(t, instance.HasMigration())
+	assert.False(t, instance.HasPreflight(), "an instance that declares no Preflight must be skipped by the validate walk")
 	assert.False(t, instance.HasStart())
 	assert.False(t, instance.HasTrafficPreparation())
 	assert.False(t, instance.HasStop())
 	assert.False(t, instance.HasPreStop(), "an instance that declares no PreStop must not be handed to the phase")
 	assert.Nil(t, instance.Context(), "no ContextFactory means no lifecycle Context")
 	require.NoError(t, instance.InvokeMigration())
+	require.NoError(t, instance.InvokePreflight())
 	require.NoError(t, instance.InvokeStart())
 	require.NoError(t, instance.InvokeTrafficPreparation())
 	require.NoError(t, instance.StopBounded(context.Background(), time.Second))
@@ -500,10 +505,11 @@ func TestLifecycleFailuresAndPanicsAreWrappedWithIdentityAndStage(t *testing.T) 
 	t.Parallel()
 	for stage, invoke := range map[string]func(*Instance) error{
 		"Migrate":     (*Instance).InvokeMigration,
+		"Preflight":   (*Instance).InvokePreflight,
 		"Start":       (*Instance).InvokeStart,
 		"OpenTraffic": (*Instance).InvokeTrafficPreparation,
 	} {
-		short := map[string]string{"Migrate": "migrate", "Start": "start", "OpenTraffic": "open"}[stage]
+		short := map[string]string{"Migrate": "migrate", "Preflight": "preflight", "Start": "start", "OpenTraffic": "open"}[stage]
 		t.Run(stage+" error", func(t *testing.T) {
 			var stages []string
 			err := invoke(stagedInstance(t, &stages, short, ""))

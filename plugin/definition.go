@@ -73,7 +73,8 @@ type Options[P any] struct {
 // Drain are appended in the order they were added so that adding each one
 // moved nothing. PreStop runs before Stop, and Drain runs after PreStop and
 // before Stop; see PreStopper and Drainer for why both take a plain
-// context.Context while Init, Migrate, Start and OpenTraffic take a *Context.
+// context.Context while Init, Migrate, Preflight, Start and OpenTraffic take a
+// *Context.
 type Lifecycle[P any] struct {
 	Init        func(P, *Context) error
 	Migrate     func(P, *Context) error
@@ -82,6 +83,9 @@ type Lifecycle[P any] struct {
 	Stop        func(P, context.Context) error
 	PreStop     func(P, context.Context) error
 	Drain       func(P, context.Context) error
+	// Preflight is appended as well, for the same reason: it was added last,
+	// and it runs before Start rather than after Drain. See Preflighter.
+	Preflight func(P, *Context) error
 }
 
 // Contract is one additional interface export tied to primary type P.
@@ -287,6 +291,9 @@ func eraseLifecycle[P any](lifecycle Lifecycle[P]) pluginmodel.LifecycleAdapters
 	}
 	if lifecycle.Drain != nil {
 		erased.Drain = func(value any, context context.Context) error { return lifecycle.Drain(value.(P), context) }
+	}
+	if lifecycle.Preflight != nil {
+		erased.Preflight = func(value, context any) error { return lifecycle.Preflight(value.(P), context.(*Context)) }
 	}
 	return erased
 }

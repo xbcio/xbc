@@ -203,6 +203,10 @@ type LifecycleAdapters struct {
 	Stop        func(any, context.Context) error
 	PreStop     func(any, context.Context) error
 	Drain       func(any, context.Context) error
+	// Preflight is appended rather than inserted because it was added last;
+	// the field order here follows the order the stages were added, not the
+	// order they run in.
+	Preflight func(any, any) error
 }
 
 // InstancePlan is the complete side-effect-free plan for one instance.

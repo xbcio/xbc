@@ -16,6 +16,22 @@ go run ./examples/quickstart doctor --config examples/quickstart/application.yml
 
 `doctor` validates configuration, plugin activation, typed inputs and contracts, and dependency order. It then reports the enabled instances in start order, where each one was selected, and which producers were bound to each of its declared inputs -- including the optional and collecting inputs that were bound to nothing. Its output includes source paths, plugin identities, and contract type names, but never configuration values. See [Diagnosing why a plugin is in the graph](recipes.md#diagnosing-why-a-plugin-is-in-the-graph) for how to read that section.
 
+Because it constructs nothing, anything that exists only after construction is absent from its output by design. The most visible case is the route table: routes are contributed by their plugins during start, so `doctor` cannot list them or the authentication policy each one resolves to.
+
+`validate` covers exactly that gap:
+
+```bash
+go run ./examples/quickstart validate --config examples/quickstart/application.yml
+```
+
+It constructs every enabled plugin and runs their `Preflight` hooks -- the state a start would build, from each contributed route to the compiled authentication policy -- then prints the same report a start prints just before it opens the gate: the middleware chain in order, the route table, and the policy decision behind each route. It stops short of activating anything: no listener is bound, so it can run beside a serving instance, and the process exits with the report. The plugins a real boot still has to prove -- anything that only fails when it is running -- remain the start's to discover.
+
+A successful check closes with `xbc: application validation finished`, stating how many instances were checked and how long that took, so a pipeline gets a duration to watch and not only an exit code. At `debug` level the log breaks that time down per plugin, by `Preflight` stage.
+
+Constructing is not the same as touching nothing: a plugin's `Init` runs here exactly as it would at boot, so a composition that opens a database or a queue connection really does contact it. `doctor` is the command that touches nothing; `validate` is the one that finds out whether the connections a boot would open can be opened.
+
+`validate` never migrates. Neither `--migrate` nor `xbc.auto_migrate` is consulted on that path, so a check run against a deployment cannot change its schema first; run `migrate` (or a normal boot with the flag) when the schema is what should move.
+
 Start the application:
 
 ```bash

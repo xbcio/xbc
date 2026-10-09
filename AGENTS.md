@@ -70,7 +70,7 @@ Do not use root-level `go test ./...` as full-repository validation: it excludes
 
 While iterating, test only the affected package. From the root, `go test ./plugin/...` covers core packages; a submodule is tested from its own directory, e.g. `cd transport/web && go test ./...`. Run the workspace-wide `make fmt`, `make check`, and `make test-race` once when the change is complete.
 
-`go run ./examples/quickstart doctor --config examples/quickstart/application.yml` validates and prints the full plan -- configuration, plugin activation, typed inputs, contracts, and start order -- without opening a listener.
+`go run ./examples/quickstart doctor --config examples/quickstart/application.yml` validates and prints the full plan -- configuration, plugin activation, typed inputs, contracts, and start order -- without opening a listener. `go run ./examples/quickstart validate --config examples/quickstart/application.yml` goes one step further and runs the same construction and startup preparation a boot would, reporting the route table and its authentication policy, but still without binding a listener or admitting a serving task.
 
 After changing Go code, run `make fmt` followed by `make check`. Also run `make test-race` for concurrent runtime, lifecycle, plugin, or server changes. Targeted package tests are useful during development but do not replace the final workspace-wide check. Documentation-only changes do not require tests unless they alter commands, configuration, or runnable examples.
 

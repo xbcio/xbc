@@ -17,6 +17,7 @@ var (
 	closerType        = reflect.TypeOf((*plugin.Closer)(nil)).Elem()
 	preStopperType    = reflect.TypeOf((*plugin.PreStopper)(nil)).Elem()
 	drainerType       = reflect.TypeOf((*plugin.Drainer)(nil)).Elem()
+	preflighterType   = reflect.TypeOf((*plugin.Preflighter)(nil)).Elem()
 
 	// lifecycleStages pairs each stage's name with the interface that declares
 	// it and with the predicate that reports whether an adapter covers it, so
@@ -34,6 +35,7 @@ var (
 		{"Stop", closerType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.Stop != nil }},
 		{"PreStop", preStopperType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.PreStop != nil }},
 		{"Drain", drainerType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.Drain != nil }},
+		{"Preflight", preflighterType, func(adapters pluginmodel.LifecycleAdapters) bool { return adapters.Preflight != nil }},
 	}
 )
 
@@ -133,6 +135,22 @@ func compileLifecycle(definition pluginmodel.DefinitionDescriptor) (lifecycleDes
 		}
 	} else if adapters.Drain != nil {
 		descriptor.drain = adapters.Drain
+	}
+	// Preflight is compiled last for the same reason PreStop and Drain were
+	// appended rather than inserted: it was added last, not because it runs
+	// last -- the validate command runs it after construction and before any
+	// Start. The mutual-exclusion rule is identical to every stage above.
+	if primary.Implements(preflighterType) {
+		if adapters.Preflight != nil {
+			return lifecycleDescriptor{}, duplicateLifecycle(definition, "Preflight")
+		}
+		descriptor.preflight = func(value any, context *plugin.Context) error {
+			return value.(plugin.Preflighter).Preflight(context)
+		}
+	} else if adapters.Preflight != nil {
+		descriptor.preflight = func(value any, context *plugin.Context) error {
+			return adapters.Preflight(value, context)
+		}
 	}
 	return descriptor, nil
 }

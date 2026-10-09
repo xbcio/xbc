@@ -37,6 +37,12 @@ const (
 	StageInit Stage = "Init"
 	// StageMigrate runs only when the run was asked to migrate.
 	StageMigrate Stage = "Migrate"
+	// StagePreflight runs only for the validate command, after construction
+	// and before any Start. It assembles the state Start would assemble --
+	// without activating anything -- so a mistake fails the command instead of
+	// a deployment; see plugin.Preflighter. A run that migrates never reaches
+	// it: validate is the only command that invokes the stage.
+	StagePreflight Stage = "Preflight"
 	// StageStart runs before the traffic gate is released.
 	StageStart Stage = "Start"
 	// StageOpenTraffic is the last startup stage before the gate opens.
@@ -75,8 +81,8 @@ type ConstructOptions struct {
 
 	// OnStageBegin, when set, is called immediately before this package
 	// invokes one startup stage on one instance: the factory and Init inside
-	// Construct, and Migrate, Start and OpenTraffic through the Invoke*
-	// methods. A hook the Definition never declared announces nothing,
+	// Construct, and Migrate, Preflight, Start and OpenTraffic through the
+	// Invoke* methods. A hook the Definition never declared announces nothing,
 	// because nothing runs. StageStop, StagePreStop and StageDrain announce
 	// nothing either: all three are already bounded by the budget they run
 	// under and reported per attempt in StopRecord, PreStopRecord and
@@ -149,6 +155,9 @@ func (instance *Instance) HasPreStop() bool { return instance.lifecycle.preStop 
 
 // HasDrain reports whether this instance declares a Drain hook.
 func (instance *Instance) HasDrain() bool { return instance.lifecycle.drain != nil }
+
+// HasPreflight reports whether this instance declares a Preflight hook.
+func (instance *Instance) HasPreflight() bool { return instance.lifecycle.preflight != nil }
 
 // IsIngress reports whether this instance opens traffic: either its primary
 // value implements plugin.TrafficOpener directly, or an Options[P].Lifecycle
@@ -356,6 +365,12 @@ func (instance *Instance) InvokeMigration() error {
 // InvokeStart runs one frozen start descriptor under a panic boundary.
 func (instance *Instance) InvokeStart() error {
 	return instance.invoke(StageStart, instance.lifecycle.start)
+}
+
+// InvokePreflight runs one frozen preflight descriptor under a panic boundary.
+// Only the validate command calls it.
+func (instance *Instance) InvokePreflight() error {
+	return instance.invoke(StagePreflight, instance.lifecycle.preflight)
 }
 
 // InvokeTrafficPreparation runs one frozen traffic-preparation descriptor.

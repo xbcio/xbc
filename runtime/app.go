@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/xbcio/xbc/config"
 	"github.com/xbcio/xbc/log"
@@ -66,6 +67,12 @@ type App struct {
 	// startup is written on the execute goroutine, before the released-gate
 	// report that reads it, and is never written again.
 	startup startupTiming
+
+	// validation is the same measurement for the validate command, which ends
+	// before any Start hook runs and therefore never fills startup at all. It
+	// is written on the execute goroutine, before the report that reads it,
+	// and is never written again.
+	validation time.Duration
 
 	// progress is where startup currently is. Unlike startup it is written
 	// before each step rather than after it, and read by the slow-startup

@@ -90,6 +90,7 @@ type lifecycleDescriptor struct {
 	stop        func(any, context.Context) error
 	preStop     func(any, context.Context) error
 	drain       func(any, context.Context) error
+	preflight   func(any, *plugin.Context) error
 }
 
 // Order returns the canonical deterministic dependency order.

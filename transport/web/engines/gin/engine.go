@@ -13,8 +13,9 @@ import (
 )
 
 // Factory constructs the gin-backed Engine. It is the only exported
-// constructor: web.Server calls Factory{}.NewEngine during Start, and no
-// other package needs to reach the concrete *engine type.
+// constructor: web.Server calls Factory{}.NewEngine from assemblePipeline --
+// during Start on the way to serving, and during Preflight for the validate
+// command -- and no other package needs to reach the concrete *engine type.
 type Factory struct{}
 
 type engine struct {

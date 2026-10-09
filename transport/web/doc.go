@@ -137,6 +137,12 @@
 // so one failure leaves every ingress blocked. Stop drains a serving server or
 // closes a listener that never crossed the gate.
 //
+// Server.Preflight is the same assembly without the activation: it builds and
+// registers the pipeline, freezes the route table, and prints the report a boot
+// prints, but binds no listener and admits no serving task. The runtime invokes
+// it only for the validate command, so a deployment can be checked -- by a
+// process that exits -- before one that serves it is started.
+//
 // When runtime cancellation begins, Stop optionally leaves a serving listener
 // up for web.shutdown.pre_drain_delay before calling http.Server.Shutdown. The
 // default is 0s. A nonzero delay lets readiness probes receive 503 before HTTP

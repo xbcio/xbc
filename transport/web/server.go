@@ -52,6 +52,7 @@ type Server struct {
 var (
 	_ plugin.Runner        = (*Server)(nil)
 	_ plugin.TrafficOpener = (*Server)(nil)
+	_ plugin.Preflighter   = (*Server)(nil)
 	_ plugin.Closer        = (*Server)(nil)
 )
 
@@ -88,26 +89,43 @@ func (s *Server) Addr() string {
 	return s.ln.Addr().String()
 }
 
-// Start assembles the immutable request pipeline, binds the listener, and
-// submits the serving loop while managed-task admission is open. The pipeline is
-// led by the process-level in-flight gate, the one stage no contributed
-// middleware can displace, disable, or order itself outside of. The task waits
-// for the runtime-owned traffic gate (or task cancellation) before calling
-// Serve, so no ingress is exposed during fallible preparation.
-func (s *Server) Start(ctx *plugin.Context) error {
-	if ctx == nil {
-		return errors.New("xbc: web Start requires a non-nil plugin context")
-	}
+// assembledPipeline is everything a Server builds before it activates
+// anything: the request pipeline, the route table every contributor has
+// registered against, and the authentication middleware that is about to
+// compile its policy. Start builds it and then goes on to bind a listener and
+// submit the serving task; Preflight builds it and stops there, so the fallible
+// half of a boot can be exercised -- and reported -- by a process that serves
+// nothing.
+type assembledPipeline struct {
+	cfg            Config
+	engine         Engine
+	router         *Router
+	ordered        []plugin.Entry[Middleware]
+	misses         []MiddlewareOrderMiss
+	authentication *authenticationMiddleware
+	inflight       *inFlightGate
+}
+
+// assemblePipeline builds the immutable request pipeline and registers every
+// route the composition contributes, without binding anything or submitting any
+// task. Its failure modes are the ones an operator can still act on before
+// deploying -- a bad configuration value, a middleware-order conflict, a route
+// registration mistake -- which is why it is shared with Preflight rather than
+// living inside Start.
+//
+// The caller owns what happens next: Start installs the result on the Server
+// and serves it, Preflight freezes and reports it.
+func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error) {
 	cfg, err := normalizeConfig(s.cfg)
 	if err != nil {
-		return err
+		return assembledPipeline{}, err
 	}
 	s.cfg = cfg
 
 	logger := ctx.Log()
 
 	if s.factory == nil {
-		return errors.New("xbc: web Server has no EngineFactory configured; select an engine Bundle alongside web.Bundle()")
+		return assembledPipeline{}, errors.New("xbc: web Server has no EngineFactory configured; select an engine Bundle alongside web.Bundle()")
 	}
 	engine, err := s.factory.NewEngine(Options{
 		TrustedProxies:     cfg.TrustedProxies,
@@ -120,7 +138,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		Logger:             logger,
 	})
 	if err != nil {
-		return fmt.Errorf("xbc: web engine: %w", err)
+		return assembledPipeline{}, fmt.Errorf("xbc: web engine: %w", err)
 	}
 
 	routes, frozen, index := newRouteTable()
@@ -155,16 +173,16 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	// contributed middleware claiming one is rejected by rule, before it can
 	// surface as a duplicate identity.
 	if err := rejectReservedMiddlewareIdentities(s.middlewares); err != nil {
-		return err
+		return assembledPipeline{}, err
 	}
 	panicGuard := newPanicBoundary(logger, cfg.Recovery.Stack)
 	boundary, err := newErrorBoundary(s.mappers)
 	if err != nil {
-		return err
+		return assembledPipeline{}, err
 	}
 	authenticator, err := newAuthenticationMiddleware(cfg.Security, s.authenticators, s.extractors)
 	if err != nil {
-		return fmt.Errorf("xbc: web authentication: %w", err)
+		return assembledPipeline{}, fmt.Errorf("xbc: web authentication: %w", err)
 	}
 	middlewares := append(
 		[]plugin.Entry[Middleware]{
@@ -198,7 +216,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	}
 	ordered, misses, err := orderMiddlewares(middlewares, orderOptions...)
 	if err != nil {
-		return err
+		return assembledPipeline{}, err
 	}
 	for _, entry := range ordered {
 		handlers = append(handlers, entry.Value.Handler())
@@ -256,6 +274,39 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		entry.Value.RegisterRoutes(&contributor)
 	}
 
+	return assembledPipeline{
+		cfg:            cfg,
+		engine:         engine,
+		router:         router,
+		ordered:        ordered,
+		misses:         misses,
+		authentication: authenticator,
+		inflight:       inflight,
+	}, nil
+}
+
+// Start assembles the immutable request pipeline, binds the listener, and
+// submits the serving loop while managed-task admission is open. The pipeline is
+// led by the process-level in-flight gate, the one stage no contributed
+// middleware can displace, disable, or order itself outside of. The task waits
+// for the runtime-owned traffic gate (or task cancellation) before calling
+// Serve, so no ingress is exposed during fallible preparation.
+//
+// The assembly it starts from is the same one Preflight builds -- see
+// assemblePipeline -- so a pipeline validate accepted is the pipeline a boot
+// goes on to serve.
+func (s *Server) Start(ctx *plugin.Context) error {
+	if ctx == nil {
+		return errors.New("xbc: web Start requires a non-nil plugin context")
+	}
+	pipeline, err := s.assemblePipeline(ctx)
+	if err != nil {
+		return err
+	}
+	cfg := pipeline.cfg
+	engine := pipeline.engine
+	logger := ctx.Log()
+
 	ln := s.listener
 	if ln == nil {
 		ln, err = net.Listen("tcp", cfg.Addr)
@@ -271,12 +322,12 @@ func (s *Server) Start(ctx *plugin.Context) error {
 		return errors.New("xbc: web Server has already started")
 	}
 	s.engine = engine
-	s.router = router
+	s.router = pipeline.router
 	s.ln = ln
-	s.ordered = ordered
-	s.misses = misses
-	s.authentication = authenticator
-	s.inflight = inflight
+	s.ordered = pipeline.ordered
+	s.misses = pipeline.misses
+	s.authentication = pipeline.authentication
+	s.inflight = pipeline.inflight
 	s.started = true
 	s.mu.Unlock()
 
@@ -309,7 +360,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	// count is necessarily zero here: what an operator reads from this line is
 	// the ceiling, where it came from, and the Retry-After a refusal will carry.
 	// The live reading afterwards is Server.InFlightStats.
-	logger.Info(renderInFlightGate(inflight.stats(), cfg.MaxInFlight <= 0))
+	logger.Info(renderInFlightGate(pipeline.inflight.stats(), cfg.MaxInFlight <= 0))
 	return nil
 }
 
@@ -334,29 +385,84 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 	authenticator := s.authentication
 	s.mu.Unlock()
 
-	catalog, err := router.freeze()
+	catalog, err := freezeRoutes(router, authenticator, listeners)
 	if err != nil {
 		return err
-	}
-	// The built-in authentication middleware compiles its policy table and runs
-	// the startup policy validations before any contributed listener observes
-	// the catalog: a policy mistake must fail startup, not be reported after
-	// other listeners have already reacted to the route table.
-	if authenticator != nil {
-		if err := authenticator.RoutesReady(catalog); err != nil {
-			return err
-		}
-	}
-	for _, entry := range listeners {
-		if err := entry.Value.RoutesReady(catalog); err != nil {
-			return fmt.Errorf("xbc: plugin %s RoutesReady failed: %w", entry.Identity, err)
-		}
 	}
 
 	logger := log.L()
 	if ctx != nil {
 		logger = ctx.Log()
 	}
+	renderStartupReport(logger, ordered, misses, catalog, authenticator)
+
+	s.mu.Lock()
+	s.catalog = catalog
+	s.prepared = true
+	s.mu.Unlock()
+	return nil
+}
+
+// Preflight assembles and validates what a later Start would build -- the
+// request pipeline, every contributed route registration, and the compiled
+// authentication policy -- and reports it, without activating any of it: no
+// listener is bound, no serving task is admitted, and no request can be served.
+//
+// The runtime invokes it only for the validate command, whose point is to fail a
+// deployment before it is deployed: an unknown authentication scheme, a route no
+// policy covers, a middleware ordering conflict, or a route that cannot be
+// registered all fail the command, and the report a real boot prints on the way
+// to serving is printed here too. What it cannot check is anything that requires
+// activation -- that the configured address can actually be bound, for one, is
+// still discovered by Start.
+func (s *Server) Preflight(ctx *plugin.Context) error {
+	if ctx == nil {
+		return errors.New("xbc: web Preflight requires a non-nil plugin context")
+	}
+	pipeline, err := s.assemblePipeline(ctx)
+	if err != nil {
+		return err
+	}
+	catalog, err := freezeRoutes(pipeline.router, pipeline.authentication, s.listeners)
+	if err != nil {
+		return err
+	}
+	renderStartupReport(ctx.Log(), pipeline.ordered, pipeline.misses, catalog, pipeline.authentication)
+	return nil
+}
+
+// freezeRoutes compiles the frozen route table and hands it to every party that
+// has to accept it before the runtime releases the traffic gate: the built-in
+// authentication middleware first, so that a policy mistake fails startup rather
+// than being reported after other listeners have already reacted to the route
+// table, and then each contributed listener in composition order.
+//
+// Nothing here depends on a listener having been bound, which is why Preflight
+// can run it for a process that will never serve.
+func freezeRoutes(router *Router, authenticator *authenticationMiddleware, listeners []plugin.Entry[RouteCatalogListener]) (RouteCatalog, error) {
+	catalog, err := router.freeze()
+	if err != nil {
+		return nil, err
+	}
+	if authenticator != nil {
+		if err := authenticator.RoutesReady(catalog); err != nil {
+			return nil, err
+		}
+	}
+	for _, entry := range listeners {
+		if err := entry.Value.RoutesReady(catalog); err != nil {
+			return nil, fmt.Errorf("xbc: plugin %s RoutesReady failed: %w", entry.Identity, err)
+		}
+	}
+	return catalog, nil
+}
+
+// renderStartupReport prints what a boot decided about its ingress: the ordered
+// middleware chain, the routes that landed, and the authentication policy each
+// route falls under. OpenTraffic prints it just before the gate opens; Preflight
+// prints the same report for a process that will never serve, because the
+// decision an operator reads is the same decision either way.
+func renderStartupReport(logger log.Logger, ordered []plugin.Entry[Middleware], misses []MiddlewareOrderMiss, catalog RouteCatalog, authenticator *authenticationMiddleware) {
 	if len(ordered) > 0 {
 		logger.Info(renderMiddlewareChain(ordered))
 	}
@@ -371,12 +477,6 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 		logger.Info(renderPublicEndpoints(authenticator.publicRoutes(), authenticator.permitAll))
 		logger.Info(renderPolicyDecisions(authenticator.decisions(), authenticator.manager.DefaultSchemes()))
 	}
-
-	s.mu.Lock()
-	s.catalog = catalog
-	s.prepared = true
-	s.mu.Unlock()
-	return nil
 }
 
 // Stop drains a serving server or closes a listener that never crossed the

@@ -141,6 +141,7 @@ type dualLifecycleValue struct{}
 
 func (dualLifecycleValue) Init(*plugin.Context) error        { return nil }
 func (dualLifecycleValue) Migrate(*plugin.Context) error     { return nil }
+func (dualLifecycleValue) Preflight(*plugin.Context) error   { return nil }
 func (dualLifecycleValue) Start(*plugin.Context) error       { return nil }
 func (dualLifecycleValue) OpenTraffic(*plugin.Context) error { return nil }
 func (dualLifecycleValue) Stop(ctx context.Context) error    { return nil }
@@ -153,6 +154,7 @@ func TestFreezeRejectsAStageDeclaredByBothTheTypeAndAnAdapter(t *testing.T) {
 	for stage, lifecycle := range map[string]plugin.Lifecycle[dualLifecycleValue]{
 		"Init":        {Init: func(dualLifecycleValue, *plugin.Context) error { return nil }},
 		"Migrate":     {Migrate: func(dualLifecycleValue, *plugin.Context) error { return nil }},
+		"Preflight":   {Preflight: func(dualLifecycleValue, *plugin.Context) error { return nil }},
 		"Start":       {Start: func(dualLifecycleValue, *plugin.Context) error { return nil }},
 		"OpenTraffic": {OpenTraffic: func(dualLifecycleValue, *plugin.Context) error { return nil }},
 		"Stop":        {Stop: func(dualLifecycleValue, context.Context) error { return nil }},
@@ -202,6 +204,10 @@ type pointerDrainValue struct{}
 
 func (*pointerDrainValue) Drain(context.Context) error { return nil }
 
+type pointerPreflightValue struct{}
+
+func (*pointerPreflightValue) Preflight(*plugin.Context) error { return nil }
+
 func TestFreezeRejectsALifecycleStageImplementedOnlyOnThePointerType(t *testing.T) {
 	t.Parallel()
 	for name, testCase := range map[string]struct {
@@ -223,6 +229,14 @@ func TestFreezeRejectsALifecycleStageImplementedOnlyOnThePointerType(t *testing.
 				})
 			},
 			stage: "Migrate",
+		},
+		"Preflight": {
+			define: func() plugin.Definition {
+				return plugin.Define("pointer", func(plugin.BuildContext) (pointerPreflightValue, error) {
+					return pointerPreflightValue{}, nil
+				})
+			},
+			stage: "Preflight",
 		},
 		"Start": {
 			define: func() plugin.Definition {
@@ -306,6 +320,39 @@ func TestFreezeAcceptsAnAdapterForAStageDeclaredOnlyOnThePointerType(t *testing.
 		assert.Equal(t, instance.Primary(), value, "the adapter receives the boxed primary value")
 	default:
 		t.Fatal("the Stop adapter did not run")
+	}
+}
+
+// TestFreezeAcceptsAPreflightAdapter pins the adapter path for the stage the
+// validate command exists to run: a primary type that declares no Preflight
+// method of its own still gets one from Options[P].Lifecycle, and it receives
+// the boxed primary.
+func TestFreezeAcceptsAPreflightAdapter(t *testing.T) {
+	t.Parallel()
+	preflighted := make(chan *store, 1)
+	definition := plugin.Define("adapted-preflight", func(plugin.BuildContext) (*store, error) {
+		return &store{name: "adapted-preflight"}, nil
+	}, plugin.Options[*store]{Lifecycle: plugin.Lifecycle[*store]{
+		Preflight: func(value *store, _ *plugin.Context) error {
+			preflighted <- value
+			return nil
+		},
+	}})
+
+	plan, err := planFor(t, nil, definition)
+	require.NoError(t, err)
+	constructed, err := Construct(plan, ConstructOptions{})
+	require.NoError(t, err)
+	instance, ok := constructed.Instance(plugin.Identity{Plugin: "adapted-preflight"})
+	require.True(t, ok)
+	require.True(t, instance.HasPreflight(), "the adapter must compile into the Preflight hook")
+
+	require.NoError(t, instance.InvokePreflight())
+	select {
+	case value := <-preflighted:
+		assert.Equal(t, instance.Primary(), value, "the adapter receives the boxed primary value")
+	default:
+		t.Fatal("the Preflight adapter did not run")
 	}
 }
 

@@ -13,7 +13,9 @@
 #
 # Run `go run ./examples/quickstart doctor --config <path>` to see the resolved
 # plugin graph, instances, configuration sources, and disable reasons without
-# starting anything.
+# starting anything. Run `validate` instead of `doctor` to construct that graph
+# and print the route table and authentication policy a start would serve; it
+# still does not bind the address below.
 
 xbc:
   # This process's identity: the token that names it in the placement line at

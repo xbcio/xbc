@@ -10,11 +10,16 @@ import (
 // the flags shared by every execution mode. It stays private because XBC does
 // not expose command parsing as a reusable framework capability.
 type command struct {
-	subcommand string // "" (normal boot) / "migrate" / "doctor"
+	subcommand string // "" (normal boot) / "migrate" / "doctor" / "validate"
 	config     string
 	profile    string
 	migrate    bool
 }
+
+// validateSubcommand names the constructing, non-serving check: it runs every
+// Preflight hook -- the assembly a Start would perform, without activating
+// anything -- and unwinds. It never migrates and never listens.
+const validateSubcommand = "validate"
 
 // parseArgs parses the small command surface owned by the runtime process
 // adapter. The subcommand, if present, must be the first non-flag argument;
@@ -35,12 +40,12 @@ func parseArgs(args []string, envPrefix string) (command, error) {
 	rest := args
 	if len(rest) > 0 && rest[0] != "" && rest[0][0] != '-' {
 		switch rest[0] {
-		case "migrate", "doctor":
+		case "migrate", "doctor", "validate":
 			cmd.subcommand = rest[0]
 			rest = rest[1:]
 		default:
 			fs.Usage()
-			return cmd, fmt.Errorf("xbc: unknown subcommand %q; use migrate, doctor, or no subcommand to start", rest[0])
+			return cmd, fmt.Errorf("xbc: unknown subcommand %q; use migrate, doctor, validate, or no subcommand to start", rest[0])
 		}
 	}
 

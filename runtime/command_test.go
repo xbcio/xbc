@@ -80,6 +80,17 @@ func TestParseArgsDoctorSubcommand(t *testing.T) {
 	assert.Equal(t, "doctor", cmd.subcommand)
 }
 
+// TestParseArgsValidateSubcommand pins the "validate" subcommand. It is the
+// constructing, non-serving command: it runs every Preflight hook and unwinds,
+// so parsing it must not be confused with either a bare run or a migration.
+func TestParseArgsValidateSubcommand(t *testing.T) {
+	cmd, err := parseArgs([]string{"validate", "--config", "/tmp/command-z.yaml"}, "XBC_")
+	require.NoError(t, err)
+	assert.Equal(t, "validate", cmd.subcommand)
+	assert.False(t, cmd.migrate, "the validate subcommand must not imply --migrate")
+	assert.Equal(t, "/tmp/command-z.yaml", cmd.config, "Flags after subcommand must still be parsed")
+}
+
 // TestParseArgsMigrateSubcommand pins the "migrate" subcommand, and that
 // flags following it are still parsed -- parseArgs peels the subcommand off
 // as the first non-flag argument and hands the rest to flag.FlagSet.Parse.
@@ -137,6 +148,11 @@ func TestWantsMigrationTruthTable(t *testing.T) {
 		{"Only auto_migrate is true", command{}, true, true},
 		{"--migrate and auto_migrate both being true is still true", command{migrate: true}, true, true},
 		{"doctor subcommand itself does not trigger migration", command{subcommand: "doctor"}, false, false},
+		{"validate subcommand itself does not trigger migration", command{subcommand: "validate"}, false, false},
+		// wantsMigration answers only whether migration was asked for; the
+		// validate command is the branch above the answer that never reads it.
+		// TestValidateNeverMigrates pins that ordering.
+		{"auto_migrate still asks under validate", command{subcommand: "validate"}, true, true},
 		{"False when all three are false", command{}, false, false},
 	}
 

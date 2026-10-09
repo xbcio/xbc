@@ -13,7 +13,9 @@ import (
 // strings the timing breakdown prints (startupPhases.String), because an
 // operator who reads "phase start" in a slow-startup warning and "start 31s"
 // in the breakdown must not have to work out that those are two names for one
-// phase.
+// phase. phaseValidate is the exception: only the validate command enters it,
+// and only the watchdog reports it -- the timing breakdown belongs to a run
+// that reaches servable, which validate never does.
 const (
 	phaseBootstrap = "bootstrap"
 	phasePlanning  = "planning"
@@ -21,6 +23,7 @@ const (
 	phaseMigrate   = "migrate"
 	phaseStart     = "start"
 	phaseTraffic   = "traffic"
+	phaseValidate  = "validate"
 )
 
 // startupProgress is where the startup currently is: the phase execute has

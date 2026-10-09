@@ -22,7 +22,8 @@ const (
 )
 
 // Execute drives this App once. Exit code 2 denotes command-line usage, 1 a
-// planning/runtime failure, and 0 a complete doctor, migration, or clean run.
+// planning/runtime failure, and 0 a complete doctor, validate, migration, or
+// clean run.
 func (a *App) Execute(ctx context.Context, args []string) (int, error) {
 	return a.execute(ctx, args, stopReasonContext)
 }
@@ -174,6 +175,16 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 		return 1, a.abort(err)
 	}
 
+	// validate is a constructing command that serves nothing: it runs every
+	// Preflight hook -- the assembly a Start would perform, without activating
+	// anything -- and then unwinds. It sits above the migration block on
+	// purpose: validate never migrates, so neither --migrate nor
+	// xbc.auto_migrate is consulted on this path, and a startup mistake fails
+	// the command before any schema change could run.
+	if command.subcommand == validateSubcommand {
+		return a.validate(instances, startedAt)
+	}
+
 	if migrate {
 		a.progress.enterPhase(phaseMigrate)
 		migrateStarted := time.Now()
@@ -219,6 +230,38 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	a.reportStarted(instances, migrate)
 	a.reportStartupTimings(instances)
 	return a.wait()
+}
+
+// validate is the validate command: every Preflight hook in graph order, then
+// the command's own report, then the ordinary reverse stop walk. It serves
+// nothing -- no Start hook runs, no traffic gate is released -- and it is the
+// only caller of preflightAll.
+//
+// The report is emitted before the unwind, exactly as the released-gate line
+// is: the number it states is how long validation took, not how long the
+// process lived, and a stop that fails afterwards is reported as its own error.
+func (a *App) validate(instances []*assembly.Instance, startedAt time.Time) (int, error) {
+	a.progress.enterPhase(phaseValidate)
+	if err := a.preflightAll(instances); err != nil {
+		return 1, a.abort(err)
+	}
+	// preflightAll checks for a stop request before every hook, which leaves
+	// the tail uncovered: a request landing after the last hook returned -- or
+	// a composition that declares no Preflight at all -- would otherwise be
+	// recorded as a completed validation. Claiming the completion stop is what
+	// tells the two apart, exactly as the migrate subcommand does, and an
+	// external request keeps its own reason, so the report names what actually
+	// stopped the run.
+	if !a.requestStop(stopReasonCompleted) && a.currentStopReason() != stopReasonCompleted {
+		return 1, a.abort(a.errStopDuringStartup("validation"))
+	}
+	a.validation = time.Since(startedAt)
+	a.reportValidated(instances)
+	a.reportValidationTimings(instances)
+	if err := a.unwind(stopReasonCompleted); err != nil {
+		return 1, err
+	}
+	return 0, nil
 }
 
 func (a *App) ensureStarting(stage string) error {

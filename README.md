@@ -76,6 +76,7 @@ Requires Go 1.25 or later. Run from the repository root:
 
 ```bash
 go run ./examples/quickstart doctor --config examples/quickstart/application.yml
+go run ./examples/quickstart validate --config examples/quickstart/application.yml
 go run ./examples/quickstart --config examples/quickstart/application.yml
 ```
 

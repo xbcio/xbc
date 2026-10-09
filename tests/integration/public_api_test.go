@@ -59,6 +59,30 @@ func TestPublicAPIExecutesPrivateBundle(t *testing.T) {
 	assert.Contains(t, err.Error(), "can only be called once")
 }
 
+// TestPublicAPIValidatesAComposition is the same path for the other command an
+// external importer is told to run. It takes its own App because Execute is
+// once-only, and it asserts the difference that matters: doctor reports the
+// plan without constructing anything, while validate constructs what it is
+// validating and still returns without serving.
+func TestPublicAPIValidatesAComposition(t *testing.T) {
+	var factories atomic.Int32
+	definition := plugin.Define("public-api-fixture", func(plugin.BuildContext) (*int, error) {
+		factories.Add(1)
+		value := 1
+		return &value, nil
+	})
+
+	app, err := xbc.New(xbc.WithBundles(plugin.BundleOf(definition)))
+	require.NoError(t, err)
+
+	code, err := app.Execute(context.Background(), []string{
+		"validate", "--config", quietConfig(t),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, int32(1), factories.Load(), "validate constructs the graph it validates")
+}
+
 // TestPublicRunAcceptsExplicitComposition pins Run's signature from the
 // position an external importer occupies. It is the entry point the facade's
 // documentation and every example point at, and it is the only one that owns

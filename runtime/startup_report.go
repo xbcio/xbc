@@ -76,6 +76,22 @@ func (a *App) reportStarted(instances []*assembly.Instance, migrate bool) {
 	)
 }
 
+// reportValidated states how long the validate command took and how many
+// instances it checked. It is reportStarted's counterpart for the command that
+// ends at validation rather than at a released traffic gate: the same anchor
+// measures it -- the moment argument parsing succeeded, before any of the work
+// being timed -- so an operator reads the two numbers the same way.
+//
+// It is emitted before the unwind, because what it reports is the validation,
+// not the shutdown that follows it; a stop that fails afterwards is reported as
+// its own error by the caller.
+func (a *App) reportValidated(instances []*assembly.Instance) {
+	a.log().Info("xbc: application validation finished",
+		"instances", len(instances),
+		"validation", a.validation.String(),
+	)
+}
+
 // startupTiming is how long this App took to reach servable, and where that
 // time went.
 type startupTiming struct {
@@ -138,6 +154,44 @@ func (a *App) reportStartupTimings(instances []*assembly.Instance) {
 type labelledDuration struct {
 	label    string
 	duration time.Duration
+}
+
+// reportValidationTimings breaks a slow validation down to the plugin stage,
+// the way reportStartupTimings does for a boot, and lands at debug for the same
+// reason: the breakdown grows with the number of selected plugins while the
+// line above already states the one number every operator wants. The
+// always-on number is what makes it safe to keep this one at debug -- a
+// validation that got slow shows up as a longer total whatever the log level,
+// and the slow-startup watchdog names the plugin still holding the phase when
+// it crosses the configured threshold.
+//
+// Preflight is the only stage listed. Configuration and construction are the
+// work validate shares with every other command, and the boot report already
+// measures those; what is specific to this command is the hook that a
+// composition need not declare at all, so an instance without one contributes
+// no line and no zero.
+func (a *App) reportValidationTimings(instances []*assembly.Instance) {
+	if !a.log().Enabled(log.DebugLevel) {
+		return
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "xbc: validation timings, total %s", a.validation)
+	for _, instance := range instances {
+		var preflight time.Duration
+		found := false
+		for _, timing := range instance.Timings() {
+			if timing.Stage != assembly.StagePreflight {
+				continue
+			}
+			preflight, found = timing.Duration, true
+		}
+		if !found {
+			continue
+		}
+		fmt.Fprintf(&b, "\n  %-28s %s", instance.Identity().String(),
+			joinTimings([]labelledDuration{{string(assembly.StagePreflight), preflight}}))
+	}
+	a.log().Debug(b.String())
 }
 
 func joinTimings(entries []labelledDuration) string {

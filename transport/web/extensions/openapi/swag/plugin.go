@@ -134,7 +134,10 @@ func (p *Plugin) RegisterRoutes(r *web.Router) {
 }
 
 // RoutesReady resolves the transport's final base-prefixed documentation paths
-// and prepares Swagger UI before the global traffic gate opens.
+// and prepares Swagger UI at the moment the route table is frozen: on a boot
+// before the global traffic gate opens, and under the validate command, where
+// the gate is never opened at all and the served documentation is what is being
+// checked.
 func (p *Plugin) RoutesReady(routes web.RouteCatalog) error {
 	if routes == nil {
 		return fmt.Errorf("swag: route catalog is nil")

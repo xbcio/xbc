@@ -181,10 +181,10 @@
 //
 // # Lifecycle capabilities
 //
-// A primary value opts into up to seven stages by implementing the matching
-// interface directly: Initializer, Migrator, Runner, TrafficOpener, Closer,
-// PreStopper, and Drainer. None is required, and P inherits none of them from
-// a base type — a bare struct with no methods is a perfectly valid,
+// A primary value opts into up to eight stages by implementing the matching
+// interface directly: Initializer, Migrator, Preflighter, Runner, TrafficOpener,
+// Closer, PreStopper, and Drainer. None is required, and P inherits none of them
+// from a base type — a bare struct with no methods is a perfectly valid,
 // lifecycle-free Plugin.
 //
 // Only P's own method set counts. The runtime owns the boxed value it got from
@@ -203,12 +203,29 @@
 //
 //	plugin.Lifecycle[*Service]{
 //		Migrate:     (*Service).migrate,
+//		Preflight:   (*Service).preflight,
 //		Start:       (*Service).start,
 //		OpenTraffic: (*Service).openTraffic,
 //		PreStop:     (*Service).preStop,
 //		Drain:       (*Service).drain,
 //		Stop:        (*Service).stop,
 //	}
+//
+// Preflight is what makes a plugin's startup checkable before it is deployed.
+// It runs only under the validate command, once every enabled Plugin has been
+// constructed and before any stage below, and its contract is the reason it can
+// run at all there: build and validate the fallible startup state a Start would
+// build, and activate nothing — no listener, no goroutine, no managed task, no
+// traffic gate. Construction is not activation: a transport that builds its
+// engine on the way to serving builds it here too, including whatever
+// library-level process state that engine sets for itself, because the state
+// under validation has to be the state a boot would build. What is forbidden is
+// activation — nothing running, nothing admitted, nothing externally visible.
+// A hook that fails fails the command, which then unwinds through the ordinary
+// Stop walk, so a plugin that needs a client to check its own configuration can
+// open it in Init and close it in Stop as usual. A normal boot never calls
+// Preflight; it is not a substitute for Start's own checks, and only a plugin
+// that implements it is validated at all.
 //
 // PreStop runs before Stop and is the one hook whose context is not the
 // application's: it retracts external participation while the process is

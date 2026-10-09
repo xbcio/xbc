@@ -223,6 +223,7 @@ func TestEraseLifecycleAdaptsEveryStageToTheOwningPrimaryType(t *testing.T) {
 	}, Options[*definitionValue]{Lifecycle: Lifecycle[*definitionValue]{
 		Init:        record("init"),
 		Migrate:     record("migrate"),
+		Preflight:   record("preflight"),
 		Start:       record("start"),
 		OpenTraffic: record("open"),
 		Stop: func(value *definitionValue, ctx context.Context) error {
@@ -244,6 +245,7 @@ func TestEraseLifecycleAdaptsEveryStageToTheOwningPrimaryType(t *testing.T) {
 	ctx := NewRuntimeContext(newFakeHost(), Identity{Plugin: "staged"})
 	require.NoError(t, adapters.Init(value, ctx))
 	require.NoError(t, adapters.Migrate(value, ctx))
+	require.NoError(t, adapters.Preflight(value, ctx))
 	require.NoError(t, adapters.Start(value, ctx))
 	require.NoError(t, adapters.OpenTraffic(value, ctx))
 	require.NoError(t, adapters.Stop(value, context.Background()))
@@ -258,13 +260,14 @@ func TestEraseLifecycleAdaptsEveryStageToTheOwningPrimaryType(t *testing.T) {
 	cancel()
 	assert.Equal(t, context.Canceled, adapters.PreStop(value, cancelled))
 	assert.Equal(t, context.Canceled, adapters.Drain(value, cancelled))
-	assert.Equal(t, []string{"init:staged", "migrate:staged", "start:staged", "open:staged", "stop", "prestop", "drain"}, stages)
-	assert.Equal(t, 4, value.value, "PreStop and Drain take no *Context, so neither can record the Context name")
+	assert.Equal(t, []string{"init:staged", "migrate:staged", "preflight:staged", "start:staged", "open:staged", "stop", "prestop", "drain"}, stages)
+	assert.Equal(t, 5, value.value, "PreStop and Drain take no *Context, so neither can record the Context name")
 
 	bare := descriptorOf(t, Define("bare", func(BuildContext) (*definitionValue, error) {
 		return &definitionValue{}, nil
 	})).Lifecycle
 	assert.Nil(t, bare.Init)
+	assert.Nil(t, bare.Preflight)
 	assert.Nil(t, bare.Stop)
 	assert.Nil(t, bare.PreStop)
 	assert.Nil(t, bare.Drain)

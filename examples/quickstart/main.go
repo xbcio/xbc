@@ -6,7 +6,13 @@
 //	curl localhost:8080/api/v1/hello
 //
 // Use the doctor subcommand to validate the complete plan without constructing
-// resources or opening a listener.
+// resources or opening a listener, and the validate subcommand to construct the
+// graph, run each plugin's Preflight, and print the route table and
+// authentication policy a start would serve -- still without opening a
+// listener:
+//
+//	go run ./examples/quickstart doctor --config examples/quickstart/application.yml
+//	go run ./examples/quickstart validate --config examples/quickstart/application.yml
 //
 // @title XBC Quickstart API
 // @version dev

@@ -247,8 +247,9 @@ func newRouteTable() (routes *[]RouteInfo, frozen *bool, index *map[string]Route
 	return &r, &f, &i
 }
 
-// newRouter is called exactly once, by (*Server).Start, the first time the
-// route table needs somewhere to register routes. routes/frozen/index come
+// newRouter is called exactly once, by (*Server).assemblePipeline -- from Start
+// on the way to binding a listener, and from Preflight for the validate command
+// -- the first time the route table needs somewhere to register routes. routes/frozen/index come
 // from a prior newRouteTable call -- see that function's doc comment for why
 // the two are split. handlers is the root chain every route inherits --
 // (*Server).Start builds it in the exact order internal middleware must run

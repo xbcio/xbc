@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -347,6 +348,304 @@ func TestAutoMigrateConfigurationMigratesWithoutAnyFlag(t *testing.T) {
 	app.requestStop(stopReasonSignal)
 	require.NoError(t, awaitRuntimeTestResult(t, result).err)
 	assert.Equal(t, int32(1), migrated.Load())
+}
+
+// --- validate -----------------------------------------------------------
+
+// preflightingDefinition records every lifecycle stage it reaches into stages,
+// and reports into admission what managed-task admission looked like from
+// inside the Preflight hook. It is the migrate fixture's counterpart for the
+// other constructing, non-serving command.
+func preflightingDefinition(stages *[]string, admission *bool) plugin.Definition {
+	record := func(stage string) func(*runtimeTestValue, *plugin.Context) error {
+		return func(*runtimeTestValue, *plugin.Context) error {
+			*stages = append(*stages, stage)
+			return nil
+		}
+	}
+	stopRecord := func(stage string) func(*runtimeTestValue, context.Context) error {
+		return func(*runtimeTestValue, context.Context) error {
+			*stages = append(*stages, stage)
+			return nil
+		}
+	}
+	return plugin.Define("preflighting", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Init:    record("init"),
+		Migrate: record("migrate"),
+		Preflight: func(_ *runtimeTestValue, ctx *plugin.Context) error {
+			*stages = append(*stages, "preflight")
+			// Admission is open only while a Start hook runs, so a Preflight
+			// hook that could submit a managed task would be a Start in
+			// disguise -- which is exactly what the stage promises not to be.
+			*admission = ctx.Go(func(context.Context) {})
+			return nil
+		},
+		Start:       record("start"),
+		OpenTraffic: record("open"),
+		PreStop:     stopRecord("prestop"),
+		Stop:        stopRecord("stop"),
+	}})
+}
+
+// TestTheValidateSubcommandPreflightsAndStopsWithoutServing pins what validate
+// is: it constructs the whole graph, runs every Preflight hook, and unwinds --
+// without migrating, starting, opening traffic, or releasing the gate. The
+// stage list is the assertion; the gate is checked separately because "no
+// ingress was exposed" is not visible in a list of hooks that did not run.
+func TestTheValidateSubcommandPreflightsAndStopsWithoutServing(t *testing.T) {
+	var stages []string
+	var admission bool
+	app := newRuntimeTestApp(preflightingDefinition(&stages, &admission))
+	args := append([]string{"validate"}, runtimeTestConfig(t, time.Second)...)
+
+	code, err := app.Execute(context.Background(), args)
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, []string{"init", "preflight", "stop"}, stages,
+		"validate constructs, preflights and unwinds: no migration, no start, no traffic, no pre-stop")
+	assert.False(t, admission, "Preflight ran with managed-task admission open, which is Start's alone")
+	assertChannelOpen(t, app.trafficGate, "the validate command released the traffic gate")
+}
+
+// TestValidateNeverMigrates pins the position of the branch rather than its
+// content: validate sits above the migration block, so neither --migrate nor
+// xbc.auto_migrate makes it touch a schema. Moving the branch below that block
+// would turn the read-only command into a migrating one on every deployment
+// that sets auto_migrate.
+func TestValidateNeverMigrates(t *testing.T) {
+	var stages []string
+	var admission bool
+	app := newRuntimeTestApp(preflightingDefinition(&stages, &admission))
+	args := []string{"validate", "--migrate", "--config", writeRuntimeTestConfig(t,
+		"log:\n  console:\n    enabled: false\n  file:\n    enabled: false\nxbc:\n  shutdown_timeout: 1s\n  auto_migrate: true\n")}
+
+	code, err := app.Execute(context.Background(), args)
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, []string{"init", "preflight", "stop"}, stages,
+		"neither --migrate nor xbc.auto_migrate may add a migration to validate")
+}
+
+// TestAValidateFailureUnwindsThroughTheOrdinaryStopWalk pins the cleanup
+// contract of a failed Preflight: the command fails, and everything it
+// constructed is still stopped. PreStop is deliberately absent -- the gate never
+// opened, so there is no externally visible participation to retract, and
+// running the phase would ask a plugin to release something it never took.
+func TestAValidateFailureUnwindsThroughTheOrdinaryStopWalk(t *testing.T) {
+	var stages []string
+	failure := errors.New("route table is not acceptable")
+	definition := plugin.Define("failing-preflight", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Init: func(*runtimeTestValue, *plugin.Context) error {
+			stages = append(stages, "init")
+			return nil
+		},
+		Preflight: func(*runtimeTestValue, *plugin.Context) error {
+			stages = append(stages, "preflight")
+			return failure
+		},
+		Start: func(*runtimeTestValue, *plugin.Context) error {
+			stages = append(stages, "start")
+			return nil
+		},
+		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error {
+			stages = append(stages, "open")
+			return nil
+		},
+		PreStop: func(*runtimeTestValue, context.Context) error {
+			stages = append(stages, "prestop")
+			return nil
+		},
+		Stop: func(*runtimeTestValue, context.Context) error {
+			stages = append(stages, "stop")
+			return nil
+		},
+	}})
+	app := newRuntimeTestApp(definition)
+	args := append([]string{"validate"}, runtimeTestConfig(t, time.Second)...)
+
+	code, err := app.Execute(context.Background(), args)
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, failure, "the hook's own error must survive the command boundary")
+	assert.Contains(t, err.Error(), "Preflight failed", "the failure must name the stage that produced it")
+	assert.Equal(t, []string{"init", "preflight", "stop"}, stages,
+		"a failed validation still stops what it constructed")
+	assert.Equal(t, stopReasonStartupFailed, app.currentStopReason())
+	assertChannelOpen(t, app.trafficGate, "a failed validation released the traffic gate")
+}
+
+// TestPreflightRunsInGraphOrderOverTheInstancesThatDeclareIt pins the walk
+// itself: graph order, and no announcement for an instance that declares no
+// hook. A plugin without a Preflight hook is not a zero-length stage.
+func TestPreflightRunsInGraphOrderOverTheInstancesThatDeclareIt(t *testing.T) {
+	var order []string
+	recording := func(key plugin.Key) plugin.Definition {
+		return plugin.Define(key, func(plugin.BuildContext) (*runtimeTestValue, error) {
+			return &runtimeTestValue{}, nil
+		}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+			Preflight: func(*runtimeTestValue, *plugin.Context) error {
+				order = append(order, string(key))
+				return nil
+			},
+		}})
+	}
+	silent := plugin.Define("silent-preflight", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+	app := newRuntimeTestApp(recording("first-preflight"), silent, recording("second-preflight"))
+	args := append([]string{"validate"}, runtimeTestConfig(t, time.Second)...)
+
+	code, err := app.Execute(context.Background(), args)
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, []string{"first-preflight", "second-preflight"}, order,
+		"Preflight runs in graph order, and an instance that declares no hook contributes nothing")
+}
+
+// TestTheValidateCommandReportsItsCompletionAndTiming pins the command's own two
+// records against an invocation of the command, not against the report
+// functions in isolation: an operator reading the log needs the line to be
+// emitted, to carry the measurement the command took, and to name the stage it
+// came from. A report that stopped being called, or one that read the boot
+// measurement instead of this command's own, would otherwise leave a validate
+// run with an exit code and no number.
+//
+// The command is driven directly on the calling goroutine under a recording
+// logger, the way this package's other report tests drive the phase they assert
+// on; a full Execute installs a logger of its own.
+func TestTheValidateCommandReportsItsCompletionAndTiming(t *testing.T) {
+	definition := plugin.Define("preflighting", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Preflight: func(*runtimeTestValue, *plugin.Context) error {
+			time.Sleep(startupProbe)
+			return nil
+		},
+	}})
+
+	app := newRuntimeTestApp(definition)
+	capture := ownUnderCapture(t, app)
+
+	code, err := app.validate(app.owned.Instances(), time.Now())
+	require.NoError(t, err)
+	require.Equal(t, 0, code)
+
+	var reports []captureEntry
+	for _, entry := range capture.entries {
+		if entry.msg == "xbc: application validation finished" || strings.HasPrefix(entry.msg, "xbc: validation timings") {
+			reports = append(reports, entry)
+		}
+	}
+	require.Len(t, reports, 2, "the command states its completion and its breakdown, one record each")
+
+	completed := reports[0]
+	assert.Equal(t, "info", completed.level, "finishing validation is the command's normal outcome")
+	fields := completed.fields()
+	assert.EqualValues(t, 1, fields["instances"])
+	stated, ok := fields["validation"].(string)
+	require.True(t, ok, "a duration is reported as text, not as a nanosecond count")
+	measured, parseErr := time.ParseDuration(stated)
+	require.NoError(t, parseErr)
+	assert.GreaterOrEqual(t, measured, startupProbe,
+		"the number is the time this command spent, measured around the hook that was slow")
+	assert.Zero(t, app.startup.total, "the boot measurement is never what a validation reports")
+
+	breakdown := reports[1]
+	assert.Equal(t, "debug", breakdown.level, "the breakdown is off an operator's default path")
+	assert.Contains(t, breakdown.msg, "total "+stated, "both records state the same duration")
+	assert.Contains(t, breakdown.msg, "preflighting")
+	assert.Contains(t, breakdown.msg, "Preflight ")
+}
+
+// TestAStopRequestedDuringAPreflightHookStopsTheWalk pins the per-instance stop
+// check: a request that lands while one hook runs ends the walk before the next
+// hook is invoked. Without the check the remaining hooks would still run, each
+// of them against an execution context that was already cancelled.
+func TestAStopRequestedDuringAPreflightHookStopsTheWalk(t *testing.T) {
+	var app *App
+	var ran []string
+	stopping := plugin.Define("stopping-preflight", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Preflight: func(*runtimeTestValue, *plugin.Context) error {
+			ran = append(ran, "stopping-preflight")
+			app.requestStop(stopReasonSignal)
+			return nil
+		},
+		Stop: func(*runtimeTestValue, context.Context) error {
+			ran = append(ran, "stopping-stop")
+			return nil
+		},
+	}})
+	after := plugin.Define("zulu-preflight", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Preflight: func(*runtimeTestValue, *plugin.Context) error {
+			ran = append(ran, "zulu-preflight")
+			return nil
+		},
+		Stop: func(*runtimeTestValue, context.Context) error {
+			ran = append(ran, "zulu-stop")
+			return nil
+		},
+	}})
+	app = newRuntimeTestApp(stopping, after)
+
+	code, err := app.Execute(context.Background(), append([]string{"validate"}, runtimeTestConfig(t, time.Second)...))
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aborting validation phase")
+	assert.Equal(t, []string{"stopping-preflight", "zulu-stop", "stopping-stop"}, ran,
+		"the walk ends at the request: the later hook never runs, and both instances are still stopped")
+}
+
+// TestAStopRequestArrivingAfterTheLastPreflightHookFailsTheCommand covers the
+// tail a per-instance stop check cannot: preflightAll looks for a stop request
+// before each hook, so a request landing after the final hook returned -- or a
+// composition that declares no Preflight at all -- would otherwise be recorded
+// as a completed validation and exit 0. The hook blocks until the request is
+// in, which makes the window deterministic instead of a race to reproduce.
+func TestAStopRequestArrivingAfterTheLastPreflightHookFailsTheCommand(t *testing.T) {
+	var stages []string
+	hookEntered := make(chan struct{})
+	releaseHook := make(chan struct{})
+	definition := plugin.Define("preflighting", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Preflight: func(*runtimeTestValue, *plugin.Context) error {
+			close(hookEntered)
+			<-releaseHook
+			return nil
+		},
+		Stop: func(*runtimeTestValue, context.Context) error {
+			stages = append(stages, "stop")
+			return nil
+		},
+	}})
+	app := newRuntimeTestApp(definition)
+	result := executeRuntimeTest(app, append([]string{"validate"}, runtimeTestConfig(t, time.Second)...)...)
+
+	select {
+	case <-hookEntered:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the Preflight hook did not begin")
+	}
+	app.requestStop(stopReasonSignal)
+	close(releaseHook)
+
+	completed := awaitRuntimeTestResult(t, result)
+	assert.Equal(t, 1, completed.code,
+		"a validation interrupted by a stop request must not report success")
+	require.Error(t, completed.err)
+	assert.Contains(t, completed.err.Error(), "aborting validation phase")
+	assert.Equal(t, stopReasonSignal, app.currentStopReason(),
+		"the external request keeps its own reason")
+	assert.Equal(t, []string{"stop"}, stages,
+		"the interrupted validation still stops what it constructed")
 }
 
 func TestLifecycleContextForwardsTheCallerScopeAndTheHostIdentity(t *testing.T) {

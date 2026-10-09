@@ -8,9 +8,12 @@
 //
 // Press Ctrl-C to watch reverse-order shutdown; press it twice to watch the
 // runtime abandon a graceful stop. Use the doctor subcommand to inspect the
-// plan without constructing anything:
+// plan without constructing anything, and the validate subcommand to construct
+// every plugin, run its Preflight hook, and unwind -- which exercises the real
+// Init and Stop of each plugin and then exits:
 //
 //	go run ./examples/worker doctor --config examples/worker/application.yml
+//	go run ./examples/worker validate --config examples/worker/application.yml
 //
 // The composition below is the whole difference from a Web service. Nothing
 // here opens a listener, so what keeps the process running is sweeper's

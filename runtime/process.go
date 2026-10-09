@@ -46,7 +46,7 @@ func exitWithError(err error) {
 // forceQuit abandons a shutdown the operator has stopped waiting for. It is
 // the only path that can end a process whose plugin hook never returns:
 // requesting a stop cancels contexts and closes the stop channel, but it
-// cannot interrupt an Init, Migrate, Start, or OpenTraffic that blocks
+// cannot interrupt an Init, Migrate, Preflight, Start, or OpenTraffic that blocks
 // forever, so App.execute never returns and the ordinary exit tail is never
 // reached. Without this escalation the operator's only remaining tool is
 // SIGKILL.

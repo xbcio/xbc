@@ -21,6 +21,28 @@ func (a *App) migrateAll(instances []*assembly.Instance) error {
 	return nil
 }
 
+// preflightAll runs every Preflight hook the validate command can see, in
+// graph order, after the whole graph has been constructed and before any
+// Start. Only the validate command calls it: the hooks assemble and validate
+// the startup-time state a run would build later, and must activate nothing, so
+// the pass needs no task admission and no traffic gate. A hook failure -- or a
+// stop request arriving while one runs -- fails the command, and the caller
+// then unwinds the graph through the ordinary Stop walk.
+func (a *App) preflightAll(instances []*assembly.Instance) error {
+	for _, instance := range instances {
+		if a.stopRequested() {
+			return a.errStopDuringStartup("validation")
+		}
+		if !instance.HasPreflight() {
+			continue
+		}
+		if err := instance.InvokePreflight(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // startAll opens task admission for exactly one Plugin while its synchronous
 // Start hook executes, and closes it before observing the hook result.
 func (a *App) startAll(instances []*assembly.Instance) error {

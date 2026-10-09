@@ -88,3 +88,24 @@ type PreStopper interface {
 type Drainer interface {
 	Drain(ctx context.Context) error
 }
+
+// Preflighter assembles, without activating anything, the fallible startup
+// state that Start would build, so a composition can be checked before any
+// listener binds. XBC invokes it only for the validate command, once per
+// instance, after every enabled instance has been constructed, in graph order;
+// a normal run and the migrate command never call it.
+//
+// It exists because some startup-time state cannot be examined any earlier. The
+// Web transport's route table is registered by RouteContributor values while
+// its Server starts, and authentication policies are compiled against that
+// table; doctor must not construct anything, so it can never see either. A
+// Preflight hook moves that assembly, and its validation, in front of the
+// listener, where a mistake fails the command instead of a deployment.
+//
+// It must not bind a listener, start a goroutine or a managed task, release the
+// traffic gate, or change process-wide state: activating nothing is the whole
+// point. It may build in-memory structures, validate cross-instance contracts,
+// and report through ctx.Log(). An error fails the validate command, after
+// which the constructed graph unwinds through the ordinary Stop walk; no
+// PreStop runs, because the start phase never began.
+type Preflighter interface{ Preflight(ctx *Context) error }
