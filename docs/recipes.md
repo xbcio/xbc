@@ -733,6 +733,81 @@ Setting `pre_stop_timeout: 0s` skips the phase and makes the total `shutdown_tim
 
 The restart policy is not optional. Takeover works by a standby requesting shutdown on purpose once it has won a slot, and the supervisor is what brings that process back as the real holder. Without `Restart=always` or `restart: always`, the first takeover turns a standby into a stopped container.
 
+## Running behind a TLS-terminating proxy
+
+The Web runtime does not terminate TLS. It loads no certificate, reloads none, verifies no client certificate, and has no keystore to configure; the process speaks plain HTTP and a reverse proxy, ingress, or load balancer in front of it terminates TLS. That is a deployment shape rather than a gap to work around, and two keys are the whole of the process's side of it.
+
+**Forwarded headers are opt-in.** `web.trusted_proxies` is empty by default, which makes the engine ignore `X-Forwarded-For` and `X-Real-IP` completely: the client address a handler or an access-log line reports is then whichever peer opened the connection, which is the proxy. List the proxy's exact addresses or CIDRs to make them the sources whose forwarded headers are believed:
+
+```yaml
+web:
+  addr: ":8080"
+  trusted_proxies: ["10.0.30.11", "10.0.30.0/24"]
+```
+
+Never write `0.0.0.0/0` or `::/0`. These headers are client-controlled text, so a wildcard entry lets any caller claim any client address — in an access log, in a rate limit, and in anything else keyed by client IP. The proxy must also strip client-supplied `X-Forwarded-*` headers and add its own; a proxy that forwards what it received turns every address in the log into a claim by the client.
+
+**HSTS needs a second key when the proxy terminates TLS.** `securityheaders` emits HSTS only for a TLS request, and a request arriving from a TLS-terminating proxy is already plain HTTP by the time this process sees it, so the header never appears at all. What the deployment usually wants is for the proxy to add it, since the proxy is the layer that knows whether the client connection was secure. A deployment that would rather this process emit HSTS switches the decision to the `X-Forwarded-Proto` header:
+
+```yaml
+plugins:
+  securityheaders:
+    hsts_trust_forwarded_proto: true
+```
+
+That key does not consult `web.trusted_proxies` — it reads the header as it arrived — so it is safe exactly when the proxy is what sets that header and strips any client-supplied value first. Enabled in front of a proxy that forwards the client's own header, a client can claim HTTPS it never used and receive an HSTS policy for a service it reached over plain HTTP.
+
+The listener stays what it was: bind `web.addr` to the interface the proxy reaches, keep the certificate and its private key in the proxy's own secret store rather than in this process's configuration, and keep credentials in request bodies and headers rather than in URLs, since a proxy logs the URL it forwards.
+
+## Building and running the production image
+
+`examples/production` is the composition a Web service is meant to grow from: a public metadata route, authenticated and authorized business routes, a transactional outbox beside a real database, a scrape endpoint, and the framework baseline. Its `Dockerfile` is a starting point for any XBC image, and the three parts it is made of are the three any XBC application image needs.
+
+Build it from the repository root, because the build needs the whole workspace:
+
+```bash
+docker build -f examples/production/Dockerfile -t xbc-production .
+```
+
+`examples/go.mod` resolves every XBC module through this repository's `go.work` rather than through version-tagged releases, so a build context of `examples/production` alone cannot compile. `.dockerignore` keeps the repository's history and local working directories out of the context while leaving the manifests and every module in it.
+
+The build stage runs with `CGO_ENABLED=1`, which is required rather than incidental: the example's database is SQLite, whose driver is cgo-backed, and a cgo-disabled build produces a binary that compiles and then cannot open a database. The runtime stage is distroless `base-debian12`, which carries the glibc that binary links against and the CA bundle an outbound TLS connection needs, with no shell and no package manager to install into. It runs as `nonroot` in `/var/lib/xbc`, the one directory it owns — a non-root process cannot create its data directory, and SQLite cannot create its database file in a directory it cannot write.
+
+The image is startable from environment variables alone; no configuration file is baked in. What it sets is the part that describes the process rather than the deployment:
+
+| variable | value | why it is the image's |
+| --- | --- | --- |
+| `XBC_WEB_BASE_PATH` | `/api/v1` | the prefix every route is served below; the framework's own default is `/` |
+| `XBC_LOG_CONSOLE_FORMAT` | `json` | one JSON object per line is what a container log collector reads; the default is human-oriented console output |
+| `XBC_PLUGINS_GORM_DEFAULT_DRIVER` | `sqlite` | the example ships no external database |
+| `XBC_PLUGINS_GORM_DEFAULT_DSN` | `file:/var/lib/xbc/production.db?...` | a path that exists and is writable in this filesystem |
+| `XBC_PLUGINS_OUTBOX_MIGRATE` | `true` | the outbox's table belongs to the outbox, not to the deployer |
+| `XBC_PLUGINS_METRICS_HTTP_ENABLED` | `true` | the scrape endpoint is a process property |
+| `XBC_AUTO_MIGRATE` | `true` | one container comes up ready to serve |
+| `XBC_PLUGINS_VERSION_VERSION` | the `VERSION` build arg | the same binary reports the image's version |
+
+The one setting an image cannot supply is the credential, and this image supplies none:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e XBC_PLUGINS_JWT_SECRET="$(openssl rand -hex 32)" \
+  xbc-production
+```
+
+`plugins.jwt.secret` has no default anywhere, so a container started without it fails at startup naming the key instead of running with a guessable one. With only that variable set, the process starts, migrates, and serves: `/api/v1/healthz`, `/api/v1/readyz`, and `/api/v1/version` are public, while `/api/v1/orders` and `/api/v1/metrics` answer `401` without a credential. Two capabilities are absent by construction rather than by oversight. The API-key scheme cannot be configured from the environment at all: the environment layer can address any declared configuration path, but the value it carries has to be a scalar or a list of strings, and a set of credentials is a list of structured entries. A deployment that needs service credentials gives this process a file, or an operator-only mechanism, rather than a variable. Authorization is absent unless the run also configures `plugins.casbin` and `plugins.casbin-http`: the policy *is* a single string and therefore expressible in the environment, newlines and all, and so is the middleware's own section, because selecting the middleware takes nothing but `XBC_PLUGINS_CASBIN_HTTP_MISSING_PERMISSION=deny`.
+
+The image migrates at every boot, which is what makes a single container work and is wrong for several replicas starting at once. A deployment runs the migration separately and starts the service without it:
+
+```bash
+docker run --rm xbc-production migrate
+docker run --rm -p 8080:8080 -e XBC_AUTO_MIGRATE=false \
+  -e XBC_PLUGINS_JWT_SECRET="$SECRET" xbc-production
+```
+
+`migrate` is a subcommand of the same binary: it runs every plugin's migration, starts and stops nothing, binds no listener, and exits. The migration run needs no credential — with no `plugins.jwt` key present the authenticator is dormant, and a schema operation is not a serving one — so a deployment job runs it without handing a signing secret to a process that would not use it. A service started with `XBC_AUTO_MIGRATE=false` never touches the schema, and `validate` never does either, so a check can run against a live deployment.
+
+Probing follows the paths above: `/api/v1/healthz` for liveness, `/api/v1/readyz` for readiness, both public and neither metered by `web.max_in_flight`. Give the container a stop grace period longer than `xbc.pre_stop_timeout + xbc.shutdown_timeout` — the supervisor section above works through the arithmetic — or it is killed mid-drain. The image is an example, not a release artifact: it is built from this workspace, and publishing, signing, and scanning images belong to whoever deploys the service.
+
 ## Migrating a schema across workloads
 
 Migration runs only for the workloads this process hosts. A rolling restart therefore cannot be relied on to migrate everything, and adding a workload later is not migrated merely by deploying it.

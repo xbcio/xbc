@@ -25,6 +25,12 @@ application-local.yml
 
 # Runtime artifacts
 **/logs/
+# A SQLite database an example creates where it was run from. The production
+# example's shipped DSN is relative, and docs/recipes.md runs it from the
+# repository root.
+*.db
+*.db-wal
+*.db-shm
 
 # Tool working directories
 .superpowers/

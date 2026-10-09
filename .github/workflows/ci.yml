@@ -64,3 +64,94 @@ jobs:
       # see it. This does not require tags to exist yet.
       - name: Check detached module manifests
         run: ./scripts/check-detached-manifests
+
+  # The production example's image is the one artifact here the Go test suite
+  # cannot exercise: a Dockerfile, a runtime base image, and the
+  # environment-only configuration path. No setup-go step is needed, because
+  # the binary is built inside the build stage from the same committed sources.
+  container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955b # v4.3.0
+
+      # The build argument is what a release pipeline would stamp an image
+      # with. The route below reports it, so the whole path -- build argument,
+      # image environment, configuration, response -- is exercised here rather
+      # than asserted nowhere.
+      - name: Build the production example image
+        run: |
+          docker build \
+            --build-arg "VERSION=sha-${GITHUB_SHA::7}" \
+            -f examples/production/Dockerfile \
+            -t xbc-production-smoke .
+
+      # The container gets variables and nothing else: the image's working
+      # directory holds no configuration file, so every setting below has to
+      # arrive through the environment layer or the process does not start.
+      - name: Start it from environment variables alone
+        run: |
+          docker run -d --name xbc-production-smoke \
+            -e XBC_PLUGINS_JWT_SECRET="$(openssl rand -hex 32)" \
+            -p 8080:8080 \
+            xbc-production-smoke
+
+      - name: Wait for readiness
+        run: |
+          set -eu
+          for attempt in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8080/api/v1/readyz; then
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' xbc-production-smoke)" != "true" ]; then
+              echo "the container exited before it became ready"
+              docker logs xbc-production-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "the container never became ready"
+          docker logs xbc-production-smoke
+          exit 1
+
+      # The route policy is the same in a container as in the file-based run:
+      # the three public endpoints answer anyone, and a route that declares no
+      # policy of its own is covered by web.security.default (deny).
+      - name: Check the public and the protected routes
+        run: |
+          set -eu
+          check() { # path expected-status
+            actual="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8080/api/v1$1")"
+            printf '%s -> %s (want %s)\n' "$1" "$actual" "$2"
+            [ "$actual" = "$2" ]
+          }
+          check /healthz 200
+          check /version 200
+          check /orders 401
+          check /metrics 401
+
+          # The public route reports the image's build argument, which the
+          # first step passed to `docker build`.
+          body="$(curl -s http://127.0.0.1:8080/api/v1/version)"
+          echo "/version body: $body"
+          case "$body" in
+            *"\"version\":\"sha-${GITHUB_SHA::7}\""*) ;;
+            *) echo "the version route did not report the build argument"; exit 1 ;;
+          esac
+
+      # xbc.shutdown_timeout defaults to 25s, so SIGTERM needs a grace period
+      # longer than the budget it starts. Exit code 0 is the assertion: a
+      # process that was killed mid-drain, or one that failed a release step,
+      # reports something else.
+      - name: Stop it with SIGTERM and require a clean exit
+        run: |
+          set -eu
+          docker stop -t 30 xbc-production-smoke
+          code="$(docker inspect -f '{{.State.ExitCode}}' xbc-production-smoke)"
+          echo "exit code: $code"
+          [ "$code" = "0" ]
+
+      - name: Show the container log
+        if: always()
+        run: docker logs xbc-production-smoke

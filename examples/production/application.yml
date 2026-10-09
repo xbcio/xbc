@@ -1,0 +1,270 @@
+# The production example's configuration: one HTTP service with a public
+# version route, authenticated orders routes authorized by Casbin, an orders
+# table whose writes share a transaction with their outbox events, a Prometheus
+# scrape endpoint, and the framework baseline -- request ids, structured access
+# logs, security headers, compression, cooperative timeouts, and health probes.
+#
+# There are two supported ways to run this program, and this file is only one of
+# them. The other is environment variables alone, which is what the container
+# image uses; main.go composes the same Bundles either way, because every
+# difference between the two runs below is configuration rather than code.
+#
+# The signing secret is deliberately NOT in this file. plugins.jwt has no
+# default secret, so this file cannot start a process on its own: it makes the
+# environment the only place the secret can come from, which is where a
+# credential belongs. Supply one with
+#
+#   XBC_PLUGINS_JWT_SECRET=<at least 32 bytes>
+#
+# and the section below completes. The container image and the smoke test do
+# exactly that. Run doctor or validate with the same variable set:
+#
+#   XBC_PLUGINS_JWT_SECRET=$(openssl rand -hex 32) \
+#     go run ./examples/production validate --config examples/production/application.yml
+#
+# XBC searches application.yml and configs/application.yml in that order, or
+# accepts --config explicitly. YAML values do not expand ${VAR}. The environment
+# is a complete configuration layer above this file, so any key below can be
+# overridden with its full path, as in XBC_WEB_ADDR or
+# XBC_PLUGINS_GORM_DEFAULT_DSN. Multi-instance sections insert the instance
+# name, as in XBC_PLUGINS_GORM_PRIMARY_DSN. Every key must be owned by a
+# selected plugin or by the framework, so a misspelled section fails startup by
+# name instead of being ignored.
+
+xbc:
+  # Leave empty to derive a per-process identity (hostname, boot second, short
+  # random suffix). Set it when the supervisor already knows which slot this
+  # process occupies.
+  instance_id: ""
+  # One budget covers cancellation, the managed-task join, the drain phase, and
+  # reverse-order plugin Stop. A shutdown that exceeds it is reported rather
+  # than extended indefinitely.
+  shutdown_timeout: 20s
+  # PreStop gives a value the chance to retract its externally visible
+  # participation while the process is still fully alive; this composition
+  # releases nothing, so the value only demonstrates the key.
+  pre_stop_timeout: 2s
+  slow_startup_after: 30s
+
+  runtime:
+    # auto leaves the GOMAXPROCS count to the Go runtime, which reads this
+    # container's cgroup CPU quota and keeps re-reading it. Installing a count
+    # here would turn that re-reading off.
+    max_procs: auto
+    memory_limit: 0
+    gc_percent: 0
+
+log:
+  level: info
+  # One JSON object per line to stdout: the shape a container log collector
+  # expects. The one process hosts one App constraint in the log package's
+  # documentation is what makes a single global logger safe here.
+  console:
+    enabled: true
+    format: json
+  # Sensitive field names are masked by the facade's built-in rules and cannot
+  # be unmasked through configuration; this key only appends names.
+  # mask_fields: []
+
+# Web is a transport runtime, so its configuration lives at the root.
+web:
+  addr: ":8080"
+  # Plugin routes are relative to this prefix, which is why the paths in
+  # web.security.policies and in plugins.casbin.policy below all start with
+  # /api/v1: policy resolution and Casbin both address frozen route paths, not
+  # the relative path a plugin registered.
+  base_path: "/api/v1"
+  # Process-wide admission ceiling. Beyond it a request is refused with 503 and
+  # Retry-After before any handler runs rather than being queued. 0 applies the
+  # fixed default of 1024; size it from this service's own memory and
+  # dependency budget.
+  max_in_flight: 0
+  shutdown:
+    # Keep the listener up after cancellation so /readyz can answer 503 before
+    # HTTP draining begins. It is an opportunity for a load balancer to
+    # withdraw this instance, not confirmation that one did.
+    pre_drain_delay: 3s
+  read_timeout: 10s
+  read_header_timeout: 5s
+  write_timeout: 30s
+  idle_timeout: 60s
+  max_header_bytes: 1048576
+  max_request_body_bytes: 10485760
+  max_multipart_memory: 8388608
+  # This process speaks plain HTTP: TLS is terminated by a reverse proxy in
+  # front of it. Keep trusted_proxies empty unless that proxy is known by
+  # address, and then list only its exact IPs or CIDRs -- never 0.0.0.0/0 --
+  # because these are the sources whose X-Forwarded-* headers are believed.
+  # See "Running behind a TLS-terminating proxy" in docs/recipes.md for the
+  # rest of that arrangement, including HSTS.
+  trusted_proxies: []
+  recovery:
+    stack: true
+
+  # Route access is decided by a three-tier model:
+  #   tier 1: the rules below, in declaration order, first match wins
+  #   tier 2: the route's own .Auth(...) declaration, e.g. Auth(web.Public())
+  #   tier 3: web.security.default, which covers every route the other two miss
+  # A tier-1 rule overrides a route's own declaration, and the default never
+  # overrides one. Omitting .Auth() is what leaves a route to tier 3, and that
+  # is what the orders routes rely on: under "deny" they require authentication
+  # with any registered scheme, in the order below, which is what makes the two
+  # schemes interchangeable without the routes having to name either one.
+  security:
+    default: deny
+    # Mandatory here because two authenticators are registered: with more than
+    # one, authentication order is a security decision and is never inferred.
+    # It must be a full permutation of the registered schemes, and the first
+    # scheme that yields an accepted credential wins. A scheme that rejects a
+    # credential does not end the chain, so a credential valid for the later
+    # scheme is still accepted when the earlier one refuses it.
+    schemes: ["jwt", "apikey"]
+    policies:
+      # Operator actions are interactive and are pinned to the token scheme:
+      # an API key must not be able to reach them, even though it can
+      # authenticate. A more specific rule must precede the broader one.
+      - match: "/api/v1/admin/**"
+        authenticate: [jwt]
+      # The scrape endpoint goes the other way: it is machine traffic, so it
+      # takes a service credential rather than a user token. This rule is what
+      # keeps the management route from inheriting "any registered scheme",
+      # which is the tier-3 behavior worth avoiding for an operator surface.
+      - match: "/api/v1/metrics"
+        authenticate: [apikey]
+
+plugins:
+  # plugins.jwt activates the JWT authenticator and its Authorization: Bearer
+  # credential extractor. secret is absent by design -- see the file header.
+  jwt:
+    issuer: "xbc-production-example"
+    expire: 30m
+
+  # A static API-key set. The digest below is a placeholder and matches no key:
+  # generate a real one and replace it, keeping the plaintext out of this file.
+  #   key=... ; printf '%s' "$key" | shasum -a 256
+  # See docs/recipes.md for the same recipe with more context. Requiring the
+  # digest rather than the key is deliberate: a configuration file cannot then
+  # leak a usable credential, and the plugin compares SHA-256 digests in
+  # constant time.
+  apikey:
+    header: "X-API-Key"
+    allow_bearer: true
+    min_key_bytes: 32
+    static:
+      - id: "prometheus-2026-10"
+        app_id: "observability"
+        # The subject is the identity every downstream decision sees: this is
+        # the name that must appear in plugins.casbin.policy below for the
+        # scraper to read /api/v1/metrics.
+        subject: "prometheus"
+        sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        disabled: false
+
+  # Authorization. request_convention path_method enforces the request tuple
+  # (subject, route path, HTTP method) against the policy below, so a route
+  # carries no permission tag and the policy names the route templates this
+  # service registers -- including the web.base_path prefix, and with :id
+  # kept as written, because Casbin matches the template, not the URL a client
+  # sent. Subjects come from the authenticated Principal, never from a header.
+  casbin:
+    request_convention: path_method
+    # Neither model nor model_file is set: the plugin then uses its built-in
+    # model for this convention, which defines exactly the g/p/matcher shape
+    # the policy below assumes.
+    policy: |
+      # Operator role: everything, including the administrative summary.
+      p, admin, /api/v1/orders, GET
+      p, admin, /api/v1/orders, POST
+      p, admin, /api/v1/orders/:id, GET
+      p, admin, /api/v1/admin/orders/stats, GET
+      g, alice, admin
+
+      # Viewer role: read-only. POST /api/v1/orders is deliberately absent, so
+      # bob authenticates successfully and is still refused.
+      p, viewer, /api/v1/orders, GET
+      p, viewer, /api/v1/orders/:id, GET
+      g, bob, viewer
+
+      # The scraper's own subject, which arrives through the API-key scheme.
+      p, prometheus, /api/v1/metrics, GET
+
+  # The HTTP face of the policy engine above: the middleware that enforces
+  # plugins.casbin on matched routes. The two are separate products with
+  # separate keys, so selecting the middleware takes a section of its own;
+  # without it the engine would still run for non-Web callers, and every
+  # matched route would be served with no route authorization at all.
+  casbin-http:
+    # Deny (the default, spelled out because it is the secure choice) refuses a
+    # protected route that carries no permission tag rather than admitting it.
+    missing_permission: deny
+
+  # One named GORM connection. Each key below plugins.gorm is a separate
+  # instance bound to a fresh Config. sqlite keeps this example startable with
+  # no external infrastructure; point driver and dsn at a real server database
+  # in a deployment. The DSN is masking-tagged, so it never reaches a log line.
+  gorm:
+    default:
+      driver: sqlite
+      dsn: "file:production.db?_busy_timeout=5000&_journal_mode=WAL"
+      # One connection: SQLite serializes writers anyway, and a pool larger
+      # than one only turns write contention into lock-wait timeouts.
+      max_open_conn: 1
+      max_idle_conn: 1
+      conn_max_lifetime: 1h
+      conn_max_idle_time: 30m
+
+  # The transactional outbox. migrate creates its table during XBC's explicit
+  # migration stage. worker.enabled stays false: the dispatcher publishes to an
+  # external broker, and this example deliberately ships no broker, so events
+  # accumulate in the table where an operator (or a later deployment with a
+  # Publisher composed) can see exactly what would have been sent. Turning it
+  # on requires composing a Bundle that exports outbox.Publisher; construction
+  # fails clearly when the key is true and none is present.
+  outbox:
+    db_instance: "default"
+    table: "production_outbox_events"
+    migrate: true
+    worker:
+      enabled: false
+
+  # The scrape endpoint is a route on this process's own listener, protected by
+  # the tier-1 rule above. Management endpoints follow web.security.default by
+  # design and never declare a route-level exemption: a permit-typed default
+  # would publish this one unauthenticated, which is why the rule above exists.
+  metrics:
+    namespace: "xbc"
+    http:
+      enabled: true
+      path: "/metrics"
+
+  # Tracing is composed in main.go and left dormant here on purpose. Its OTLP
+  # exporter needs a collector; a service that has none should not start a
+  # pipeline that fails on every batch. Uncomment, point endpoint at the
+  # collector, and re-deploy:
+  #
+  # tracing:
+  #   service_name: "xbc-production-example"
+  #   environment: "production"
+  #   sample_ratio: 0.1
+  #   exporter:
+  #     protocol: grpc
+  #     endpoint: "otel-collector.observability.svc:4317"
+  #     insecure: false
+  #     tls:
+  #       server_name: "otel-collector.observability.svc"
+
+  # The starter already switched these on; the sections below exist only to
+  # change their budgets, and deleting one leaves its member running at the
+  # owning plugin's own default. Every value here is a default restated
+  # nowhere else.
+  #
+  # requestid:
+  #   trust_incoming: false        # never trust a client-supplied request id
+  # accesslog:
+  #   skip_paths: ["/api/v1/healthz"]
+  # timeout:
+  #   duration: 15s                # cooperative; streaming bypasses it
+  # health:
+  #   timeout: 2s                  # per-check budget across all contributors
+  # health-http:
+  #   detail_policy: never         # never expose dependency errors on probes
