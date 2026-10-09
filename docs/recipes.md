@@ -42,6 +42,53 @@ An application with two or more registered authenticators must declare `schemes`
 
 For high-volume or dynamic credentials, inject an API-key repository instead of repeatedly editing static YAML.
 
+## Redis topologies
+
+One `plugins.redis.<name>` section constructs one client, and `mode` selects which deployment it addresses. The default is a standalone server:
+
+```yaml
+plugins:
+  redis:
+    cache:
+      addr: "redis.internal:6379"
+      db: 1
+```
+
+A sentinel-managed master is named through the sentinels that report it, with the sentinel credentials kept separate from the data-node ones:
+
+```yaml
+plugins:
+  redis:
+    cache:
+      mode: sentinel
+      addrs: ["sentinel-1.internal:26379", "sentinel-2.internal:26379"]
+      master_name: orders-cache
+      sentinel_username: sentinel
+      sentinel_password: "${REDIS_SENTINEL_PASSWORD}"
+      username: app
+      password: "${REDIS_PASSWORD}"
+```
+
+`route_by_latency` and `route_randomly` belong to this mode: either flag routes read-only commands to the closest or to a random master or replica, and either one selects the sentinel-backed cluster client that implements the routing, because the plain failover client ignores the flags and go-redis panics when they are handed to it anyway.
+
+A cluster is seeded the same way, with its own two keys:
+
+```yaml
+plugins:
+  redis:
+    cache:
+      mode: cluster
+      addrs: ["redis-1.internal:6379", "redis-2.internal:6379"]
+      read_only: true
+      max_redirects: 5
+```
+
+`read_only` lets read commands run on replica nodes. `max_redirects` bounds MOVED and ASK redirects; its zero value means the library default of 3, and `-1` refuses to follow redirects at all. A cluster section cannot set `db`, which the cluster client would ignore, so a configured `db` is refused rather than silently dropped.
+
+**A section describes one topology, and half-describing two is a plan-time error.** The rules are enforced while planning, before anything connects: standalone rejects `addrs` and every sentinel or cluster key, sentinel requires `addrs` and `master_name` and rejects the cluster-only keys, and cluster requires `addrs` and rejects `master_name` and the routing flags. `addr` is the one key outside this discipline -- its default tag makes an unset value indistinguishable from one written out, so it is accepted in every mode and ignored outside standalone, where `addrs` carries the addresses.
+
+**The mode is invisible to the consumers.** Sessions, idempotency, and the cron lease all resolve the same topology-neutral client contract, so moving a deployment between topologies changes this section and nothing else. `max_retries` keeps the same meaning in every mode, including cluster, where the framework's value replaces the cluster client's own default of no retries; a cluster deployment that prefers the library behavior sets `max_retries: -1`. Integrations that own their own connections keep their own sections rather than the plugin's: `asynq` takes a standalone `redis` block, `casbin-redis` its own `mode` and `addrs`, and the Session store names a plugin instance through `redis_instance`.
+
 ## Idempotent write endpoints
 
 Only routes explicitly marked `.Idempotent()` enter idempotency handling. A single-process development environment can use the in-memory backend:
@@ -189,7 +236,7 @@ plugins:
     auto_select_single: true
 ```
 
-A login handler creates a session through `session.Manager.Create` and then calls `SetCookie`. Use atomic `Rotate` after privilege or authentication changes, and use `Revoke` plus `ClearCookie` during logout.
+A login handler creates a session through `session.Manager.Create` and then calls `SetCookie`. Call `Rotate` after privilege or authentication changes, and use `Revoke` plus `ClearCookie` during logout. **Rotation retires the old ID in every backend, though not at the same instant.** The memory store swaps the two records under one lock; the Redis store runs three single-key steps -- the shape that keeps rotation working on a cluster without forcing every session key into one slot -- so the old ID stays valid until its own delete lands. Two rotations racing on one ID can therefore both report success on Redis, each returning the replacement its own caller minted; the old ID is gone in both cases.
 
 The server-side authentication flow must write `tenant_id` and `tenant_ids` session attributes. `X-Tenant-ID` merely selects one tenant from that verified membership set; it never proves membership. Anonymous requests receive 401 from the framework's built-in authentication middleware when the route resolves to deny; the tenant middleware itself only produces 403 for forged or unauthorized selections.
 
