@@ -70,6 +70,21 @@ func (g *engine) Handle(method, path string, chain []web.Handler) {
 	g.e.Handle(method, path, g.toGinChain(chain)...)
 }
 
+// Mount registers chain for the subtree rooted at prefix on one method. gin
+// needs two registrations to cover it: the bare prefix answers exactly that
+// path, and the prefix with a catch-all segment answers everything under it,
+// including the trailing-slash form. gin's radix tree stops the catch-all at
+// a path-segment boundary, so "/flow/*rest" never matches "/flowx" -- that is
+// where the port's segment-boundary rule comes from. The tree is also why an
+// overlapping mount has to be refused before it gets here: gin panics on the
+// conflicting registration itself, without naming what it conflicts with, and
+// the Router's own check runs first so the diagnostic names both sides.
+func (g *engine) Mount(method, prefix string, chain []web.Handler) {
+	converted := g.toGinChain(chain)
+	g.e.Handle(method, prefix, converted...)
+	g.e.Handle(method, prefix+"/*rest", converted...)
+}
+
 func (g *engine) NoRoute(chain []web.Handler)  { g.e.NoRoute(g.toGinChain(chain)...) }
 func (g *engine) NoMethod(chain []web.Handler) { g.e.NoMethod(g.toGinChain(chain)...) }
 func (g *engine) Serve(ln net.Listener) error  { return g.srv.Serve(ln) }

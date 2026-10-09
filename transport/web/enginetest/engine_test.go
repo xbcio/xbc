@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -418,4 +419,71 @@ func TestBodylessStatusCommitsThroughTheInstalledWriter(t *testing.T) {
 
 	assert.Equal(t, committed["String"], committed["JSON"],
 		"JSON and String must commit at the same moment -- a regression on either side must surface here")
+}
+
+// TestMountCoversThePrefixAndItsSubtree pins the dialect translation this
+// engine performs for web.Engine.Mount. The port asks for coverage of a whole
+// subtree on a segment boundary, while ServeMux registers one pattern per
+// path, so the adapter has to register the bare prefix and the slash-terminated
+// subtree pattern together; either registration alone leaves a request the
+// port promises to cover answered by the matcher instead of the mounted chain.
+//
+// The matched chain must see the request exactly as it arrived: the port
+// defines covering, not the stripping, which belongs to whatever wrapped the
+// handler. The /mx case is what keeps "covers the subtree" from degrading into
+// "matches a string prefix", and the POST case pins that a mount answers only
+// the methods it was mounted for -- the 405 with Allow, the same answer an
+// unmounted path gets.
+func TestMountCoversThePrefixAndItsSubtree(t *testing.T) {
+	engine := New()
+
+	var seen []string
+	engine.Mount(http.MethodGet, "/m", []web.Handler{func(_ context.Context, c *web.Ctx) error {
+		seen = append(seen, c.Request().URL.Path)
+		c.Status(http.StatusNoContent)
+		return nil
+	}})
+
+	cases := []struct {
+		name     string
+		method   string
+		target   string
+		wantCode int
+		wantRan  bool
+	}{
+		{name: "the prefix itself", method: http.MethodGet, target: "/m", wantCode: http.StatusNoContent, wantRan: true},
+		{name: "the subtree root", method: http.MethodGet, target: "/m/", wantCode: http.StatusNoContent, wantRan: true},
+		{name: "deeper in the subtree", method: http.MethodGet, target: "/m/x/y", wantCode: http.StatusNoContent, wantRan: true},
+		{name: "a sibling sharing the prefix's characters", method: http.MethodGet, target: "/mx", wantCode: http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := len(seen)
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, httptest.NewRequest(tc.method, tc.target, nil))
+
+			assert.Equal(t, tc.wantCode, recorder.Code)
+			if !tc.wantRan {
+				assert.Len(t, seen, before, "a path outside the subtree must not reach the mounted chain")
+				return
+			}
+			require.Len(t, seen, before+1, "the mounted chain must run exactly once")
+			assert.Equal(t, tc.target, seen[before], "the chain must see the request path unchanged -- stripping belongs to the caller")
+		})
+	}
+
+	t.Run("an unmounted method", func(t *testing.T) {
+		before := len(seen)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/m/x", nil))
+
+		assert.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+		assert.Len(t, seen, before, "an unmounted method must not reach the mounted chain")
+		allowed := make(map[string]bool)
+		for _, entry := range strings.Split(recorder.Result().Header.Get("Allow"), ",") {
+			allowed[strings.TrimSpace(entry)] = true
+		}
+		assert.True(t, allowed[http.MethodGet], "the 405 must list the method the subtree is mounted for")
+		assert.False(t, allowed[http.MethodPost], "the 405 must not list the request's own method")
+	})
 }

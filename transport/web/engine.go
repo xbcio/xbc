@@ -26,6 +26,29 @@ import (
 // Detail like any other.
 type Engine interface {
 	Handle(method, path string, chain []Handler)
+	// Mount installs chain for a whole subtree on one method: the literal
+	// prefix itself and every path beneath it, never a path that merely
+	// shares its characters ("/flow" owns "/flow" and "/flow/...", not
+	// "/flowx"). It is a separate port method because a subtree's syntax is
+	// the engine's own -- gin spells it with a catch-all segment, ServeMux
+	// with a trailing slash -- so a caller that wrote either one into a path
+	// handed to Handle would be writing one engine's dialect into the route
+	// table. The caller asks for "the prefix and everything under it" and the
+	// adapter translates.
+	//
+	// The boundaries Handle draws are unchanged: the adapter splices nothing
+	// into the chain it is handed, and the chain -- never the engine's own
+	// matcher -- answers the request. Inside the subtree that means a path
+	// the chain's terminal handler does not serve is a 404 that handler
+	// writes, and a method the caller did not mount reaches NoMethod with
+	// Allow, exactly as for an ordinary route.
+	//
+	// Mount is per-method; a subtree served under several methods is several
+	// calls. Registrations never overlap -- the caller refuses a mount at or
+	// under an existing registration on the same method before either adapter
+	// sees it -- so an adapter receives prefixes that are disjoint at path
+	// segment boundaries.
+	Mount(method, prefix string, chain []Handler)
 	NoRoute(chain []Handler)
 	// NoMethod installs the chain answering a request whose path is registered
 	// under other methods only. Distinguishing that case from an unmatched path

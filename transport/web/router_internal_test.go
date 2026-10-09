@@ -24,6 +24,7 @@ import (
 type nullEngine struct{}
 
 func (nullEngine) Handle(string, string, []Handler) {}
+func (nullEngine) Mount(string, string, []Handler)  {}
 func (nullEngine) NoRoute([]Handler)                {}
 func (nullEngine) NoMethod([]Handler)               {}
 func (nullEngine) Serve(net.Listener) error         { return nil }

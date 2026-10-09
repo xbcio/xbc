@@ -41,7 +41,7 @@ import (
 // ServeMux's built-in 404 and 405 responses, which would bypass them.
 const unmatchedPattern = "/"
 
-// Engine is the standard-library web.Engine. Its port methods (Handle,
+// Engine is the standard-library web.Engine. Its port methods (Handle, Mount,
 // NoRoute, NoMethod, Serve, Shutdown) implement web.Engine verbatim; the
 // separately named GET/POST/... helpers below exist only for tests that want
 // to register a route without standing up a Router.
@@ -92,6 +92,17 @@ func (e *Engine) Handle(method, path string, chain []web.Handler) {
 	e.mux.Handle(method+" "+path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		run(registered, w, r)
 	}))
+}
+
+// Mount registers chain for the subtree rooted at prefix on one method.
+// ServeMux spells the same coverage with two patterns: the bare prefix
+// matches exactly itself, and the prefix with a trailing slash matches the
+// subtree beneath it. Only those two patterns reach the chain, so a path that
+// merely shares the prefix's characters ("/flowx") is not part of the mount --
+// the port's segment-boundary rule, expressed in ServeMux's own terms.
+func (e *Engine) Mount(method, prefix string, chain []web.Handler) {
+	e.Handle(method, prefix, chain)
+	e.Handle(method, prefix+"/", chain)
 }
 
 // NoRoute installs the chain that answers a request no registered pattern
