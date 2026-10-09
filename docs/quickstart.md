@@ -200,6 +200,8 @@ Environment variables use the complete configuration path with the `XBC_` prefix
 | `xbc.instance_id` | `XBC_INSTANCE_ID` |
 | `xbc.runtime.max_procs` | `XBC_RUNTIME_MAX_PROCS` |
 | `web.addr` | `XBC_WEB_ADDR` |
+| `web.management.addr` | `XBC_WEB_MANAGEMENT_ADDR` |
+| `web.tls.cert_file` | `XBC_WEB_TLS_CERT_FILE` |
 | `plugins.jwt.secret` | `XBC_PLUGINS_JWT_SECRET` |
 | `plugins.redis.cache.password` | `XBC_PLUGINS_REDIS_CACHE_PASSWORD` |
 
@@ -296,6 +298,6 @@ The operator arithmetic this guide deliberately leaves out — how many processe
 
 - A service with no transport at all follows the same shape: see [Background-only service](recipes.md#background-only-service) and the runnable `examples/worker`.
 - One binary hosting several roles is the runnable `examples/workloads`, with the operator side in [Hosting a subset of workloads](recipes.md#hosting-a-subset-of-workloads).
-- [Deployment recipes](recipes.md) show explicit compositions for authentication, persistence, messaging, scheduling, and multi-replica services, including what a TLS-terminating proxy in front of the process requires and how the runnable [`examples/production`](../examples/production) image is built and run from environment variables alone.
+- [Deployment recipes](recipes.md) show explicit compositions for authentication, persistence, messaging, scheduling, and multi-replica services, including terminating TLS in the process or behind a proxy, moving metrics and pprof to a listener of their own, and how the runnable [`examples/production`](../examples/production) image is built and run from environment variables alone.
 - [Package `web`](https://pkg.go.dev/github.com/xbcio/xbc/transport/web) documents routing, middleware, request binding, errors, limits, and trusted proxies.
 - [Package `config`](https://pkg.go.dev/github.com/xbcio/xbc/config) documents the programmatic loader and schema contract.

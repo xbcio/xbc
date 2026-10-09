@@ -733,9 +733,56 @@ Setting `pre_stop_timeout: 0s` skips the phase and makes the total `shutdown_tim
 
 The restart policy is not optional. Takeover works by a standby requesting shutdown on purpose once it has won a slot, and the supervisor is what brings that process back as the real holder. Without `Restart=always` or `restart: always`, the first takeover turns a standby into a stopped container.
 
+## Terminating TLS in the process
+
+A certificate and its private key turn TLS termination on here rather than at a proxy; a deployment that writes no `web.tls` section is unchanged and serves plain HTTP, exactly as it did before the section existed.
+
+```yaml
+web:
+  addr: ":8443"
+  tls:
+    cert_file: /etc/orders/tls.crt
+    key_file: /etc/orders/tls.key
+    min_version: "1.2"
+    reload_interval: 30s
+```
+
+The pair is read during the startup path rather than at the first connection, so a missing, unreadable, or malformed file fails the boot — and fails `validate` the same way, without binding a port, which is where a rollout should find a bad secret rather than in an outage. `cert_file` is the key that decides whether the section means anything: every other key in it describes a listener that exists only once a certificate is named, so a `client_ca_file` or a `reload_interval` without one is refused as a configuration mistake rather than silently ignored.
+
+**The certificate rotates without a restart.** The listener checks the pair's identity on a handshake rather than on a timer: at most one `stat` of the two files per `reload_interval` across all concurrent handshakes (`0s`, the default, checks on every handshake), and the pair is reloaded only when the modification time or size of either file has changed. A rotation is picked up by the first handshake after `reload_interval` has elapsed — the interval bounds the check rate, not the staleness — and connections that are already established keep the certificate they negotiated until they next complete a handshake. Three rules make an in-place rotation safe: a reload that fails keeps serving the previous certificate, a handshake is never failed because a file on disk is broken, and one broken version of the file is reported once rather than once per connection. Writing a new file, or swapping a symlink, is the rotation this notices; editing a certificate in place while preserving its size and timestamp is not.
+
+**Client certificates are a policy, not a keystore.** `client_ca_file` names the PEM bundle a presented certificate is verified against, and `client_auth` selects `none` (the default), `verify_if_given` (verify a certificate a client happens to present, but do not require one), or `require_and_verify` (refuse the handshake without one that chains to the bundle). The two belong together — a CA with no verification mode has nothing to verify, and a mode with no CA could only accept certificates it cannot validate — so the validator refuses either one alone. Mutual TLS here authenticates the client to the process; which application principal it is remains the authenticator's job.
+
+**The cipher list is a restriction, and only below TLS 1.3.** `cipher_suites` takes Go's names for the secure suites, `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` among them, and refusing a name outside `tls.CipherSuites()` is deliberate: the insecure set Go still knows about cannot be selected here. TLS 1.3 suites are not configurable in Go at all, so this key has no effect on a connection that negotiates 1.3.
+
+**HTTP/2 is not offered, and that is a decision rather than an oversight.** TLS termination happens on the listener this process wraps around `web.addr`, and the ALPN protocols it advertises are `http/1.1` alone: a client that offers `h2` and `http/1.1` is answered with `http/1.1`. An HTTP/2 deployment therefore terminates TLS at a proxy that can serve it to clients and speak HTTP/1.1 to this process. What an application sees is unaffected either way — `r.Proto`, the request context, and every middleware above it are the same ones a plain HTTP deployment runs.
+
+**HSTS starts working without a proxy.** `securityheaders` emits HSTS exactly when the request arrived over TLS, and a process that terminates TLS is looking at a request that did — so `hsts_only_https: true`, the default, now emits the header with no further configuration. The `hsts_trust_forwarded_proto` key below exists for the other shape, where a proxy terminates and this process has to be told that it did.
+
+## An operator listener of its own
+
+Health, metrics, and pprof are three different audiences sharing one port by default. Metrics and pprof are operator endpoints, and a deployment can move them onto a second listener:
+
+```yaml
+web:
+  addr: ":8080"
+  management:
+    addr: ":9091"
+```
+
+With an empty `management.addr` — the default — a plugin that registers through `Router.Management` gets exactly the route it would have registered on the serving listener, and the process opens one listener as before. Configuring an address is what moves those routes onto their own listener, engine, and middleware chain, and the startup report says so twice: a `web: management listener <address> (bound; N rows marked [management])` line, and a `[management]` mark beside every row that moved. A route that answers on the management port is then `404` on the serving port, which is the migration an existing scrape job has to be told about.
+
+Three properties of that second listener are worth knowing before enabling it:
+
+- **It answers while the process is saturated.** The in-flight gate bounds business traffic; a scrape must not be refused because the process is at its ceiling, and a CPU profile is usually wanted precisely then. The management chain carries the panic boundary and nothing else: no authentication, no admission gate, no contributed middleware.
+- **It is protected by its address, not by a policy.** An operator surface has no business principal to authenticate, so access control is where it binds. A hostless `":9091"` binds loopback rather than every interface, and a management address that is not loopback requires `allow_remote: true` — which in turn requires `web.tls.cert_file`, because an unauthenticated operator surface reachable from the network in cleartext is never what an operator meant to configure. The same certificate, client-auth policy, and reload path serve both listeners.
+- **It drains after the serving plane, not with it.** During shutdown the serving listener stops accepting and drains first, and the management listener keeps answering until that finishes: a management port that went dark at the same instant would take the one view of the drain with it. It is stopped with the process that follows.
+
+Health probes stay on the serving port deliberately. Readiness is the answer to "should traffic be sent to this process", asked by whatever routes traffic — an ingress, a load balancer, the placement layer — and moving the answer to a second port leaves those probes unable to reach the process they are asking about. pprof and metrics moved for the opposite reason: they are read by a person or a scraper that knows where to look, which is exactly the difference between them and a probe.
+
 ## Running behind a TLS-terminating proxy
 
-The Web runtime does not terminate TLS. It loads no certificate, reloads none, verifies no client certificate, and has no keystore to configure; the process speaks plain HTTP and a reverse proxy, ingress, or load balancer in front of it terminates TLS. That is a deployment shape rather than a gap to work around, and two keys are the whole of the process's side of it.
+A proxy deployment writes no `web.tls` section, and then the process serves plain HTTP to a reverse proxy, ingress, or load balancer that terminates TLS in front of it. What that shape asks of the process is unchanged by the section's existence, and two keys are the whole of it.
 
 **Forwarded headers are opt-in.** `web.trusted_proxies` is empty by default, which makes the engine ignore `X-Forwarded-For` and `X-Real-IP` completely: the client address a handler or an access-log line reports is then whichever peer opened the connection, which is the proxy. List the proxy's exact addresses or CIDRs to make them the sources whose forwarded headers are believed:
 
@@ -747,7 +794,7 @@ web:
 
 Never write `0.0.0.0/0` or `::/0`. These headers are client-controlled text, so a wildcard entry lets any caller claim any client address — in an access log, in a rate limit, and in anything else keyed by client IP. The proxy must also strip client-supplied `X-Forwarded-*` headers and add its own; a proxy that forwards what it received turns every address in the log into a claim by the client.
 
-**HSTS needs a second key when the proxy terminates TLS.** `securityheaders` emits HSTS only for a TLS request, and a request arriving from a TLS-terminating proxy is already plain HTTP by the time this process sees it, so the header never appears at all. What the deployment usually wants is for the proxy to add it, since the proxy is the layer that knows whether the client connection was secure. A deployment that would rather this process emit HSTS switches the decision to the `X-Forwarded-Proto` header:
+**HSTS needs a second key when the proxy terminates TLS.** `securityheaders` emits HSTS only for a TLS request, and a request arriving from a TLS-terminating proxy is already plain HTTP by the time this process sees it, so the header never appears at all. What the deployment usually wants is for the proxy to add it, since the proxy is the layer that knows whether the client connection was secure. A deployment that would rather this process emit HSTS while a proxy terminates switches the decision to the `X-Forwarded-Proto` header — or drops the proxy from the TLS path entirely, as the section above describes, and gets the header for free:
 
 ```yaml
 plugins:
@@ -757,7 +804,7 @@ plugins:
 
 That key does not consult `web.trusted_proxies` — it reads the header as it arrived — so it is safe exactly when the proxy is what sets that header and strips any client-supplied value first. Enabled in front of a proxy that forwards the client's own header, a client can claim HTTPS it never used and receive an HSTS policy for a service it reached over plain HTTP.
 
-The listener stays what it was: bind `web.addr` to the interface the proxy reaches, keep the certificate and its private key in the proxy's own secret store rather than in this process's configuration, and keep credentials in request bodies and headers rather than in URLs, since a proxy logs the URL it forwards.
+The listener stays what it was: bind `web.addr` to the interface the proxy reaches, keep the certificate and its private key in whichever layer terminates — the proxy's secret store, or `web.tls` with the file permissions of any other secret — and keep credentials in request bodies and headers rather than in URLs, since a proxy logs the URL it forwards.
 
 ## Building and running the production image
 
@@ -923,7 +970,7 @@ go tool pprof -tags http://127.0.0.1:8080/debug/pprof/profile?seconds=30
 go tool pprof -tagfocus=workload=ingest http://127.0.0.1:8080/debug/pprof/profile?seconds=30
 ```
 
-`-tags` prints one line per workload with its share of the profile; `-tagfocus` narrows every later view to that workload's samples.
+`-tags` prints one line per workload with its share of the profile; `-tagfocus` narrows every later view to that workload's samples. The port in those URLs is the serving one because pprof is served there by default; a deployment that configured a management address scrapes the same path on that port instead (see [An operator listener of its own](#an-operator-listener-of-its-own)).
 
 The label exists because a stack cannot answer the question. Frames say which plugin is burning CPU; workload membership is decided at composition, so the same binary attributes the same function to different workloads depending on which slots each process won.
 
@@ -1020,7 +1067,7 @@ xbc:
 
 Read the `plugin` field first: it names the hook that has not returned, which the startup timing breakdown cannot do — that breakdown is emitted only after every phase returns, so a boot stuck in `Start` produces none of it. The threshold is a reporting threshold, not a deadline: nothing is cancelled or aborted, and the startup keeps waiting. Compare consecutive lines to tell the two failures apart — an unchanged phase and plugin mean stuck, a moving one means slow but progressing. An application whose migrations legitimately run for minutes should raise the value or set `0s` to switch the report off.
 
-pprof is disabled by default. It carries no authentication mechanism of its own: it falls through to the `web.security` global default, which is `deny` out of the box. An application that enables it must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`.
+pprof is disabled by default. It carries no authentication mechanism of its own: it falls through to the `web.security` global default, which is `deny` out of the box. An application that enables it must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`. A deployment that would rather not expose these endpoints to the business policy at all — or not reach them through the business port — can move metrics and pprof to a listener of their own: see [An operator listener of its own](#an-operator-listener-of-its-own). Doing so removes the routes from this policy discussion entirely, because nothing on that listener is authenticated.
 
 The `deny` default only means "must authenticate" -- it accepts any registered scheme, not "reachable by operators only". If the application registers an authenticator for any purpose and writes no tier-1 rule for these routes, pprof and metrics become reachable by any authenticated principal, not just operators. Restricting them to operators requires two things: a tier-1 rule that narrows the accepted scheme, and an authorization layer on top of authentication, because neither route carries a `.Perm` for Casbin or another authorizer to check (see below).
 
