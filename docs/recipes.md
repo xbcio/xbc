@@ -869,6 +869,48 @@ orders doctor --config /etc/orders/migrate-rest.yml
 
 `xbc.auto_migrate` defaults to `false`, so the flag is a deliberate opt-in and an ordinary boot never mutates a schema.
 
+## Shipping the service's own subcommands
+
+A service usually needs commands that are not a boot: a check to run after a rollout, a key rotation, a one-off repair. `xbc.WithCommand` registers one in the same binary, reading the same configuration file, so the command and the service it operates on cannot drift apart:
+
+```go
+xbc.Run(
+	xbc.WithCommand("probe", "check a running instance's liveness endpoint", probe),
+	xbc.WithBundles(prelude.Bundle(), ginengine.Bundle(), orders.Bundle()),
+)
+```
+
+The command runs instead of booting, and its position in the startup sequence is the contract: after the configuration layers have been merged and logging installed, and before anything else a boot does. It is handed that merged view through `*config.Environment` -- decoded as strictly as a plugin's input, so a key no selected plugin owns fails the command exactly as it would fail a boot -- and it may rely on nothing having been planned, constructed, migrated, placed, or listened on. That is what makes it safe beside a live deployment: no factory has run, so no connection pool was opened and no placement capacity was claimed. A command that needs a database opens and closes its own short-lived client; the framework hands it no service locator.
+
+Exit codes are the command's own result: returning nil exits 0, returning an error exits 1 with `xbc: command "probe" failed: ...` around it, and no other code is available. The context is canceled when the process is asked to stop, so a check that waits ends with the signal instead of outliving it.
+
+The flags shared with a boot -- `--config` and `--profile` -- precede the command's name, and everything after the name is the command's own, verbatim. A command owns its flag namespace, so a `--config` written after the name arrives as an argument rather than as the runtime's flag, which is worth three lines in the command itself: the difference between a usage error and a check that silently read a different file is one argument assertion. `--migrate` cannot be combined with a command at all -- migration belongs to a boot, and a command that wanted one would have to decide which workloads it migrates. A name the runtime already owns (`migrate`, `doctor`, `validate`), a duplicate, an empty name, or a missing body is refused by `xbc.New`, so a command can never shadow a built-in one.
+
+A command that hangs is diagnosed like any other unfinished startup: the slow-startup warning reports it in the `command` phase, so an operator reads the command holding the process rather than an unfinished bootstrap.
+
+The quickstart's `probe` is the smallest useful shape -- three merged values composed into the URL a boot would serve:
+
+```go
+address := configString(env, "web.addr")
+if strings.HasPrefix(address, ":") {
+	// A bind address is not a dial address: ":8080" names every interface, and
+	// this command runs where the process does.
+	address = "127.0.0.1" + address
+}
+url := "http://" + address +
+	strings.TrimSuffix(configString(env, "web.base_path"), "/") +
+	configString(env, "plugins.health-http.liveness_path")
+```
+
+```sh
+# The shared flag precedes the name; the arguments after it are the command's.
+go run ./examples/quickstart --config examples/quickstart/application.yml probe
+```
+
+Two limits are worth knowing before writing one. The framework's rule that reports never contain configuration values does not extend to what a command prints: a command that echoes a credential has leaked it, whatever file it read. And the command runs before placement is resolved, so it can tell nothing about which workloads this process carries -- a command that needs that answer resolves it itself, or belongs in a boot (see [Hosting a subset of workloads](#hosting-a-subset-of-workloads)).
+
+Schema changes are the one job that stays with the built-in commands: `migrate` and `--migrate` run the migration stage over the workloads this process hosts, and a command that migrated would have to answer that question for itself (see [Migrating a schema across workloads](#migrating-a-schema-across-workloads)).
+
 ## Attributing CPU to a workload
 
 Every managed task -- anything submitted through `plugin.Context.Go` or `GoCritical` -- runs under a `workload` profiler label naming the workload its plugin belongs to, and every queue delivery does too: the asynq integration runs each task under the same label, restoring the worker goroutine's previous labels afterwards because the queue library reuses its workers. A CPU profile can therefore be read per role:

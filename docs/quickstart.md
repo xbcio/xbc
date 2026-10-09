@@ -40,6 +40,14 @@ go run ./examples/quickstart --config examples/quickstart/application.yml
 
 The process listens on `localhost:8080` and serves routes below `/api/v1`.
 
+The example also registers a subcommand of its own, the seam an application uses for one-off management commands:
+
+```bash
+go run ./examples/quickstart --config examples/quickstart/application.yml probe
+```
+
+`probe` runs instead of booting, which is what lets it run beside a serving instance: it reads the address, base path, and liveness route from the same merged configuration a boot would serve from, opens and closes its own connection, and exits -- 0 when the endpoint answered, 1 with its error otherwise. A command's arguments are its own, so the shared flags precede its name; `probe --config ...` is a mistake the command reports rather than a check that silently read another file. See [Shipping the service's own subcommands](recipes.md#shipping-the-services-own-subcommands).
+
 ## Understand the composition root
 
 [`examples/quickstart/main.go`](../examples/quickstart/main.go) selects every capability explicitly:

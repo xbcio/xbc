@@ -5,12 +5,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -99,6 +101,36 @@ func TestQuickstartBinaryServesAndStopsCleanly(t *testing.T) {
 		t.Errorf("GET /hello = %q, want the greeting the example documents", envelope.Data.Message)
 	}
 
+	// The example's own subcommand is exercised through the committed binary,
+	// because what it demonstrates is a property of the command line rather
+	// than of its body: the shared --config precedes the name, and everything
+	// after the name reaches the command. The environment spells the address
+	// the way application.yml does -- a bare port -- so the healthy run also
+	// covers turning a bind address into a dial address. Both outcomes are
+	// asserted, because a command that returned nil whatever it found would
+	// pass the healthy half alone.
+	probeEnv := append(os.Environ(), "XBC_WEB_ADDR="+portOnly(address))
+	healthy := exec.Command(binary, "--config", "application.yml", "probe")
+	healthy.Env = probeEnv
+	probeOutput, err := healthy.CombinedOutput()
+	if err != nil {
+		t.Fatalf("probe against the running instance: %v\n%s", err, probeOutput)
+	}
+	if !strings.Contains(string(probeOutput), "answered 200") {
+		t.Errorf("probe printed %q, want the endpoint it reached and its status", probeOutput)
+	}
+
+	misused := exec.Command(binary, "probe", "--config", "application.yml")
+	misused.Env = probeEnv
+	misuseOutput, err := misused.CombinedOutput()
+	var exitErr2 *exec.ExitError
+	if !errors.As(err, &exitErr2) || exitErr2.ExitCode() != 1 {
+		t.Fatalf("a shared flag after the command name exited %v, want 1\n%s", err, misuseOutput)
+	}
+	if !strings.Contains(string(misuseOutput), "precede the command name") {
+		t.Errorf("probe misuse printed %q, want the rule it broke", misuseOutput)
+	}
+
 	// A signal is how an operator stops this process, so it is what the test
 	// sends: a clean exit here means the shutdown path -- traffic drain, the
 	// greeter's background follow-up, plugin stop -- completed inside the
@@ -176,6 +208,13 @@ func get(t *testing.T, url string, output func() string) (int, []byte) {
 		t.Fatalf("GET %s: read body: %v", url, err)
 	}
 	return response.StatusCode, payload
+}
+
+// portOnly renders an address the way application.yml spells this example's
+// bind address, as a bare ":port", so the probe child proves that a bind
+// address is turned into a dial address rather than being dialed as written.
+func portOnly(address string) string {
+	return address[strings.LastIndex(address, ":"):]
 }
 
 func freeAddress(t *testing.T) string {
