@@ -48,15 +48,20 @@ import (
 //     Allow rather than h; the subtree is mounted for the anyMethods list and
 //     for no other method.
 //
-// Registration refuses overlaps. A mount at, above, or below any existing
-// registration on the same method panics here, and so does a route registered
-// under an existing mount: a mount owns its whole subtree, so no second
-// registration on that method can live inside it. The refusal is xbc's rather
-// than the engine's because engines disagree about the overlap -- gin panics
-// on a conflicting subtree without naming either side, ServeMux accepts one
-// silently -- and a conflict resolved differently per engine is worse than an
-// explicit refusal. The check is per method: the same prefix under a
-// different method is a distinct registration in every engine xbc ships.
+// Registration refuses overlaps. A mount is refused when its subtree holds an
+// existing registration on the same method -- a route at the prefix, a route
+// under it, another mount anywhere in it -- and when an existing pattern
+// route reaches the prefix: a path carrying ":" or "*" claims the subtree
+// below its last literal segment, so no mount at or beneath that prefix can
+// share the method with it. A mount strictly below a plain route stays legal:
+// that route names one path, and the mount's subtree starts beneath it. A
+// route registered at or under a mount is refused the same way, since a mount
+// owns its whole subtree. The refusal is xbc's rather than the engine's
+// because engines disagree about the overlap -- gin panics on a conflicting
+// subtree without naming either side, ServeMux accepts one silently -- and a
+// conflict resolved differently per engine is worse than an explicit refusal.
+// The check is per method: the same prefix under a different method is a
+// distinct registration in every engine xbc ships.
 //
 // The prefix is a literal, non-root path without a trailing slash. The root
 // is refused because a mount there would own every path, conflicting with
@@ -127,40 +132,99 @@ func mountPrefix(basePath, relativePath string) string {
 // panic can name both sides. mounted says whether the incoming registration
 // is a mount.
 //
-// The predicate only ever fires on an overlap a mount is part of. Two
-// single-path routes sharing a path keep the engine's own
-// duplicate-registration error: that overlap is a plain mistake whose message
-// the engine already gives, while an overlap with a subtree is the one the
-// engines disagree about.
+// The predicate only ever fires on an overlap a mount is part of. Overlaps
+// that no mount is part of -- two plain routes on one path, two pattern routes
+// whose trees collide -- stay the engine's own registration error: those are
+// one engine's syntax presented to it, while an overlap with a mount is the
+// one the engines disagree about.
+//
+// A mount holds a subtree. So does a route whose path carries engine pattern
+// syntax (":" or "*"), from the last literal segment before the pattern:
+// every engine xbc ships matches a pattern at a fixed position in its tree,
+// so a mount below the pattern's literal prefix collides with it however
+// unrelated the two path strings look. Two claims overlap when both hold
+// subtrees and either contains the other, or when a subtree holds the other
+// side's single path. A plain route above a mount stays legal, while a
+// pattern route is compared at that same coarse grain on purpose: naming a
+// path the pattern would not really match is a refusal an author can read and
+// rename, while missing one is an engine panic that names neither side.
 //
 // The comparison is on path segments, never on raw characters: "/flow" owns
 // "/flow/x" but not "/flowx", which is exactly the boundary both adapters'
 // matchers draw.
 func conflictingRegistration(method, fullPath string, mounted bool, routes []RouteInfo) (RouteInfo, bool) {
+	incomingBase, incomingSubtree := registrationClaim(fullPath, mounted)
 	for _, existing := range routes {
 		if existing.Method != method {
 			continue
 		}
-		if existing.Path == fullPath {
-			if mounted || existing.Mounted {
-				return existing, true
-			}
+		if !mounted && !existing.Mounted {
 			continue
 		}
-		if existing.Mounted && pathBelow(existing.Path, fullPath) {
-			return existing, true
-		}
-		if mounted && pathBelow(fullPath, existing.Path) {
+		existingBase, existingSubtree := registrationClaim(existing.Path, existing.Mounted)
+		if registrationOverlap(existingBase, existingSubtree, incomingBase, incomingSubtree) {
 			return existing, true
 		}
 	}
 	return RouteInfo{}, false
 }
 
+// registrationClaim returns what a registration holds on its method: the base
+// its matching branches from, and whether it holds a whole subtree there
+// rather than that single path. A mount holds its subtree. A route whose path
+// carries pattern syntax holds the subtree below its literal prefix: the
+// pattern picks the paths inside it, which is what makes the two registrations
+// each other's business rather than a comparison of path strings.
+func registrationClaim(path string, mounted bool) (string, bool) {
+	if mounted {
+		return path, true
+	}
+	base := literalPrefix(path)
+	return base, base != path
+}
+
+// literalPrefix is the part of a registration path that stays literal: the
+// path before the segment carrying the first ":" or "*", which is the last
+// point every engine's tree still branches at a fixed position. A path with
+// no pattern segment is its own prefix; a pattern in the first segment makes
+// the root the prefix, reaching every other path.
+func literalPrefix(path string) string {
+	i := strings.IndexAny(path, ":*")
+	if i < 0 {
+		return path
+	}
+	if slash := strings.LastIndex(path[:i], "/"); slash >= 0 {
+		return path[:slash]
+	}
+	return ""
+}
+
+// registrationOverlap reports whether two registrations' claims on one method
+// overlap: two subtrees overlap when either contains the other, and a subtree
+// and a single path overlap when the subtree contains the path.
+func registrationOverlap(aBase string, aSubtree bool, bBase string, bSubtree bool) bool {
+	switch {
+	case aSubtree && bSubtree:
+		return subtreeContains(aBase, bBase) || subtreeContains(bBase, aBase)
+	case aSubtree:
+		return subtreeContains(aBase, bBase)
+	case bSubtree:
+		return subtreeContains(bBase, aBase)
+	}
+	return false
+}
+
+// subtreeContains reports whether the subtree rooted at prefix holds p:
+// prefix itself or a path below it. The root prefix holds every absolute
+// path, which is what a pattern in a path's first segment claims.
+func subtreeContains(prefix, p string) bool {
+	return p == prefix || pathBelow(prefix, p)
+}
+
 // pathBelow reports whether p lies strictly below prefix on a path-segment
-// boundary: "/flow/x" is below "/flow", "/flowx" is not. Every prefix here is
-// absolute and non-root (mountPrefix refuses the root), so the boundary is
-// always prefix+"/".
+// boundary: "/flow/x" is below "/flow", "/flowx" is not. The boundary is
+// always prefix+"/", so the root prefix ("") is below every absolute path and
+// no path is below the root.
 func pathBelow(prefix, p string) bool {
 	return strings.HasPrefix(p, prefix+"/")
 }

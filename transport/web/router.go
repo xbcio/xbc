@@ -469,16 +469,18 @@ func (r *Router) requireMutable() {
 // running first is what lets every later handler -- including global
 // middleware that aborts or fails before reaching h -- call CurrentRoute.
 //
-// A path at or below a mounted prefix on the same method panics here: the
-// mount already owns that whole subtree, so the engine could not route to
-// both. See Router.Mount for the rule and why xbc refuses the overlap itself.
+// A path that overlaps a mounted prefix on the same method panics here -- at
+// or below it, or a path carrying a ":" or "*" whose literal prefix reaches
+// it: the mount already owns that whole subtree, so the engine could not
+// route to both. See Router.Mount for the rule and why xbc refuses the
+// overlap itself.
 func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 	r.requireMutable()
 	fullPath := joinPaths(r.basePath, relativePath)
 	if existing, conflict := conflictingRegistration(method, fullPath, false, *r.routes); conflict {
 		panic(fmt.Sprintf(
-			"xbc: route %s %s is at or under the mount %s %s registered on the same method, and a mount owns its whole subtree",
-			method, fullPath, existing.Method, existing.Path))
+			"xbc: route %s %s overlaps the %s registered on the same method, and a mount owns its whole subtree",
+			method, fullPath, describeRoute(existing)))
 	}
 	chain := appendChain([]Handler{recordCurrentRoute(method, fullPath, r.frozen, r.index)}, r.handlers...)
 	chain = appendChain(chain, h...)
@@ -501,6 +503,11 @@ func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 // and into RouteInfo.Path/recordCurrentRoute's baked-in key, so any drift from
 // gin's own joining would also desynchronize what the engine actually routes
 // from what CurrentRoute reports for it.
+//
+// Cleaning is still path.Join's, ".." segments included: a relative path that
+// resolves somewhere other than it reads is a caller's mistake, and it gets
+// the same normalization every route path has always had, a mount's prefix
+// included.
 func joinPaths(absolutePath, relativePath string) string {
 	if relativePath == "" {
 		return absolutePath

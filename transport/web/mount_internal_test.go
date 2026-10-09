@@ -151,10 +151,11 @@ func TestMountRefusesToRegisterAfterFreeze(t *testing.T) {
 
 // TestMountRefusesOverlappingRegistrations pins the registration-time
 // conflict rule at every shape of overlap this side of the pair can take, in
-// both directions, plus the shapes that must stay legal. The check is what
-// lets the adapters keep their own, disagreeing conflict behaviour out of the
-// picture: gin panics on a conflicting subtree without naming what it
-// conflicts with, and ServeMux accepts the overlap silently.
+// both directions, pattern routes included, plus the shapes that must stay
+// legal. The check is what lets the adapters keep their own, disagreeing
+// conflict behaviour out of the picture: gin panics on a conflicting subtree
+// without naming what it conflicts with, and ServeMux accepts the overlap
+// silently.
 //
 // wantRows is asserted after the call either way, so a refused registration
 // is also pinned to have registered nothing.
@@ -216,7 +217,7 @@ func TestMountRefusesOverlappingRegistrations(t *testing.T) {
 				r.Mount("/flow", mountedHandler())
 				r.GET("/flow", okRouteHandler)
 			},
-			wantPanic: "xbc: route GET /api/flow is at or under the mount GET /api/flow registered on the same method, and a mount owns its whole subtree",
+			wantPanic: "xbc: route GET /api/flow overlaps the mount GET /api/flow registered on the same method, and a mount owns its whole subtree",
 			wantRows:  len(anyMethods),
 		},
 		{
@@ -225,8 +226,44 @@ func TestMountRefusesOverlappingRegistrations(t *testing.T) {
 				r.Mount("/flow", mountedHandler())
 				r.GET("/flow/status", okRouteHandler)
 			},
-			wantPanic: "xbc: route GET /api/flow/status is at or under the mount GET /api/flow registered on the same method, and a mount owns its whole subtree",
+			wantPanic: "xbc: route GET /api/flow/status overlaps the mount GET /api/flow registered on the same method, and a mount owns its whole subtree",
 			wantRows:  len(anyMethods),
+		},
+		{
+			name: "a pattern route under the mount afterwards",
+			register: func(r *Router) {
+				r.Mount("/flow", mountedHandler())
+				r.GET("/flow/:id", okRouteHandler)
+			},
+			wantPanic: "xbc: route GET /api/flow/:id overlaps the mount GET /api/flow registered on the same method, and a mount owns its whole subtree",
+			wantRows:  len(anyMethods),
+		},
+		{
+			name: "a catch-all route reaching over the mount afterwards",
+			register: func(r *Router) {
+				r.Mount("/flow", mountedHandler())
+				r.GET("/*all", okRouteHandler)
+			},
+			wantPanic: "xbc: route GET /api/*all overlaps the mount GET /api/flow registered on the same method, and a mount owns its whole subtree",
+			wantRows:  len(anyMethods),
+		},
+		{
+			name: "a catch-all route above the mount first",
+			register: func(r *Router) {
+				r.GET("/flow/*rest", okRouteHandler)
+				r.Mount("/flow/status", mountedHandler())
+			},
+			wantPanic: "xbc: mount GET /api/flow/status overlaps route GET /api/flow/*rest registered on the same method, and a mount owns its whole subtree",
+			wantRows:  1,
+		},
+		{
+			name: "a parameter route above the mount first",
+			register: func(r *Router) {
+				r.GET("/flow/:id", okRouteHandler)
+				r.Mount("/flow/status", mountedHandler())
+			},
+			wantPanic: "xbc: mount GET /api/flow/status overlaps route GET /api/flow/:id registered on the same method, and a mount owns its whole subtree",
+			wantRows:  1,
 		},
 		{
 			name: "a conflict found mid-way registers nothing",
@@ -242,6 +279,22 @@ func TestMountRefusesOverlappingRegistrations(t *testing.T) {
 			register: func(r *Router) {
 				r.Mount("/flow", mountedHandler())
 				r.GET("/flowx", okRouteHandler)
+			},
+			wantRows: len(anyMethods) + 1,
+		},
+		{
+			name: "a pattern route in a sibling subtree",
+			register: func(r *Router) {
+				r.GET("/flowx/*rest", okRouteHandler)
+				r.Mount("/flow", mountedHandler())
+			},
+			wantRows: len(anyMethods) + 1,
+		},
+		{
+			name: "a pattern route on a method the mount does not cover",
+			register: func(r *Router) {
+				r.Mount("/flow", mountedHandler())
+				r.Handle(http.MethodTrace, "/*all", okRouteHandler)
 			},
 			wantRows: len(anyMethods) + 1,
 		},
@@ -281,6 +334,37 @@ func TestMountRefusesOverlappingRegistrations(t *testing.T) {
 			assert.Len(t, *router.routes, tc.wantRows)
 		})
 	}
+}
+
+// TestMountRefusesAWildcardAtTheRoot pins the coarsest claim a pattern route
+// makes: a catch-all in the path's first segment has no literal prefix at
+// all, so it already reaches every mount on its method. Without it the pair
+// would reach gin, which panics on the registration itself with a message
+// naming neither side. The case needs its own router because the prefix a
+// catch-all leaves behind is only empty at the root, and the conflict matrix
+// registers under a group.
+func TestMountRefusesAWildcardAtTheRoot(t *testing.T) {
+	router, _ := newTestRouter("/")
+	router.GET("/*all", okRouteHandler)
+
+	require.PanicsWithValue(t,
+		"xbc: mount GET /flow overlaps route GET /*all registered on the same method, and a mount owns its whole subtree",
+		func() { router.Mount("/flow", mountedHandler()) })
+	assert.Len(t, *router.routes, 1)
+}
+
+// TestPatternRoutesOutsideMountsKeepTheEngineConflict pins where the conflict
+// rule stops. Two pattern routes sharing a prefix are one engine's routing
+// syntax colliding inside that engine's own tree; xbc compares them like any
+// other pair of routes and leaves the refusal, and its wording, to the
+// engine. Only an overlap a mount is part of is xbc's to name.
+func TestPatternRoutesOutsideMountsKeepTheEngineConflict(t *testing.T) {
+	router, _ := newTestRouter("/api")
+	require.NotPanics(t, func() {
+		router.GET("/flow/:id", okRouteHandler)
+		router.GET("/flow/*rest", okRouteHandler)
+	})
+	assert.Len(t, *router.routes, 2)
 }
 
 // TestFreezeRefusesAnUnmeteredMount pins the reason RouteInfo.Mounted has to

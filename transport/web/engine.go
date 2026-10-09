@@ -44,10 +44,10 @@ type Engine interface {
 	// Allow, exactly as for an ordinary route.
 	//
 	// Mount is per-method; a subtree served under several methods is several
-	// calls. Registrations never overlap -- the caller refuses a mount at or
-	// under an existing registration on the same method before either adapter
-	// sees it -- so an adapter receives prefixes that are disjoint at path
-	// segment boundaries.
+	// calls. Registrations never overlap -- the caller refuses a mount that
+	// would overlap an existing registration on the same method, a pattern
+	// route's literal prefix included, before either adapter sees it -- so an
+	// adapter receives prefixes that are disjoint at path segment boundaries.
 	Mount(method, prefix string, chain []Handler)
 	NoRoute(chain []Handler)
 	// NoMethod installs the chain answering a request whose path is registered
