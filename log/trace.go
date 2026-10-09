@@ -83,23 +83,23 @@ func WithTrace(ctx context.Context, t Trace) context.Context {
 // Lookup order: this package's own local Trace (set via Span/Extract/
 // WithTrace) first, then OTel's trace.SpanContextFromContext as a fallback.
 //
-// This is deliberately the reverse of the "OTel first, local fallback"
-// order one might expect from an interop feature. Local-first avoids a real
-// regression: if the caller has some OTel instrumentation active (e.g.
-// otelhttp) that put an outer HTTP span into ctx via
-// trace.ContextWithSpanContext, but never wired UseTracer up, and then calls
-// log.Span(ctx, "db.query") to open an inner span, the inner span is stored
-// under this package's own key. If OTel were checked first, TraceFrom would
-// return the outer HTTP span and swallow the inner db.query span entirely --
+// This is deliberately the reverse of the "OTel first, local fallback" order
+// one might expect from an interop feature. Interop is one-way as implemented:
+// Span records the span it opens under this package's own key and never opens
+// one in an OTel SDK, while TraceFrom also reads a SpanContext that an OTel
+// SDK or OTel-based instrumentation already placed into ctx. No hook makes
+// Span delegate to an OTel tracer, so for a span this package opened, the
+// local key is its only home. That is what makes local win: with an otelhttp
+// outer span in ctx and a log.Span(ctx, "db.query") inner span, checking OTel
+// first would return the outer HTTP span and swallow the inner one entirely --
 // logging would get coarser, not finer, exactly where the caller asked for
 // more detail.
 //
-// Local-first does not give up anything in the case OTel interop is meant to
-// cover: once UseTracer is wired up, Span() delegates to the real tracer and
-// the resulting span lands under OTel's own key -- this package's local key
-// is never written in that path, so "prefer local" degrades automatically
-// into "read OTel" for exactly that scenario. Local-first is therefore never
-// worse than, and sometimes better than, checking OTel first.
+// A delegation mode -- a tracer hook through which Span opens a real OTel span
+// instead -- would land under OTel's own key and keep this order correct for
+// the same reason: there would be nothing local to prefer. Until that mode
+// exists, callers get the tail of a trace they can read, not the ability to
+// contribute to one.
 func TraceFrom(ctx context.Context) Trace {
 	if ctx == nil {
 		return Trace{}

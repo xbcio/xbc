@@ -101,11 +101,11 @@ func TestTraceFromFallsBackToOTelSpanContext(t *testing.T) {
 }
 
 // The most important regression guard: when ctx carries both an outer OTel
-// SpanContext (e.g. from otelhttp instrumentation that was never wired up
-// via UseTracer) and an inner local Trace (from this package's own Span),
-// TraceFrom must return the local one -- otherwise the inner span would be
-// silently swallowed by the outer one, making logging coarser instead of
-// finer at exactly the point the caller asked for more detail.
+// SpanContext (e.g. from otelhttp instrumentation) and an inner local Trace
+// (from this package's own Span, which writes no OTel key), TraceFrom must
+// return the local one -- otherwise the inner span would be silently
+// swallowed by the outer one, making logging coarser instead of finer at
+// exactly the point the caller asked for more detail.
 func TestTraceFromPrefersLocalOverOTel(t *testing.T) {
 	outer := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    trace.TraceID{0xaa},

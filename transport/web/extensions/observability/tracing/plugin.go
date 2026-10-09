@@ -196,6 +196,10 @@ func (p *Plugin) Shutdown(ctx context.Context) error { return p.contractHandle()
 // construction-time input of web.Server, it always constructs before and
 // therefore stops after the web server during reverse lifecycle unwind, so
 // this bounded flush-and-shutdown runs only once dependent traffic drains.
+//
+// Stop is the whole shutdown path: Plugin deliberately does not implement
+// plugin.Drainer, for the reasons the package documentation's Shutdown section
+// gives.
 func (p *Plugin) Stop(ctx context.Context) error {
 	return p.contractHandle().Shutdown(ctx)
 }

@@ -55,4 +55,20 @@
 // side effects; import
 // github.com/xbcio/xbc/transport/web/extensions/observability/tracing/autoload explicitly
 // for default-bundle registration.
+//
+// # Shutdown
+//
+// Plugin implements Stop only, not plugin.Drainer, and that is deliberate
+// rather than an oversight even though the spans it accepts are buffered
+// asynchronously: Stop force-flushes that buffer before releasing the exporter,
+// so work accepted before shutdown is exported rather than dropped. Drain
+// would add no safety beyond it. Every span producer holds the Handle contract,
+// which means it constructs after this plugin and is therefore stopped before
+// it, so no producer can be recording while Stop runs; and the flush needs no
+// shared shutdown budget to protect a dependent, because the only dependent
+// that could still need the exporter is the exporter's own owner. What Stop
+// does share with a drain phase is that it runs the flush detached from the
+// caller's deadline, under the configured batch export timeout, once and only
+// once no matter how many callers arrive -- a caller whose own context expires
+// gets back its context error without cutting the flush short.
 package tracing
