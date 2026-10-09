@@ -46,7 +46,11 @@ var (
 func newTestEngineAndRouter(basePath string) (*enginetest.Engine, *web.Router) {
 	engine := enginetest.New()
 	routes, frozen, index := web.NewRouteTable()
-	return engine, web.NewRouter(engine, basePath, nil, routes, frozen, index)
+	// The management engine is nil: these tests exercise the serving plane,
+	// which is also the default a deployment without web.management.addr runs
+	// with -- Router.Management then returns the router itself, and the route
+	// table gains no management rows.
+	return engine, web.NewRouter(engine, nil, basePath, nil, routes, frozen, index)
 }
 
 func TestRouteMetadataChainIsFrozenIntoCatalogAndCurrentRoute(t *testing.T) {

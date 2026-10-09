@@ -313,6 +313,25 @@ func managementHostIsLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// bindAddr resolves Addr to the address the Server actually listens on. The
+// resolution exists because a hostless spelling does not mean what it looks
+// like once it reaches net.Listen: ":9091" binds every interface, which on this
+// listener would publish an operator surface that carries no authentication to
+// the network. Filling the missing host with loopback is what makes
+// managementHostIsLoopback's reading of an empty host true rather than
+// aspirational -- a config that validated as loopback-only must be reachable
+// from this machine only.
+//
+// An address that already names a host is passed through untouched, including
+// the explicit remote spellings allow_remote exists to consent to.
+func (m ManagementConfig) bindAddr() string {
+	host, port, err := net.SplitHostPort(m.Addr)
+	if err != nil || host != "" {
+		return m.Addr
+	}
+	return net.JoinHostPort("127.0.0.1", port)
+}
+
 // validate checks the TLS material and the declarations around it. It does
 // not read the certificate: whether the files exist and parse is a startup
 // question with a startup error, answered where the listener is configured

@@ -36,18 +36,20 @@ type Server struct {
 	// listener is a test-only pre-bound socket set from export_test.go.
 	listener net.Listener
 
-	mu             sync.Mutex
-	engine         Engine
-	router         *Router
-	ln             net.Listener
-	ordered        []plugin.Entry[Middleware]
-	misses         []MiddlewareOrderMiss
-	authentication *authenticationMiddleware
-	catalog        RouteCatalog
-	inflight       *inFlightGate
-	started        bool
-	prepared       bool
-	served         bool
+	mu               sync.Mutex
+	engine           Engine
+	router           *Router
+	ln               net.Listener
+	managementEngine Engine
+	managementLn     net.Listener
+	ordered          []plugin.Entry[Middleware]
+	misses           []MiddlewareOrderMiss
+	authentication   *authenticationMiddleware
+	catalog          RouteCatalog
+	inflight         *inFlightGate
+	started          bool
+	prepared         bool
+	served           bool
 }
 
 var (
@@ -80,7 +82,9 @@ func newServer(
 }
 
 // Addr returns the bound address after Start succeeds. It resolves an ephemeral
-// :0 port before the global traffic gate is released.
+// :0 port before the global traffic gate is released, and it always names the
+// serving listener: a deployment that separates the planes has two addresses,
+// and this method keeps the meaning every caller already depends on.
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,6 +92,19 @@ func (s *Server) Addr() string {
 		return ""
 	}
 	return s.ln.Addr().String()
+}
+
+// ManagementAddr returns the bound management address after Start succeeds, or
+// "" when no management listener is configured -- which is the default, and
+// also what a caller sees before Start. Like Addr, it resolves an ephemeral :0
+// port, so a caller tests against a real port rather than a guess.
+func (s *Server) ManagementAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.managementLn == nil {
+		return ""
+	}
+	return s.managementLn.Addr().String()
 }
 
 // assembledPipeline is everything a Server builds before it activates
@@ -105,6 +122,13 @@ type assembledPipeline struct {
 	misses         []MiddlewareOrderMiss
 	authentication *authenticationMiddleware
 	inflight       *inFlightGate
+	// managementEngine is the second engine management-plane routes register
+	// against, or nil when web.management.addr is unset -- the default, in
+	// which there is no second listener and no management route. It is built
+	// here, beside the serving engine, because what a plugin registers must be
+	// decided before Preflight reports it; the listener it later serves on is
+	// bound in Start, and Preflight binds nothing.
+	managementEngine Engine
 	// tlsConfig is what the listener is wrapped with, or nil for plain HTTP.
 	// It is built here -- reading the certificate files -- so Preflight
 	// validates the material a boot would terminate TLS with, without binding
@@ -151,6 +175,28 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 	})
 	if err != nil {
 		return assembledPipeline{}, fmt.Errorf("xbc: web engine: %w", err)
+	}
+	// The management engine is a second engine of the same kind, built from the
+	// same options, and it exists exactly when an address was configured for
+	// it. Building it here rather than in Start is what lets the routes a
+	// plugin registers through Router.Management be decided -- and reported --
+	// without binding anything, which is the same split the serving engine
+	// already has.
+	var managementEngine Engine
+	if cfg.Management.Addr != "" {
+		managementEngine, err = s.factory.NewEngine(Options{
+			TrustedProxies:     cfg.TrustedProxies,
+			ReadTimeout:        cfg.ReadTimeout,
+			ReadHeaderTimeout:  cfg.ReadHeaderTimeout,
+			WriteTimeout:       cfg.WriteTimeout,
+			IdleTimeout:        cfg.IdleTimeout,
+			MaxHeaderBytes:     cfg.MaxHeaderBytes,
+			MaxMultipartMemory: cfg.MaxMultipartMemory,
+			Logger:             logger,
+		})
+		if err != nil {
+			return assembledPipeline{}, fmt.Errorf("xbc: web management engine: %w", err)
+		}
 	}
 
 	routes, frozen, index := newRouteTable()
@@ -260,18 +306,31 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 	unmatchedChain := func(terminal Handler) []Handler {
 		return append(slices.Clone(handlers), terminal)
 	}
-	engine.NoRoute(unmatchedChain(func(_ context.Context, c *Ctx) error {
+	notFound := func(_ context.Context, c *Ctx) error {
 		AbortProblem(c, NewProblem(http.StatusNotFound, "not_found"))
 		return nil
-	}))
-	engine.NoMethod(unmatchedChain(func(_ context.Context, c *Ctx) error {
+	}
+	notAllowed := func(_ context.Context, c *Ctx) error {
 		AbortProblem(c, NewProblem(http.StatusMethodNotAllowed, "method_not_allowed"))
 		return nil
-	}))
+	}
+	engine.NoRoute(unmatchedChain(notFound))
+	engine.NoMethod(unmatchedChain(notAllowed))
+
+	// The management listener answers the same two questions with the same
+	// Problem Details, over the plane's own chain -- see managementPlane for
+	// what that chain is and why it is short.
+	var management *managementPlane
+	if managementEngine != nil {
+		planeHandlers := []Handler{panicGuard.Handler()}
+		managementEngine.NoRoute(append(slices.Clone(planeHandlers), notFound))
+		managementEngine.NoMethod(append(slices.Clone(planeHandlers), notAllowed))
+		management = &managementPlane{engine: managementEngine, handlers: planeHandlers}
+	}
 
 	// Router snapshots the handlers slice, so this must happen after every
 	// entry above is appended.
-	router := newRouter(engine, cfg.BasePath, handlers, routes, frozen, index)
+	router := newRouter(engine, management, cfg.BasePath, handlers, routes, frozen, index)
 	// Each contributor registers against its own copy of the root Router. The
 	// copy shares the route table (routes, frozen, index), the engine, and the
 	// root chain, but keeps its own defaultPerm/defaultAuth -- a default is
@@ -287,14 +346,15 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 	}
 
 	return assembledPipeline{
-		cfg:            cfg,
-		engine:         engine,
-		router:         router,
-		ordered:        ordered,
-		misses:         misses,
-		authentication: authenticator,
-		inflight:       inflight,
-		tlsConfig:      tlsConfig,
+		cfg:              cfg,
+		engine:           engine,
+		router:           router,
+		ordered:          ordered,
+		misses:           misses,
+		authentication:   authenticator,
+		inflight:         inflight,
+		tlsConfig:        tlsConfig,
+		managementEngine: managementEngine,
 	}, nil
 }
 
@@ -333,15 +393,36 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	// serverTLSConfig for why HSTS needs no code of ours behind this.
 	ln = wrapTLS(ln, pipeline.tlsConfig)
 
+	// The management listener reuses the same TLS configuration, so a
+	// deployment terminates TLS with one certificate pair, one client-auth
+	// policy, and one reload path on both ports. Its address is the resolved
+	// one, not the configured spelling: see ManagementConfig.bindAddr for why a
+	// hostless address binds loopback rather than every interface.
+	managementEngine := pipeline.managementEngine
+	var managementLn net.Listener
+	if managementEngine != nil {
+		managementLn, err = net.Listen("tcp", cfg.Management.bindAddr())
+		if err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("xbc: failed to listen on management address %s: %w", cfg.Management.bindAddr(), err)
+		}
+		managementLn = wrapTLS(managementLn, pipeline.tlsConfig)
+	}
+
 	s.mu.Lock()
 	if s.started {
 		s.mu.Unlock()
 		_ = ln.Close()
+		if managementLn != nil {
+			_ = managementLn.Close()
+		}
 		return errors.New("xbc: web Server has already started")
 	}
 	s.engine = engine
 	s.router = pipeline.router
 	s.ln = ln
+	s.managementEngine = managementEngine
+	s.managementLn = managementLn
 	s.ordered = pipeline.ordered
 	s.misses = pipeline.misses
 	s.authentication = pipeline.authentication
@@ -366,11 +447,45 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	})
 	if !accepted {
 		_ = ln.Close()
+		if managementLn != nil {
+			_ = managementLn.Close()
+		}
 		s.mu.Lock()
 		s.started = false
 		s.ln = nil
+		s.managementLn = nil
 		s.mu.Unlock()
 		return errors.New("xbc: web managed serving task was rejected outside Start admission")
+	}
+	if managementEngine != nil {
+		// The management task waits on the same gate as the serving task, so
+		// neither plane answers a request before the runtime opens traffic --
+		// and a management scrape cannot observe a process that never finished
+		// starting. Its rejection needs no separate rollback: a refused
+		// submission leaves nothing admitted (runtime/task.go charges before it
+		// creates anything), so the only work to undo is the socket, and the
+		// serving task already admitted returns when the runtime cancels this
+		// Plugin's task context on the failed Start.
+		managementAccepted := ctx.GoCritical(func(taskCtx context.Context) {
+			select {
+			case <-gate:
+			case <-taskCtx.Done():
+				return
+			}
+			if serveErr := managementEngine.Serve(managementLn); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
+				logger.Error("xbc: management HTTP service terminated abnormally", "error", serveErr)
+			}
+		})
+		if !managementAccepted {
+			_ = ln.Close()
+			_ = managementLn.Close()
+			s.mu.Lock()
+			s.started = false
+			s.ln = nil
+			s.managementLn = nil
+			s.mu.Unlock()
+			return errors.New("xbc: web management serving task was rejected outside Start admission")
+		}
 	}
 
 	// Reported once Start has committed the pipeline, and before ingress is
@@ -510,7 +625,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	started := s.started
 	served := s.served
 	engine := s.engine
+	managementEngine := s.managementEngine
 	ln := s.ln
+	managementLn := s.managementLn
 	preDrainDelay := s.cfg.Shutdown.PreDrainDelay
 	s.mu.Unlock()
 	if !started {
@@ -527,10 +644,23 @@ func (s *Server) Stop(ctx context.Context) error {
 		if err := engine.Shutdown(ctx); err != nil {
 			return fmt.Errorf("xbc: graceful shutdown failed: %w", err)
 		}
+		// The management plane drains after the serving plane, so a scrape
+		// issued while business traffic is still finishing -- the window an
+		// operator watches a rollout through -- lands, and a scrape issued
+		// afterwards is refused rather than answered by a process about to
+		// exit. Both drains share the runtime's one remaining deadline.
+		if managementEngine != nil {
+			if err := managementEngine.Shutdown(ctx); err != nil {
+				return fmt.Errorf("xbc: management HTTP shutdown failed: %w", err)
+			}
+		}
 		return nil
 	}
-	if ln != nil {
-		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+	for _, listener := range []net.Listener{ln, managementLn} {
+		if listener == nil {
+			continue
+		}
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			return fmt.Errorf("xbc: failed to close listener before traffic gate release: %w", err)
 		}
 	}

@@ -36,7 +36,7 @@ var _ Engine = nullEngine{}
 // with the route table's frozen flag, which a freeze-failure test has to read.
 func newTestRouter(basePath string) (*Router, *bool) {
 	routes, frozen, index := newRouteTable()
-	return newRouter(nullEngine{}, basePath, nil, routes, frozen, index), frozen
+	return newRouter(nullEngine{}, nil, basePath, nil, routes, frozen, index), frozen
 }
 
 // TestGroupAuthDefaultAppliesAndIsPerRouteDeepCopy covers Router.Auth's
@@ -202,8 +202,7 @@ func newManagedTestRouter(basePath string) (*Router, *recordingEngine, *recordin
 	routes, frozen, index := newRouteTable()
 	serving := &recordingEngine{}
 	management := &recordingEngine{}
-	router := newRouter(serving, basePath, nil, routes, frozen, index)
-	router.managementEngine = management
+	router := newRouter(serving, &managementPlane{engine: management}, basePath, nil, routes, frozen, index)
 	return router, serving, management
 }
 

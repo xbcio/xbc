@@ -246,15 +246,37 @@ type Router struct {
 	index       *map[string]RouteInfo
 	defaultPerm string
 	defaultAuth *AuthPolicy
-	// managementEngine is the engine Router.Management binds its view to, or
-	// nil when no management listener is configured -- the default. A nil
-	// engine is what makes Management return the receiver, so a composition
-	// that registers an operator route through it gets exactly the route it
-	// would have registered without it.
-	managementEngine Engine
-	// managementPlane marks a view Management built: its registrations are
+	// management is what Router.Management registers against -- the management
+	// engine and the chain its routes run -- or nil when no management listener
+	// is configured, which is the default. Nil is what makes Management return
+	// the receiver, so a composition that registers an operator route through
+	// it gets exactly the route it would have registered without it.
+	management *managementPlane
+	// managementView marks a router Management built: its registrations are
 	// recorded as management-plane rows and reach the management engine.
-	managementPlane bool
+	managementView bool
+}
+
+// managementPlane is one Router's management wiring, as (*Server).Start
+// assembles it: the engine the management listener serves with, and the chain
+// every management route inherits. Both travel together because they are one
+// decision -- the plane Router.Management binds to -- and a Router that has one
+// without the other would register routes nothing serves.
+//
+// The chain is the framework's panic boundary and nothing else, and each
+// omission is a stage the serving chain decided differently: no admission gate,
+// because a management route reports what the process is doing and matters most
+// exactly when the process is saturated; no authentication middleware, because
+// an operator surface has no business identity to authenticate and its access
+// control is where the listener binds (see ManagementConfig); and none of the
+// stages that shape or police a business request -- the body cap, the error
+// boundary, contributed middleware -- which a scrape is not. The panic boundary
+// stays because it is not about business policy at all: a panic in a profiler
+// handler must be contained and logged where an operator can see it, rather
+// than unwinding into a connection the standard library closes silently.
+type managementPlane struct {
+	engine   Engine
+	handlers []Handler
 }
 
 // newRouteTable allocates the three pieces of shared, pointer-identity
@@ -285,14 +307,15 @@ func newRouteTable() (routes *[]RouteInfo, frozen *bool, index *map[string]Route
 // not part of this chain: Router.Handle bakes one in per route instead, once
 // that route's own method and path are known -- see Handle and
 // recordCurrentRoute's doc comments.
-func newRouter(engine Engine, basePath string, handlers []Handler, routes *[]RouteInfo, frozen *bool, index *map[string]RouteInfo) *Router {
+func newRouter(engine Engine, management *managementPlane, basePath string, handlers []Handler, routes *[]RouteInfo, frozen *bool, index *map[string]RouteInfo) *Router {
 	return &Router{
-		engine:   engine,
-		handlers: appendChain(nil, handlers...),
-		basePath: joinPaths("/", basePath),
-		routes:   routes,
-		frozen:   frozen,
-		index:    index,
+		engine:     engine,
+		handlers:   appendChain(nil, handlers...),
+		basePath:   joinPaths("/", basePath),
+		routes:     routes,
+		frozen:     frozen,
+		index:      index,
+		management: management,
 	}
 }
 
@@ -477,16 +500,16 @@ func appendChain(parent []Handler, extra ...Handler) []Handler {
 // failure mode unrepresentable.
 func (r *Router) Group(relativePath string, h ...Handler) *Router {
 	return &Router{
-		engine:           r.engine,
-		handlers:         appendChain(r.handlers, h...),
-		basePath:         joinPaths(r.basePath, relativePath),
-		routes:           r.routes,
-		frozen:           r.frozen,
-		index:            r.index,
-		defaultPerm:      r.defaultPerm,
-		defaultAuth:      cloneAuthPolicy(r.defaultAuth),
-		managementEngine: r.managementEngine,
-		managementPlane:  r.managementPlane,
+		engine:         r.engine,
+		handlers:       appendChain(r.handlers, h...),
+		basePath:       joinPaths(r.basePath, relativePath),
+		routes:         r.routes,
+		frozen:         r.frozen,
+		index:          r.index,
+		defaultPerm:    r.defaultPerm,
+		defaultAuth:    cloneAuthPolicy(r.defaultAuth),
+		management:     r.management,
+		managementView: r.managementView,
 	}
 }
 
@@ -504,12 +527,12 @@ func (r *Router) Group(relativePath string, h ...Handler) *Router {
 //
 // With a listener configured, the view shares the route table and the freeze
 // flag but binds its registrations to the management engine and to the
-// management chain, which carries none of the serving plane's framework stages:
-// no authentication middleware, no in-flight gate, no business middleware. The
-// view keeps this router's base path, so a group offers a management view of
-// its own subtree -- but not the group's handlers, which were declared for the
-// routes that plane serves; middleware for management routes is declared by
-// grouping the view itself.
+// management chain, which carries none of the serving plane's framework stages
+// (see managementPlane for what that chain is and why). The view keeps this
+// router's base path, so a group offers a management view of its own subtree --
+// but not the group's handlers, which were declared for the routes that plane
+// serves; middleware for management routes is declared by grouping the view
+// itself.
 //
 // A management route may not declare .Auth, .Perm, or .Unmetered: nothing on
 // its chain would enforce them, so freeze refuses the declaration rather than
@@ -517,16 +540,17 @@ func (r *Router) Group(relativePath string, h ...Handler) *Router {
 // to the management plane is therefore a property of where its listener binds,
 // which web.management.addr and allow_remote decide.
 func (r *Router) Management() *Router {
-	if r.managementEngine == nil {
+	if r.management == nil {
 		return r
 	}
 	return &Router{
-		engine:          r.managementEngine,
-		basePath:        r.basePath,
-		routes:          r.routes,
-		frozen:          r.frozen,
-		index:           r.index,
-		managementPlane: true,
+		engine:         r.management.engine,
+		handlers:       appendChain(nil, r.management.handlers...),
+		basePath:       r.basePath,
+		routes:         r.routes,
+		frozen:         r.frozen,
+		index:          r.index,
+		managementView: true,
 	}
 }
 
@@ -609,7 +633,7 @@ func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 		Path:       fullPath,
 		Auth:       cloneAuthPolicy(r.defaultAuth),
 		Perm:       r.defaultPerm,
-		Management: r.managementPlane,
+		Management: r.managementView,
 	})
 	return &Route{Router: r, indexes: []int{len(*r.routes) - 1}}
 }

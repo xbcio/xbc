@@ -9,17 +9,23 @@ import (
 	"github.com/xbcio/xbc/transport/web"
 )
 
-// RegisterRoutes contributes pprof only when explicitly enabled. Access control
-// is delegated to the application's authentication policy.
+// RegisterRoutes contributes pprof only when explicitly enabled.
+//
+// The routes are registered on the management plane: profiling a process is not
+// business traffic, and it is the surface most obviously wrong to expose
+// wherever business clients connect. With no management listener configured --
+// the default -- they are ordinary routes on the serving listener, exactly as
+// they were before the plane existed; see web.Router.Management.
 func (p *Plugin) RegisterRoutes(router *web.Router) {
 	cfg := p.currentSettings()
 	if !cfg.enabled {
 		return
 	}
 	handler := p.handler()
-	router.GET(cfg.path, handler).Name("management.pprof.index")
-	router.GET(cfg.path+"/*profile", handler).Name("management.pprof.profile")
-	router.POST(cfg.path+"/*profile", handler).Name("management.pprof.command")
+	management := router.Management()
+	management.GET(cfg.path, handler).Name("management.pprof.index")
+	management.GET(cfg.path+"/*profile", handler).Name("management.pprof.profile")
+	management.POST(cfg.path+"/*profile", handler).Name("management.pprof.command")
 }
 
 func (p *Plugin) handler() web.Handler {

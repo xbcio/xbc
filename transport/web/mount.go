@@ -96,11 +96,12 @@ func (r *Router) Mount(relativePath string, h http.Handler) *Route {
 		chain = appendChain(chain, terminal)
 		r.engine.Mount(method, fullPath, chain)
 		*r.routes = append(*r.routes, RouteInfo{
-			Method:  method,
-			Path:    fullPath,
-			Auth:    cloneAuthPolicy(r.defaultAuth),
-			Perm:    r.defaultPerm,
-			Mounted: true,
+			Method:     method,
+			Path:       fullPath,
+			Auth:       cloneAuthPolicy(r.defaultAuth),
+			Perm:       r.defaultPerm,
+			Mounted:    true,
+			Management: r.managementView,
 		})
 		indexes = append(indexes, len(*r.routes)-1)
 	}
