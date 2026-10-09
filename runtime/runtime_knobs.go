@@ -31,11 +31,6 @@ var cgroupRoot = defaultCgroupRoot
 // subtraction could produce.
 const unlimitedMemoryLimit = 1 << 62
 
-// maxDerivedCPUs bounds what a cpu.max file may claim. A quota above this is a
-// malformed control file rather than a container with a million processors, and
-// installing it would be worse than installing nothing.
-const maxDerivedCPUs = 1 << 20
-
 // knobSource names where an effective process-level value came from. These
 // words are the vocabulary of the startup line, so an operator reading one boot
 // can tell a value derived from the container's own limits from one somebody
@@ -47,6 +42,12 @@ const (
 	knobSourceCgroup knobSource = "cgroup"
 	// knobSourceExplicit is a value configured under xbc.runtime.
 	knobSourceExplicit knobSource = "explicit"
+	// knobSourceRuntime is a value the Go runtime computes for itself. It is
+	// what xbc.runtime.max_procs "auto" resolves to: the runtime reads the
+	// container's CPU quota wherever the container's cgroup is mounted and
+	// keeps re-reading it while the process lives, neither of which this
+	// package can do on its behalf.
+	knobSourceRuntime knobSource = "runtime"
 	// knobSourceUnset is a knob nobody configured and nothing was derivable for.
 	knobSourceUnset knobSource = "unset"
 )
@@ -77,17 +78,28 @@ type runtimeKnobs struct {
 // describe renders the effective values as the single line the runtime logs
 // once per boot and the doctor command reports, for example:
 //
-//	max_procs=4 (cgroup) memory_limit=1.5GiB (cgroup, 75%) gc_percent=default (unset)
+//	max_procs=auto (runtime) memory_limit=1.5GiB (cgroup, 75%) gc_percent=default (unset)
 //
 // A knob left alone reads "default", because the number that ends up in force
 // is then whatever Go computed for this process -- the host's processor count
 // for GOMAXPROCS, 100 for the GC percentage -- and neither value was chosen by
-// this configuration.
+// this configuration. max_procs reads "auto" rather than "default" when the
+// configuration asked the runtime to decide, so the line distinguishes that
+// deliberate choice from a knob nobody wrote.
 func (k runtimeKnobs) describe() string {
 	return fmt.Sprintf("max_procs=%s (%s) memory_limit=%s (%s) gc_percent=%s (%s)",
-		countKnob(k.maxProcs), k.maxProcsSource,
+		k.maxProcsKnob(), k.maxProcsSource,
 		bytesKnob(k.memoryLimit), k.memoryLimitSource,
 		countKnob(k.gcPercent), k.gcPercentSource)
+}
+
+// maxProcsKnob renders the processor count the way the line shows it: "auto"
+// when the runtime is deciding for itself, the installed count otherwise.
+func (k runtimeKnobs) maxProcsKnob() string {
+	if k.maxProcsSource == knobSourceRuntime {
+		return "auto"
+	}
+	return countKnob(k.maxProcs)
 }
 
 // resolveRuntimeKnobs turns the xbc.runtime section into the values to install.
@@ -112,17 +124,16 @@ func resolveRuntimeKnobs(section runtimeSettings, root string) (runtimeKnobs, er
 
 	switch {
 	case maxProcs.auto:
-		// Deriving nothing is not an error here: a bare-metal host has no
-		// quota to derive from, and "auto" then means the Go default that is
-		// already in force. The line still says so, because an operator who
-		// asked for a container-derived value needs to know they did not get
-		// one.
-		if count, ok := containerCPUs(root); ok {
-			knobs.maxProcs = count
-			knobs.maxProcsSource = knobSourceCgroup
-		} else {
-			knobs.maxProcsSource = knobSourceUnset + ", no cgroup cpu quota"
-		}
+		// Nothing is installed, and that is the whole behaviour: the Go
+		// runtime sizes the scheduler from the container's CPU quota itself,
+		// looking wherever that container's cgroup is actually mounted (a
+		// systemd slice is not the root this package would read), and it keeps
+		// re-reading the quota while the process lives. Installing a count
+		// here would be narrower and strictly worse -- GOMAXPROCS(n) turns
+		// that periodic re-check off -- so "auto" means the same thing a
+		// positive integer cannot: leave the decision with the component that
+		// can keep making it.
+		knobs.maxProcsSource = knobSourceRuntime
 	case maxProcs.count > 0:
 		knobs.maxProcs = maxProcs.count
 		knobs.maxProcsSource = knobSourceExplicit
@@ -180,85 +191,17 @@ func applyRuntimeKnobs(knobs runtimeKnobs) {
 	}
 }
 
-// containerCPUs returns the number of CPUs this container's cgroup allows.
-//
-// The unified hierarchy states it in cpu.max as "<quota> <period>", where a
-// quota of the literal "max" means unlimited. The legacy hierarchy splits the
-// same pair across cpu.cfs_quota_us and cpu.cfs_period_us and spells unlimited
-// as a quota of -1. Anything missing, unreadable, malformed or non-positive is
-// reported as underivable, never as zero: a zero would be installed as a
-// GOMAXPROCS of one and would quietly serialize the process.
-//
-// The two hierarchies are tried in that order and the first one present is
-// authoritative, so a unified host whose cpu.max says "max" reports underivable
-// even if a legacy cpu.cfs_quota_us file also exists. That is deliberate: the
-// kernel enforces one hierarchy per controller, so on such a host the v1 file is
-// a leftover from another mount rather than a live limit, and reading it would
-// install a quota the container is not actually held to. "No quota" is the truth
-// there, and the caller treats it as leave-GOMAXPROCS-alone.
-func containerCPUs(root string) (int, bool) {
-	if raw, ok := readCgroupValue(filepath.Join(root, "cpu.max")); ok {
-		fields := strings.Fields(raw)
-		if len(fields) != 2 || fields[0] == "max" {
-			return 0, false
-		}
-		period, err := strconv.ParseInt(fields[1], 10, 64)
-		if err != nil {
-			return 0, false
-		}
-		quota, err := strconv.ParseInt(fields[0], 10, 64)
-		if err != nil {
-			return 0, false
-		}
-		return wholeCPUs(quota, period)
-	}
-
-	quotaRaw, ok := readCgroupValue(filepath.Join(root, "cpu", "cpu.cfs_quota_us"))
-	if !ok {
-		return 0, false
-	}
-	periodRaw, ok := readCgroupValue(filepath.Join(root, "cpu", "cpu.cfs_period_us"))
-	if !ok {
-		return 0, false
-	}
-	quota, err := strconv.ParseInt(quotaRaw, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	period, err := strconv.ParseInt(periodRaw, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return wholeCPUs(quota, period)
-}
-
-// wholeCPUs turns a quota/period pair into the processor count to install.
-//
-// A fractional quota is rounded up: a container granted 1.5 CPUs still owes
-// this process those 1.5 CPUs, and rounding down would leave it unable to use
-// what it was granted while changing nothing about the quota it is held to.
-func wholeCPUs(quota, period int64) (int, bool) {
-	if quota <= 0 || period <= 0 {
-		return 0, false
-	}
-	count := math.Ceil(float64(quota) / float64(period))
-	if count < 1 || count > maxDerivedCPUs {
-		return 0, false
-	}
-	return int(count), true
-}
-
 // containerMemoryLimit returns the memory this container's cgroup allows.
 //
 // The unified hierarchy states it in memory.max, where the literal "max" means
 // unlimited. The legacy hierarchy keeps it in memory/memory.limit_in_bytes and
-// has no word for unlimited at all -- see unlimitedMemoryLimit. As with the CPU
-// quota, an absent, malformed or non-positive file is underivable rather than
-// zero, because installing a zero limit would put the process into a permanent
-// GC death spiral instead of leaving it unlimited.
+// has no word for unlimited at all -- see unlimitedMemoryLimit. An absent,
+// malformed or non-positive file is underivable rather than zero, because
+// installing a zero limit would put the process into a permanent GC death
+// spiral instead of leaving it unlimited.
 //
-// The order and the single-source rule match containerCPUs, and for the same
-// reason: memory.max decides when it is present, so its "max" is read as
+// The two layouts are tried in that order and the first one present is
+// authoritative: memory.max decides when it is present, so its "max" is read as
 // unlimited rather than as "look in the legacy file".
 func containerMemoryLimit(root string) (int64, bool) {
 	if raw, ok := readCgroupValue(filepath.Join(root, "memory.max")); ok {

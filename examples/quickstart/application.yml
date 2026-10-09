@@ -54,12 +54,13 @@ xbc:
   # for one that tries. The effective values, and where each came from, are
   # logged once at startup and printed by the doctor subcommand.
   runtime:
-    # auto derives the processor count from this container's cgroup CPU quota
-    # rather than from the host's core count -- the difference between a
-    # 4-core-quota container starting 4 workers and starting 64. Where no quota
-    # is derivable, as on a bare-metal host, auto leaves GOMAXPROCS at the Go
-    # default and says so on the startup line. A positive integer sets it
-    # outright; 0 leaves it untouched.
+    # auto leaves the count to the Go runtime, which sizes the scheduler from
+    # this container's cgroup CPU quota rather than from the host's core count
+    # -- the difference between a 4-core-quota container starting 4 workers and
+    # starting 64 -- and keeps re-reading it as the container's quota changes.
+    # Installing a count here would turn that re-reading off, so auto is the
+    # only setting that stays right as a container's limits move. A positive
+    # integer sets the count outright; 0 also leaves the process value alone.
     max_procs: auto
     # A byte count, or a percentage of this container's memory limit such as
     # "75%". A percentage needs a derivable limit and is a startup error rather

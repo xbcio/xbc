@@ -245,18 +245,20 @@ func sanitizeHostname(host string) string {
 //
 // Every member is written in the form that reads best in a deployment file
 // rather than the form the runtime consumes: "auto" and "75%" state an intent
-// that depends on the container the process happens to land in, and turning
-// them into a processor count or a byte count is the job of the resolver.
+// that depends on the container the process happens to land in, and deciding
+// what to install for each of them is the job of the resolver.
 type runtimeSettings struct {
-	// MaxProcs is the GOMAXPROCS value to install: "auto" derives it from this
-	// container's CPU quota, a positive integer is used as written, and 0
-	// leaves the process value alone.
+	// MaxProcs is the GOMAXPROCS value to install: "auto" leaves the count to
+	// the Go runtime, a positive integer is used as written, and 0 also leaves
+	// the process value alone.
 	//
-	// "auto" exists because the default is wrong in the one deployment this
-	// framework is built for: inside a container Go sizes its scheduler from
-	// the host's processor count, not from the quota the container is held to,
-	// so a process with a 4-CPU quota on a 64-core host runs 64-wide and is
-	// throttled for it.
+	// "auto" is the default because it is the one setting that stays right as
+	// a container's quota changes: the Go runtime sizes the scheduler from the
+	// container's CPU quota, reading it wherever that container's cgroup is
+	// mounted, and re-reads it as the process runs. Setting a count -- here or
+	// through the GOMAXPROCS environment variable -- turns that re-reading off,
+	// so a deployment writes one only when it wants a fixed width that
+	// deliberately ignores the quota.
 	MaxProcs maxProcsSetting `yaml:"max_procs" default:"auto"`
 
 	// MemoryLimit is a soft memory limit: a byte count, or a percentage of
@@ -269,10 +271,18 @@ type runtimeSettings struct {
 	// the process instead of after.
 	MemoryLimit memoryLimitSetting `yaml:"memory_limit" default:"0"`
 
-	// GCPercent is the GOGC value to install; 0 leaves the Go default of 100
-	// in place. A lower value collects more often and trades throughput for
-	// headroom, which is what a container whose memory limit is close to its
-	// working set needs.
+	// GCPercent is the GOGC value to install; 0 installs nothing, which leaves
+	// the process's own value in place -- the Go default of 100, or whatever
+	// GOGC said at startup, GOGC=off included. A lower value collects more
+	// often and trades throughput for headroom, which is what a container whose
+	// memory limit is close to its working set needs.
+	//
+	// Disabling collection has no spelling of its own here on purpose: "off"
+	// is the runtime's word for it, and a second name for one setting is a
+	// second thing to keep in sync. Negative values are refused rather than
+	// read as that word, because -1 is exactly the argument
+	// debug.SetGCPercent treats as "off": a mistyped sign should not turn
+	// "collect more often" into "never collect".
 	GCPercent int `yaml:"gc_percent"`
 }
 
@@ -294,7 +304,8 @@ func (v *maxProcsSetting) UnmarshalText(text []byte) error {
 
 // maxProcsSpec is the parsed form of xbc.runtime.max_procs.
 type maxProcsSpec struct {
-	// auto asks for the count to be derived from the container's CPU quota.
+	// auto asks the Go runtime to size GOMAXPROCS for the container, which is
+	// what it does when nothing installs a count.
 	auto bool
 	// count is the configured processor count, where 0 is the documented off
 	// switch rather than another way of writing "auto".
@@ -310,7 +321,7 @@ func (v maxProcsSetting) parse() (maxProcsSpec, error) {
 		// unbounded default. The message says so, because the generic remedy
 		// ("use 0") is already what a blank value looks like it means.
 		return maxProcsSpec{}, fmt.Errorf(
-			"xbc: %s.runtime.max_procs is empty; write \"auto\", a positive processor count, or 0 to leave GOMAXPROCS alone",
+			"xbc: %s.runtime.max_procs is empty; write \"auto\" to let the Go runtime size it, a positive processor count, or 0 to leave the process value alone",
 			settingsSection)
 	}
 	if strings.EqualFold(text, "auto") {
@@ -319,7 +330,7 @@ func (v maxProcsSetting) parse() (maxProcsSpec, error) {
 	count, err := strconv.Atoi(text)
 	if err != nil {
 		return maxProcsSpec{}, fmt.Errorf(
-			"xbc: %s.runtime.max_procs must be \"auto\", a positive processor count, or 0, got %q; use 0 to leave GOMAXPROCS alone",
+			"xbc: %s.runtime.max_procs must be \"auto\", a positive processor count, or 0, got %q; write 0 to leave the process value alone",
 			settingsSection, text)
 	}
 	if count < 0 {
@@ -400,7 +411,7 @@ func parseRuntimeSection(section runtimeSettings) (maxProcsSpec, memoryLimitSpec
 	}
 	if section.GCPercent < 0 {
 		return maxProcsSpec{}, memoryLimitSpec{}, fmt.Errorf(
-			"xbc: %s.runtime.gc_percent must not be negative, got %d; 0 leaves the Go default of 100 in place",
+			"xbc: %s.runtime.gc_percent must not be negative, got %d; 0 installs nothing, which leaves the process's own value (the Go default of 100, or GOGC, including GOGC=off) in place",
 			settingsSection, section.GCPercent)
 	}
 	return maxProcs, memoryLimit, nil

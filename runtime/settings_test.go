@@ -337,11 +337,15 @@ func TestSettingsRuntimeKnobsComeFromTheEnvironment(t *testing.T) {
 	assert.Equal(t, 50, app.settings.Runtime.GCPercent)
 }
 
-// TestBootstrapInstallsTheDerivedGOMAXPROCS is this task's delivery boundary: a
-// process whose container has a CPU quota ends up sized by that quota rather
-// than by the host's processor count. It is deliberately not parallel, because
-// it changes a process-global knob and the cgroup root the derivation reads.
-func TestBootstrapInstallsTheDerivedGOMAXPROCS(t *testing.T) {
+// TestBootstrapLeavesAutoToTheRuntimeAndInstallsOnlyAnExplicitCount is this
+// task's delivery boundary, and it has two halves. With the default "auto",
+// bootstrap installs no processor count at all -- not even in a container whose
+// cgroup states a quota, because the Go runtime sizes the scheduler from that
+// quota itself and keeps re-reading it, and installing a count would stop the
+// re-reading. An explicit count is still installed as written. It is
+// deliberately not parallel, because it changes a process-global knob and the
+// cgroup root the resolver reads.
+func TestBootstrapLeavesAutoToTheRuntimeAndInstallsOnlyAnExplicitCount(t *testing.T) {
 	previousProcs := goruntime.GOMAXPROCS(0)
 	t.Cleanup(func() { goruntime.GOMAXPROCS(previousProcs) })
 	previousRoot := cgroupRoot
@@ -354,8 +358,16 @@ func TestBootstrapInstallsTheDerivedGOMAXPROCS(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	assert.Equal(t, 2, goruntime.GOMAXPROCS(0),
-		"the boot must install the quota the container is actually held to")
+	assert.Equal(t, previousProcs, goruntime.GOMAXPROCS(0),
+		"auto leaves the count exactly as the runtime sized it, quota or no quota")
+
+	t.Setenv("XBC_RUNTIME_MAX_PROCS", "3")
+	app = newRuntimeTestApp()
+	cmd, err = parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix)
+	require.NoError(t, err)
+	require.NoError(t, app.bootstrap(cmd))
+
+	assert.Equal(t, 3, goruntime.GOMAXPROCS(0), "an explicit count is installed as written")
 }
 
 // TestBootstrapInstallsTheConfiguredRuntimeKnobs covers the two remaining

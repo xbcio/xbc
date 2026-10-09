@@ -594,8 +594,9 @@ func TestDoctorSpellsOutAnEmptyPlacementExplanation(t *testing.T) {
 // The synthetic cgroup hierarchy is the point. Doctor has to print the same
 // line the startup would install, so it resolves the section through the same
 // pure resolver -- pointing that resolver at a temporary hierarchy is what
-// makes the derived case observable without a container, and the underivable
-// case is the one an operator hits on a bare-metal host.
+// makes the memory derivation observable without a container. The processor
+// count is deliberately not derived: "auto" reads as the runtime deciding, and
+// a quota in the hierarchy changes nothing about that.
 func TestDoctorReportsTheRuntimeKnobsFromTheContainer(t *testing.T) {
 	root := t.TempDir()
 	writeCgroupFile(t, root, "cpu.max", "400000 100000")
@@ -610,19 +611,19 @@ func TestDoctorReportsTheRuntimeKnobsFromTheContainer(t *testing.T) {
 		"  runtime:\n    max_procs: auto\n    memory_limit: \"75%\"\n    gc_percent: 20\n"+
 			doctorWorkloadConfig("sast"))...)
 
-	assert.Contains(t, out, "max_procs=4 (cgroup)",
-		"auto resolves against the container quota, not the host")
+	assert.Contains(t, out, "max_procs=auto (runtime)",
+		"auto hands the processor count to the runtime; a cgroup quota does not make the framework derive one")
 	assert.Contains(t, out, "memory_limit=1.5GiB (cgroup, 75%)")
 	assert.Contains(t, out, "gc_percent=20 (explicit)")
 
-	// A bare-metal host states nothing to derive from, and doctor must say that
-	// rather than print a number nobody configured.
+	// A bare-metal host states nothing to derive a memory limit from, and
+	// doctor must say that rather than print a number nobody configured.
 	bare := t.TempDir()
 	cgroupRoot = bare
 	app = doctorApp(doctorWorkloadBundles())
 	out = runDoctor(t, app, runtimeTestConfigWith(t, time.Second, doctorWorkloadConfig("sast"))...)
 
-	assert.Contains(t, out, "max_procs=default (unset, no cgroup cpu quota)")
+	assert.Contains(t, out, "max_procs=auto (runtime)")
 	assert.Contains(t, out, "memory_limit=default (unset)")
 	assert.Contains(t, out, "gc_percent=default (unset)")
 }

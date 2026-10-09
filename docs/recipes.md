@@ -528,7 +528,7 @@ The process-level runtime knobs belong to the framework rather than to any plugi
 ```yaml
 xbc:
   runtime:
-    max_procs: auto      # derive from the container's CPU quota
+    max_procs: auto      # leave it to the runtime, which tracks the container's quota
     memory_limit: "75%"  # bytes, or a percentage of the container memory limit
     gc_percent: 0        # 0 leaves the Go default of 100 alone
 
@@ -536,9 +536,9 @@ web:
   max_in_flight: 0       # 0 applies the fixed default (1024 concurrent requests)
 ```
 
-`max_procs: auto` reads the container's cgroup CPU quota, so a container limited to two cores runs with `GOMAXPROCS=2` rather than the host's core count. `memory_limit` makes the runtime collect harder as the container approaches its limit instead of being killed. A build in which a plugin called `debug.SetGCPercent`, `debug.SetMemoryLimit`, or `runtime.GOMAXPROCS` outside the framework fails the repository's architecture guard, which is what makes the values `doctor` reports worth trusting.
+`max_procs: auto` installs nothing and lets the Go runtime size the scheduler from the container's cgroup CPU quota, so a container limited to two cores runs with `GOMAXPROCS=2` rather than the host's core count, and keeps tracking that quota as it moves. `memory_limit` makes the runtime collect harder as the container approaches its limit instead of being killed. A build in which a plugin called `debug.SetGCPercent`, `debug.SetMemoryLimit`, or `runtime.GOMAXPROCS` outside the framework fails the repository's architecture guard, which is what makes the values `doctor` reports worth trusting.
 
-The two defaults are deliberately asymmetric, and this block is a recommendation rather than a description of them. `max_procs` defaults to `auto` because sizing the scheduler from the host's cores inside a quota is a factual error with no trade-off to weigh. `memory_limit` defaults to `0`, no limit, because a soft limit trades CPU for heap and only the deployment knows how much of each it wants -- and because a percentage needs a derivable container limit, so a framework default of `"75%"` would fail startup on bare metal for a deployment that configured nothing. `"75%"` is the value to write for a containerized process; outside a container write a byte count or leave it at `0`.
+The two defaults are deliberately asymmetric, and this block is a recommendation rather than a description of them. `max_procs` defaults to `auto` because the runtime already sizes the scheduler from the container's quota and re-checks it as that quota moves; a framework-installed count would be narrower than that -- it reads the quota only where this process's cgroup is mounted -- and would stop the re-checking, so the framework installs a count only when one is written down. `memory_limit` defaults to `0`, no limit, because a soft limit trades CPU for heap and only the deployment knows how much of each it wants -- and because a percentage needs a derivable container limit, so a framework default of `"75%"` would fail startup on bare metal for a deployment that configured nothing. `"75%"` is the value to write for a containerized process; outside a container write a byte count or leave it at `0`.
 
 `workloads`, `xbc.runtime`, `xbc.pre_stop_timeout`, and `web.max_in_flight` are introduced together with workload placement. A deployment that declares no workload keeps exactly its previous behaviour.
 

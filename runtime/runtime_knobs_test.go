@@ -21,93 +21,6 @@ func writeCgroupFile(t *testing.T, root, relative, contents string) {
 	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
 }
 
-// TestContainerCPUsDerivesFromBothCgroupLayouts covers the two hierarchies the
-// same derivation has to read, and the three ways a control file can fail to
-// state a quota: an explicit unlimited word, a malformed value, and no file at
-// all. Every one of those must be reported as underivable rather than as zero,
-// because the caller installs whatever it is handed.
-func TestContainerCPUsDerivesFromBothCgroupLayouts(t *testing.T) {
-	t.Parallel()
-	for name, testCase := range map[string]struct {
-		files   map[string]string
-		want    int
-		derived bool
-	}{
-		"v2 whole quota": {
-			files:   map[string]string{"cpu.max": "200000 100000\n"},
-			want:    2,
-			derived: true,
-		},
-		"v2 fractional quota rounds up": {
-			files:   map[string]string{"cpu.max": "150000 100000"},
-			want:    2,
-			derived: true,
-		},
-		"v2 unlimited": {
-			files: map[string]string{"cpu.max": "max 100000"},
-		},
-		"v2 quota without a period": {
-			files: map[string]string{"cpu.max": "200000"},
-		},
-		"v2 unparsable quota": {
-			files: map[string]string{"cpu.max": "many 100000"},
-		},
-		"v2 zero period": {
-			files: map[string]string{"cpu.max": "200000 0"},
-		},
-		"v2 empty file": {
-			files: map[string]string{"cpu.max": "\n"},
-		},
-		"v1 quota and period": {
-			files: map[string]string{
-				"cpu/cpu.cfs_quota_us":  "400000",
-				"cpu/cpu.cfs_period_us": "100000\n",
-			},
-			want:    4,
-			derived: true,
-		},
-		"v1 no limit": {
-			files: map[string]string{
-				"cpu/cpu.cfs_quota_us":  "-1",
-				"cpu/cpu.cfs_period_us": "100000",
-			},
-		},
-		"v1 quota without a period file": {
-			files: map[string]string{"cpu/cpu.cfs_quota_us": "400000"},
-		},
-		"v1 unparsable period": {
-			files: map[string]string{
-				"cpu/cpu.cfs_quota_us":  "400000",
-				"cpu/cpu.cfs_period_us": "one hundred thousand",
-			},
-		},
-		"no cgroup at all": {
-			files: map[string]string{},
-		},
-		"quota below one cpu still yields one": {
-			files:   map[string]string{"cpu.max": "50000 100000"},
-			want:    1,
-			derived: true,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			root := t.TempDir()
-			for relative, contents := range testCase.files {
-				writeCgroupFile(t, root, relative, contents)
-			}
-			count, derived := containerCPUs(root)
-			assert.Equal(t, testCase.derived, derived,
-				"only a well-formed, bounded quota is a derivable one")
-			if testCase.derived {
-				assert.Equal(t, testCase.want, count)
-			} else {
-				assert.Zero(t, count, "an underivable quota must not be reported as a count")
-			}
-		})
-	}
-}
-
 // TestContainerMemoryLimitReadsBothCgroupLayouts pins the two spellings of "no
 // limit": cgroup v2 says "max", cgroup v1 says nothing and reports a
 // page-aligned value just below MaxInt64. Both must leave the process limit
@@ -173,7 +86,13 @@ func TestContainerMemoryLimitReadsBothCgroupLayouts(t *testing.T) {
 	}
 }
 
-func TestResolveRuntimeKnobsUsesTheContainerQuotaOnlyForAuto(t *testing.T) {
+// TestResolveRuntimeKnobsLeavesAutoToTheRuntime is the mutation control for
+// "auto": it installs no count whatever the container's cgroup says, because
+// the Go runtime derives that count itself and keeps re-deriving it -- and
+// because GOMAXPROCS(n) turns that re-derivation off. A cpu.max read here would
+// also miss a quota set on a cgroup this process does not sit at the root of,
+// which is the broader failure this case exists to prevent.
+func TestResolveRuntimeKnobsLeavesAutoToTheRuntime(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeCgroupFile(t, root, "cpu.max", "300000 100000")
@@ -184,8 +103,10 @@ func TestResolveRuntimeKnobsUsesTheContainerQuotaOnlyForAuto(t *testing.T) {
 		MemoryLimit: "0",
 	}, root)
 	require.NoError(t, err)
-	assert.Equal(t, 3, knobs.maxProcs, "auto must derive the count from the quota, not from the host")
-	assert.Equal(t, knobSourceCgroup, knobs.maxProcsSource)
+	assert.Zero(t, knobs.maxProcs, "auto must install nothing at all")
+	assert.Equal(t, knobSourceRuntime, knobs.maxProcsSource)
+	assert.Contains(t, knobs.describe(), "max_procs=auto (runtime)",
+		"the line has to say the runtime is deciding, not that nobody configured anything")
 	assert.Zero(t, knobs.memoryLimit)
 	assert.Equal(t, knobSourceUnset, knobs.memoryLimitSource)
 
@@ -193,25 +114,14 @@ func TestResolveRuntimeKnobsUsesTheContainerQuotaOnlyForAuto(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 8, knobs.maxProcs, "an explicit count is used as written, cgroup or not")
 	assert.Equal(t, knobSourceExplicit, knobs.maxProcsSource)
+	assert.Contains(t, knobs.describe(), "max_procs=8 (explicit)")
 
 	knobs, err = resolveRuntimeKnobs(runtimeSettings{MaxProcs: "0", MemoryLimit: "0"}, root)
 	require.NoError(t, err)
 	assert.Zero(t, knobs.maxProcs, "0 is the documented off switch")
 	assert.Equal(t, knobSourceUnset, knobs.maxProcsSource)
-}
-
-// TestResolveRuntimeKnobsLeavesGOMAXPROCSAloneWithoutAQuota is the mutation
-// control for the derivation itself: were "auto" to fall back to the host's
-// processor count, or to a placeholder, this case would install something
-// instead of leaving the process as Go sized it.
-func TestResolveRuntimeKnobsLeavesGOMAXPROCSAloneWithoutAQuota(t *testing.T) {
-	t.Parallel()
-	knobs, err := resolveRuntimeKnobs(runtimeSettings{MaxProcs: "auto", MemoryLimit: "0"}, t.TempDir())
-	require.NoError(t, err)
-	assert.Zero(t, knobs.maxProcs)
-	assert.Equal(t, knobSource("unset, no cgroup cpu quota"), knobs.maxProcsSource,
-		"the effective-value line has to say that nothing was derivable")
-	assert.Contains(t, knobs.describe(), "max_procs=default (unset, no cgroup cpu quota)")
+	assert.Contains(t, knobs.describe(), "max_procs=default (unset)",
+		"an explicit 0 and an auto are different statements and read differently")
 }
 
 func TestResolveRuntimeKnobsResolvesAMemoryPercentageAgainstTheContainer(t *testing.T) {
@@ -271,15 +181,23 @@ func TestRuntimeKnobsDescribeIsTheEffectiveValueLine(t *testing.T) {
 	t.Parallel()
 	resolved := runtimeKnobs{
 		maxProcs:          4,
-		maxProcsSource:    knobSourceCgroup,
+		maxProcsSource:    knobSourceExplicit,
 		memoryLimit:       1610612736,
 		memoryLimitSource: "cgroup, 75%",
 		gcPercent:         200,
 		gcPercentSource:   knobSourceExplicit,
 	}
 	assert.Equal(t,
-		"max_procs=4 (cgroup) memory_limit=1.5GiB (cgroup, 75%) gc_percent=200 (explicit)",
+		"max_procs=4 (explicit) memory_limit=1.5GiB (cgroup, 75%) gc_percent=200 (explicit)",
 		resolved.describe())
+
+	assert.Equal(t,
+		"max_procs=auto (runtime) memory_limit=default (unset) gc_percent=default (unset)",
+		runtimeKnobs{
+			maxProcsSource:    knobSourceRuntime,
+			memoryLimitSource: knobSourceUnset,
+			gcPercentSource:   knobSourceUnset,
+		}.describe())
 
 	assert.Equal(t,
 		"max_procs=default (unset) memory_limit=default (unset) gc_percent=default (unset)",
