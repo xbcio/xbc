@@ -223,8 +223,8 @@ func subtreeContains(prefix, p string) bool {
 
 // pathBelow reports whether p lies strictly below prefix on a path-segment
 // boundary: "/flow/x" is below "/flow", "/flowx" is not. The boundary is
-// always prefix+"/", so the root prefix ("") is below every absolute path and
-// no path is below the root.
+// always prefix+"/", so every absolute path lies below the root prefix ("")
+// and no path lies below the root path ("/").
 func pathBelow(prefix, p string) bool {
 	return strings.HasPrefix(p, prefix+"/")
 }
