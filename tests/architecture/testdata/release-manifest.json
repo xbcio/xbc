@@ -349,11 +349,17 @@
         "github.com/xbcio/xbc/extensions/authorization/casbin-redis",
         "github.com/xbcio/xbc/extensions/authorization/rbac",
         "github.com/xbcio/xbc/extensions/concurrency/async",
+        "github.com/xbcio/xbc/extensions/jobs/asynq",
         "github.com/xbcio/xbc/extensions/jobs/cron",
+        "github.com/xbcio/xbc/extensions/messaging/outbox",
         "github.com/xbcio/xbc/extensions/reliability/health",
         "github.com/xbcio/xbc/extensions/storage/gorm",
         "github.com/xbcio/xbc/transport/web",
         "github.com/xbcio/xbc/transport/web/engines/gin",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/transport/web/extensions/observability/metrics",
+        "github.com/xbcio/xbc/transport/web/extensions/observability/tracing",
         "github.com/xbcio/xbc/transport/web/extensions/openapi/swag"
       ]
     },
