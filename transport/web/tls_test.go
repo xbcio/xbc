@@ -494,3 +494,120 @@ func touch(t *testing.T, path string, offset time.Duration) {
 	stamp := time.Now().Add(offset)
 	require.NoError(t, os.Chtimes(path, stamp, stamp))
 }
+
+// writeClientCA writes one certificate authority a server can verify client
+// certificates against, and returns its PEM path plus the material a test
+// signs a client certificate with. name lets one test write two of them -- the
+// authority a deployment configured and one it is expected not to trust.
+func writeClientCA(t *testing.T, dir, name string) (caFile string, ca *x509.Certificate, caKey *ecdsa.PrivateKey) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	template := x509.Certificate{
+		SerialNumber:          big.NewInt(100),
+		Subject:               pkix.Name{CommonName: name},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	caFile = filepath.Join(dir, name+".crt")
+	require.NoError(t, os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
+	ca, err = x509.ParseCertificate(der)
+	require.NoError(t, err)
+	return caFile, ca, key
+}
+
+// writeClientCertificate issues a client certificate signed by ca, in the form
+// a client presents during a handshake. The client extended key usage is what
+// makes it a client certificate rather than another server's; a verifier is
+// entitled to reject the latter.
+func writeClientCertificate(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, serial int64) tls.Certificate {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(serial),
+		Subject:      pkix.Name{CommonName: "xbc test client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, ca, &key.PublicKey, caKey)
+	require.NoError(t, err)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// TestMutualTLSRequiresAVerifiedClientCertificate pins the half of web.tls that
+// only a handshake can show: client_auth and client_ca_file reach the TLS
+// configuration as a verification policy, not merely as validated strings. The
+// accepted client is what makes the two refusals evidence -- a server that
+// refused every client would satisfy both negative assertions.
+func TestMutualTLSRequiresAVerifiedClientCertificate(t *testing.T) {
+	dir := t.TempDir()
+	caFile, ca, caKey := writeClientCA(t, dir, "client-ca")
+	_, lookalikeCA, lookalikeKey := writeClientCA(t, t.TempDir(), "client-ca")
+	certFile, keyFile, roots := writeTestCertificate(t)
+
+	cfg := web.DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.TLS = web.TLSConfig{
+		CertFile:     certFile,
+		KeyFile:      keyFile,
+		ClientCAFile: caFile,
+		ClientAuth:   "require_and_verify",
+	}
+	server, ctx, host := newPingServer(t, cfg, serverInputs{})
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+	host.releaseTraffic()
+	addr := server.Addr()
+
+	client := func(certificates ...tls.Certificate) *http.Client {
+		return &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig:   &tls.Config{RootCAs: roots, Certificates: certificates, NextProtos: []string{"http/1.1"}},
+				ForceAttemptHTTP2: false,
+			},
+		}
+	}
+
+	presented := client(writeClientCertificate(t, ca, caKey, 1))
+	var response *http.Response
+	require.True(t, pollUntil(2*time.Second, 20*time.Millisecond, func() bool {
+		resp, err := presented.Get("https://" + addr + "/ping")
+		if err != nil {
+			return false
+		}
+		response = resp
+		return true
+	}), "a client certificate signed by tls.client_ca_file must complete the handshake")
+	defer response.Body.Close()
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+	require.NotNil(t, response.TLS)
+	// The served response is the evidence: under require_and_verify the
+	// standard library completes the handshake only after it has verified the
+	// client's certificate against tls.client_ca_file, so a served request is
+	// a verified client. (PeerCertificates on the client side name the server,
+	// which is the other end of the same verification.)
+
+	_, err := client().Get("https://" + addr + "/ping")
+	assert.Error(t, err, "require_and_verify must refuse a client that presents no certificate")
+
+	// A client picks the certificate to present by issuer name, so the
+	// authority below carries the configured one's subject with a different
+	// key: its certificate is really offered to the server and can only be
+	// refused by verifying its signature. This is the half the case above does
+	// not reach -- there, nothing was presented at all -- and it is what
+	// separates a server that verifies from one that merely demands.
+	_, err = client(writeClientCertificate(t, lookalikeCA, lookalikeKey, 2)).Get("https://" + addr + "/ping")
+	assert.Error(t, err, "a certificate whose issuer matches by name but not by key must fail verification")
+}

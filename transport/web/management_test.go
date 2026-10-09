@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"crypto/x509"
 	"io"
 	"net"
 	"net/http"
@@ -425,6 +426,79 @@ func TestPreflightDoesNotBindTheManagementAddress(t *testing.T) {
 		"a Preflight that bound the configured management address would fail here with an address-in-use error")
 	assert.Empty(t, server.ManagementAddr(), "Preflight must leave the Server unstarted")
 	assert.Empty(t, server.Addr())
+}
+
+// TestManagementListenerTerminatesTLSWithTheSameCertificate pins the TLS half
+// of the second plane: one certificate pair, one client-auth policy, and one
+// reload path serve both listeners. The rotation is what makes "one path" more
+// than a claim about startup -- the handshake after it is served by the newly
+// written certificate, which only a shared certificate source produces.
+func TestManagementListenerTerminatesTLSWithTheSameCertificate(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile, certificate := writeCertificatePair(t, dir, 1)
+
+	cfg := managementConfig()
+	cfg.TLS = web.TLSConfig{CertFile: certFile, KeyFile: keyFile}
+	server, ctx, host := newPingServer(t, cfg, serverInputs{
+		routes: []plugin.Entry[web.RouteContributor]{managementContributor("/-/metrics")},
+	})
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+	host.releaseTraffic()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(certificate)
+	client := newTLSClient(roots)
+	managementAddr := server.ManagementAddr()
+	require.NotEmpty(t, managementAddr)
+
+	var response *http.Response
+	require.True(t, pollUntil(2*time.Second, 20*time.Millisecond, func() bool {
+		resp, err := client.Get("https://" + managementAddr + "/-/metrics")
+		if err != nil {
+			return false
+		}
+		response = resp
+		return true
+	}), "a management listener beside a TLS serving listener must terminate TLS too")
+	defer response.Body.Close()
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+
+	// A cleartext request is refused by the standard library, exactly as on the
+	// serving listener: wrapping the second socket is what makes the
+	// deployment's one client-auth policy hold on both ports.
+	plaintext, err := (&http.Client{Timeout: time.Second}).Get("http://" + managementAddr + "/-/metrics")
+	require.NoError(t, err)
+	defer plaintext.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, plaintext.StatusCode,
+		"a management listener terminating TLS must not serve a plaintext request")
+
+	servingAddr := server.Addr()
+	assert.Equal(t, int64(1), servedSerial(t, client, servingAddr))
+	assert.Equal(t, int64(1), servedSerialAt(t, client, managementAddr, "/-/metrics"))
+
+	_, _, rotated := writeCertificatePair(t, dir, 2)
+	roots.AddCert(rotated)
+
+	assert.Equal(t, int64(2), servedSerial(t, client, servingAddr),
+		"the serving listener picks up a rotation")
+	assert.Equal(t, int64(2), servedSerialAt(t, client, managementAddr, "/-/metrics"),
+		"the management listener serves the rotated certificate through the same source")
+}
+
+// servedSerialAt reports which certificate the next handshake to addr is served
+// on a request to path. It generalizes servedSerial, which asks /ping and so
+// only fits the serving plane.
+func servedSerialAt(t *testing.T, client *http.Client, addr, path string) int64 {
+	t.Helper()
+
+	response, err := client.Get("https://" + addr + path)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.NotNil(t, response.TLS)
+	require.NotEmpty(t, response.TLS.PeerCertificates)
+	return response.TLS.PeerCertificates[0].SerialNumber.Int64()
 }
 
 // TestStartFailureOnTheManagementAddressReleasesTheServingListener covers the
