@@ -624,13 +624,15 @@ func settledGoroutines() int {
 type captureLogger struct {
 	log.Logger
 
-	mu      sync.Mutex
-	infoLog []string
-	warnLog []string
+	mu       sync.Mutex
+	infoLog  []string
+	warnLog  []string
+	errorLog []string
 }
 
-func (l *captureLogger) Info(msg string, kv ...any) { l.record(&l.infoLog, msg, kv...) }
-func (l *captureLogger) Warn(msg string, kv ...any) { l.record(&l.warnLog, msg, kv...) }
+func (l *captureLogger) Info(msg string, kv ...any)  { l.record(&l.infoLog, msg, kv...) }
+func (l *captureLogger) Warn(msg string, kv ...any)  { l.record(&l.warnLog, msg, kv...) }
+func (l *captureLogger) Error(msg string, kv ...any) { l.record(&l.errorLog, msg, kv...) }
 
 func (l *captureLogger) record(destination *[]string, msg string, kv ...any) {
 	line := msg
@@ -642,8 +644,9 @@ func (l *captureLogger) record(destination *[]string, msg string, kv ...any) {
 	*destination = append(*destination, line)
 }
 
-func (l *captureLogger) infos() []string { return l.snapshot(&l.infoLog) }
-func (l *captureLogger) warns() []string { return l.snapshot(&l.warnLog) }
+func (l *captureLogger) infos() []string  { return l.snapshot(&l.infoLog) }
+func (l *captureLogger) warns() []string  { return l.snapshot(&l.warnLog) }
+func (l *captureLogger) errors() []string { return l.snapshot(&l.errorLog) }
 
 func (l *captureLogger) snapshot(source *[]string) []string {
 	l.mu.Lock()

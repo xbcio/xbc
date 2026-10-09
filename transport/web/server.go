@@ -131,7 +131,7 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 
 	logger := ctx.Log()
 
-	tlsConfig, err := cfg.TLS.serverTLSConfig()
+	tlsConfig, err := cfg.TLS.serverTLSConfig(logger)
 	if err != nil {
 		return assembledPipeline{}, err
 	}

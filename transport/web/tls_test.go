@@ -123,7 +123,7 @@ func TestTLSListenerTerminatesTheHandshake(t *testing.T) {
 	assert.Error(t, err, "min_version 1.2 must refuse a TLS 1.1 client")
 
 	assert.Contains(t, strings.Join(capture.infos(), "\n"),
-		"web: TLS termination enabled (min_version 1.2, client_auth none, cipher_suites default)",
+		"web: TLS termination enabled (min_version 1.2, client_auth none, cipher_suites default, reload_interval 0s)",
 		"the startup report must state the handshake policy an operator is about to serve")
 }
 
@@ -222,10 +222,25 @@ type tlsObservation struct {
 func writeTestCertificate(t *testing.T) (certFile, keyFile string, roots *x509.CertPool) {
 	t.Helper()
 
+	certFile, keyFile, certificate := writeCertificatePair(t, t.TempDir(), 1)
+	roots = x509.NewCertPool()
+	roots.AddCert(certificate)
+	return certFile, keyFile, roots
+}
+
+// writeCertificatePair writes a fresh self-signed pair with the given serial
+// into dir, overwriting whatever pair is already there -- which is what a
+// rotation does. The modification time is set explicitly rather than left to
+// the filesystem's clock: the reload trigger is an identity of modification
+// time and size, and two writes inside one filesystem timestamp tick would
+// otherwise make a rotation invisible to the code under test.
+func writeCertificatePair(t *testing.T, dir string, serial int64) (certFile, keyFile string, certificate *x509.Certificate) {
+	t.Helper()
+
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	template := x509.Certificate{
-		SerialNumber:          big.NewInt(1),
+		SerialNumber:          big.NewInt(serial),
 		Subject:               pkix.Name{CommonName: "localhost"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(time.Hour),
@@ -239,7 +254,6 @@ func writeTestCertificate(t *testing.T) (certFile, keyFile string, roots *x509.C
 	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
 	require.NoError(t, err)
 
-	dir := t.TempDir()
 	certFile = filepath.Join(dir, "tls.crt")
 	keyFile = filepath.Join(dir, "tls.key")
 	require.NoError(t, os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600))
@@ -247,9 +261,236 @@ func writeTestCertificate(t *testing.T) (certFile, keyFile string, roots *x509.C
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: encodedKey}), 0o600))
 
-	roots = x509.NewCertPool()
-	certificate, err := x509.ParseCertificate(der)
+	stamp := time.Now().Add(time.Duration(serial) * time.Second)
+	require.NoError(t, os.Chtimes(certFile, stamp, stamp))
+	require.NoError(t, os.Chtimes(keyFile, stamp, stamp))
+
+	certificate, err = x509.ParseCertificate(der)
 	require.NoError(t, err)
-	roots.AddCert(certificate)
-	return certFile, keyFile, roots
+	return certFile, keyFile, certificate
+}
+
+// certificateSerial reads which rotation a loaded certificate is. The serial
+// is the only fact that distinguishes two certificates the same key generated,
+// so it is what a rotation test asserts on.
+func certificateSerial(t *testing.T, certificate *tls.Certificate) int64 {
+	t.Helper()
+
+	require.NotNil(t, certificate)
+	require.NotEmpty(t, certificate.Certificate)
+	parsed, err := x509.ParseCertificate(certificate.Certificate[0])
+	require.NoError(t, err)
+	return parsed.SerialNumber.Int64()
+}
+
+// newTLSClient builds a client that verifies the generated certificate and
+// opens a fresh connection per request, so every request is a handshake -- the
+// only place a rotation can be observed.
+func newTLSClient(roots *x509.CertPool) *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		TLSClientConfig:   &tls.Config{RootCAs: roots, NextProtos: []string{"h2", "http/1.1"}},
+		ForceAttemptHTTP2: false,
+		DisableKeepAlives: true,
+	}}
+}
+
+// servedSerial performs one request and reports the serial of the certificate
+// the server presented. A client that trusts only the pre-rotation
+// certificate would fail verification after a rotation, so the pool a
+// rotation test trusts carries every certificate it writes.
+func servedSerial(t *testing.T, client *http.Client, addr string) int64 {
+	t.Helper()
+
+	response, err := client.Get("https://" + addr + "/ping")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.NotNil(t, response.TLS)
+	require.NotEmpty(t, response.TLS.PeerCertificates)
+	return response.TLS.PeerCertificates[0].SerialNumber.Int64()
+}
+
+// servingFixture is a running Server that terminates TLS with a certificate
+// pair this test owns and rotates. Each test builds its own -- a shared one
+// would let one test's rotation decide what another test serves.
+type servingFixture struct {
+	dir      string
+	certFile string
+	keyFile  string
+	addr     string
+	client   *http.Client
+	roots    *x509.CertPool
+	logger   *captureLogger
+}
+
+// newServingFixture starts a Server on a generated pair with the given reload
+// interval and waits until it answers, so a test's first assertion is about a
+// certificate rather than about readiness.
+func newServingFixture(t *testing.T, reloadInterval time.Duration) *servingFixture {
+	t.Helper()
+
+	dir := t.TempDir()
+	certFile, keyFile, certificate := writeCertificatePair(t, dir, 1)
+
+	cfg := web.DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.TLS = web.TLSConfig{CertFile: certFile, KeyFile: keyFile, ReloadInterval: reloadInterval}
+	capture := &captureLogger{}
+	server, ctx, host := newPingServer(t, cfg, serverInputs{})
+	host.logger = capture
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+	host.releaseTraffic()
+
+	fixture := &servingFixture{
+		dir:      dir,
+		certFile: certFile,
+		keyFile:  keyFile,
+		addr:     server.Addr(),
+		roots:    x509.NewCertPool(),
+		logger:   capture,
+	}
+	fixture.roots.AddCert(certificate)
+	fixture.client = newTLSClient(fixture.roots)
+	require.True(t, pollUntil(2*time.Second, 20*time.Millisecond, func() bool {
+		response, err := fixture.client.Get("https://" + fixture.addr + "/ping")
+		if err != nil {
+			return false
+		}
+		response.Body.Close()
+		return true
+	}), "the TLS listener must answer once the traffic gate opens")
+	return fixture
+}
+
+// rotate replaces the serving pair with a new one, the way a deployment does
+// when it renews, and starts trusting it: the client pool is read at handshake
+// time, so the next request verifies against both certificates and can tell a
+// rotation apart from a refusal.
+func (f *servingFixture) rotate(t *testing.T, serial int64) {
+	t.Helper()
+
+	_, _, certificate := writeCertificatePair(t, f.dir, serial)
+	f.roots.AddCert(certificate)
+}
+
+// serial reports which certificate the next connection is served.
+func (f *servingFixture) serial(t *testing.T) int64 {
+	t.Helper()
+	return servedSerial(t, f.client, f.addr)
+}
+
+// TestCertificateRotationIsPickedUpOnTheNextHandshake is the whole point of
+// GetCertificate, observed where an operator would observe it: a deployment
+// replaces the files under a running process, and the next connection is
+// served the new certificate. reload_interval 0 checks the file on every
+// handshake, which is the default a rotation written by an external tool --
+// a cert-manager, a sidecar, a kubectl create -- relies on.
+func TestCertificateRotationIsPickedUpOnTheNextHandshake(t *testing.T) {
+	fixture := newServingFixture(t, 0)
+	assert.Equal(t, int64(1), fixture.serial(t), "the pair present at startup is what serves")
+	assert.NotContains(t, strings.Join(fixture.logger.infos(), "\n"), "reloaded",
+		"a pair that has not moved is not a rotation: reload_interval 0 asks the question every handshake, and the answer must not be a log line every handshake")
+
+	fixture.rotate(t, 2)
+	assert.Equal(t, int64(2), fixture.serial(t),
+		"a rotated certificate must be presented without a restart")
+	assert.Contains(t, strings.Join(fixture.logger.infos(), "\n"), "web: TLS certificate reloaded",
+		"a rotation an operator cannot see in the log is a rotation they cannot audit")
+	assert.Empty(t, fixture.logger.errors(), "a rotation that worked is not an error")
+}
+
+// TestBrokenRotationKeepsServingThePreviousCertificate pins what happens while
+// a rotation is half done: the certificate file has been replaced, but not yet
+// with a pair that loads. Failing the handshake would turn a rotation mistake
+// into an outage at exactly the moment the previous certificate is still
+// valid, so the old one keeps serving -- and the failure is reported once for
+// the file state that caused it, not once per connection.
+func TestBrokenRotationKeepsServingThePreviousCertificate(t *testing.T) {
+	fixture := newServingFixture(t, 0)
+	require.Equal(t, int64(1), fixture.serial(t))
+
+	halfWritten := []byte("-----BEGIN CERTIFICATE-----\nnot a finished rotation\n")
+	require.NoError(t, os.WriteFile(fixture.certFile, halfWritten, 0o600))
+	touch(t, fixture.certFile, time.Hour)
+
+	assert.Equal(t, int64(1), fixture.serial(t))
+	assert.Equal(t, int64(1), fixture.serial(t), "every handshake inside a broken state keeps serving")
+	require.Len(t, fixture.logger.errors(), 1,
+		"a file that has not moved is one failure, however many connections it survives")
+	assert.Contains(t, fixture.logger.errors()[0], "the previous certificate is still serving")
+	assert.NotContains(t, strings.Join(fixture.logger.infos(), "\n"), "reloaded",
+		"a failed load must not be reported as a rotation")
+
+	// A different broken file is a different fact: an operator debugging a
+	// second failed rotation has to see it.
+	require.NoError(t, os.WriteFile(fixture.certFile, append(halfWritten, 'x'), 0o600))
+	touch(t, fixture.certFile, 2*time.Hour)
+	assert.Equal(t, int64(1), fixture.serial(t))
+	assert.Len(t, fixture.logger.errors(), 2)
+
+	fixture.rotate(t, 3)
+	assert.Equal(t, int64(3), fixture.serial(t), "a completed rotation is served once the file loads")
+	assert.Contains(t, strings.Join(fixture.logger.infos(), "\n"), "web: TLS certificate reloaded")
+	assert.Len(t, fixture.logger.errors(), 2, "a recovery does not erase the failures before it")
+}
+
+// TestMissingCertificateIsReportedOnce covers the other way a rotation can
+// fail: the file is gone, so there is no identity to compare and the failure
+// has to be reported on the state that remains. Without that, a refused
+// rotation that deletes and rewrites the certificate -- a rename-based rollout
+// in its window -- would log an error per connection.
+func TestMissingCertificateIsReportedOnce(t *testing.T) {
+	fixture := newServingFixture(t, 0)
+	require.Equal(t, int64(1), fixture.serial(t))
+
+	require.NoError(t, os.Remove(fixture.certFile))
+
+	assert.Equal(t, int64(1), fixture.serial(t))
+	assert.Equal(t, int64(1), fixture.serial(t))
+	assert.Len(t, fixture.logger.errors(), 1,
+		"a certificate that stays gone stays one report")
+}
+
+// TestReloadIntervalBoundsHowOftenTheFileIsChecked pins the rate limit through
+// the source's own clock. The certificate rotates between two lookups, and the
+// interval -- not the write -- is what decides whether the rotation is seen;
+// advancing a fake clock proves that without making the test wait, and without
+// the flakiness a real interval under load would introduce.
+func TestReloadIntervalBoundsHowOftenTheFileIsChecked(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile, _ := writeCertificatePair(t, dir, 1)
+	capture := &captureLogger{}
+	source, err := web.NewCertificateSource(web.TLSConfig{
+		CertFile:       certFile,
+		KeyFile:        keyFile,
+		ReloadInterval: time.Hour,
+	}, capture)
+	require.NoError(t, err)
+
+	clock := time.Now()
+	source.SetClock(func() time.Time { return clock })
+	assert.Equal(t, int64(1), certificateSerial(t, source.ServeCertificate()))
+
+	_, _, rotated := writeCertificatePair(t, dir, 2)
+	require.Equal(t, int64(2), rotated.SerialNumber.Int64())
+
+	assert.Equal(t, int64(1), certificateSerial(t, source.ServeCertificate()),
+		"a handshake inside the interval the previous check claimed must not state the file")
+	assert.Equal(t, int64(1), certificateSerial(t, source.ServeCertificate()))
+	assert.NotContains(t, strings.Join(capture.infos(), "\n"), "reloaded")
+
+	clock = clock.Add(time.Hour + time.Second)
+	assert.Equal(t, int64(2), certificateSerial(t, source.ServeCertificate()),
+		"the first handshake after the interval is the one that sees the rotation")
+	assert.Contains(t, strings.Join(capture.infos(), "\n"), "web: TLS certificate reloaded")
+}
+
+// touch moves a file's modification time, which is half of the identity the
+// reload trigger compares. Writing alone is not enough on a filesystem whose
+// timestamps are coarse enough that two writes land in the same tick.
+func touch(t *testing.T, path string, offset time.Duration) {
+	t.Helper()
+	stamp := time.Now().Add(offset)
+	require.NoError(t, os.Chtimes(path, stamp, stamp))
 }

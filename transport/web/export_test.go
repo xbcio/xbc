@@ -1,7 +1,9 @@
 package web
 
 import (
+	"crypto/tls"
 	"net"
+	"time"
 
 	"github.com/xbcio/xbc/extensions/authentication"
 )
@@ -141,3 +143,23 @@ func (s *Server) Engine() Engine {
 	defer s.mu.Unlock()
 	return s.engine
 }
+
+// Certificate reload. The source is reached through inference -- an external
+// test can hold what the constructor returns without naming its type, and can
+// call exported methods on it -- which is enough to drive a handshake's
+// certificate lookup directly, without a socket.
+var NewCertificateSource = newCertificateSource
+
+// ServeCertificate performs the lookup crypto/tls performs during a handshake
+// and reports the certificate that would be presented. The error the callback
+// could return is deliberately dropped here, as it is in production: the
+// lookup fails a handshake for no reason.
+func (s *certificateSource) ServeCertificate() *tls.Certificate {
+	certificate, _ := s.getCertificate(nil)
+	return certificate
+}
+
+// SetClock replaces the clock the reload rate limit reads. ReloadInterval is a
+// time dependency, and a test that proved the limit by sleeping through a real
+// interval would be a test that flakes on a loaded machine.
+func (s *certificateSource) SetClock(now func() time.Time) { s.now = now }
