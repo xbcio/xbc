@@ -54,6 +54,10 @@ func (h *fakeHost) Logger() log.Logger                { return h.logger }
 func (*fakeHost) ProcessInstance() string             { return "test-process" }
 func (h *fakeHost) TrafficGate() <-chan struct{}      { return h.gate }
 
+func (h *fakeHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (h *fakeHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (h *fakeHost) SubmitTask(id plugin.Identity, fn func(context.Context), critical bool) bool {
 	if fn == nil {
 		return false

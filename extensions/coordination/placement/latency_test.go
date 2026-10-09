@@ -110,9 +110,10 @@ func assertReturnsPromptly(t *testing.T, description string, call func() error) 
 // provably still inside the store.
 func TestAReadinessProbeAndStatsDoNotWaitForASlowRenewal(t *testing.T) {
 	store := newGatedRenewLocker()
-	// The interval is long enough that no loop of this test's own runs: the
-	// renewal below is driven directly, so the only renewal in the store is the
-	// one the test holds.
+	// The interval is long enough that the loop takes no round beyond the one it
+	// takes at the decision, and that round is held inside the store exactly as
+	// the direct one below is: the reads under test race a renewal that provably
+	// cannot return.
 	value := mustNew(t, store, WithRenewInterval(time.Hour))
 	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
@@ -152,9 +153,15 @@ func TestAReadinessProbeAndStatsDoNotWaitForASlowRenewal(t *testing.T) {
 // component whose availability is in question.
 func TestTheReadinessProbeAndStatsMakeNoStoreCall(t *testing.T) {
 	recorder := newRecordingLocker(newMemoryLocker())
-	value := mustNew(t, recorder)
+	// The interval is long enough that the keepalive takes no round beyond the
+	// one it takes at the decision, and that round is waited for below: the count
+	// taken afterwards can then only move if a read reaches the store.
+	value := mustNew(t, recorder, WithRenewInterval(time.Hour))
 	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
+	await(t, "the decision and the keepalive's first round to reach the store", func() bool {
+		return recorder.storeCalls() >= 2
+	})
 
 	checks := newHealthProbe(value).HealthChecks()
 	require.Len(t, checks, 1)

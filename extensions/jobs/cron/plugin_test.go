@@ -106,7 +106,6 @@ func TestFactoryValidatesContributorSnapshotAndSchedules(t *testing.T) {
 		name         string
 		contributors []plugin.Entry[JobContributor]
 	}{
-		{"none", nil},
 		{"nil contributor", []plugin.Entry[JobContributor]{{Identity: plugin.Identity{Plugin: "worker"}, Value: (*nilContributor)(nil)}}},
 		{"nil job", []plugin.Entry[JobContributor]{contributorEntry("jobs", nil)}},
 		{"invalid name", []plugin.Entry[JobContributor]{contributorEntry("jobs", &funcJob{name: "Bad", spec: "@hourly", run: func(context.Context) error { return nil }})}},

@@ -139,47 +139,46 @@ func (l *stopWindowLease) Release(ctx context.Context) (bool, error) {
 // TestACleanStopIsNotRecordedAsARenewalFailure pins what the renewal loop must
 // not do on its way out.
 //
-// The loop's select has three ready-able cases, and select picks uniformly among
-// the ones that are ready, so a tick that becomes ready in the same moment the
-// run is asked to stop is chosen about half the time. A round taken from there
-// runs against a context that is already cancelled: every call fails,
-// xbc_workload_lease_renew_failures_total counts failures no store ever caused,
-// and readiness reports the process as degraded while it is leaving. An
-// operator cannot alert on a counter that fires on every clean shutdown, so the
-// round has to not happen at all.
+// The loop's select has several ready-able cases, and select picks uniformly
+// among the ones that are ready, so a tick that becomes ready in the same moment
+// the placement is quiesced is chosen about half the time. Two things keep a
+// shutdown out of xbc_workload_lease_renew_failures_total and out of readiness:
+// a round that is already in flight finishes, because the store calls run on a
+// context nothing cancels, and a round that has not started is not taken, which
+// is the guard renewTick rechecks. An operator cannot alert on a counter that
+// fires on every clean stop, and readiness must not report a process that is
+// leaving as degraded.
 //
-// The tick is driven directly rather than waited for. The defect is a race
+// The tick is driven directly rather than waited for. The guard is a race
 // resolved by the runtime's own coin flip, so a test that started the loop and
 // hoped for the wrong side of it would pin nothing; the loop body is where the
 // decision lives.
 func TestACleanStopIsNotRecordedAsARenewalFailure(t *testing.T) {
-	// The run's context is cancelled first, which is the order the runtime uses:
-	// the execution context goes before any hook of this plugin runs.
-	cancelled := newStopWindowLocker()
-	value := mustNew(t, cancelled, WithRenewInterval(time.Hour))
+	store := newStopWindowLocker()
+	value := mustNew(t, store, WithRenewInterval(5*time.Millisecond))
 	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
-	runCtx, cancelRun := context.WithCancel(context.Background())
-	cancelRun()
+	// A real stop on a placement whose keepalive is running: the run's context is
+	// cancelled first, which is the order the runtime uses -- the execution
+	// context goes before any hook of this plugin runs.
+	await(t, "the keepalive to renew the slot", func() bool { return store.renewAttempts() >= 2 })
 
-	assert.False(t, value.renewTick(runCtx), "a tick that raced the stop signal ends the loop")
-	assert.Zero(t, cancelled.renewAttempts(), "no renewal may be attempted once the run has been cancelled")
+	host := newTestHost()
+	host.openGate()
+	require.NoError(t, value.start(host.context()))
+	host.requestStop()
+	require.NoError(t, value.preStop(context.Background()))
+
 	assert.Zero(t, value.renewFailures.Load(), "a stop is not a renewal failure")
 	require.NoError(t, value.renewalHealth(), "readiness must not go down because the process is stopping")
 
-	// The other signal, reached through a Stop whose run was never cancelled --
-	// a torn-down application, or a Stop called on its own. Neither signal
-	// implies the other, so both have to be read.
-	quiesced := newStopWindowLocker()
-	other := mustNew(t, quiesced, WithRenewInterval(time.Hour))
-	_, err = other.Resolve(workloadRequest(ordinary("sast", 1)))
-	require.NoError(t, err)
-	other.quiesce()
-
-	assert.False(t, other.renewTick(context.Background()), "a tick that raced quiesce ends the loop")
-	assert.Zero(t, quiesced.renewAttempts(), "a quiesced placement must not touch the store again")
-	assert.Zero(t, other.renewFailures.Load())
+	// And the guard itself: a tick that reaches the loop after the quiesce ends
+	// it instead of renewing.
+	before := store.renewAttempts()
+	assert.False(t, value.renewTick(), "a tick that raced the stop signal ends the loop")
+	assert.Equal(t, before, store.renewAttempts(), "no renewal may be attempted once the placement is quiesced")
+	host.awaitTasks(t)
 }
 
 // TestACancelledStoreCallIsStillARenewalFailure is the other side of the same
@@ -194,13 +193,23 @@ func TestACleanStopIsNotRecordedAsARenewalFailure(t *testing.T) {
 func TestACancelledStoreCallIsStillARenewalFailure(t *testing.T) {
 	locker := newMemoryLocker()
 	locker.renewErr = context.Canceled
-	value := mustNew(t, locker, WithRenewInterval(time.Hour))
+	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
 	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
-	assert.True(t, value.renewTick(context.Background()), "a failed renewal keeps the loop running")
-	assert.Equal(t, uint64(1), value.renewFailures.Load(), "a cancelled store call is a renewal that did not happen")
-	require.Error(t, value.renewalHealth(), "an unconfirmed claim takes readiness down while the process keeps hosting")
+	// The loop drives this rather than a single round called directly: a counter
+	// that keeps climbing proves both that the failure was recorded and that the
+	// loop kept asking -- a round that had given up on the slot would leave the
+	// counter frozen.
+	await(t, "cancelled store calls to be recorded", func() bool { return value.renewFailures.Load() >= 3 })
+	// The slot is reported as unconfirmed while the process keeps hosting it,
+	// which is the state the counter and the per-slot flag export. Readiness
+	// deliberately waits a ttl before it follows them; see health.go.
+	held := value.Stats().Held
+	require.Len(t, held, 1)
+	require.True(t, held[0].Degraded, "an unconfirmed claim is reported as degraded while the process keeps hosting")
+
+	require.NoError(t, value.stop(context.Background()))
 }
 
 // ── a standby that wins on the way out ─────────────────────────────────────
@@ -358,6 +367,11 @@ func TestPreStopWaitsForTheStandbyLoopToGoQuiet(t *testing.T) {
 // cleanups a refused managed-task submission owes beyond the wait-group count
 // that start_test.go pins.
 //
+// The submission is the standby one, because that is the only one left: the
+// renewal loop begins with the decision and never asks the runtime for
+// admission. A standby is also the shape that has to be able to shut down at any
+// moment, which is what makes the omissions here worth pinning.
+//
 // The done signal is observable through PreStop: the phase waits for a loop that
 // was never admitted and, on a context with no deadline of its own, waits for
 // ever. The run context is not reachable from outside start, so it is pinned at
@@ -367,9 +381,11 @@ func TestPreStopWaitsForTheStandbyLoopToGoQuiet(t *testing.T) {
 // the cancel function is used inside the submitted closure.
 func TestARefusedLoopGivesBackItsDoneSignalAndItsRunContext(t *testing.T) {
 	locker := newMemoryLocker()
-	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	locker.deny = true
+	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond), WithStandbyRetry(10*time.Millisecond))
+	decision, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
+	require.Empty(t, decision.Hosted, "every slot is held elsewhere, so start takes the standby branch")
 
 	host := newRefusingHost()
 	require.Error(t, value.start(host.context()))

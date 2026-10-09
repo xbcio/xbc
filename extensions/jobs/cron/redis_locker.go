@@ -52,13 +52,25 @@ import (
 //
 // What has to stay in step between the two is the contract's ownership rule
 // rather than the code: the scripts below compare the stored owner token before
-// acting, so a lease whose key has already been taken over renews nothing and
-// deletes nothing. TestRedisLockerContentionAndOwnerSafeRelease drives that
-// property here, as its counterpart does in the Redis extension.
+// acting, so a lease whose key has already been taken over renews nothing,
+// deletes nothing, and reconstructs nothing; and a renewal that finds its own
+// key gone re-establishes it under the same token, so a lock that merely lapsed
+// is re-confirmed rather than reported lost. TestRedisLockerContentionAndOwnerSafeRelease
+// drives the first property here, as its counterpart does in the Redis
+// extension. The second is what keeps a store blip from cancelling a running
+// invocation: renewSession treats a renewal that reports ownership lost as a
+// reason to stop the job, and without the re-establishment half a key that
+// expired during a store outage would report lost even though no other replica
+// had taken it.
 var (
 	redisRenewScript = redis.NewScript(`
-if redis.call("get", KEYS[1]) == ARGV[1] then
+local current = redis.call("get", KEYS[1])
+if current == ARGV[1] then
   return redis.call("pexpire", KEYS[1], ARGV[2])
+end
+if current == false then
+  redis.call("set", KEYS[1], ARGV[1], "PX", ARGV[2])
+  return 1
 end
 return 0`)
 	redisReleaseScript = redis.NewScript(`

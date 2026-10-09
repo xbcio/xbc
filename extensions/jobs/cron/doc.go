@@ -57,4 +57,17 @@
 // canceled by Stop or on lease loss; jobs should honor cancellation and keep
 // externally visible work idempotent because a lease cannot fence code that
 // ignores it.
+//
+// A process whose Plugins contribute no job is not an error: it starts,
+// schedules nothing, and provides the long-lived task the runtime requires of a
+// running process, which is the shape a standby between roles has.
+//
+// Every invocation charges one unit of the workload its contributor belongs to
+// (workloads.<key>.max_goroutines) for as long as it runs, taken before the
+// distributed lock so a replica waiting for quota does not hold the job's lock
+// while it waits. That is what keeps work the scheduler runs on a workload's
+// behalf inside the budget the workload declared; an invocation whose
+// contributor belongs to no workload charges nothing. An invocation that cannot
+// take a unit waits rather than skipping the occurrence, and a wait that ends
+// with the shutdown abandons that invocation.
 package cron

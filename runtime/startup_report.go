@@ -30,6 +30,39 @@ func (a *App) reportDisabled(plan *assembly.Plan) {
 	a.log().Info(b.String())
 }
 
+// reportSaturatedWorkloads warns about every bounded workload whose budget is
+// fully held once the last Start hook has returned.
+//
+// The warning exists because the admission half of the budget is silent by
+// construction: an admission waits for a unit rather than refusing, so a
+// workload whose own process-lifetime tasks have filled the limit never runs
+// the queue delivery, the pooled task or the cron invocation that was meant to
+// charge it, and nothing but a wait nobody is watching says so. The refusal
+// half already warns where it happens (taskRuntime.submit). The end of the
+// Start phase is when the reading is at its most telling: submission of a
+// managed task is admitted only inside a Start hook, so the workload's own
+// start-up work has all been submitted, and the queue workers and cron runners
+// that charge the admission half are still waiting on a traffic gate that has
+// not opened.
+//
+// It warns rather than fails: the counter cannot tell a process-lifetime task
+// from one that is merely still running -- a Start hook may have spawned
+// transient work into a workload-scoped pool, which waits for no gate -- so a
+// workload with nothing left is unusual rather than illegal, and the message
+// says what was observed instead of asserting a hang that a task ending a
+// moment later would disprove.
+func (a *App) reportSaturatedWorkloads() {
+	for _, report := range a.tasks.workloadBudgets() {
+		if report.Running < report.Limit {
+			continue
+		}
+		a.log().Warn("xbc: workload goroutine budget fully held at the end of start; an admission for it waits until a held unit comes free",
+			"workload", report.Workload.String(),
+			"limit", report.Limit,
+			"running", report.Running)
+	}
+}
+
 func (a *App) reportStarted(instances []*assembly.Instance, migrate bool) {
 	labels := make([]string, len(instances))
 	for index, instance := range instances {

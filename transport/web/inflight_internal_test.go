@@ -17,7 +17,7 @@ import (
 // should have been refused would simply hang until something upstream timed it
 // out.
 func TestInFlightGateAdmitsUpToItsLimitAndRefusesWithoutBlocking(t *testing.T) {
-	gate := newInFlightGate(2)
+	gate := newInFlightGate(2, nil, nil)
 
 	require.True(t, gate.acquire())
 	require.True(t, gate.acquire())
@@ -75,7 +75,7 @@ func TestRenderInFlightGateReportsTheOperatorsNumbers(t *testing.T) {
 // no better than none: what the two lines carry between them must add up to
 // every refusal the gate recorded.
 func TestSaturationIsReportedOnceAtEachEdgeOfAnEpisode(t *testing.T) {
-	gate := newInFlightGate(2)
+	gate := newInFlightGate(2, nil, nil)
 	require.True(t, gate.acquire())
 	require.True(t, gate.acquire())
 
@@ -109,7 +109,7 @@ func TestSaturationIsReportedOnceAtEachEdgeOfAnEpisode(t *testing.T) {
 // missed the first warn must still learn that refusals resumed, so closing an
 // episode has to leave the gate able to report the next one.
 func TestSaturationReportsRearmAfterRecovery(t *testing.T) {
-	gate := newInFlightGate(1)
+	gate := newInFlightGate(1, nil, nil)
 
 	require.True(t, gate.acquire())
 	_, opened := gate.openSaturation()
@@ -132,7 +132,7 @@ func TestSaturationReportsRearmAfterRecovery(t *testing.T) {
 func TestConcurrentRefusalsElectExactlyOneReporter(t *testing.T) {
 	const refusals = 64
 
-	gate := newInFlightGate(1)
+	gate := newInFlightGate(1, nil, nil)
 	require.True(t, gate.acquire())
 
 	var reporters atomic.Int64

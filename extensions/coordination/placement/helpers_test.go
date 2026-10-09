@@ -32,9 +32,16 @@ type leaseEvent struct {
 }
 
 // memoryLocker is a lease.Locker the tests can steer: they decide whether an
-// acquisition succeeds, whether a renewal fails, and whether a renewal
-// re-establishes a key that is already gone. Everything it does is recorded, so
-// a test can assert on the order of store calls and not only on their effect.
+// acquisition succeeds and whether a renewal fails. Everything it does is
+// recorded, so a test can assert on the order of store calls and not only on
+// their effect.
+//
+// Its renewal follows the contract, including the half that is easy to get
+// wrong: a key that is gone is re-established under the same token, because
+// "lapsed" and "taken over" call for opposite responses and only the store can
+// tell them apart. That is what makes the release guard in this package
+// load-bearing rather than decorative -- a renewal that reached the store after
+// a release would put the key back.
 type memoryLocker struct {
 	mu     sync.Mutex
 	held   map[string]string
@@ -62,11 +69,6 @@ type memoryLocker struct {
 	// releaseErr makes releases fail, which is how a store that refuses the
 	// handover is spelled.
 	releaseErr error
-	// renewReestablishes makes a renewal set its key again when it finds none,
-	// which is the shape a renewal would have to have for a late renewal to
-	// undo a release. No conforming backend does this; the test uses it to prove
-	// the release guard covers the effect and not only the call.
-	renewReestablishes bool
 }
 
 func newMemoryLocker() *memoryLocker {
@@ -121,14 +123,21 @@ func (l *memoryLease) Renew(_ context.Context, _ time.Duration) (bool, error) {
 	if l.store.renewErr != nil {
 		return false, l.store.renewErr
 	}
-	if l.store.held[l.key] == l.owner {
-		return true, nil
-	}
-	if l.store.renewReestablishes {
+	stored, exists := l.store.held[l.key]
+	switch {
+	case !exists:
+		// Lapsed, not moved: the contract requires the renewal to re-establish
+		// the key under the same token, so a store blip does not read to the
+		// caller as a lost claim.
 		l.store.held[l.key] = l.owner
 		return true, nil
+	case stored == l.owner:
+		return true, nil
+	default:
+		// The key exists under another token: ownership has moved, and the
+		// renewal must not touch it.
+		return false, nil
 	}
-	return false, nil
 }
 
 func (l *memoryLease) Release(_ context.Context) (bool, error) {
@@ -345,6 +354,10 @@ func (h *testHost) Logger() log.Logger                { return h.logger }
 func (*testHost) ProcessInstance() string             { return "test-process" }
 func (h *testHost) TrafficGate() <-chan struct{}      { return h.gate }
 
+func (h *testHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (h *testHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (h *testHost) SubmitTask(_ plugin.Identity, fn func(context.Context), _ bool) bool {
 	h.mu.Lock()
 	h.tasks.Add(1)
@@ -445,5 +458,17 @@ func mustNew(t *testing.T, locker lease.Locker, options ...Option) *Placement {
 	if err != nil {
 		t.Fatalf("placement.New: %v", err)
 	}
+	// The keepalive begins with the decision, so a test that resolves a
+	// placement -- most of them -- leaves a goroutine running that nothing else
+	// in a unit test stops. Cleanup quiesces it so a test about something else
+	// does not leave a store call in flight over the next one, and so a goroutine
+	// profile of a run stays readable. It deliberately does not release: what the
+	// store holds at the end of a test is an assertion, not litter.
+	t.Cleanup(func() {
+		value.quiesce()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		value.awaitLoopQuiet(ctx)
+	})
 	return value
 }

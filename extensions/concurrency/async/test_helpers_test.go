@@ -13,6 +13,10 @@ import (
 type fakeHost struct {
 	ctx context.Context
 	log log.Logger
+	// admission is what the host reports for the plugin's own workload: nil
+	// means the host supplies no limiter, as a process outside any workload
+	// does, and Context.Admission then normalizes it to an unbounded one.
+	admission plugin.Admission
 }
 
 func newFakeHost() *fakeHost { return &fakeHost{ctx: context.Background(), log: log.Nop()} }
@@ -30,8 +34,13 @@ func (host *fakeHost) Logger() log.Logger {
 	}
 	return host.log
 }
-func (*fakeHost) ProcessInstance() string                                      { return "test-process" }
-func (*fakeHost) TrafficGate() <-chan struct{}                                 { gate := make(chan struct{}); close(gate); return gate }
+func (*fakeHost) ProcessInstance() string      { return "test-process" }
+func (*fakeHost) TrafficGate() <-chan struct{} { gate := make(chan struct{}); close(gate); return gate }
+
+func (host *fakeHost) Admission(plugin.Identity) plugin.Admission { return host.admission }
+
+func (*fakeHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (*fakeHost) SubmitTask(plugin.Identity, func(context.Context), bool) bool { return false }
 func (*fakeHost) RequestShutdown(plugin.Identity, string) bool                 { return false }
 

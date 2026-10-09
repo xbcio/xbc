@@ -69,9 +69,10 @@ func (a *App) bootstrap(cmd command) error {
 	// The task budgets are configuration and are read here, where the
 	// configuration is; the identity-to-workload attribution -- which the
 	// budgets are charged against and which every managed task's profiler label
-	// is taken from -- is a property of the frozen graph and cannot exist yet.
-	// The closure below resolves it per submission instead, which is why the two
-	// halves are assembled from two different moments.
+	// is taken from -- and the hosted set that admission asks about are
+	// properties of the frozen graph and cannot exist yet. The closures below
+	// resolve both on demand instead, which is why the halves are assembled
+	// from two different moments.
 	limits, err := workloadTaskLimits(a.bundles, env)
 	if err != nil {
 		return err
@@ -79,7 +80,7 @@ func (a *App) bootstrap(cmd command) error {
 	a.env = env
 	a.settings = settings
 	tasks := newTaskRuntime(a.logger, a.onCritical)
-	tasks.configureWorkloadBudget(limits, a.workloadOf)
+	tasks.configureWorkloadBudget(limits, a.workloadOf, a.hostsWorkload)
 	// Published under stateMu, not before: the parent-context AfterFunc
 	// registered at the top of execute can run requestStop on another
 	// goroutine while bootstrap is still here, and requestStop reads a.tasks

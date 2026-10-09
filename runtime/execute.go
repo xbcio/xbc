@@ -88,22 +88,25 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	a.progress.enterPhase(phasePlanning)
 	planningStarted := time.Now()
 	// A placement source may acquire something to answer -- the lease source
-	// wins its slots inside Resolve -- and only a constructed plugin would
-	// normally give it back, through its own PreStop and Stop hooks. Nothing
-	// owns the claim between here and a successful Construct: doctor and a plan
-	// failure construct nothing, a plan that enables nothing never reaches
-	// Construct, and a stop during planning returns the same way. Without this
-	// release each of those paths would hold the claim until its lease expired,
-	// so a read-only diagnostic would consume cluster capacity. The release is
-	// armed before the source is consulted and disarmed the moment Construct
-	// succeeds, when the plugin graph takes ownership. A failed release is a
-	// warning for every path that has a logger; doctor runs against a no-op one,
-	// so its report is where the failure has to land instead.
-	placementHandedOff := false
+	// wins its slots inside Resolve -- and it is given back through
+	// plugin.PlacementReleaser. This deferred call is the run's backstop for
+	// that. On a running application it fires after wait and unwind, so the
+	// placement plugin's own PreStop and Stop hooks have already had their
+	// chance and this release is the idempotent no-op the contract requires it
+	// to be; on every other path out of here it is the only thing that gives the
+	// claim back at all, because nothing else runs: doctor and a plan failure
+	// construct nothing, a plan that enables nothing never reaches Construct, a
+	// stop during planning returns the same way, a composition that never
+	// selected the placement Bundle has no hook to run, and a shutdown the
+	// budget abandoned never ran Stop. Without it each of those would hold the
+	// claim until its lease expired, so a read-only diagnostic would consume
+	// cluster capacity and a stopped process would delay the next takeover by a
+	// full TTL. Disarming it after Construct was tried and is wrong: a graph
+	// without the placement plugin in it looks exactly like one that releases,
+	// from here. A failed release is a warning for every path that has a logger;
+	// doctor runs against a no-op one, so its report is where the failure has to
+	// land instead.
 	defer func() {
-		if placementHandedOff {
-			return
-		}
 		if releaseErr := a.releasePlacement(executionCtx); releaseErr != nil && command.subcommand == doctorSubcommand {
 			a.reportDoctorPlacementRelease(releaseErr)
 		}
@@ -162,8 +165,8 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	}
 	// Ownership of whatever the placement source acquired moves to the plugin
 	// graph here: the placement plugin's PreStop and Stop hooks are what give it
-	// back from now on, and the runtime's release must not run behind them.
-	placementHandedOff = true
+	// back on a well-formed stop, and the deferred release at the top of execute
+	// is the backstop for the paths they cannot cover.
 	phases.construct = time.Since(constructStarted)
 	a.owned = owned
 	instances := owned.Instances()

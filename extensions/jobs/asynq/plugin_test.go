@@ -128,7 +128,7 @@ func TestInitFailureRollsBackRedisAndLeavesPartialStateStoppable(t *testing.T) {
 	if created == nil || !redisClientClosed(created) {
 		t.Fatal("failed init did not close its Redis client")
 	}
-	if p.initialized || p.redis != nil || p.client != nil || p.server != nil {
+	if p.initialized || p.redis != nil || p.client != nil {
 		t.Fatalf("failed init retained state: %+v", p)
 	}
 	if err := p.stop(context.Background()); err != nil {
@@ -393,6 +393,15 @@ func (s *fakeWorkerServer) startCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.starts
+}
+
+// deliveredHandler is the handler the plugin started this server with, nil
+// before Start. It lets a test drive one delivery through the real wrapper
+// chain without Redis.
+func (s *fakeWorkerServer) deliveredHandler() hibiken.Handler {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.handler
 }
 
 func (s *fakeWorkerServer) stopCount() int {

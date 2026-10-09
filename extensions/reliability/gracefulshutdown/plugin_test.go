@@ -30,10 +30,14 @@ func newTestHost() *testHost {
 	return &testHost{execution: execution, cancel: cancel}
 }
 
-func (h *testHost) ExecutionContext() context.Context { return h.execution }
-func (*testHost) Logger() log.Logger                  { return log.Nop() }
-func (*testHost) ProcessInstance() string             { return "test-process" }
-func (*testHost) TrafficGate() <-chan struct{}        { return nil }
+func (h *testHost) ExecutionContext() context.Context        { return h.execution }
+func (*testHost) Logger() log.Logger                         { return log.Nop() }
+func (*testHost) ProcessInstance() string                    { return "test-process" }
+func (*testHost) TrafficGate() <-chan struct{}               { return nil }
+func (*testHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (*testHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (*testHost) SubmitTask(plugin.Identity, func(context.Context), bool) bool {
 	return false
 }

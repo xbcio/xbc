@@ -104,10 +104,11 @@ func (a *App) placement() PlacementSource {
 // shaping a process that would then have to be undone.
 //
 // A source that acquires something to answer -- the lease source wins a slot
-// per hosted workload here -- is given back through plugin.PlacementReleaser on
-// every path that returns before ownership passes to a constructed plugin; see
-// releasePlacement. A decision that is only read therefore never holds
-// capacity, which is what makes doctor safe against a live deployment.
+// per hosted workload here -- is given back through plugin.PlacementReleaser:
+// the constructed plugin owns it for the run, and the runtime's release is the
+// backstop behind that, on every path out of the command; see releasePlacement.
+// A decision that is only read therefore never holds capacity, which is what
+// makes doctor safe against a live deployment.
 func (a *App) resolvePlacement() (plugin.Placement, error) {
 	sections, err := assembly.ReadWorkloadSections(a.bundles, a.env)
 	if err != nil {
@@ -155,13 +156,19 @@ func (a *App) resolvePlacement() (plugin.Placement, error) {
 	return placement, nil
 }
 
-// placementReleaseBudget is the outer bound on the release of what a placement
-// source acquired for a decision that never reached a constructed plugin. It
-// holds for a generic source, one that honours the context it is given; a
-// source that bounds its own handback may come back sooner, and the lease
-// source does exactly that -- its Release detaches from this budget and imposes
-// its own handbackBudget (2s) in its place, so of the two bounds the tighter
-// one is the one that holds.
+// placementReleaseBudget is the outer bound on the runtime's wait for the
+// release of what a placement source acquired to decide this run's hosted set.
+// It holds for a generic source, one that honours the context it is given.
+//
+// It does not bound every source's whole release, and the lease source shows
+// why: its Release first asks its keepalive loop to go quiet and waits out a
+// round already in flight inside this budget -- that round runs on the loop's
+// own context, bounded only by the backend's client timeouts -- and only then
+// hands the slots back under a fresh handbackBudget (2s) of its own, taken on a
+// context detached from this one. The 2s therefore adds to the wait rather than
+// replacing this bound, and a store that is not answering can hold a stopping
+// process for about this budget plus 2s before the claim is left to expire with
+// its ttl.
 //
 // The bound exists because the release runs while a command is already
 // returning, so a store that is answering releases the claim inside it and one
@@ -172,12 +179,18 @@ func (a *App) resolvePlacement() (plugin.Placement, error) {
 const placementReleaseBudget = 5 * time.Second
 
 // releasePlacement gives back whatever this process's placement source acquired
-// to answer, on the paths that never constructed the plugin owning the claim.
+// to answer, as the backstop behind the plugin that owns the claim.
 //
-// It is a no-op for a source that acquires nothing -- the static default and
-// every source that only reads configuration -- because implementing
-// plugin.PlacementReleaser is what marks a source as owning something. The
-// release is best effort and must not change the command's outcome: it runs
+// It runs on every path out of execute. On a running application that is after
+// the plugin graph's own PreStop and Stop hooks, so for a composition that
+// selected the placement Bundle this is the second call the contract requires
+// to be idempotent, and for one that did not -- or for a Stop the shutdown
+// budget abandoned -- it is the only call there is. It is a no-op for a source
+// that acquires nothing -- the static default and every source that only reads
+// configuration -- because implementing plugin.PlacementReleaser is what marks
+// a source as owning something.
+//
+// The release is best effort and must not change the command's outcome: it runs
 // while that command is already on its way out. The failure is still returned,
 // because doctor runs against a no-op logger and its report is the one surface
 // the warning can reach; every other caller is free to ignore the value.
@@ -186,14 +199,15 @@ func (a *App) releasePlacement(runCtx context.Context) error {
 	if !ok {
 		return nil
 	}
-	// The run's cancellation is dropped because the path that most needs this
-	// is a stop that cancelled the run before planning finished, and a release
-	// that inherited it would fail on its first store call. The budget stands
-	// in its place so a store that never answers cannot hold the command open.
+	// The run's cancellation is dropped because the paths that most need this
+	// are a stop that cancelled the run before planning finished and a stop the
+	// shutdown budget already spent, and a release that inherited either would
+	// fail on its first store call. The budget stands in its place so a store
+	// that never answers cannot hold the command open.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), placementReleaseBudget)
 	defer cancel()
 	if err := releaser.Release(ctx); err != nil {
-		a.log().Warn("xbc: a placement source could not give back what it acquired for a decision that was not constructed; the claim expires with its own ttl",
+		a.log().Warn("xbc: a placement source could not give back what it acquired to decide this run's hosted set; the claim expires with its own ttl",
 			"error", err)
 		return err
 	}

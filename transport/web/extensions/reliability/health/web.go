@@ -9,11 +9,24 @@ import (
 	transportweb "github.com/xbcio/xbc/transport/web"
 )
 
-// RegisterRoutes implements web.RouteContributor. Probe endpoints explicitly
-// bypass authentication so operational health never depends on credentials.
+// RegisterRoutes implements web.RouteContributor.
+//
+// Probe endpoints explicitly bypass authentication so operational health never
+// depends on credentials, and they are unmetered so admission control never
+// answers them either. The second exemption matters as much as the first: the
+// in-flight ceiling exists to refuse work when the process is saturated, and a
+// liveness probe is not work. Without it, a busy process fails its own probe
+// and is restarted by its orchestrator at exactly the moment it is carrying its
+// full traffic ceiling, moving that traffic onto replicas that then fail their
+// probes in turn. An orchestrator cannot distinguish "saturated" from "dead"
+// unless the probe is answered, and the two call for opposite responses.
+//
+// The cost of the exemption is that an unmetered probe is bounded by nothing
+// but its own checks, which is why every check declares a timeout and the
+// aggregator runs them concurrently: see the report this handler renders.
 func (p *Plugin) RegisterRoutes(router *transportweb.Router) {
-	router.GET(p.cfg.LivenessPath, p.probeHandler(corehealth.Liveness)).Auth(transportweb.Public())
-	router.GET(p.cfg.ReadinessPath, p.probeHandler(corehealth.Readiness)).Auth(transportweb.Public())
+	router.GET(p.cfg.LivenessPath, p.probeHandler(corehealth.Liveness)).Unmetered().Auth(transportweb.Public())
+	router.GET(p.cfg.ReadinessPath, p.probeHandler(corehealth.Readiness)).Unmetered().Auth(transportweb.Public())
 }
 
 func (p *Plugin) probeHandler(kind corehealth.Kind) transportweb.Handler {

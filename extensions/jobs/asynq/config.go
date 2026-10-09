@@ -2,6 +2,7 @@ package asynq
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"strconv"
 	"strings"
@@ -11,15 +12,31 @@ import (
 )
 
 // Config configures the enqueue client and worker bound at plugins.asynq.
+//
+// The worker is one server per group of contributing Plugins: the Plugins that
+// belong to a workload are served by that workload's server, and the Plugins
+// that belong to none share the top-level one. One group consumes one queue
+// set, so handlers that belong together are consumed by the process that
+// carries them and a workload this process does not host gets no worker.
 type Config struct {
 	Redis RedisConfig `yaml:"redis"`
 
 	// Queues maps queue names to positive relative weights. For example,
 	// {critical: 6, default: 3, low: 1} gives those queues approximately
-	// 60%, 30%, and 10% of polling opportunities while all remain busy.
+	// 60%, 30%, and 10% of polling opportunities while all remain busy. These
+	// are the unowned group's queues; a workload declares its own under
+	// workloads.
 	Queues         map[string]int `yaml:"queues" validate:"required,min=1,dive,gt=0"`
 	StrictPriority bool           `yaml:"strict_priority" default:"false"`
 	Concurrency    int            `yaml:"concurrency"     default:"10" validate:"min=1"`
+
+	// Workloads declares the worker each workload gets when its Plugins
+	// contribute task handlers. A workload with contributors must name its
+	// queues here: which queue a workload's tasks are consumed from is a
+	// deployment decision, not something derivable from a handler's task type.
+	// An entry for a workload that contributes nothing here is unused, which is
+	// the ordinary case of a workload this process does not host.
+	Workloads map[string]WorkloadConfig `yaml:"workloads"`
 
 	DefaultQueue      string        `yaml:"default_queue"       default:"default" validate:"required"`
 	DefaultMaxRetries int           `yaml:"default_max_retries" default:"25"      validate:"min=0"`
@@ -32,6 +49,20 @@ type Config struct {
 	// handler that also outlives this budget is requeued by the asynq library
 	// and must not be relied on to finish.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout" default:"8s" validate:"gt=0"`
+}
+
+// WorkloadConfig is one workload's worker: the queues it consumes and how many
+// tasks it runs at once.
+type WorkloadConfig struct {
+	// Queues is the workload's queue set, with the same weight semantics as the
+	// top-level queues field. It is required for a workload whose Plugins
+	// contribute handlers, and must not overlap another group's set: a queue
+	// consumed by two servers in one process is delivered to whichever server
+	// fetches it first, which is a routing bug rather than a deployment choice.
+	Queues map[string]int `yaml:"queues"`
+	// Concurrency bounds how many tasks this workload's worker runs at once.
+	// Zero takes the top-level concurrency.
+	Concurrency int `yaml:"concurrency"`
 }
 
 // RedisConfig configures the Redis connection owned exclusively by the plugin.
@@ -70,11 +101,36 @@ func defaultConfig() Config {
 
 func (c Config) clone() Config {
 	out := c
-	out.Queues = make(map[string]int, len(c.Queues))
-	for name, weight := range c.Queues {
-		out.Queues[name] = weight
+	out.Queues = maps.Clone(c.Queues)
+	if c.Workloads != nil {
+		out.Workloads = make(map[string]WorkloadConfig, len(c.Workloads))
+		for key, workload := range c.Workloads {
+			workload.Queues = maps.Clone(workload.Queues)
+			out.Workloads[key] = workload
+		}
 	}
 	return out
+}
+
+// knownQueues is every queue name this configuration declares: the unowned
+// group's set plus each workload's.
+//
+// Enqueue validation is against this whole vocabulary rather than the queues
+// this process consumes. A process enqueues legitimately to workloads it does
+// not host -- an API process that accepts sast work and hands it to the sast
+// worker over the same queue -- so restricting the client to the local groups
+// would break composition in exactly the deployment the split exists for.
+func (c Config) knownQueues() map[string]struct{} {
+	declared := make(map[string]struct{}, len(c.Queues))
+	for name := range c.Queues {
+		declared[name] = struct{}{}
+	}
+	for _, workload := range c.Workloads {
+		for name := range workload.Queues {
+			declared[name] = struct{}{}
+		}
+	}
+	return declared
 }
 
 // Validate checks all connection, queue, retry, timeout, and cross-field
@@ -91,24 +147,27 @@ func (c Config) validate() error {
 	if len(c.Queues) == 0 {
 		return fmt.Errorf("asynq: at least one queue is required")
 	}
-	maxInt := int(^uint(0) >> 1)
-	totalWeight := 0
-	for name, weight := range c.Queues {
-		if strings.TrimSpace(name) != name || name == "" {
-			return fmt.Errorf("asynq: queue name %q must be non-empty and have no surrounding whitespace", name)
+	if err := validateQueues(c.Queues, "queues"); err != nil {
+		return err
+	}
+	for key, workload := range c.Workloads {
+		if strings.TrimSpace(key) != key || key == "" {
+			return fmt.Errorf("asynq: workload key %q must be non-empty and have no surrounding whitespace", key)
 		}
-		if weight <= 0 {
-			return fmt.Errorf("asynq: queue %q weight must be positive, got %d", name, weight)
+		if len(workload.Queues) == 0 {
+			return fmt.Errorf("asynq: workload %q must declare at least one queue", key)
 		}
-		if weight > maxInt-totalWeight {
-			return fmt.Errorf("asynq: queue weights overflow int")
+		if err := validateQueues(workload.Queues, fmt.Sprintf("workloads.%s.queues", key)); err != nil {
+			return err
 		}
-		totalWeight += weight
+		if workload.Concurrency < 0 {
+			return fmt.Errorf("asynq: workload %q concurrency cannot be negative, got %d", key, workload.Concurrency)
+		}
 	}
 	if strings.TrimSpace(c.DefaultQueue) != c.DefaultQueue || c.DefaultQueue == "" {
 		return fmt.Errorf("asynq: default_queue must be non-empty and have no surrounding whitespace")
 	}
-	if _, ok := c.Queues[c.DefaultQueue]; !ok {
+	if _, ok := c.knownQueues()[c.DefaultQueue]; !ok {
 		return fmt.Errorf("asynq: default_queue %q is not present in queues", c.DefaultQueue)
 	}
 	if c.DefaultMaxRetries < 0 {
@@ -122,6 +181,27 @@ func (c Config) validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("asynq: shutdown_timeout must be positive, got %s", c.ShutdownTimeout)
+	}
+	return nil
+}
+
+// validateQueues checks one queue set's names and weights. where is the
+// configuration path the set came from, so an error in a workload's set does
+// not read as if it were the top-level one.
+func validateQueues(queues map[string]int, where string) error {
+	maxInt := int(^uint(0) >> 1)
+	totalWeight := 0
+	for name, weight := range queues {
+		if strings.TrimSpace(name) != name || name == "" {
+			return fmt.Errorf("asynq: %s queue name %q must be non-empty and have no surrounding whitespace", where, name)
+		}
+		if weight <= 0 {
+			return fmt.Errorf("asynq: %s queue %q weight must be positive, got %d", where, name, weight)
+		}
+		if weight > maxInt-totalWeight {
+			return fmt.Errorf("asynq: %s queue weights overflow int", where)
+		}
+		totalWeight += weight
 	}
 	return nil
 }

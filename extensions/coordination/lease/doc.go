@@ -14,8 +14,11 @@
 // reports it as (nil, false, nil), never as an error, because two owners
 // racing for the same key is the expected outcome of the design rather than a
 // failure of either one. Renew and Release compare the stored owner token
-// atomically, so a lease that has already expired or been superseded cannot
-// extend or delete its successor's claim.
+// atomically, so a lease that has been superseded cannot extend, delete, or
+// reconstruct over its successor's claim. A renewal that finds its own key
+// gone re-establishes it under the same token, because a claim that merely
+// lapsed is not a claim that moved, and only the backend can tell the two
+// apart.
 //
 // # Who holds a key
 //

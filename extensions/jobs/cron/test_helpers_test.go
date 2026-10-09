@@ -31,6 +31,14 @@ type testHost struct {
 	critical        int
 	tasks           sync.WaitGroup
 
+	// admission is what the host reports for the plugin's own workload, and
+	// admissionForWorkload what it reports when the scheduler asks on behalf of
+	// a job contributor's workload. admissionQueries records every question, so
+	// a test can tell whose quota an invocation charged.
+	admission            plugin.Admission
+	admissionForWorkload func(plugin.WorkloadKey) plugin.Admission
+	admissionQueries     []admissionQuery
+
 	// process is what this host reports as the identity of the process the
 	// plugin runs in. It is fixed for the life of the host, as a real runtime's
 	// is, so a test can name two hosts and read the two names apart in a store.
@@ -60,6 +68,37 @@ func (h *testHost) ProcessInstance() string           { return h.process }
 func (h *testHost) TrafficGate() <-chan struct{}      { return h.gate }
 func (*testHost) RequestShutdown(plugin.Identity, string) bool {
 	return false
+}
+
+// admissionQuery is one RuntimeHost admission question: the plugin that asked
+// and, for AdmissionFor, the workload it asked about.
+type admissionQuery struct {
+	identity plugin.Identity
+	workload plugin.WorkloadKey
+	shared   bool
+}
+
+func (h *testHost) Admission(id plugin.Identity) plugin.Admission {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.admissionQueries = append(h.admissionQueries, admissionQuery{identity: id})
+	return h.admission
+}
+
+func (h *testHost) AdmissionFor(id plugin.Identity, workload plugin.WorkloadKey) plugin.Admission {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.admissionQueries = append(h.admissionQueries, admissionQuery{identity: id, workload: workload, shared: true})
+	if h.admissionForWorkload == nil {
+		return h.admission
+	}
+	return h.admissionForWorkload(workload)
+}
+
+func (h *testHost) queries() []admissionQuery {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]admissionQuery(nil), h.admissionQueries...)
 }
 
 func (h *testHost) SubmitTask(_ plugin.Identity, fn func(context.Context), critical bool) bool {
@@ -128,6 +167,14 @@ func contributorEntry(instance string, jobs ...Job) plugin.Entry[JobContributor]
 		Identity: plugin.Identity{Plugin: "worker", Instance: instance},
 		Value:    testContributor{jobs: jobs},
 	}
+}
+
+// workloadEntry is contributorEntry for a contributor whose Plugin belongs to a
+// workload, which is what makes its invocations charge that workload's quota.
+func workloadEntry(workload plugin.WorkloadKey, jobs ...Job) plugin.Entry[JobContributor] {
+	entry := contributorEntry("jobs", jobs...)
+	entry.Workload = workload
+	return entry
 }
 
 func newTestPlugin(

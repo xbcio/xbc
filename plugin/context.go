@@ -16,6 +16,14 @@ type RuntimeHost interface {
 	TrafficGate() <-chan struct{}
 	SubmitTask(id Identity, fn func(context.Context), critical bool) bool
 	RequestShutdown(id Identity, reason string) bool
+	// Admission reports the admission limiter for the workload a submitting
+	// Plugin belongs to. It may return nil, which Context reports as an
+	// unbounded limiter.
+	Admission(id Identity) Admission
+	// AdmissionFor reports the admission limiter for a named workload, for a
+	// shared Plugin that runs work on behalf of contributors that declare one.
+	// It may return nil, which Context reports as an unbounded limiter.
+	AdmissionFor(id Identity, workload WorkloadKey) Admission
 }
 
 // Context is the lifecycle-operation parameter for one Plugin instance. It
@@ -97,11 +105,54 @@ func (c *Context) TrafficGate() <-chan struct{} {
 	return c.host.TrafficGate()
 }
 
+// Admission reports the admission limiter for this Plugin's workload. Work a
+// Plugin runs outside Context.Go -- a queue worker's handler invocation, a task
+// handed to a pool executor -- takes one unit of that quota for as long as it
+// runs, so max_goroutines bounds the workload's concurrent work however it was
+// started. See Admission for what the limiter guarantees.
+//
+// A Plugin that belongs to no workload gets a limiter that admits immediately:
+// unowned plugins are the ones a standby process exists to run, and rationing
+// them would defeat that. The call is nil-safe and may be used before Start.
+func (c *Context) Admission() Admission {
+	if c == nil || c.host == nil {
+		return noAdmission{}
+	}
+	if admission := c.host.Admission(c.id); admission != nil {
+		return admission
+	}
+	return noAdmission{}
+}
+
+// AdmissionFor reports the admission limiter for a named workload, for a shared
+// Plugin that runs work on behalf of the workload that declared it. Its
+// attribution source is Entry.Workload: a plugin that collects workload-tagged
+// producers -- a queue worker collecting handlers, a scheduler collecting jobs
+// -- knows which workload each unit of work belongs to, and charges that
+// workload's quota for it rather than its own (a shared plugin usually belongs
+// to no workload at all).
+//
+// The workload must be one this process carries; a workload it does not host
+// has no limiter, because there is no work of that workload here to bound. The
+// empty key is never a valid workload and is treated the same way. Like
+// Admission, the result is never nil-valued and the call is nil-safe.
+func (c *Context) AdmissionFor(workload WorkloadKey) Admission {
+	if c == nil || c.host == nil || workload == "" {
+		return noAdmission{}
+	}
+	if admission := c.host.AdmissionFor(c.id, workload); admission != nil {
+		return admission
+	}
+	return noAdmission{}
+}
+
 // Go submits a non-critical managed task. Submission is accepted only while
-// this Plugin's Start hook is executing; false means the admission window is
-// closed. A non-critical task may return whenever its work is done, so it does
-// not count as the long-lived capability the runtime requires of a startable
-// application; use GoCritical for work that must last the process lifetime.
+// this Plugin's Start hook is executing and only while its workload has a unit
+// of its budget to spare; false means one of the two said no, and the warning
+// the runtime logs names which. A non-critical task may return whenever its
+// work is done, so it does not count as the long-lived capability the runtime
+// requires of a startable application; use GoCritical for work that must last
+// the process lifetime.
 //
 // A submitted task runs under a "workload" profiler label when this Plugin
 // belongs to one, so a CPU profile can be read per workload. Plugins that belong
@@ -112,8 +163,9 @@ func (c *Context) Go(fn func(context.Context)) bool {
 }
 
 // GoCritical submits a task whose panic or unprompted return requests
-// application shutdown. Because such a task is expected to run for the process
-// lifetime, it satisfies the runtime's long-lived capability requirement.
+// application shutdown. It is accepted and refused on the same terms as Go.
+// Because such a task is expected to run for the process lifetime, it
+// satisfies the runtime's long-lived capability requirement.
 func (c *Context) GoCritical(fn func(context.Context)) bool {
 	return c != nil && c.host != nil && c.host.SubmitTask(c.id, fn, true)
 }

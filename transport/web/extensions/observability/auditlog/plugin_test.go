@@ -23,6 +23,10 @@ func (*fakeHost) TrafficGate() <-chan struct{} {
 	close(ch)
 	return ch
 }
+func (h *fakeHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (h *fakeHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (h *fakeHost) SubmitTask(_ plugin.Identity, fn func(context.Context), _ bool) bool {
 	if fn == nil {
 		return false

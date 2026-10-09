@@ -173,8 +173,8 @@ func (a *App) reportDoctorRuntime(out io.Writer) {
 	fmt.Fprintln(out)
 }
 
-// workloadBudgets indexes the managed-task budgets by workload, so a workload
-// row can carry its own budget without the reader matching two lists up.
+// workloadBudgets indexes the work budgets by workload, so a workload row can
+// carry its own budget without the reader matching two lists up.
 //
 // It reads the limits rather than the counters, and that distinction is the
 // point: doctor is a single-use diagnostic that admits no task, so every
@@ -208,12 +208,12 @@ func (a *App) workloadBudgets() map[plugin.WorkloadKey]workloadBudgetReport {
 // and a workload absent from the list could not be told apart from one the
 // composition never declared.
 //
-// A workload that declares a managed-task budget carries it on its row, but
-// only when this process actually hosts it. The budget is charged against
-// submissions from the workload's own plugins, and an unhosted workload
-// contributes no plugin to submit anything -- so printing its limit beside
-// "not held" would read as a bound that is in force when nothing can consume
-// it.
+// A workload that declares a work budget carries it on its row, but
+// only when this process actually hosts it. The budget is charged by the
+// workload's own managed tasks and by the units a shared integration admits on
+// its behalf, and neither can happen for a workload this process does not host
+// -- so printing its limit beside "not held" would read as a bound that is in
+// force when nothing can consume it.
 //
 // A hosted workload with no bound gets no such field rather than one reading
 // zero: "unbounded" and "bounded at zero" are different answers, only one of

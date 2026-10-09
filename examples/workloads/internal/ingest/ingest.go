@@ -11,6 +11,12 @@
 // is for a workload with a process-wide side effect, not for a workload that is
 // merely busy: ingest is the busier of the two here, and it still shares its
 // process, because nothing it does reaches outside itself.
+//
+// The workload admits its unit of work through two doors: the ticker submitted
+// from Start here, and the queue handler registered in queue.go. Both
+// Definitions sit in the same Bundle, so placement carries the timer and the
+// queue consumer together or not at all, and both charge the same
+// workloads.ingest.max_goroutines budget.
 package ingest
 
 import (
@@ -21,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xbcio/xbc/extensions/jobs/asynq"
 	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
@@ -80,6 +87,11 @@ var definition = plugin.DefineConfigured(
 		Exports: plugin.Contracts(
 			plugin.ExportAs[web.RouteContributor](func(value *Plugin) web.RouteContributor { return value }),
 			plugin.ExportAs[health.Contributor](func(value *Plugin) health.Contributor { return value }),
+			// The queue integration serves whichever workloads host a
+			// contributor: this Plugin declares no worker of its own, and the
+			// handler it exports is run by the ingest workload's worker. See
+			// queue.go.
+			plugin.ExportAs[asynq.HandlerContributor](func(value *Plugin) asynq.HandlerContributor { return value }),
 		),
 	},
 )

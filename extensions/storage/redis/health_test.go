@@ -156,10 +156,14 @@ func TestAssembledHealthPluginReportsEveryConfiguredInstance(t *testing.T) {
 
 type healthTestHost struct{}
 
-func (healthTestHost) ExecutionContext() context.Context { return context.Background() }
-func (healthTestHost) Logger() log.Logger                { return nil }
-func (healthTestHost) ProcessInstance() string           { return "test-process" }
-func (healthTestHost) TrafficGate() <-chan struct{}      { return nil }
+func (healthTestHost) ExecutionContext() context.Context          { return context.Background() }
+func (healthTestHost) Logger() log.Logger                         { return nil }
+func (healthTestHost) ProcessInstance() string                    { return "test-process" }
+func (healthTestHost) TrafficGate() <-chan struct{}               { return nil }
+func (healthTestHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (healthTestHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (healthTestHost) SubmitTask(plugin.Identity, func(context.Context), bool) bool {
 	return false
 }

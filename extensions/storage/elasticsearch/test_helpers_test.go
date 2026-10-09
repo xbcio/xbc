@@ -39,6 +39,10 @@ func (*fakeHost) TrafficGate() <-chan struct{} {
 	return gate
 }
 
+func (host *fakeHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (host *fakeHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (host *fakeHost) SubmitTask(_ plugin.Identity, fn func(context.Context), _ bool) bool {
 	host.mu.Lock()
 	if host.rejectTasks {

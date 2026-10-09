@@ -165,8 +165,9 @@ web:
 #       # process from a role outright is a deployment decision rather than a
 #       # placement one.
 #       enabled: true
-#       # Managed tasks this process may run on behalf of the workload at once.
-#       # 0 is unbounded.
+#       # Units of work this process may run on behalf of the workload at once:
+#       # a managed task and a unit taken through Context.Admission charge the
+#       # same number. 0 is unbounded.
 #       max_goroutines: 0
 #
 # The workload's replicas and exclusivity are deliberately absent from YAML:

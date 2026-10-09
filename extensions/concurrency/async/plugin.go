@@ -49,6 +49,13 @@ var ErrDrainedBeforeInit = errors.New("async: cannot Init after Drain or Stop")
 // hooks -- and not only later request handlers -- can already Spawn. A Pool
 // drained or stopped before its Init refuses to (re)open admission, and Init
 // reports that instead of silently succeeding.
+//
+// Init also resolves the workload quota every executed task charges. It is the
+// pool's own: a Pool declared inside a workload spends that workload's budget,
+// and a Pool belonging to no workload charges nothing. The tasks it runs may
+// have been spawned by callers in several workloads, but the pool is the thing
+// running them, and the quota bounds a workload's concurrent work rather than
+// who asked for it.
 func initPool(pool *Pool, ctx *plugin.Context) error {
 	if pool == nil {
 		return errors.New("async: Init requires a non-nil pool")
@@ -57,6 +64,7 @@ func initPool(pool *Pool, ctx *plugin.Context) error {
 		return errors.New("async: Init requires a non-nil plugin context")
 	}
 	pool.log = ctx.Log()
+	pool.admission = ctx.Admission()
 	if !pool.open() {
 		return ErrDrainedBeforeInit
 	}

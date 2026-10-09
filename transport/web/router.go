@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"strings"
 
 	"github.com/xbcio/xbc/extensions/authentication"
 )
@@ -94,6 +95,10 @@ type RouteInfo struct {
 	Auth       *AuthPolicy
 	Perm       string
 	Idempotent bool
+	// Unmetered reports that this route is served without taking a slot in the
+	// process-level in-flight gate, so it is answered even when every slot is
+	// taken. See Route.Unmetered for when that is the right declaration.
+	Unmetered bool
 }
 
 // Route is the metadata handle returned by Router.Handle and the
@@ -148,6 +153,32 @@ func (r *Route) Perm(permission string) *Route {
 // semantics. Enforcement, if desired, is supplied by a separate plugin.
 func (r *Route) Idempotent() *Route {
 	r.update(func(info *RouteInfo) { info.Idempotent = true })
+	return r
+}
+
+// Unmetered exempts the route from the process-level in-flight gate, so a
+// saturated process still answers it while its other routes are refused with
+// 503.
+//
+// It is for routes that report what the process is doing rather than routes
+// that do work for a client -- in practice the liveness and readiness probes,
+// which is where health-http declares it. Without the exemption a busy process
+// fails its own liveness probe and is restarted by its orchestrator at exactly
+// the moment it is serving its traffic ceiling: the restart sheds the load onto
+// the remaining replicas, which then fail their probes too. Liveness is the one
+// question an admission ceiling must not answer, because "too busy" and "dead"
+// call for opposite responses and the orchestrator can only distinguish them if
+// the probe is answered.
+//
+// Two properties come with the exemption and are the reason it is declared
+// rather than inferred. The route takes no slot and is therefore bounded by
+// nothing else, so its handler has to be cheap and bound its own work with
+// per-check timeouts; and its path must be literal, because the gate decides
+// the exemption from the request's own method and path without asking the
+// engine to match anything -- a pattern would be rejected when the route table
+// is frozen rather than silently left metered.
+func (r *Route) Unmetered() *Route {
+	r.update(func(info *RouteInfo) { info.Unmetered = true })
 	return r
 }
 
@@ -260,6 +291,9 @@ func (r *Router) freeze() (RouteCatalog, error) {
 		if err := validateRouteAuth(route); err != nil {
 			return nil, err
 		}
+		if err := validateUnmeteredRoute(route); err != nil {
+			return nil, err
+		}
 	}
 
 	idx := make(map[string]RouteInfo, len(*r.routes))
@@ -275,6 +309,30 @@ func (r *Router) freeze() (RouteCatalog, error) {
 		frozenIdx[k] = cloneRouteInfo(v)
 	}
 	return &routeCatalog{all: all, index: frozenIdx}, nil
+}
+
+// validateUnmeteredRoute rejects an unmetered route whose path is a pattern,
+// and an unmetered mount.
+//
+// The in-flight gate exempts a route by looking the request's own method and
+// path up in the frozen table, without asking the engine to match anything --
+// that is what keeps the exemption from moving routing into the gate. The
+// price is that ":id" or "*" in the path would never be recognized, and a
+// mounted row's subtree is equally invisible: the table holds one row per
+// method at the prefix, while the requests the mount serves carry paths the
+// table has never seen. Either way the route would be metered in a way nobody
+// would see until a saturated process stopped answering its probes. A startup
+// error names the route instead.
+func validateUnmeteredRoute(route RouteInfo) error {
+	if !route.Unmetered {
+		return nil
+	}
+	if strings.ContainsAny(route.Path, ":*") {
+		return fmt.Errorf(
+			"xbc: route %s %s is marked unmetered but its path is a pattern\n  → the in-flight gate exempts a route by its literal path, so this route would be metered anyway; give the probe a fixed path, or drop Unmetered and let it be admitted like any other route",
+			route.Method, route.Path)
+	}
+	return nil
 }
 
 func validateRouteAuth(route RouteInfo) error {

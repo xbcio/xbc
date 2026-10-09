@@ -22,6 +22,22 @@ type testHost struct {
 	tasks     sync.WaitGroup
 	submitted int
 	critical  int
+
+	// admission is what the host hands back for the plugin's own workload, and
+	// admissionForWorkload what it hands back when the integration asks on
+	// behalf of one of its contributors. Queries records every question, so a
+	// test can check which workload a shared worker charged.
+	admission            plugin.Admission
+	admissionForWorkload func(plugin.WorkloadKey) plugin.Admission
+	admissionQueries     []admissionQuery
+}
+
+// admissionQuery is one RuntimeHost admission question: the plugin that asked
+// and, for AdmissionFor, the workload it asked about.
+type admissionQuery struct {
+	identity plugin.Identity
+	workload plugin.WorkloadKey
+	shared   bool
 }
 
 func newTestHost() *testHost {
@@ -40,6 +56,29 @@ func (*testHost) ProcessInstance() string             { return "test-process" }
 func (h *testHost) TrafficGate() <-chan struct{}      { return h.gate }
 func (*testHost) RequestShutdown(plugin.Identity, string) bool {
 	return false
+}
+
+func (h *testHost) Admission(id plugin.Identity) plugin.Admission {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.admissionQueries = append(h.admissionQueries, admissionQuery{identity: id})
+	return h.admission
+}
+
+func (h *testHost) AdmissionFor(id plugin.Identity, workload plugin.WorkloadKey) plugin.Admission {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.admissionQueries = append(h.admissionQueries, admissionQuery{identity: id, workload: workload, shared: true})
+	if h.admissionForWorkload == nil {
+		return h.admission
+	}
+	return h.admissionForWorkload(workload)
+}
+
+func (h *testHost) queries() []admissionQuery {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]admissionQuery(nil), h.admissionQueries...)
 }
 
 func (h *testHost) SubmitTask(_ plugin.Identity, fn func(context.Context), critical bool) bool {

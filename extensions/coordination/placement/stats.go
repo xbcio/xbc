@@ -47,6 +47,29 @@ type Held struct {
 	Degraded bool
 }
 
+// Declared is one workload this process's declaration admits, as reported by
+// Stats: the capacity the deployment asked for, as opposed to the slots this
+// process happened to win.
+//
+// It exists so a monitor does not have to copy Go constants into alert rules.
+// "How many replicas of sast are running" is an aggregation over per-process
+// metrics, and "fewer than declared" or "declared but held by nobody" are the
+// two questions that aggregation is asked; both need the declared number next
+// to the held gauge, and only the process can report the number it was
+// assembled with.
+type Declared struct {
+	// Workload is the declared workload's key, the same label the held gauge
+	// carries.
+	Workload plugin.WorkloadKey
+	// Replicas is how many processes the declaration allows to hold this
+	// workload at once, and Exclusive reports that a holder may hold nothing
+	// else. Both are cluster-level constraints read from this process's own
+	// declaration, so every process that admits the workload reports the same
+	// values for it.
+	Replicas  int
+	Exclusive bool
+}
+
 // Stats is one lock-free-enough snapshot of what this process's placement is
 // doing.
 //
@@ -64,13 +87,23 @@ type Stats struct {
 	// Standby reports that this process won no slot and is hosting only the
 	// plugins that belong to no workload.
 	//
-	// A process that won slots and then gave them back -- Release, on the paths
-	// that never construct the placement plugin -- is not reported as one. It
-	// took the role for as long as its decision held, and Standby describes the
+	// A process that won slots and then gave them back -- Release, which the
+	// runtime calls at the end of every run, behind PreStop and Stop wherever
+	// the placement plugin was constructed -- is not reported as one. It took
+	// the role for as long as its decision held, and Standby describes the
 	// decision rather than the current held set.
 	Standby bool
 	// Held is every slot this process holds, ordered by workload then slot.
 	Held []Held
+	// Declared is every workload this process's declaration admits, ordered by
+	// key, with the replica count and exclusivity declared for it.
+	//
+	// It is empty until the placement has resolved, and it holds what this
+	// process admits rather than the whole cluster's declaration: a workload
+	// vetoed here by `workloads.<key>.enabled: false` is absent, because this
+	// process may never host it and counting its replicas against a fleet that
+	// excluded it would count capacity nobody declared.
+	Declared []Declared
 	// RenewFailures counts renewals the store did not confirm, which is
 	// xbc_workload_lease_renew_failures_total. It is cumulative: a process that
 	// recovered from a store outage still shows that the outage happened.
@@ -94,6 +127,7 @@ func (p *Placement) Stats() Stats {
 	released := p.released
 	instance := p.instance
 	held := append([]*heldSlot(nil), p.held...)
+	admitted := append([]plugin.Workload(nil), p.admitted...)
 	p.mu.Unlock()
 
 	stats := Stats{
@@ -102,6 +136,16 @@ func (p *Placement) Stats() Stats {
 		Standby:       resolved && !released && len(held) == 0,
 		RenewFailures: p.renewFailures.Load(),
 	}
+	for _, workload := range admitted {
+		stats.Declared = append(stats.Declared, Declared{
+			Workload:  workload.Key,
+			Replicas:  workload.Replicas,
+			Exclusive: workload.Exclusive,
+		})
+	}
+	sort.Slice(stats.Declared, func(i, j int) bool {
+		return stats.Declared[i].Workload < stats.Declared[j].Workload
+	})
 	now := time.Now()
 	for _, slot := range held {
 		state := slot.snapshot()

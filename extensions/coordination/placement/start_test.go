@@ -40,6 +40,10 @@ func (h *refusingHost) Logger() log.Logger                { return log.Nop() }
 func (*refusingHost) ProcessInstance() string             { return "test-process" }
 func (h *refusingHost) TrafficGate() <-chan struct{}      { return h.gate }
 
+func (h *refusingHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (h *refusingHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (h *refusingHost) SubmitTask(_ plugin.Identity, _ func(context.Context), _ bool) bool {
 	h.submissions.Add(1)
 	return false
@@ -68,26 +72,37 @@ func awaitStop(t *testing.T, value *Placement) {
 	}
 }
 
-// TestARefusedRenewalTaskDoesNotWedgeStop pins the wait-group bookkeeping on the
-// renewal branch of start's refusal path.
+// TestAWinnerAsksTheRuntimeForNoAdmissionToKeepItsSlotsAlive pins the shape the
+// renewal loop took when it moved to the decision.
 //
-// start counts the renewal loop before submitting it, and stop waits on that
-// group. A runtime that refuses the submission runs no goroutine, so the count
-// has to be given back on the way out; otherwise the process can never shut
-// down, which is far worse than the loop not existing.
-func TestARefusedRenewalTaskDoesNotWedgeStop(t *testing.T) {
+// The loop is deliberately not a managed task: admission is open only while a
+// Start hook runs, and the claim exists before the plan that would run Start, so
+// a loop that had to be admitted could not begin early enough to protect it. A
+// runtime that refuses every submission -- which is what being outside the
+// admission window looks like from a host's side -- must therefore make no
+// difference to a process that won slots, and no submission may be attempted on
+// its behalf.
+func TestAWinnerAsksTheRuntimeForNoAdmissionToKeepItsSlotsAlive(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
 	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
-	require.NoError(t, err, "the process holds a slot, so start takes the renewal branch")
+	require.NoError(t, err)
+	const key = "xbc:workload:sast:0"
 
 	host := newRefusingHost()
-	err = value.start(host.context())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not accepting the lease renewal task")
-	assert.Equal(t, int32(1), host.submissions.Load(), "the renewal loop is submitted exactly once")
+	require.NoError(t, value.start(host.context()), "a winner asks the runtime for nothing")
+	assert.Zero(t, host.submissions.Load(), "the renewal loop is not submitted as a managed task")
+
+	await(t, "the keepalive to renew the slot", func() bool { return locker.renewCount(key) >= 2 })
 
 	awaitStop(t, value)
+	assert.False(t, locker.holds(key), "a stop still gives the slot back")
+
+	// The keepalive goes quiet with the placement rather than reaching a store
+	// the process has already finished with.
+	settled := locker.renewCount(key)
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, settled, locker.renewCount(key), "the keepalive stops with the placement")
 }
 
 // TestARefusedStandbyTaskDoesNotWedgeStop is the same defect on the other

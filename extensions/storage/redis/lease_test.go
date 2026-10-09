@@ -112,6 +112,60 @@ func TestLockerContentionAndOwnerSafeRelease(t *testing.T) {
 	}
 }
 
+// TestARenewalReestablishesALapsedKey is the other half of lease.Lease.Renew:
+// a key that lapsed is not a key that was taken over, and only the store can
+// tell the two apart. A renewal that finds its own key gone re-establishes it
+// under the same token, which is what keeps a store outage longer than one ttl
+// from leaving a live process permanently unconfirmed -- and with a standby
+// free to take the slot, running a replica count above the declared one until
+// somebody restarts it by hand.
+//
+// The token must be the same one, not a fresh one: Owner is what Release
+// compares against the store, so a renewal that rewrote the key under a new
+// token would leave the lease unable to release itself.
+func TestARenewalReestablishesALapsedKey(t *testing.T) {
+	server, client, locker := newLockerTest(t)
+	ctx := context.Background()
+
+	held, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("TryAcquire() acquired = %v, error = %v", acquired, err)
+	}
+
+	// The key lapses -- a store outage past the ttl, an unpersisted restart --
+	// and no other process takes it before the next renewal.
+	server.FastForward(2 * time.Second)
+	if server.Exists("placement:sast:0") {
+		t.Fatal("the lease did not lapse")
+	}
+
+	if owned, err := held.Renew(ctx, 5*time.Second); err != nil || !owned {
+		t.Fatalf("Renew() over a lapsed key = (%v, %v), want the claim re-established", owned, err)
+	}
+	stored, err := client.Get(ctx, "placement:sast:0").Result()
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if stored != held.Owner() {
+		t.Fatalf("stored value = %q, want the lease's own token %q", stored, held.Owner())
+	}
+	if ttl := server.TTL("placement:sast:0"); ttl < 4*time.Second {
+		t.Fatalf("TTL after re-establishment = %s, want approximately the renewed 5s", ttl)
+	}
+
+	// The claim the renewal re-established is still this lease's to give back,
+	// and a contending acquisition cannot take it while it stands.
+	if _, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-2", time.Second); err != nil || acquired {
+		t.Fatalf("contending TryAcquire() over a re-established key acquired = %v, error = %v", acquired, err)
+	}
+	if released, err := held.Release(ctx); err != nil || !released {
+		t.Fatalf("Release() released = %v, error = %v", released, err)
+	}
+	if server.Exists("placement:sast:0") {
+		t.Fatal("the re-established key survived its own release")
+	}
+}
+
 // TestTheStoredValueNamesTheProcessHoldingTheKey is why TryAcquire takes a
 // claimant at all. Without it the value under a held key is sixteen random
 // bytes, so an operator who finds a slot occupied learns that someone holds it

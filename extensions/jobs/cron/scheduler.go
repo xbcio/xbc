@@ -18,6 +18,11 @@ type scheduledJob struct {
 	label    string
 	lockKey  string
 	schedule robfigcron.Schedule
+	// workload is the workload the job's contributor belongs to, empty when it
+	// belongs to none. Invocations charge that workload's quota, so what the
+	// scheduler runs on a workload's behalf stays inside the budget the
+	// workload declared, whichever process happens to hold the job's lock.
+	workload plugin.WorkloadKey
 	renewals chan *leaseSession
 	// runnerDone is closed when this job's runner returns, which is how its
 	// renewal manager learns that no further session can arrive once drain has
@@ -72,6 +77,11 @@ func (p *Plugin) start(ctx *plugin.Context) error {
 
 	logger := ctx.Log()
 	trafficGate := ctx.TrafficGate()
+	if len(jobs) == 0 {
+		if !p.admit(ctx, p.waitForStop) {
+			return p.failStart(runCancel, "idle task", string(Key))
+		}
+	}
 	for _, entry := range jobs {
 		entry := entry
 		if p.config.Distributed.Enabled {
@@ -103,6 +113,24 @@ func (p *Plugin) start(ctx *plugin.Context) error {
 	p.mu.Unlock()
 	p.completeTasksIfReady()
 	return nil
+}
+
+// waitForStop is the whole body of the task a plugin with no jobs submits. It
+// is not a decoration: the runtime refuses to hand a process to its signal loop
+// when nothing provides a long-lived capability, and a scheduler with no jobs
+// is exactly such a process.
+//
+// It ends at drain rather than only at stop. Drain waits for the managed tasks,
+// and this task exists to provide liveness rather than to hold work, so a task
+// that only stop could end would make drain wait for work that was never there.
+// The task's own context is the third exit, for a process whose runtime cancels
+// the task scope before either phase reaches it.
+func (p *Plugin) waitForStop(taskContext context.Context) {
+	select {
+	case <-p.drainCh:
+	case <-p.stopCh:
+	case <-taskContext.Done():
+	}
 }
 
 // admit is called only by start while managed-task admission is open. The
@@ -246,6 +274,12 @@ func mergedContext(primary, secondary context.Context) (context.Context, context
 }
 
 func (p *Plugin) runInvocation(ctx context.Context, logger log.Logger, entry *scheduledJob) {
+	release, admitted := p.chargeQuota(ctx, logger, entry)
+	if !admitted {
+		return
+	}
+	defer release()
+
 	if !p.config.Distributed.Enabled {
 		_ = p.invokeJob(ctx, logger, entry)
 		return
@@ -294,6 +328,35 @@ func (p *Plugin) runInvocation(ctx context.Context, logger log.Logger, entry *sc
 	jobCancel()
 	close(session.finished)
 	<-session.renewalDone
+}
+
+// chargeQuota takes one unit of the workload quota this invocation runs against
+// and reports whether it may proceed. The unit is held for the whole
+// invocation, including its distributed lock and lease confirmation, and given
+// back when it returns.
+//
+// The charge is per invocation rather than around the runner because the runner
+// is a scheduling loop, not work: bounding it would bound how long a process
+// keeps a timer, not what the workload runs. It is taken before the distributed
+// lock so a replica that is only waiting for quota does not hold the job's lock
+// while it waits -- the lock picks which replica runs the job, and a replica
+// that cannot run it yet has nothing to reserve.
+//
+// A contributor that belongs to no workload charges nothing, which is what the
+// runtime reports for a plugin outside every workload.
+func (p *Plugin) chargeQuota(ctx context.Context, logger log.Logger, entry *scheduledJob) (func(), bool) {
+	admission := p.admissions[entry.workload]
+	if admission == nil {
+		return func() {}, true
+	}
+	release, err := admission.Acquire(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.Error("cron: invocation could not take its workload's quota", "job", entry.label, "error", err.Error())
+		}
+		return nil, false
+	}
+	return release, true
 }
 
 func (p *Plugin) runRenewalManager(

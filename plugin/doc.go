@@ -355,8 +355,10 @@
 // never require one by type or by name, because requiring one would let the
 // hosted set decide whether the process starts at all. Reads of a
 // producer's Entry[T] expose its Workload so an application can account for a
-// value against the workload that owns it; the per-workload task budgets the
-// runtime enforces attribute a submission to the Plugin that made it instead.
+// value against the workload that owns it: work a Plugin starts for itself is
+// charged to its own workload, while work run on another workload's behalf is
+// charged to that workload's quota through Context.AdmissionFor, whose key
+// comes from exactly that field.
 //
 // # BuildContext and Context
 //

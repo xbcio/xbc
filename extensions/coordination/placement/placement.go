@@ -183,10 +183,12 @@ func (config *options) validate() error {
 //
 // It implements plugin.PlacementSource, so the runtime asks it which workloads
 // this process carries; it is also the Definition behind Bundle, so the same
-// value renews those slots under Start and gives them back under PreStop. A
-// command that returns before that plugin exists -- doctor, a plan failure --
-// gives the slots back through plugin.PlacementReleaser instead, which is
-// Release.
+// value renews those slots from the decision onwards and gives them back under
+// PreStop. Release is the same handback for the runs where that plugin never
+// exists -- doctor, a plan failure, a composition that did not select this
+// Bundle, a stop the shutdown budget abandoned -- and the runtime calls it at
+// the end of every run as the backstop behind PreStop, which its idempotence
+// makes a no-op once this value has given the slots back.
 type Placement struct {
 	locker       lease.Locker
 	prefix       string
@@ -221,21 +223,22 @@ type Placement struct {
 	// on its way out, recorded so a handover that failed is still owed. See
 	// adoptHandback for why these are kept out of held.
 	handback []*heldSlot
-	// looping reports that a managed loop was submitted -- the renewal loop, or
-	// the standby retry loop -- so PreStop knows whether it has one to wait for.
+	// looping reports that a keepalive loop exists -- the renewal loop, started
+	// by the round that won a slot, or the standby retry loop, submitted by
+	// Start -- so PreStop and Release know whether they have one to wait for.
 	// Both loops touch the store, so both are loops a release has to be ordered
 	// after.
 	looping bool
 	logger  log.Logger
 
-	// quiet is closed once, by quiesce, and is what tells both managed loops to
-	// stop touching the store.
+	// quiet is closed once, by quiesce, and is what tells both keepalive loops
+	// to stop touching the store.
 	quiet     chan struct{}
 	quietOnce sync.Once
 
-	// loopDone is closed when the managed loop has returned -- or by Stop when
-	// no loop was ever started, so a PreStop that waits on it can never wait on
-	// a goroutine that does not exist.
+	// loopDone is closed when this placement's loop has returned, or by every
+	// path that will never start one, so a PreStop or a Release that waits on it
+	// can never wait on a goroutine that does not exist.
 	loopDone     chan struct{}
 	loopDoneOnce sync.Once
 
@@ -311,6 +314,16 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 	if err != nil {
 		return plugin.Placement{}, err
 	}
+	// The round runs on a background context with no deadline of this
+	// package's own, and that is the contract's call rather than an omission:
+	// lease.Locker requires implementations to bound their own calls, because
+	// only the implementation knows what its client's dial, read and write
+	// timeouts are. A bound added here would either cut off a store that is
+	// answering slowly or be so long it bounds nothing, and it would be a
+	// second source of truth for a number the backend already owns. The
+	// handback path is the exception for a reason of its own -- it drops the
+	// caller's cancellation, so something has to replace it (handbackBudget) --
+	// and this path inherits no cancellation to drop.
 	held, heldNotes, err := p.acquireAll(context.Background(), admitted, request.Instance)
 	if err != nil {
 		// The slots won before the failure come back with the error instead of
@@ -366,17 +379,75 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 	p.instance = request.Instance
 	p.decision = decision
 	p.resolved = true
+	if len(held) > 0 {
+		// The slots start being kept alive here, not in Start.
+		//
+		// Resolve runs before the plan is built, and everything that stands
+		// between it and Start -- construction, migration, a slow Init -- runs
+		// first, so a keepalive that began in Start left the ttl unguarded for
+		// exactly as long as a startup is slow. A migration that outlasts one ttl
+		// was enough to expire the claim of the process that legitimately won it:
+		// a standby then took the slot and restarted into the same role, and the
+		// two ran the same workload until somebody intervened. Keeping the claim
+		// alive is part of holding it, so it begins with the claim.
+		p.startRenewalLoop()
+	}
 	return decision, nil
+}
+
+// startRenewalLoop starts the goroutine that keeps this decision's slots alive
+// until the placement is quiesced.
+//
+// It is not a managed task, and that is deliberate rather than a shortcut. Task
+// admission is open only while a Start hook executes, and the claim exists
+// before the plan that would run Start, so a managed submission cannot begin
+// early enough to protect it. The loop is not a plugin's background work either
+// -- it is the life of an ownership the runtime has already accepted -- and its
+// exit conditions are the placement's own (quiesce, PreStop, Stop, Release),
+// all of which wait on the same done signal the managed machinery would have
+// waited on. Nothing about it asks the process to exit, which is the property a
+// Go submission was chosen for in the first place: a renewal failure is soft
+// placement and must never be a reason to stop.
+//
+// The caller holds p.mu, so the loop observes a fully resolved placement. It
+// may take p.mu on its first round and simply waits until the decision is
+// published.
+func (p *Placement) startRenewalLoop() {
+	if p.stopping {
+		// A stop that raced the decision: nothing is kept alive for a process
+		// that is already on its way out. The loops' done signal is closed so a
+		// PreStop or Release that is waiting has something to observe.
+		p.markLoopDone()
+		return
+	}
+	p.looping = true
+	p.loops.Add(1)
+	go func() {
+		defer p.loops.Done()
+		defer p.markLoopDone()
+		p.runRenewal()
+	}()
 }
 
 // Release gives back every slot this process won for a decision that no
 // constructed plugin took ownership of.
 //
-// The runtime calls it when a command returns between Resolve and a successful
-// Construct -- doctor, a plan that fails to build, an answer the runtime
-// refuses, a stop during planning -- paths on which no constructed plugin owns
-// the slots. Without it those paths would hold cluster capacity until each
-// lease expired, which is the opposite of what a read-only diagnostic is for.
+// The runtime calls it on every path out of a command: between Resolve and a
+// successful Construct -- doctor, a plan that fails to build, an answer the
+// runtime refuses, a stop during planning -- where no constructed plugin owns
+// the slots, and at the end of a completed run, behind the plugin's own PreStop
+// and Stop, for the compositions and abandoned stops those hooks do not cover.
+// Without it those paths would hold cluster capacity until each lease expired,
+// which is the opposite of what a read-only diagnostic is for, and a stopped
+// process would delay the next takeover by a full ttl.
+//
+// It stops the keepalive first. The renewal loop begins with the decision, not
+// with Start, so these paths can be the only thing that ever runs on top of a
+// decision -- doctor is the ordinary one -- and a release that did not quiesce
+// would leave a loop renewing a decision nobody holds, with no shutdown hook
+// left to end it. Quiescing makes the call terminal for the same reason: Release
+// is a caller saying it will not take the decision up, so a later Start reports
+// the placement as stopped rather than reviving claims that are already gone.
 //
 // It is idempotent and safe beside the plugin's own release: a slot the store
 // has already taken back is dropped from this process's report of what it
@@ -392,6 +463,12 @@ func (p *Placement) Release(callerCtx context.Context) error {
 	if callerCtx == nil {
 		callerCtx = context.Background()
 	}
+	p.quiesce()
+	// The loop itself is not the only writer to wait for: its store calls run on
+	// a context of its own, so a round in flight finishes rather than failing.
+	// awaitLoopQuiet bounds the wait by this caller's context, and the slot mutex
+	// orders whatever is left over behind the release.
+	p.awaitLoopQuiet(callerCtx)
 	slots := p.releasable()
 	_, err := p.handBack(callerCtx, slots)
 	// Whatever the store confirmed is dropped before the error is returned, so
@@ -552,6 +629,23 @@ func (p *Placement) randomOffset(replicas int) int {
 	p.rngMu.Lock()
 	defer p.rngMu.Unlock()
 	return p.rng.IntN(replicas)
+}
+
+// randomJitter draws a duration uniformly from [-half, half).
+//
+// It shares randomOffset's generator and therefore its guard: a fleet of
+// standbys retrying on the same fixed period is the correlation the offset
+// breaks for slot choice, and the period is where it comes back -- processes
+// started together (a rolling restart, a node that came back with its pods)
+// poll in lockstep, so the round that finds a freed slot finds it for all of
+// them at once, and they hand it back and restart together.
+func (p *Placement) randomJitter(half time.Duration) time.Duration {
+	if half <= 0 {
+		return 0
+	}
+	p.rngMu.Lock()
+	defer p.rngMu.Unlock()
+	return time.Duration(p.rng.Int64N(int64(2*half))) - half
 }
 
 // newSource seeds a per-Placement generator from the system's entropy source.

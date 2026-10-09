@@ -72,6 +72,19 @@
 // Selecting the Bundle enables the Pool with these safe defaults; a
 // deployment that wants it absent sets plugins.async.enabled: false.
 //
+// # Workload quota
+//
+// Every task the Pool executes charges one unit of the workload the Pool itself
+// belongs to (workloads.<key>.max_goroutines) for as long as it runs, the same
+// budget the workload's managed tasks charge. MaxConcurrency bounds the pool's
+// own workers, which is a per-pool number; the workload quota is what stops a
+// pool from spending a whole workload's capacity on its own, and it is the
+// reason the two are not the same knob. A task waits for a unit instead of
+// being refused, so the pool keeps its accepted work and runs it at the
+// workload's pace; a task still waiting when the Pool stops is abandoned and
+// logged rather than run. A Pool belonging to no workload, or one whose
+// workload declares no budget, charges nothing.
+//
 // The ants section's three fields are read only when executor is "ants": see
 // AntsConfig's doc comment for why setting any of them away from its default
 // while executor is "goroutine" is rejected at startup rather than silently

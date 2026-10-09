@@ -62,6 +62,7 @@
         },
         "StrictPriority": false,
         "Concurrency": 10,
+        "Workloads": null,
         "DefaultQueue": "default",
         "DefaultMaxRetries": 25,
         "DefaultTimeout": 1800000000000,

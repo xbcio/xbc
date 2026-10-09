@@ -1,6 +1,9 @@
 package placement
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,8 +105,6 @@ func TestResolveHostsOneSlotPerAdmittedWorkload(t *testing.T) {
 	require.Len(t, locker.heldKeys(), 2, "one slot per workload, not one per replica")
 	assert.Len(t, decision.Notes, 2)
 	assert.NotEmpty(t, decision.Holder)
-	assert.True(t, decision.Hosts("alpha"))
-	assert.False(t, decision.Hosts("gamma"))
 }
 
 // TestExclusiveWorkloadIsAttemptedFirstAndStopsAcquisition pins both halves of
@@ -210,6 +211,120 @@ func TestSlotSearchStartsAtARandomOffset(t *testing.T) {
 	}
 	assert.GreaterOrEqual(t, len(firsts), 3,
 		"the starting index must vary across runs; %v means the search is not spreading", firsts)
+}
+
+// TestStandbyRetryIsJitteredAroundTheConfiguredInterval is the fleet guard for
+// the retry period, and the sibling of the offset test above. Standbys that
+// poll in lockstep find a freed slot in the same round, hand it back in the same
+// round, and restart together -- and processes that started together keep that
+// phase for the life of the run. The wait therefore has to vary per round while
+// staying centred on the configured interval, so the store sees the same mean
+// load and the worst case grows only by the half interval the deployment
+// arithmetic accounts for.
+func TestStandbyRetryIsJitteredAroundTheConfiguredInterval(t *testing.T) {
+	const (
+		rounds   = 40
+		interval = 100 * time.Millisecond
+	)
+	value := mustNew(t, newMemoryLocker(), WithStandbyRetry(interval))
+
+	waits := make(map[time.Duration]bool)
+	for round := 0; round < rounds; round++ {
+		wait := value.standbyWait()
+		assert.GreaterOrEqual(t, wait, interval/2,
+			"a wait under half the interval would make the store's load a lottery")
+		assert.Less(t, wait, interval+interval/2,
+			"the worst case is the configured interval plus half of it, not double")
+		waits[wait] = true
+	}
+	assert.Greater(t, len(waits), rounds/2,
+		"the wait must vary per round; %d distinct waits over %d rounds means the period is fixed",
+		len(waits), rounds)
+}
+
+// TestASearchNeverLeavesItsOwnDeclaration pins the bound on the slots a process
+// can ever hold. A slot index comes from the process's own declaration --
+// replicas is a property of the binary that declares the workload -- so a search
+// that ran past it would create capacity no declaration accounts for, and it
+// would do so exactly while a rolling update has two declarations in flight.
+// The other half of that story is release ordering, which no local check can
+// provide: see the replicas change procedure in docs/recipes.md.
+func TestASearchNeverLeavesItsOwnDeclaration(t *testing.T) {
+	const replicas = 4
+	locker := newMemoryLocker()
+	locker.deny = true
+	value := mustNew(t, locker)
+
+	_, err := value.Resolve(workloadRequest(ordinary("sast", replicas)))
+	require.NoError(t, err)
+
+	attempts := locker.attempts()
+	require.Len(t, attempts, replicas, "one round attempts every declared slot exactly once")
+	for _, key := range attempts {
+		index, err := strconv.Atoi(strings.TrimPrefix(key, "xbc:workload:sast:"))
+		require.NoError(t, err, "every attempt addresses a slot of the declared workload")
+		assert.Less(t, index, replicas, "a process may not search outside its own declaration")
+	}
+
+	// The same bound holds for the slot that is actually won, whichever one the
+	// search reached first: here every index but the last is held elsewhere.
+	granting := newMemoryLocker()
+	for index := 0; index < replicas-1; index++ {
+		granting.held[fmt.Sprintf("xbc:workload:sast:%d", index)] = "another-process/owner"
+	}
+	winner := mustNew(t, granting)
+	decision, err := winner.Resolve(workloadRequest(ordinary("sast", replicas)))
+	require.NoError(t, err)
+	require.Equal(t, []plugin.WorkloadKey{"sast"}, decision.Hosted)
+
+	held := winner.Stats().Held
+	require.Len(t, held, 1)
+	assert.Equal(t, replicas-1, held[0].Slot,
+		"the only free slot is the last declared one, so that is the one a search may win")
+}
+
+// TestStatsReportsTheDeclarationThisProcessWasAssembledWith covers the half of
+// the snapshot that is not about this process's luck. A monitor answers "are
+// fewer replicas running than declared" and "is a declared workload held by
+// nobody" by aggregating the held gauge, and both need the declared number --
+// which only the process can report, since the alternative is copying a Go
+// constant into an alert rule. A workload this process vetoes is absent rather
+// than reported as declared with zero held: this process may never host it, so
+// its replicas are not capacity this fleet declared.
+func TestStatsReportsTheDeclarationThisProcessWasAssembledWith(t *testing.T) {
+	locker := newMemoryLocker()
+	locker.deny = true
+	value := mustNew(t, locker)
+
+	request := workloadRequest(
+		ordinary("webscan", 3),
+		ordinary("sast", 2),
+		exclusive("coderanger", 1),
+	)
+	request.Enabled = func(key plugin.WorkloadKey) bool { return key != "webscan" }
+
+	decision, err := value.Resolve(request)
+	require.NoError(t, err)
+	require.Empty(t, decision.Hosted, "every slot is held elsewhere, so this process is a standby")
+
+	stats := value.Stats()
+	assert.True(t, stats.Standby)
+	assert.Equal(t, []Declared{
+		{Workload: "coderanger", Replicas: 1, Exclusive: true},
+		{Workload: "sast", Replicas: 2},
+	}, stats.Declared,
+		"the declaration is reported whole and ordered by key, with the vetoed workload left out")
+
+	// A process that won its slots reports the same declaration: the fields are
+	// the deployment's statement, not this process's outcome.
+	granting := mustNew(t, newMemoryLocker())
+	decision, err = granting.Resolve(workloadRequest(ordinary("sast", 2), exclusive("coderanger", 1)))
+	require.NoError(t, err)
+	require.Len(t, decision.Hosted, 1)
+	assert.Equal(t, []Declared{
+		{Workload: "coderanger", Replicas: 1, Exclusive: true},
+		{Workload: "sast", Replicas: 2},
+	}, granting.Stats().Declared)
 }
 
 // TestUnreachableStoreFailsResolveInsteadOfHostingEverything is the cold-start

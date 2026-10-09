@@ -34,9 +34,11 @@ const (
 // tags: this section is bound directly, without the config.Validate pass the
 // plugin path runs, so a tag here would never execute.
 type WorkloadConfig struct {
-	// MaxGoroutines bounds how many managed tasks this process may run on
-	// behalf of this workload at once. 0 means unbounded, which is the
-	// behaviour of every workload that does not ask for a bound.
+	// MaxGoroutines bounds how many units of work this process may run on
+	// behalf of this workload at once, however they are started: a managed
+	// task and a unit taken through Context.Admission draw on the same count.
+	// 0 means unbounded, which is the behaviour of every workload that does
+	// not ask for a bound.
 	MaxGoroutines int `yaml:"max_goroutines" default:"0"`
 }
 
@@ -196,7 +198,7 @@ var bindOptionsEnablingToggle = config.BindOptions{AllowedKeys: []string{"enable
 func validateWorkloadConfig(path string, config WorkloadConfig) error {
 	if config.MaxGoroutines < 0 {
 		return fmt.Errorf(
-			"xbc: %s.max_goroutines must not be negative, got %d; 0 leaves this workload's managed tasks unbounded",
+			"xbc: %s.max_goroutines must not be negative, got %d; 0 leaves work on this workload's behalf unbounded",
 			path, config.MaxGoroutines)
 	}
 	return nil

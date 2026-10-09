@@ -17,6 +17,10 @@ func (testHost) TrafficGate() <-chan struct{} {
 	close(ch)
 	return ch
 }
+func (testHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (testHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (testHost) SubmitTask(plugin.Identity, func(context.Context), bool) bool { return false }
 func (testHost) RequestShutdown(plugin.Identity, string) bool                 { return true }
 

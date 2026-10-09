@@ -105,6 +105,12 @@ func (*testRuntimeHost) ProcessInstance() string { return "test-process" }
 
 func (h *testRuntimeHost) TrafficGate() <-chan struct{} { return h.trafficGate }
 
+func (h *testRuntimeHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (h *testRuntimeHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission {
+	return nil
+}
+
 func (h *testRuntimeHost) SubmitTask(_ plugin.Identity, fn func(context.Context), critical bool) bool {
 	h.mu.Lock()
 	if !h.accepting || h.admissionLimit >= 0 && h.managedN >= h.admissionLimit {

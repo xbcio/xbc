@@ -217,6 +217,103 @@ func TestInFlightGateRefusesBeyondItsCeiling(t *testing.T) {
 	}
 }
 
+// TestProbeRoutesAreAnsweredWhileTheProcessIsSaturated states the review's
+// point as a test: the ceiling bounds work, and a liveness probe is not work.
+// With every slot held, a route declared Unmetered still answers while an
+// ordinary one is refused -- because the alternative is an orchestrator reading
+// "saturated" as "dead" and restarting the process at the moment it is carrying
+// its traffic ceiling, which sheds that load onto the replicas that are still
+// answering.
+//
+// The probe must also take no slot. If it did, it would be a request that keeps
+// a saturation episode open after the work drained, and a probe storm would
+// compete for the very ceiling it exists to report on.
+func TestProbeRoutesAreAnsweredWhileTheProcessIsSaturated(t *testing.T) {
+	const limit = 2
+
+	state := newBlockedHandler()
+	server, ctx, _ := newPingServer(t, blockedConfig(t, limit), serverInputs{
+		routes: []plugin.Entry[web.RouteContributor]{
+			{
+				Identity: plugin.Identity{Plugin: "inflight-pressure"},
+				Value: fakeRouteContributor{register: func(router *web.Router) {
+					router.GET("/block", state.handle)
+				}},
+			},
+			{
+				Identity: plugin.Identity{Plugin: "inflight-probe-route"},
+				Value: fakeRouteContributor{register: func(router *web.Router) {
+					router.GET("/healthz", func(_ context.Context, c *web.Ctx) error {
+						c.Status(http.StatusOK)
+						return nil
+					}).Unmetered()
+				}},
+			},
+		},
+	})
+	require.NoError(t, server.Start(ctx))
+	// Freezing is what publishes the declaration the gate reads, and the
+	// runtime reaches this before it opens the traffic gate.
+	require.NoError(t, server.OpenTraffic(ctx))
+	engine := testEngineOf(t, server)
+
+	// Hold the ceiling: the admitted requests park in the handler until the run
+	// releases them, so saturation is a state rather than a race.
+	var held sync.WaitGroup
+	for i := 0; i < limit; i++ {
+		held.Add(1)
+		go func() {
+			defer held.Done()
+			engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/block", nil))
+		}()
+	}
+	defer func() {
+		close(state.release)
+		held.Wait()
+	}()
+	require.True(t, pollUntil(2*time.Second, time.Millisecond, func() bool {
+		return state.inFlight.Load() == int64(limit)
+	}), "the ceiling must be fully occupied before the probe is sent")
+
+	probe := httptest.NewRecorder()
+	engine.ServeHTTP(probe, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	assert.Equal(t, http.StatusOK, probe.Code, "an unmetered route must be answered while the process is saturated")
+
+	ordinary := httptest.NewRecorder()
+	engine.ServeHTTP(ordinary, httptest.NewRequest(http.MethodGet, "/block", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, ordinary.Code,
+		"the exemption belongs to the route that declared it, not to the process")
+
+	assert.Equal(t, web.InFlightStats{Limit: limit, InFlight: limit, Rejections: 1}, server.InFlightStats(),
+		"an unmetered request must take no slot and must not be counted as a refusal")
+}
+
+// TestUnmeteredRouteWithAPatternPathIsRejectedAtFreeze pins the limit of the
+// exemption's mechanism. The gate decides it from the request's own method and
+// path -- asking the engine to match would put routing inside the gate, which
+// is what lets it refuse before any handler runs -- so a pattern path can never
+// be recognized. Failing the freeze names the route that asked for an exemption
+// it would not have received.
+func TestUnmeteredRouteWithAPatternPathIsRejectedAtFreeze(t *testing.T) {
+	server, ctx, _ := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
+		routes: []plugin.Entry[web.RouteContributor]{{
+			Identity: plugin.Identity{Plugin: "inflight-probe-route"},
+			Value: fakeRouteContributor{register: func(router *web.Router) {
+				router.GET("/probe/:id", func(_ context.Context, c *web.Ctx) error {
+					c.Status(http.StatusOK)
+					return nil
+				}).Unmetered()
+			}},
+		}},
+	})
+	require.NoError(t, server.Start(ctx))
+
+	err := server.OpenTraffic(ctx)
+	require.Error(t, err, "a route the gate cannot recognize must not be silently left metered")
+	assert.Contains(t, err.Error(), "marked unmetered")
+	assert.Contains(t, err.Error(), "/probe/:id")
+}
+
 // TestZeroMaxInFlightAppliesTheFixedDefault pins the default: an unset key
 // applies the fixed, CPU-independent ceiling instead of following the processor
 // count, so a small instance does not refuse the IO-bound traffic this

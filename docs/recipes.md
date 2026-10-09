@@ -273,7 +273,9 @@ plugins:
 
 The object-storage `local` backend is suitable for development and single-node deployments. It enforces a confined root, atomic temporary-file replacement, and streaming size limits. Replicas should use a shared S3-compatible backend.
 
-Asynq starts consuming only after `OpenTraffic` and freezes handler registration at Start. Shutdown splits in two. Drain stops the worker fetching new tasks and waits, within `xbc.drain_timeout`, for the handlers already running to return, while Enqueue and the owned Redis connection stay usable; an expired drain means stop waiting, never abort, so handlers it leaves behind keep running with their contexts untouched. Stop then rejects further Enqueue calls and shuts the worker down through the asynq library, which gives whatever outlived the drain up to `plugins.asynq.shutdown_timeout` (default `8s`) to finish before requeueing the rest, and closes Redis only once the worker stopped. Tasks may be redelivered, so handlers should be idempotent and payloads should not contain unprotected secrets. If committing business data and enqueueing work must be atomic, write an outbox event first and let its publisher enqueue the task. Do not rely on a post-commit dual write.
+Asynq freezes handler registration during construction and starts consuming only after `OpenTraffic`. The contributors that belong to a workload are consumed by that workload's own worker, with the queues and concurrency declared under `plugins.asynq.workloads.<key>`, while contributors that belong to none share the top-level worker and the top-level `queues`. Which process consumes a queue follows from which workloads it hosts, so a process that only enqueues for a workload it does not host is configured exactly the same way and simply has no worker for it; the queue sets of one process must not overlap, because a queue two workers both poll is delivered to whichever fetches first. Each delivery charges one unit of its workload's admission quota -- the same `workloads.<key>.max_goroutines` budget the workload's managed tasks charge -- and waits for a unit instead of failing the task when the quota is full. Size that quota above the workload's process-lifetime tasks: a quota the resident work alone fills leaves every delivery waiting for the whole run rather than being failed. A process whose plugins contribute no handlers still starts and provides the long-lived task the runtime needs, consuming nothing, which is what a standby role runs as. The `ingest` workload in [`examples/workloads`](../examples/workloads) carries one such handler beside its timer: enabling the queue integration there gives an ingest worker to the role that hosts ingest, and leaves a batch enqueued under a role that does not sitting at the head of its queue.
+
+Shutdown splits in two. Drain stops every worker fetching new tasks and waits, within `xbc.drain_timeout`, for the handlers already running to return, while Enqueue and the owned Redis connection stay usable; an expired drain means stop waiting, never abort, so handlers it leaves behind keep running with their contexts untouched. Stop then rejects further Enqueue calls and shuts the workers down through the asynq library, which gives whatever outlived the drain up to `plugins.asynq.shutdown_timeout` (default `8s`) to finish before requeueing the rest, and closes Redis only once the workers stopped. Tasks may be redelivered, so handlers should be idempotent and payloads should not contain unprotected secrets. If committing business data and enqueueing work must be atomic, write an outbox event first and let its publisher enqueue the task. Do not rely on a post-commit dual write.
 
 ## Background tasks that finish before shutdown
 
@@ -489,7 +491,7 @@ workloads:
 ```
 
 - `enabled` defaults to `true` and is a hard veto. A workload disabled here is refused by every placement source, including a lease-backed one; this is how a deployment excludes a process from a role outright.
-- `max_goroutines` defaults to `0` (unbounded) and bounds how many managed tasks this process may run on behalf of that workload. A task submitted past the budget is rejected and counted instead of started, and other workloads are unaffected. Plugins with no workload -- transports, infrastructure, observability -- are not bounded by it.
+- `max_goroutines` defaults to `0` (unbounded) and bounds how many units of work this process may run on behalf of that workload. It is one number, not two budgets: a managed task submitted with `Context.Go` and a unit a shared integration takes with `Context.Admission` both count against it. A task submitted past the budget is rejected and counted instead of started, while an admission waits for a unit to come free within its own context; either way other workloads are unaffected. Plugins with no workload -- transports, infrastructure, observability -- are not bounded by it. Size it above the process-lifetime tasks the workload's own plugins submit from `Start`: such a task holds its unit until shutdown, so a limit the resident work alone reaches leaves every admission for the workload -- a queue delivery, a pooled task -- waiting for as long as they run. The runtime warns about exactly that, naming the workload, when the last `Start` hook returns with no unit left to admit.
 - Environment overrides use the full path: `XBC_WORKLOADS_SAST_ENABLED`, `XBC_WORKLOADS_CODERANGER_MAX_GOROUTINES`.
 
 A `workloads.<key>` section that names no declared workload fails startup as an unowned key, exactly like a misspelled plugin section.
@@ -503,7 +505,20 @@ app, err := xbc.New(
 )
 ```
 
-A workload this process does not host is not disabled: its Definitions never enter the plan at all. No instance is constructed, no connection pool is opened, no queue handler is registered, and no timer is created. Its routes do not exist in this process either, so a request for one is answered `404` rather than forwarded.
+A workload this process does not host is not disabled: its Definitions never enter the plan at all. No instance is constructed, no connection pool is opened, no queue worker consumes its queues, and no timer is created. Its routes do not exist in this process either, so a request for one is answered `404` rather than forwarded.
+
+Shared integrations follow the same rule. A queue runtime keeps one Definition and one enqueue client, and runs one worker per group of handlers that shares a workload, so what a process consumes stays tied to what it hosts. The queues of an unhosted workload remain valid names to enqueue to -- an API process legitimately hands `sast` work to a `sast` worker it does not run -- but nothing in this process polls them:
+
+```yaml
+plugins:
+  asynq:
+    queues: {default: 1}          # the worker for contributors that belong to no workload
+    concurrency: 10
+    workloads:
+      sast:                       # required once a hosted workload contributes handlers
+        queues: {sast: 5}         # must not overlap another group's queues
+        concurrency: 20           # 0 takes the top-level concurrency
+```
 
 The process-level runtime knobs belong to the framework rather than to any plugin, so a plugin cannot change them for its own benefit:
 
@@ -580,7 +595,13 @@ app, err := xbc.New(
 )
 ```
 
-The `*placement.Placement` is both the decision and the plugin that keeps it alive, so it is passed to `WithPlacement` and its `Bundle()` is selected alongside the workloads. There is no placement constructor on the `xbc` facade itself: core's dependency closure excludes everything beneath `extensions/`, so the lease contract cannot be named there.
+The `*placement.Placement` is both the decision and the plugin that keeps it alive, so it is passed to `WithPlacement` and its `Bundle()` is selected alongside the workloads. Selecting one without the other is not refused -- the two are one value at runtime, but nothing in core can check that the composition root passed it to both call sites -- and the consequence is bounded rather than silent: the runtime gives the claim back when the run exits, so a slot whose releasing hooks were left out of the graph returns with the process instead of waiting out its lease TTL. There is no placement constructor on the `xbc` facade itself: core's dependency closure excludes everything beneath `extensions/`, so the lease contract cannot be named there.
+
+That wiring is exercised end to end by the placement module's own tests, which run a real application through `xbc.New` against a Redis-backed store -- an in-process one, so nothing has to be started first:
+
+```sh
+go test ./extensions/coordination/placement/ -run TestALeaseHolder -v
+```
 
 That is one extra connection to the store, and it is the price of deciding the hosted set before the graph is built rather than during construction. Every command that builds a plan pays it, `doctor` included, and a command that returns without constructing a plugin gives the slots it won to answer straight back, so a diagnostic never holds the capacity its report was read from.
 
@@ -595,13 +616,23 @@ The lease TTL dominates, and it is three times the renew interval by default. Wi
 That is acceptable here because these workloads are queue-backed. A task in flight when the holder died is redelivered by the queue, and mutual exclusion between the failed holder and its successor is the queue's, the distributed lock's, and the database's job rather than the lease's.
 
 Renewal failing is treated differently from a cold start, and the asymmetry is deliberate:
+The retry interval is jittered by up to half its length in either direction, so the arithmetic's worst case is `TTL + 1.5 x interval + restart` -- `30 + 7.5 + 2` in the example above -- and its average is the one in the formula. The jitter is there because a fleet of standbys started together keeps its phase for the life of the run: on a fixed period they find a freed slot in the same round, and they hand it back and restart together.
+
+One more term belongs to the observation rather than to the slot: the standby that wins **hands the slot back and restarts**, so the role is not served again until that process has finished its own graceful stop and come back up. Add the winner's own `pre_stop_timeout + shutdown_timeout` to the gap you actually observe, and expect the slot to sit free (or be taken by another standby, which restarts in turn) for that long. Nothing is lost by that -- the workloads are queue-backed -- but a deployment sized on the formula alone will find recovery slower than its arithmetic.
+
+A holder that dies **without releasing** -- an OOM kill, which is this class of workload's ordinary failure -- costs one more restart than a clean stop. Its lease outlives it, and the token that claim is stored under (`instance_id` plus a per-acquisition random suffix) died with the process, so the replacement starts as a standby: it waits out the TTL, wins the slot, hands it back, and restarts a second time to take it up. Budget one extra TTL plus restart in the recovery of a crashed holder. Reclaiming the old claim by name is not the fix it looks like: the random half is what makes a token name one *acquisition*, and a process that could resume a claim by name could resume one a standby had already been handed.
+
+Changing `replicas`, or flipping `exclusive`, is a declaration change, and it takes effect one binary at a time. A running process keeps renewing the indices its own declaration names and never searches outside them, so during an overlap the fleet briefly runs both declarations: scaling down from 4 to 2, the old binary's holders of the first two slots are correct under either declaration, while its holders of the last two keep serving until each process is replaced. Scaling up is the mirror image -- the new binary searches the new indices, and old standbys keep retrying the old range -- so the added capacity appears only once the rollout reaches the processes that declare it.
+
+The ordering that keeps this harmless is to roll out first and scale down last: add replicas before the rollout, remove them after it has finished, so no moment of the deployment declares less capacity than it is running. Give an exclusivity flip its own rollout rather than folding it into a count change, so that each intermediate fleet differs from its predecessor by one declaration, which is the difference an operator can read off `doctor` from any process in it.
+
 
 - **A running holder keeps its role.** A failed renewal is logged, counted, and otherwise ignored: the process does not release its slot and does not exit. The worst outcome is a workload briefly running more replicas than declared. That is a resource problem, not a correctness one, and the alternative -- dropping the role on a lease-store hiccup -- would reshuffle roles across the whole cluster.
 - **A cold start that cannot reach the lease store fails.** A process that cannot claim anything would have to guess, and the only guess available is "carry everything". That makes the process shape non-deterministic: `doctor` output, startup validation, snapshot diffing, and the exclusivity check all derive from the hosted set, and the capacity decision becomes fail-open. A holder has something to protect; a starter has nothing to guess with.
 
-Alert on the renewal-failure counter, where a sustained increase means the store is degraded and takeover is impaired, and on the lease age, where a holder's lease age growing without a matching renewal success means renewal is stalling. Aggregate the held gauge by workload across processes to see how many replicas each workload actually has; a value above `replicas` is the soft-placement case above, not a bug. A process restart on its own is expected rather than alarming -- that is what takeover looks like.
+Alert on the renewal-failure counter, where a sustained increase means the store is degraded and takeover is impaired, and on the lease age, where a holder's lease age growing without a matching renewal success means renewal is stalling. Those two series move on the first unconfirmed round while readiness waits out a wider grace period (below), so page on the metrics when the goal is to see degradation before any traffic moves. Aggregate the held gauge by workload across processes to see how many replicas each workload actually has; a value above `replicas` is the soft-placement case above, not a bug. A process restart on its own is expected rather than alarming -- that is what takeover looks like.
 
-Those three series are not published by the placement module itself. Core owns no metrics registry -- the Prometheus registry is a Web extension, and the placement module deliberately does not depend on a transport -- so it exposes a `placement.Stats()` snapshot instead and the three series are what a bridge over that snapshot should publish:
+None of these series are published by the placement module itself. Core owns no metrics registry -- the Prometheus registry is a Web extension, and the placement module deliberately does not depend on a transport -- so it exposes a `placement.Stats()` snapshot instead, and the series below are what a bridge over that snapshot should publish:
 
 | Series | Source field |
 | --- | --- |
@@ -611,9 +642,30 @@ Those three series are not published by the placement module itself. Core owns n
 
 `Stats().Held[].Degraded` is the per-slot form of the same signal: it reports "still serving, but the claim is not being confirmed", which is the difference between a degraded store and a stopped process. A readiness probe already exported for the health aggregator (`placement-health`) carries the same verdict without any metrics stack, and it reads this process's own renewal state only -- never the store, and never other members.
 
+| `xbc_workload_declared_replicas{workload,exclusive}` | `Stats().Declared[].Replicas` / `.Exclusive` |
+| `xbc_placement_standby` | `Stats().Standby`, as 1 or 0 |
+
+The declared-replicas gauge is what makes the two cluster-level questions answerable without copying Go constants into alert rules. Every process reports the replica count and exclusivity it was assembled with, so a rule compares the held gauge against a number the deployment itself stated:
+
+```promql
+# A workload held by fewer processes than its declaration allows. Pair it with
+# `for:` a little longer than a takeover takes, or it fires during every one.
+sum by (workload) (xbc_workload_held)
+  < max by (workload) (xbc_workload_declared_replicas)
+
+# A declared workload held by nobody at all. The right-hand side appears even
+# when the held series is gone, which is the case a plain comparison misses:
+# an aggregation with no input series simply returns nothing.
+max by (workload) (xbc_workload_declared_replicas)
+  unless sum by (workload) (xbc_workload_held)
+```
+
+`xbc_placement_standby` is the other side of the same arithmetic: it is how many takeovers the deployment currently has in reserve, and it reaching zero is the condition the sizing section above warns about rather than an alarm on its own. A workload this process vetoes by configuration contributes no declared row from that process, so a rule built on these series sees the declaration of the fleet that admits the workload rather than a count nobody would honour.
 Two different identities appear when asking "who holds this slot", and they answer different questions. `xbc.instance_id` names the process: derived from the hostname, the boot second and a random suffix when left empty, and settable per process as `XBC_INSTANCE_ID` -- see [`xbc.instance_id`](quickstart.md#configuration) for the derivation and the whitespace rule. The slot's *owner token* is what the lease backend stores under the slot key and what it compares before renewing or releasing; it identifies one acquisition rather than a process.
 
 The identity is what gets reported, because it is the one an operator can act on. `doctor`'s `holder` line and `Stats().Instance` both carry it, so a report names a process you can go and look at rather than a token. The token remains available per slot as `Stats().Held[].Owner`.
+The probe carries that verdict with a grace period, and the two readings are meant to differ. A claim reports `Degraded` from the first unconfirmed round onward, while `placement-health` turns down only once a claim has gone unconfirmed for longer than one TTL. One failed round says the store did not answer; it does not say the role is gone, because the key the previous round wrote is still inside its TTL. Reporting down there would withdraw every holder at once -- they share one store -- and move that traffic onto standbys that do not host these workloads, which is exactly the failure the lease store was never asked to be highly available for. Past one TTL the strongest local fact changes: the key cannot still exist, so a claim held in local memory may already be someone else's. That is the condition worth withdrawing for, and it is the one readiness reports. In between, the metrics and the log lines carry the episode.
+
 
 The store is readable without either of them. The token the backend mints is `<instance_id>/<random>`, so reading a slot key answers who holds it:
 
@@ -704,7 +756,32 @@ orders --migrate --config /etc/orders/migrate-rest.yml
 
 The `migrate` subcommand (`orders migrate --config ...`) and the `--migrate` flag both run the migration stage, but they do not do the same thing: the flag migrates and then boots the application normally, while the subcommand migrates, unwinds, and exits without ever starting or serving anything. Every constructed plugin's `Stop` still runs on that path even though no `Start` did, so a plugin whose `Stop` assumes `Start` ran fails there. Reach for the flag when the job is a one-off invocation of an otherwise ordinary command line, and for the subcommand when the process should do nothing but migrate.
 
-With the default static placement each job hosts exactly the workloads its file enables, and nothing else. An application that selects a lease-backed placement must give this one-off job a way to run without it -- a separate composition root, or a switch `main` reads -- because otherwise "hosts everything" depends on winning every slot in a race, and a migration that wins only some of them silently migrates a subset.
+With the default static placement each job hosts exactly the workloads its file enables, and nothing else. An application that selects a lease-backed placement must give this one-off job a way to run without it -- a separate composition root, or a switch `main` reads -- because otherwise "hosts everything" depends on winning every slot in a race, and a migration that wins only some of them silently migrates a subset. The switch is small enough to live in `main`, and it has to be decided before composition rather than during the run:
+
+```go
+// The migration job is the same binary started with ORDERS_PLACEMENT=static.
+// It composes every workload but never builds the lease source, so the default
+// placement hosts exactly what the job's own file enables.
+options := []xbc.Option{xbc.WithBundles(prelude.Bundle(), sast.Bundle(), webscan.Bundle())}
+if os.Getenv("ORDERS_PLACEMENT") != "static" {
+	locker, err := redis.NewLocker(client)
+	if err != nil {
+		return err
+	}
+	hosting, err := placement.New(locker, placement.WithTTL(30*time.Second))
+	if err != nil {
+		return err
+	}
+	options = append(options, xbc.WithPlacement(hosting), xbc.WithBundles(hosting.Bundle()))
+}
+app, err := xbc.New(options...)
+```
+
+```sh
+ORDERS_PLACEMENT=static orders --migrate --config /etc/orders/migrate-rest.yml
+```
+
+That switch gives up the property the fleet has: the job hosts exactly what its file enables, regardless of what the rest of the fleet is doing -- which is why it runs alone.
 
 Verify before trusting the run. `doctor` resolves the hosted set without constructing anything, so every declared workload in that run must appear as hosted:
 
@@ -716,7 +793,7 @@ orders doctor --config /etc/orders/migrate-rest.yml
 
 ## Attributing CPU to a workload
 
-Every managed task -- anything submitted through `plugin.Context.Go` or `GoCritical` -- runs under a `workload` profiler label naming the workload its plugin belongs to. A CPU profile can therefore be read per role:
+Every managed task -- anything submitted through `plugin.Context.Go` or `GoCritical` -- runs under a `workload` profiler label naming the workload its plugin belongs to, and every queue delivery does too: the asynq integration runs each task under the same label, restoring the worker goroutine's previous labels afterwards because the queue library reuses its workers. A CPU profile can therefore be read per role:
 
 ```sh
 # CPU by role, for every labelled workload at once
@@ -732,7 +809,7 @@ The label exists because a stack cannot answer the question. Frames say which pl
 
 Two limits are worth knowing before reading a profile this way:
 
-- **It covers background work, not request handling.** Labels are inherited by goroutines started under them, and the Web server belongs to no workload -- its accept loop serves every workload's routes. Labelling it would file each request under a name that denies the workload actually being served, so shared plugins are left unlabelled and request CPU is untagged.
+- **It covers background work, not request handling.** Labels are inherited by goroutines started under them, and the Web server belongs to no workload -- its accept loop serves every workload's routes. Labelling it would file each request under a name that denies the workload actually being served, so shared plugins are left unlabelled and request CPU is untagged. Queue deliveries are labelled because the same test passes there: a worker serves one workload's handlers, and the worker for contributors that belong to none is left unlabelled like every other shared component.
 - **Untagged is not a workload.** Samples with no `workload` tag are the shared infrastructure plus the runtime itself. There is no `unowned` tag to focus on, deliberately: `unowned` is a legal workload key.
 
 Heap profiles carry no labels at all, so memory is not attributable this way. `xbc.runtime.memory_limit` bounds the process rather than a role.
@@ -745,7 +822,9 @@ These boundaries are deliberate, and knowing them prevents several wrong deploym
 - **No in-process request forwarding and no cluster routing table.** A request for a workload this process does not host is a `404` here. A management tool talks to the process that holds the role rather than to "the service" as a whole.
 - **No member enumeration and no service-discovery contract.** Each process reports only what it holds. Aggregating that into "how many replicas of `sast` are running" is the monitoring side's job, which is why the metrics above are per-process.
 - **No fencing tokens, split-brain detection, or lease generations.** Those are what hard mutual exclusion needs, and the lease is not that.
-- **No per-workload HTTP in-flight budget.** `web.max_in_flight` is process-wide; a request over the limit is answered `503` with `Retry-After` before any handler runs. A per-workload share would require resolving the route before admitting the request, which is exactly the work the gate exists to refuse before.
+- **No per-workload HTTP in-flight budget.** `web.max_in_flight` is process-wide; a request over the limit is answered `503` with `Retry-After` before any handler runs. A per-workload share would require resolving the route before admitting the request, which is exactly the work the gate exists to refuse before. A route that genuinely must be answered from a saturated process declares itself exempt instead, by marking its registration `router.GET(...).Unmetered()`; the gate looks the request's own method and path up in the frozen route table, so an unmetered path has to be a literal one and startup rejects a pattern.
+- **No placement-independent verdict on a cross-workload `Collect` edge.** A workload that collects a contract another workload exports is refused when both are carried in one process, and resolves to an empty set when the producer's workload is not carried -- so whether that assembly starts depends on the decision. `QueryOne` and `QueryRef` have no such gap; keep cross-workload collect edges out of the design rather than relying on the error.
+- **No per-role process knobs.** `xbc.runtime.*` is installed during bootstrap, before a lease decides which workloads the process hosts, so under lease placement every replica receives the same `gc_percent` and `memory_limit`: they are a property of the process, not of the role it wins. A role that needs its own tuning wants its own deployment -- natural for an exclusive workload -- rather than a knob that follows placement.
 - **No per-workload memory accounting.** CPU is attributable through the profiler label above; heap profiles carry no labels, so `xbc.runtime.memory_limit` bounds the process rather than a role.
 
 ## Streaming a response past the write timeout
@@ -820,6 +899,7 @@ web:
 
 When Casbin is also selected, its `missing_permission` setting defaults to `deny`: a route with no `Perm` is rejected for everyone once Casbin's convention-based enforcement is active. The metrics route carries neither `Auth(web.Public())` nor a `.Perm`, so upgrading straight into that convention silently breaks Prometheus scraping with no startup warning. Fix this with a tier-1 `permit` rule for the exposition endpoint -- it takes effect before authentication and authorization run at all -- rather than flipping `missing_permission` to `allow`, which would also loosen every other `.Perm`-less route.
 
+- **No role preservation across a restart.** A replacement process starts as a standby and wins a slot only once one frees, so a rolling update moves roles to whichever process wins next rather than keeping them where they were: a restored process may host nothing while a standby takes the role. That follows from roles being claims rather than labels, and it means a rolling update is not role-preserving.
 ```yaml
 plugins:
   health:
@@ -879,6 +959,8 @@ These reports contain only identities, stage names, and durations; no configured
 ## Diagnosing why a plugin is in the graph
 
 `doctor` answers two questions the enabled-instances table cannot: who selected each plugin, and what is actually feeding it. It groups the graph the same way the workload rows do -- each declared workload, then `unowned` -- and walks that order, printing per instance the composition site that introduced it and one line per declared input:
+Both probes are registered public and unmetered: they answer before authentication and outside the process-level in-flight gate. The second exemption matters as much as the first. `web.max_in_flight` refuses work when the process is saturated, and a probe is not work; a busy process whose own liveness endpoint returned `503` would be restarted at exactly the moment it is carrying its full traffic ceiling, moving that traffic onto replicas that then fail their probes in turn. An orchestrator cannot tell "saturated" from "dead" unless the probe answers, and the two call for opposite responses. The price is that an unmetered probe is bounded by nothing but its own checks, which is why each check declares a timeout and the aggregator runs them concurrently. A probe that reaches a dependency is still a probe that spends that dependency's budget, so a saturated process answering them quickly is the design, not a gap in it.
+
 
 ```
 unowned             plugins=14

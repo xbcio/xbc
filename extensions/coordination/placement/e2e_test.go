@@ -202,6 +202,47 @@ func TestALeaseHolderHostsTheDeclaredWorkloadAndGivesItBackOnStop(t *testing.T) 
 	assert.False(t, server.Exists(e2eSlotKey), "the slot is handed back before the process exits")
 }
 
+// TestAHolderWithoutItsBundleStillGivesTheSlotBack is the regression for the
+// composition mistake the takeover section warns about: WithPlacement was given
+// a lease source, but placement.Bundle() was left out of the graph, so the
+// PreStop and Stop hooks that hand the slot back were never constructed. The
+// runtime's end-of-run release is then the only thing that gives it back, and
+// without it a graceful stop leaves the slot claimed until its ttl expires --
+// delaying the next takeover, which is the whole reason the lease is held.
+//
+// The assertion is on the store rather than on the source, because the source
+// reporting its own release is not the same claim as the slot being gone.
+func TestAHolderWithoutItsBundleStillGivesTheSlotBack(t *testing.T) {
+	server, client := newMiniredis(t)
+	hosting, err := placement.New(newLocker(t, client), placement.WithRenewInterval(50*time.Millisecond))
+	require.NoError(t, err)
+
+	var workloadInstances, unownedInstances atomic.Int32
+	workloadOpened := make(chan struct{})
+	unownedOpened := make(chan struct{})
+
+	// hosting.Bundle() is deliberately absent: the process resolves, wins and
+	// keeps the slot -- it genuinely hosts the workload -- but nothing in the
+	// graph can release what the source acquired.
+	cancel, run := startApp(t, appConfig(t), hosting,
+		unownedBundle("e2e-unowned", unownedOpened, &unownedInstances),
+		workloadBundle(e2eWorkloadKey, workloadOpened, &workloadInstances),
+	)
+
+	awaitClose(t, unownedOpened, "the unowned plugin to open traffic")
+	awaitClose(t, workloadOpened, "the hosted workload to be constructed and started")
+	assert.Equal(t, int32(1), workloadInstances.Load(),
+		"the workload is carried on this process's lease whether or not the Bundle is selected")
+	assert.True(t, server.Exists(e2eSlotKey), "the hosted workload is backed by a held slot")
+
+	cancel()
+	run.await(t)
+	require.NoError(t, run.err)
+	assert.Equal(t, 0, run.code)
+	assert.False(t, server.Exists(e2eSlotKey),
+		"the claim is returned before the process exits even though no hook owns it")
+}
+
 // TestAStaticDecisionDrivesTheSameComposition is the comparison the delivery
 // boundary asks for: the same Bundles produce the same downstream behaviour,
 // and the only difference is where the hosted set came from.
@@ -314,6 +355,38 @@ func TestDoctorGivesBackTheSlotItWonToAnswer(t *testing.T) {
 	assert.Empty(t, hosting.Stats().Held,
 		"the process reports holding nothing after the release")
 	assert.Zero(t, instances.Load(), "doctor still constructs nothing")
+}
+
+// TestValidateGivesBackTheSlotItClaims is doctor's counterpart on the other
+// non-serving command, and it exercises the half doctor cannot: validate
+// constructs the graph the decision describes, so the slot it claimed has an
+// owner, and the ordinary Stop walk is what gives it back. A command run to
+// check a deployment that held the role until its ttl expired would be a
+// diagnostic with the side effect of a deployment. What is pinned is the
+// outcome, not which of the two release paths produced it: the deferred release
+// at the top of execute is the backstop for any path that never reaches Stop.
+func TestValidateGivesBackTheSlotItClaims(t *testing.T) {
+	server, client := newMiniredis(t)
+	hosting, err := placement.New(newLocker(t, client), placement.WithRenewInterval(50*time.Millisecond))
+	require.NoError(t, err)
+
+	var instances atomic.Int32
+	app, err := xbc.New(xbc.WithPlacement(hosting), xbc.WithBundles(
+		hosting.Bundle(),
+		unownedBundle("e2e-unowned", make(chan struct{}), &instances),
+		workloadBundle(e2eWorkloadKey, make(chan struct{}), &instances),
+	))
+	require.NoError(t, err)
+
+	code, err := app.Execute(context.Background(), []string{"validate", "--config", appConfig(t)})
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.False(t, server.Exists(e2eSlotKey),
+		"the slot claimed to validate must be given back before validate returns")
+	assert.Empty(t, hosting.Stats().Held,
+		"the process reports holding nothing after the release")
+	assert.NotZero(t, instances.Load(), "validate constructs the graph the decision describes")
 }
 
 // TestAFailedPlanLeavesTheWonSlotHeldNowhere is the other pre-construct exit an

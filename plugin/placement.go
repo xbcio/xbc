@@ -35,21 +35,6 @@ type Placement struct {
 	Notes []string
 }
 
-// Hosts reports whether key is in Hosted.
-//
-// It gives tests and callers a single spelling for "is this workload carried".
-// The assembly layer and the diagnostics do not read it: each keeps its own
-// shape of the hosted set (a lookup map and sorted diagnostic labels
-// respectively), because both need it indexed differently than a linear scan.
-func (p Placement) Hosts(key WorkloadKey) bool {
-	for _, hosted := range p.Hosted {
-		if hosted == key {
-			return true
-		}
-	}
-	return false
-}
-
 // PlacementRequest is everything a PlacementSource may consult. It carries no
 // configuration values and no constructed resources: a source decides before
 // the graph exists, so it can read nothing else.
@@ -99,8 +84,7 @@ func (r PlacementRequest) Admits(key WorkloadKey) bool {
 //
 // A source that has to acquire something to answer -- a lease slot, a lock, a
 // reservation -- also implements PlacementReleaser, so the runtime can give
-// that claim back on the paths that never construct the plugin that would
-// otherwise release it.
+// that claim back on every path that does not reach the plugin which owns it.
 type PlacementSource interface {
 	Resolve(PlacementRequest) (Placement, error)
 }
@@ -108,22 +92,25 @@ type PlacementSource interface {
 // PlacementReleaser is the optional second half of a PlacementSource: it gives
 // back whatever the source acquired while resolving.
 //
-// The runtime consults a source before it plans, and only the constructed
-// plugin graph owns what a decision acquired -- the lease source's slots are
-// released by its PreStop and Stop hooks. Doctor, a plan that fails to build, a
-// plan that enables nothing and a stop during planning all return without ever
-// constructing that graph, so the runtime calls Release on every such path
-// instead of leaving the claim to expire with its own lease. It is called even
-// when Resolve failed part-way or was never reached, so a release with nothing
-// to give back must be a no-op.
+// The runtime consults a source before it plans, and on a running application
+// the constructed plugin graph owns what the decision acquired -- the lease
+// source's slots are released by its own PreStop and Stop hooks. The runtime
+// calls Release when the run ends regardless, as the backstop behind those
+// hooks: doctor, a plan that fails to build, a plan that enables nothing, a
+// stop during planning and a composition that never selected the placement
+// plugin all reach it with no hook that could have released anything, and a
+// stop the shutdown budget abandoned reaches it with a Stop that never ran. It
+// is called even when Resolve failed part-way or was never reached, so a
+// release with nothing to give back must be a no-op.
 //
 // Release must give back only what this process acquired, must be idempotent --
-// a later PreStop or Stop may release the same claim again -- and must work on
-// a run that is already stopping, because those are the paths that most need
-// it. The runtime supplies a context that does not inherit the run's
-// cancellation and bounds the call with a short deadline of its own, so a claim
-// the store does not confirm inside that budget is left to expire with its
-// lease rather than holding the command open.
+// the hooks above may have released the same claim already, and the runtime
+// calls it on every completed run -- and must work on a run that is already
+// stopping, because those are the paths that most need it. The runtime supplies
+// a context that does not inherit the run's cancellation and bounds the call
+// with a short deadline of its own, so a claim the store does not confirm
+// inside that budget is left to expire with its lease rather than holding the
+// command open.
 type PlacementReleaser interface {
 	Release(context.Context) error
 }

@@ -39,6 +39,10 @@ func TestConfigBindsSupportedOptions(t *testing.T) {
 		"queues": map[string]any{"critical": 8, "default": 2}, "strict_priority": true, "concurrency": 7,
 		"default_queue": "critical", "default_max_retries": 5, "default_timeout": "45s",
 		"task_check_interval": "250ms", "shutdown_timeout": "3s",
+		"workloads": map[string]any{
+			"sast": map[string]any{"queues": map[string]any{"sast": 4}, "concurrency": 2},
+			"saas": map[string]any{"queues": map[string]any{"saas": 1}},
+		},
 	})
 	if cfg.Redis.Addr != "redis.internal:6380" || cfg.Redis.Username != "service" || cfg.Redis.Password != "secret" || cfg.Redis.DB != 4 {
 		t.Fatalf("Redis identity config = %+v", cfg.Redis)
@@ -51,6 +55,15 @@ func TestConfigBindsSupportedOptions(t *testing.T) {
 	}
 	if cfg.DefaultQueue != "critical" || cfg.DefaultMaxRetries != 5 || cfg.DefaultTimeout != 45*time.Second || cfg.TaskCheckInterval != 250*time.Millisecond || cfg.ShutdownTimeout != 3*time.Second {
 		t.Fatalf("task defaults = %+v", cfg)
+	}
+	if len(cfg.Workloads) != 2 {
+		t.Fatalf("workloads = %+v", cfg.Workloads)
+	}
+	if sast := cfg.Workloads["sast"]; sast.Queues["sast"] != 4 || sast.Concurrency != 2 {
+		t.Fatalf("sast workload = %+v", sast)
+	}
+	if saas := cfg.Workloads["saas"]; saas.Queues["saas"] != 1 || saas.Concurrency != 0 {
+		t.Fatalf("saas workload = %+v", saas)
 	}
 	options := cfg.Redis.options()
 	if options.Addr != cfg.Redis.Addr || options.DB != cfg.Redis.DB || options.PoolSize != cfg.Redis.PoolSize || options.MaxRetries != cfg.Redis.MaxRetries {
@@ -98,6 +111,21 @@ func TestConfigSchemaAndCrossFieldValidation(t *testing.T) {
 		{name: "bad Redis port", mutate: func(c *Config) { c.Redis.Addr = "localhost:70000" }, want: "invalid port"},
 		{name: "bad Redis retries", mutate: func(c *Config) { c.Redis.MaxRetries = -2 }, want: "at least -1"},
 		{name: "shutdown timeout", mutate: func(c *Config) { c.ShutdownTimeout = 0 }, want: "shutdown_timeout"},
+		{name: "workload without queues", mutate: func(c *Config) {
+			c.Workloads = map[string]WorkloadConfig{"sast": {}}
+		}, want: `workload "sast" must declare at least one queue`},
+		{name: "workload key whitespace", mutate: func(c *Config) {
+			c.Workloads = map[string]WorkloadConfig{" sast": {Queues: map[string]int{"sast": 1}}}
+		}, want: "workload key"},
+		{name: "workload weight", mutate: func(c *Config) {
+			c.Workloads = map[string]WorkloadConfig{"sast": {Queues: map[string]int{"sast": 0}}}
+		}, want: "workloads.sast.queues"},
+		{name: "workload queue name", mutate: func(c *Config) {
+			c.Workloads = map[string]WorkloadConfig{"sast": {Queues: map[string]int{" sast": 1}}}
+		}, want: "workloads.sast.queues"},
+		{name: "workload concurrency", mutate: func(c *Config) {
+			c.Workloads = map[string]WorkloadConfig{"sast": {Queues: map[string]int{"sast": 1}, Concurrency: -1}}
+		}, want: `workload "sast" concurrency cannot be negative`},
 	}
 	for _, test := range manual {
 		t.Run(test.name, func(t *testing.T) {
@@ -112,11 +140,36 @@ func TestConfigSchemaAndCrossFieldValidation(t *testing.T) {
 
 func TestConfigCloneDefensivelyCopiesQueues(t *testing.T) {
 	cfg := defaultConfig()
+	cfg.Workloads = map[string]WorkloadConfig{"sast": {Queues: map[string]int{"sast": 1}}}
 	clone := cfg.clone()
 	clone.Queues["default"] = 9
 	clone.Queues["other"] = 1
+	workload := clone.Workloads["sast"]
+	workload.Queues["sast"] = 9
+	workload.Queues["other"] = 1
+	clone.Workloads["saas"] = WorkloadConfig{}
 	if cfg.Queues["default"] != 1 || len(cfg.Queues) != 1 {
 		t.Fatalf("clone mutated source queues: %v", cfg.Queues)
+	}
+	if len(cfg.Workloads) != 1 || cfg.Workloads["sast"].Queues["sast"] != 1 || len(cfg.Workloads["sast"].Queues) != 1 {
+		t.Fatalf("clone mutated source workloads: %v", cfg.Workloads)
+	}
+}
+
+// TestDefaultQueueMayLiveInAWorkloadsQueues covers the deployment where the
+// default queue belongs to a workload: the declared vocabulary is the union of
+// every group's set, so naming one of its queues as the default is valid.
+func TestDefaultQueueMayLiveInAWorkloadsQueues(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Queues = map[string]int{"housekeeping": 1}
+	cfg.Workloads = map[string]WorkloadConfig{"sast": {Queues: map[string]int{"sast": 1}}}
+	cfg.DefaultQueue = "sast"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	cfg.DefaultQueue = "undeclared"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "not present") {
+		t.Fatalf("Validate() error = %v, want an undeclared default queue refused", err)
 	}
 }
 

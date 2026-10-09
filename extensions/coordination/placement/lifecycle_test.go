@@ -16,24 +16,36 @@ import (
 
 // ── renewal ────────────────────────────────────────────────────────────────
 
-func TestHeldSlotsAreRenewedOnceTheTrafficGateOpens(t *testing.T) {
+// TestHeldSlotsAreKeptAliveFromTheMomentTheyAreWon covers the startup window,
+// which is where a keepalive that waited for Start or for the traffic gate did
+// its damage.
+//
+// The claim is made in Resolve, before the plan is built, and construction,
+// migration and startup all run between that and the gate opening. A startup
+// that outlasted one ttl lost the slot to a standby that then restarted into the
+// same role, so the deployment ran a replica above its declared count until
+// somebody intervened. Keeping the claim alive is part of holding it, so the
+// first renewal happens before Start -- and before the gate, because a renewal
+// is a write about the claim rather than work in front of users.
+func TestHeldSlotsAreKeptAliveFromTheMomentTheyAreWon(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
 	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 
+	// No Start, no plugin instance, no traffic gate: the decision alone starts
+	// the keepalive.
+	await(t, "the keepalive to renew the slot before the process is assembled", func() bool {
+		return locker.renewCount(key) >= 2
+	})
+
 	host := newTestHost()
 	require.NoError(t, value.start(host.context()))
-
-	// The gate is still closed, so no externally visible work may have started
-	// yet: a renewal is a write to a shared store that another process's
-	// placement decision depends on.
-	time.Sleep(50 * time.Millisecond)
-	assert.Zero(t, locker.renewCount(key), "the renewal loop waits for the traffic gate")
-
-	host.openGate()
-	await(t, "the renewal loop to confirm the slot", func() bool { return locker.renewCount(key) >= 2 })
+	// The gate stays shut for the whole test: renewal is not traffic, so there is
+	// nothing here for the gate to hold back.
+	before := locker.renewCount(key)
+	await(t, "the keepalive to keep renewing after Start", func() bool { return locker.renewCount(key) >= before+2 })
 
 	host.requestStop()
 	require.NoError(t, value.stop(context.Background()))
@@ -185,17 +197,17 @@ func TestPreStopReleasesAndALaterRenewalDoesNotWriteTheSlotBack(t *testing.T) {
 	host.awaitTasks(t)
 }
 
-// TestAReleaseIsNotUndoneByALockerWhoseRenewalReestablishes pins the effect
-// rather than the call.
+// TestAReleaseIsNotUndoneByAConformingRenewal pins the effect rather than the
+// call.
 //
-// The Redis backend's owner-checked renewal cannot recreate a deleted key, so
-// the write-back this design guards against is invisible through it. This store
-// models the backend for which it is visible -- a renewal that sets its key
-// again when it finds none -- so the guard is proven to hold for the effect and
-// not merely for the absence of a call.
-func TestAReleaseIsNotUndoneByALockerWhoseRenewalReestablishes(t *testing.T) {
+// A conforming renewal re-establishes a key it finds gone (lease.Lease.Renew),
+// which is what keeps one store blip from reading as a lost claim. The same
+// behaviour is why the write-back this design guards against is visible through
+// any faithful store: a renewal that reached the store after a release would put
+// the released key back. This store is such a backend, and the forced round
+// below is exactly the tick the guard exists for.
+func TestAReleaseIsNotUndoneByAConformingRenewal(t *testing.T) {
 	locker := newMemoryLocker()
-	locker.renewReestablishes = true
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
 
 	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
@@ -359,6 +371,7 @@ func TestConcurrentProcessesConvergeOnExactlyTheDeclaredReplicas(t *testing.T) {
 	type outcome struct {
 		decision plugin.Placement
 		stats    Stats
+		value    *Placement
 		err      error
 	}
 	outcomes := make([]outcome, processes)
@@ -385,10 +398,19 @@ func TestConcurrentProcessesConvergeOnExactlyTheDeclaredReplicas(t *testing.T) {
 				outcomes[index] = outcome{err: err}
 				return
 			}
-			outcomes[index] = outcome{decision: decision, stats: value.Stats()}
+			outcomes[index] = outcome{decision: decision, stats: value.Stats(), value: value}
 		}(index)
 	}
 	wait.Wait()
+
+	// Every winner's keepalive is stopped before the test ends. The loop begins
+	// with the decision, so a placement that is only resolved is kept alive by a
+	// goroutine nothing else will stop.
+	for _, result := range outcomes {
+		if result.value != nil {
+			require.NoError(t, result.value.Release(context.Background()))
+		}
+	}
 
 	holders := 0
 	slots := make(map[int]bool)
@@ -427,7 +449,20 @@ func TestAFreedSlotIsTakenOverAfterItsTTLExpires(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []plugin.WorkloadKey{"sast"}, decision.Hosted)
 
-	// The holder dies without releasing anything.
+	// The holder dies without releasing anything. From the store's side that is
+	// a keepalive that stops and a key left to expire -- so the keepalive is
+	// stopped here, and waited for, because a round still in flight would land
+	// after the clock below moved and re-establish the key.
+	first.quiesce()
+	await(t, "the dead holder's keepalive to stop", func() bool {
+		select {
+		case <-first.loopDone:
+			return true
+		default:
+			return false
+		}
+	})
+
 	candidate := mustNew(t, newRedisLocker(t, client), WithTTL(ttl), WithRenewInterval(100*time.Millisecond))
 	taken, err := candidate.Resolve(workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
@@ -441,4 +476,8 @@ func TestAFreedSlotIsTakenOverAfterItsTTLExpires(t *testing.T) {
 	takeover, err := successor.Resolve(workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	assert.Equal(t, []plugin.WorkloadKey{"sast"}, takeover.Hosted)
+
+	// Release is the path that stops a keepalive and gives the slot back without
+	// a plugin instance to run PreStop or Stop.
+	require.NoError(t, successor.Release(context.Background()))
 }

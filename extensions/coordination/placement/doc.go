@@ -42,8 +42,17 @@
 // to build -- still wins its slots, because there is no other way to answer.
 // What it does not have is the Start/PreStop/Stop lifecycle that normally gives
 // them back, so Placement.Release exists for those paths: the runtime calls it
-// whenever a command returns before the plugin graph exists, and no slot
+// on every way out of a command -- here, before the plugin graph exists, and at
+// the end of a run behind the graph's own PreStop and Stop -- so no slot
 // outlives the decision that needed it.
+//
+// Keeping a claim alive is part of holding it, so the renewal loop begins in
+// Resolve rather than in Start: construction, migration and startup all run
+// between the two, and a claim left unguarded for longer than its ttl is a claim
+// a standby can take -- after which it restarts into the same role and the
+// deployment runs a replica above its declared count. Release and the lifecycle
+// hooks end the loop the same way: quiesce, wait for it to go quiet, then hand
+// the slots back.
 //
 // # Soft placement
 //
@@ -53,6 +62,20 @@
 // downstream by the queue, a distributed lock and a database compare-and-swap
 // rather than by this contract. See lease's own package documentation for the
 // same argument from the contract's side.
+//
+// The other half of that trade lives in the contract rather than here: a
+// renewal that finds its own key gone re-establishes it under the same token, so
+// a claim that merely lapsed -- a store outage longer than one ttl -- is
+// re-confirmed on the next round instead of reading as taken over. That is what
+// keeps "temporarily over the declared replica count" temporary.
+//
+// Readiness follows the same asymmetry rather than contradicting it: a claim
+// that has gone unconfirmed for longer than one ttl is reported down, because
+// by then the stored key cannot still exist and the slot in local memory may
+// already be someone else's. A single unconfirmed round stays out of the probe
+// and moves only the counters -- see the health check's own documentation for
+// why withdrawing every holder at once is the wrong response to the store
+// missing one round.
 //
 // # Usage
 //

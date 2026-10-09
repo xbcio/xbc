@@ -26,11 +26,24 @@ const LeaseKey plugin.Key = "redis-lease"
 
 // leaseRenewScript and leaseReleaseScript compare the stored owner token before
 // acting. Ownership is therefore never transferred by a stale lease: a lease
-// whose key has already been taken over renews nothing and deletes nothing.
+// whose key has already been taken over renews nothing, deletes nothing, and
+// reconstructs nothing.
+//
+// The renewal script also re-establishes a key it finds absent, under the same
+// token, as lease.Lease.Renew requires. An absent key means this lease lapsed
+// -- the ttl passed during a store outage, or the store restarted without
+// persistence -- and not that another owner holds it; reading the key first is
+// what tells the two apart, and one script is what keeps the read and the write
+// from interleaving with another client's acquisition of the freed key.
 var (
 	leaseRenewScript = goredis.NewScript(`
-if redis.call("get", KEYS[1]) == ARGV[1] then
+local current = redis.call("get", KEYS[1])
+if current == ARGV[1] then
   return redis.call("pexpire", KEYS[1], ARGV[2])
+end
+if current == false then
+  redis.call("set", KEYS[1], ARGV[1], "PX", ARGV[2])
+  return 1
 end
 return 0`)
 	leaseReleaseScript = goredis.NewScript(`

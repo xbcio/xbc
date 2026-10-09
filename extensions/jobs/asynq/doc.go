@@ -47,21 +47,57 @@
 // Keeping enqueueing and handler contribution in separate Definitions avoids a
 // dependency cycle.
 //
-// Queue names passed to Queue must exist in plugins.asynq. The runtime owns its
-// Redis connection, enqueue client, and worker server. Start submits the worker
-// as a critical managed task, which waits for XBC's global traffic gate before
-// polling Redis. Shutdown splits in two. Drain stops the worker fetching new
-// tasks and waits, within the drain budget, for the handlers already running to
-// return, while Enqueue and the owned Redis connection stay usable. That wait is
+// # Workloads
+//
+// A worker serves the handlers of the Plugins that share a workload. A
+// contributor whose Plugin belongs to a workload is consumed by that workload's
+// worker, with the queues and concurrency declared under
+// plugins.asynq.workloads.<key>; contributors that belong to none share the
+// top-level worker and its top-level queues. Which process consumes a queue is
+// therefore a matter of which workloads it hosts, and a workload this process
+// does not host gets no worker here even though its queues stay valid for
+// enqueuing. The queue sets of one process must be pairwise disjoint, because a
+// task in a queue two workers both poll is delivered to whichever fetches it
+// first; that is refused at construction.
+//
+// Every delivery charges one unit of its workload's admission quota, the same
+// quota the workload's managed tasks charge, so what a workload's
+// max_goroutines bounds is the work it runs rather than the goroutines XBC
+// started for it. A delivery that cannot take a unit waits for one within the
+// task's own context rather than failing the task; contributors that belong to
+// no workload, and workloads that declare no quota, charge nothing.
+//
+// A handler runs under the same profiler label the runtime files its managed
+// tasks under -- workload=<key> -- so a CPU profile taken in a process serving
+// several workloads can be read per workload rather than only per task type.
+// The label is set for the duration of the handler and restored afterwards,
+// since the queue library reuses its worker goroutines. Contributors that
+// belong to no workload stay unlabelled, exactly as the runtime leaves unowned
+// plugins unlabelled: a label naming no workload is the truth about the shared
+// work, and a misattributed sample is worse than an unattributed one.
+//
+// A process whose Plugins contribute no handlers is not an error: it starts,
+// consumes nothing, and provides the long-lived task the runtime needs, which
+// is what a standby role needs to stay alive until it is restarted with work.
+//
+// # Queues and shutdown
+//
+// Queue names passed to Queue must exist in plugins.asynq, either in the
+// top-level queues or in any workload's. The runtime owns its Redis connection,
+// enqueue client, and worker servers. Start submits one critical managed task
+// per worker, each waiting for XBC's global traffic gate before polling Redis.
+// Shutdown splits in two. Drain stops every worker from fetching new tasks and
+// waits, within the drain budget, for the handlers already running to return,
+// while Enqueue and the owned Redis connection stay usable. That wait is
 // best-effort at the fetch boundary: asynq does not wait for a worker that
 // already dequeued a task, so a task dequeued just before the worker stopped may
 // begin after the wait and is left to Stop's library Shutdown, which finishes or
 // requeues it instead of losing it. An expired drain means stop waiting, never
 // abort, so handlers it leaves behind keep running with their contexts
-// untouched. Stop then rejects new enqueue calls and shuts the worker down
+// untouched. Stop then rejects new enqueue calls and shuts the workers down
 // through the asynq library, which lets whatever outlived the drain finish
 // within plugins.asynq.shutdown_timeout before requeueing the rest, and closes
-// Redis only once the worker stopped. Tasks may be redelivered, so handlers
+// Redis only once the workers stopped. Tasks may be redelivered, so handlers
 // should be idempotent and payloads should not contain unprotected secrets.
 //
 // # Readiness

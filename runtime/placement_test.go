@@ -82,8 +82,6 @@ func TestStaticPlacementHostsEveryEnabledWorkload(t *testing.T) {
 	assert.Equal(t, "static", placement.Source)
 	assert.Equal(t, []plugin.WorkloadKey{"sast"}, placement.Hosted,
 		"an enabled: false workload is never hosted by the default source")
-	assert.True(t, placement.Hosts("sast"))
-	assert.False(t, placement.Hosts("sca"))
 }
 
 // TestWithPlacementReplacesTheDefaultDecision pins the seam: the source the
@@ -860,21 +858,38 @@ func TestAStopDuringPlanningGivesBackWhatPlacementAcquired(t *testing.T) {
 	assert.Nil(t, app.owned, "the stop is honoured before anything is constructed")
 }
 
-// TestASuccessfulConstructTakesOwnershipOfTheClaim is the other half of the
-// boundary. Once Construct succeeds the plugin graph owns what the source
-// acquired -- the placement plugin's PreStop and Stop hooks are what release it
-// -- so the runtime must not take the claim back behind the plugin's back, at
-// any point in the run.
-func TestASuccessfulConstructTakesOwnershipOfTheClaim(t *testing.T) {
-	definition := plugin.Define("carried", func(plugin.BuildContext) (*runtimeTestValue, error) {
-		return &runtimeTestValue{}, nil
-	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
-		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
-	}})
+// TestAConstructedGraphOwnsTheClaimUntilTheRunEnds pins both halves of the
+// release boundary. A live run's claim belongs to the plugin graph -- the
+// placement plugin's PreStop and Stop hooks are what give it back -- so the
+// runtime's backstop must not touch it while the process still serves the
+// workload it was won for. Once the run has ended, the backstop is the one
+// that returns whatever is left, and this composition is exactly the case
+// that needs it: the source that claimed is not the graph that would release,
+// because the Bundle carrying the releasing plugin was never selected.
+//
+// The boundary is positional as well as counted: the carried plugin's own Stop
+// records the release count it observes, which must still be zero when the last
+// of the graph unwinds. A backstop that returned the claim beside the stop
+// rather than after the whole reverse order would fail that reading, which no
+// count taken after the run could tell apart.
+func TestAConstructedGraphOwnsTheClaimUntilTheRunEnds(t *testing.T) {
 	source := &claimingPlacement{placement: plugin.Placement{
 		Source: "lease",
 		Hosted: []plugin.WorkloadKey{"sca"},
 	}}
+	// -1 marks the hook as never run, so a composition that stops without
+	// calling it cannot pass the reading below by leaving it at its zero value.
+	releasesAtStop := atomic.Int32{}
+	releasesAtStop.Store(-1)
+	definition := plugin.Define("carried", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
+		Stop: func(*runtimeTestValue, context.Context) error {
+			releasesAtStop.Store(source.releases.Load())
+			return nil
+		},
+	}})
 	app, err := New(WithBundles(
 		plugin.WorkloadOf("sca", plugin.BundleOf(definition), plugin.WithReplicas(2)),
 	), WithPlacement(source))
@@ -887,12 +902,14 @@ func TestASuccessfulConstructTakesOwnershipOfTheClaim(t *testing.T) {
 	assert.True(t, source.claimed.Load(),
 		"the constructed plugin owns the claim once Construct has succeeded")
 	assert.Zero(t, source.releases.Load(),
-		"the runtime does not release a claim a constructed plugin owns")
+		"a live run's claim is the plugin graph's to hold, never the runtime's to return")
 
 	app.requestStop(stopReasonSignal)
 	completed := awaitRuntimeTestResult(t, result)
 	require.NoError(t, completed.err)
 	assert.Equal(t, 0, completed.code)
-	assert.Zero(t, source.releases.Load(),
-		"the release stays with the plugin for the whole run")
+	assert.Equal(t, int32(0), releasesAtStop.Load(),
+		"the graph's own Stop still saw the claim held, so the backstop runs after the last unwind and not beside the stop")
+	assert.Equal(t, int32(1), source.releases.Load(),
+		"the end of the run returns the claim, which nothing in this composition else could")
 }

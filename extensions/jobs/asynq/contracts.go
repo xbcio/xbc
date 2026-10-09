@@ -62,6 +62,12 @@ type HandlerRegistration struct {
 // HandlerContributor contributes task handlers to the Asynq Definition. Producers
 // export this contract explicitly; Asynq collects the typed input in graph order
 // and freezes each contributor's registrations during construction.
+//
+// A contributor's Plugin may declare a workload. The handlers then run on that
+// workload's worker, under its queues, concurrency, and admission quota, which
+// is how a shared integration serves several workloads without any of them
+// escaping the limits it declared. A contributor that declares none is served
+// by the top-level worker.
 type HandlerContributor interface {
 	TaskHandlers() []HandlerRegistration
 }

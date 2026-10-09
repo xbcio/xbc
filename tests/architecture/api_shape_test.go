@@ -151,6 +151,8 @@ func TestArchRuntimeHostPublicAPIShape(t *testing.T) {
 		"TrafficGate":      reflect.TypeOf((func() <-chan struct{})(nil)),
 		"SubmitTask":       reflect.TypeOf((func(plugin.Identity, func(context.Context), bool) bool)(nil)),
 		"RequestShutdown":  reflect.TypeOf((func(plugin.Identity, string) bool)(nil)),
+		"Admission":        reflect.TypeOf((func(plugin.Identity) plugin.Admission)(nil)),
+		"AdmissionFor":     reflect.TypeOf((func(plugin.Identity, plugin.WorkloadKey) plugin.Admission)(nil)),
 	}
 	for name, signature := range want {
 		method, ok := hostType.MethodByName(name)

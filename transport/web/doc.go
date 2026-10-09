@@ -158,6 +158,16 @@
 // key from the deployment's own memory and dependency budget where the default
 // is wrong for it.
 //
+// A route can be exempted from that ceiling with Route.Unmetered, which is what
+// the health probes use: an orchestrator cannot distinguish "saturated" from
+// "dead" unless the probe answers, and restarting a process at its traffic
+// ceiling only moves that traffic to replicas that fail the same way. The gate
+// recognizes the exemption by looking the request's own method and path up in
+// the frozen route table -- never by asking the engine to resolve the route,
+// because refusing before any handler runs is the property the gate exists for
+// -- so an unmetered path must be a literal one and startup rejects a pattern.
+// A route that takes the exemption is bounded by nothing but its own checks.
+//
 // TrustedProxies is empty by default, so forwarded headers such as
 // X-Forwarded-For cannot influence the engine's client address. Configure only
 // exact proxy IP addresses or CIDRs when the application is behind known reverse

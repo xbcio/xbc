@@ -34,7 +34,7 @@ func workloadTestRuntime(logger log.Logger, limits map[plugin.WorkloadKey]int, o
 	tasks.configureWorkloadBudget(limits, func(identity plugin.Identity) (plugin.WorkloadKey, bool) {
 		workload, attributed := owner[identity.Normalized().Plugin]
 		return workload, attributed
-	})
+	}, func(plugin.WorkloadKey) bool { return true })
 	return tasks
 }
 
@@ -624,7 +624,7 @@ func TestWorkloadBudgetWithoutAPlanBoundsNothing(t *testing.T) {
 	limits, err := workloadTaskLimits(nil, nil)
 	require.NoError(t, err)
 	assert.Empty(t, limits)
-	tasks.configureWorkloadBudget(limits, app.workloadOf)
+	tasks.configureWorkloadBudget(limits, app.workloadOf, app.hostsWorkload)
 
 	workload, attributed := app.workloadOf(taskIdentity("anything"))
 	assert.False(t, attributed, "a nil plan attributes nothing rather than panicking")

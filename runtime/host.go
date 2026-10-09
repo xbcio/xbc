@@ -46,6 +46,25 @@ func (host hostAdapter) SubmitTask(identity plugin.Identity, fn func(context.Con
 	return host.app.tasks.submit(identity.Normalized(), fn, critical)
 }
 
+// Admission and AdmissionFor expose the per-workload admission budget through
+// the same host the managed-task path goes through. Like SubmitTask they read
+// the task runtime without a lock: bootstrap publishes it under stateMu before
+// any Plugin is constructed, and nothing replaces it afterwards. A nil runtime
+// answers nil, which Context reports as an unbounded limiter.
+func (host hostAdapter) Admission(identity plugin.Identity) plugin.Admission {
+	if host.app.tasks == nil {
+		return nil
+	}
+	return host.app.tasks.admissionFor(identity.Normalized(), "")
+}
+
+func (host hostAdapter) AdmissionFor(identity plugin.Identity, workload plugin.WorkloadKey) plugin.Admission {
+	if host.app.tasks == nil {
+		return nil
+	}
+	return host.app.tasks.admissionFor(identity.Normalized(), workload)
+}
+
 func (host hostAdapter) RequestShutdown(identity plugin.Identity, reason string) bool {
 	reason = strings.Join(strings.Fields(reason), " ")
 	if reason == "" {

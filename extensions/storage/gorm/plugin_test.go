@@ -21,10 +21,14 @@ type testRuntimeHost struct {
 	execution context.Context
 }
 
-func (h testRuntimeHost) ExecutionContext() context.Context { return h.execution }
-func (testRuntimeHost) Logger() log.Logger                  { return nil }
-func (testRuntimeHost) ProcessInstance() string             { return "test-process" }
-func (testRuntimeHost) TrafficGate() <-chan struct{}        { return nil }
+func (h testRuntimeHost) ExecutionContext() context.Context        { return h.execution }
+func (testRuntimeHost) Logger() log.Logger                         { return nil }
+func (testRuntimeHost) ProcessInstance() string                    { return "test-process" }
+func (testRuntimeHost) TrafficGate() <-chan struct{}               { return nil }
+func (testRuntimeHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (testRuntimeHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (testRuntimeHost) SubmitTask(plugin.Identity, func(context.Context), bool) bool {
 	return false
 }

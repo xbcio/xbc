@@ -44,6 +44,16 @@ func (a *App) startAll(instances []*assembly.Instance) error {
 			return a.errStopDuringStartup("startup")
 		}
 	}
+	// The last Start hook has returned, which is the one moment a workload's
+	// budget reading is at its most telling: submission of a managed task is
+	// admitted only inside a Start hook, so every unit a workload's own plugins
+	// will ever submit here has been submitted, while the queue workers and
+	// cron runners that charge the admission half all wait on a traffic gate
+	// that is still shut. A unit held now is start-up work's -- a resident loop,
+	// or a task a Start hook spawned into a workload-scoped pool, which needs no
+	// gate -- and the counter cannot tell those apart, which is why the report
+	// warns rather than judges.
+	a.reportSaturatedWorkloads()
 	return nil
 }
 

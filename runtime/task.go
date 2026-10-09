@@ -26,10 +26,17 @@ type taskRuntime struct {
 	logger        log.Logger
 	onCritical    func(string)
 
-	// budget bounds how many managed tasks each workload may run at once. Its
+	// budget bounds how many units of work each workload may run at once. Its
 	// zero value bounds nothing, which is what a process whose workloads
 	// declare no budget keeps.
 	budget workloadBudget
+
+	// hosted reports whether this process carries a workload: the plan's hosted
+	// set. It answers the admission question attribution cannot -- "may a
+	// shared Plugin charge this workload's quota" -- because a plugin acting
+	// for a workload this process does not carry would be taking a slot no work
+	// of that workload here will ever give back. Nil hosts nothing.
+	hosted func(plugin.WorkloadKey) bool
 
 	// attribute reports which workload owns a submitting Plugin: the plan's
 	// identity-to-workload table. Nil attributes nothing.
@@ -302,24 +309,30 @@ func (runtime *taskRuntime) log() log.Logger {
 // configureWorkloadBudget installs the per-workload task budgets together with
 // the attribution both the budgets and the managed tasks' profiler labels read.
 //
-// The two halves arrive separately because they become knowable at different
+// The three halves arrive separately because they become knowable at different
 // moments. The limits are configuration, so bootstrap reads them straight out
-// of the workloads root, before anything has been planned. The attribution is a
-// property of the frozen graph -- a Definition claims membership either through
-// WorkloadOf or through Options[W].Workload, and only a finished plan has
-// proven the two agree -- so it is supplied as a closure over that plan and
-// resolved per submission instead.
+// of the workloads root, before anything has been planned. The attribution and
+// the hosted set are properties of the frozen graph -- a Definition claims
+// membership either through WorkloadOf or through Options[W].Workload, and only
+// a finished plan has proven the two agree, and only a finished plan knows
+// which workloads were carried -- so both are supplied as closures over that
+// plan and resolved on demand.
 //
 // A process that declares no budget still installs attribution, because the
 // labels do not depend on a limit: "which workload is this task" and "may this
 // workload run another task" are separate questions.
 //
-// Both are written here once and only read afterwards, which is why neither is
-// synchronized: this runs before any Plugin code can execute, and every read
+// All three are written here once and only read afterwards, which is why none
+// is synchronized: this runs before any Plugin code can execute, and every read
 // happens after, either on the goroutine that wrote them or on a goroutine
 // created from it.
-func (runtime *taskRuntime) configureWorkloadBudget(limits map[plugin.WorkloadKey]int, attribute func(plugin.Identity) (plugin.WorkloadKey, bool)) {
+func (runtime *taskRuntime) configureWorkloadBudget(
+	limits map[plugin.WorkloadKey]int,
+	attribute func(plugin.Identity) (plugin.WorkloadKey, bool),
+	hosted func(plugin.WorkloadKey) bool,
+) {
 	runtime.attribute = attribute
+	runtime.hosted = hosted
 	runtime.budget.limits = limits
 	runtime.budget.bounded = len(limits) > 0
 	runtime.budget.running = make(map[plugin.WorkloadKey]int, len(limits))
@@ -341,8 +354,49 @@ func (runtime *taskRuntime) workloadOf(identity plugin.Identity) plugin.Workload
 	return workload
 }
 
-// workloadBudget bounds how many managed tasks one workload may run at any one
+// admissionFor reports the admission limiter a Plugin runs its unmanaged work
+// against, or nil when nothing bounds that work.
+//
+// workload is the workload the work is being run for, empty when the asker
+// means "the submitting Plugin's own". The two are one code path because the
+// decision is the same in both cases: the limiter exists only for a workload
+// this process carries and bounds, which is exactly when there is a quota to
+// charge. A plugin that belongs to no workload, a workload this process does
+// not host, and a workload that declares no max_goroutines all answer nil, and
+// Context reports the nil answer as an unbounded limiter rather than an error:
+// none of them is a mistake the caller can fix, and a shared plugin asking
+// about a workload that is not here is the ordinary case of a process that
+// hosts fewer roles than the application declares.
+//
+// The limit is read without the budget mutex under the same rule as bounded:
+// configureWorkloadBudget wrote the map once, before any Plugin code could run,
+// and nothing writes it again.
+func (runtime *taskRuntime) admissionFor(identity plugin.Identity, workload plugin.WorkloadKey) plugin.Admission {
+	if runtime == nil || !runtime.budget.bounded {
+		return nil
+	}
+	if workload == "" {
+		workload = runtime.workloadOf(identity)
+		if workload == "" {
+			return nil
+		}
+	}
+	if runtime.hosted != nil && !runtime.hosted(workload) {
+		return nil
+	}
+	if limit, limited := runtime.budget.limits[workload]; !limited || limit <= 0 {
+		return nil
+	}
+	return &workloadAdmission{budget: &runtime.budget, workload: workload}
+}
+
+// workloadBudget bounds how many units of work one workload may run at any one
 // time and counts the submissions it refused.
+//
+// A unit of work is a managed task or a unit an admission Acquire took; both
+// draw on the same count, because the question max_goroutines answers is how
+// much of one workload is in flight at once, not how it was started. See
+// plugin.Admission for why the two paths share one number.
 //
 // The bound is on concurrency, never on the cumulative number of submissions. A
 // slot is taken when a task is admitted and given back when that task returns,
@@ -362,7 +416,7 @@ func (runtime *taskRuntime) workloadOf(identity plugin.Identity) plugin.Workload
 // taskRuntime.mu and then budget.mu, and nothing anywhere takes them the other
 // way round.
 type workloadBudget struct {
-	// mu guards the three maps below.
+	// mu guards everything below.
 	mu sync.Mutex
 	// bounded is len(limits) > 0, cached so that a process whose workloads
 	// declare no budget pays one boolean test per submission instead of a mutex
@@ -372,13 +426,27 @@ type workloadBudget struct {
 	// limits holds the workloads that asked for a bound. A workload absent from
 	// it is unbounded, which is what it gets by declaring no max_goroutines.
 	limits map[plugin.WorkloadKey]int
-	// running counts the managed tasks currently alive per bounded workload.
+	// running counts the units of work currently alive per bounded workload:
+	// managed tasks, and every unit an admission Acquire took.
 	running map[plugin.WorkloadKey]int
 	// rejected counts, per bounded workload, how many submissions it has
 	// refused for exceeding its limit. It is cumulative rather than a gauge
 	// because the question it answers is "is this workload being held back",
 	// which a snapshot of one moment cannot answer.
 	rejected map[plugin.WorkloadKey]uint64
+	// freed is the channel an admission waits on, closed and dropped by the
+	// next release. It is one channel for the whole budget rather than one per
+	// workload because a release cannot tell which workload a waiter wants:
+	// every waiter re-checks under mu anyway, and the waiters are worker
+	// goroutines counted in tens, so a shared wake-up costs a re-check per
+	// waiter and saves a map of channels. It is created lazily and left nil
+	// while nobody waits, so an uncontended release allocates nothing.
+	freed chan struct{}
+	// waiting counts the goroutines blocked in acquire. It exists so release
+	// can skip the broadcast when nobody is listening, which is the common case
+	// once a workload is at its ceiling for a while: without it every release
+	// would close and replace a channel nobody reads.
+	waiting int
 }
 
 // budgetRefusal is one submission the budget refused. It carries the numbers an
@@ -401,6 +469,10 @@ type budgetRefusal struct {
 // exceed, and there is deliberately no process-wide budget, because one would
 // ration the unowned plugins that a standby process exists to run and would
 // couple unrelated workloads to each other through a single shared ceiling.
+// The per-workload budget here is the whole of the admission quota, and it is
+// what Context.Admission hands to a queue worker or a pooled executor as well
+// as what this method charges managed tasks against: one workload, one number,
+// rather than a second process-wide allowance beside it.
 func (budget *workloadBudget) charge(workload plugin.WorkloadKey) (plugin.WorkloadKey, *budgetRefusal) {
 	if !budget.bounded || workload == "" {
 		return "", nil
@@ -425,8 +497,60 @@ func (budget *workloadBudget) charge(workload plugin.WorkloadKey) (plugin.Worklo
 	return workload, nil
 }
 
-// release gives back the slot charge took. The empty key is the answer charge
-// gives for a submission it charged nothing, so releasing it is a no-op.
+// acquire is charge's blocking half, and the admission path into the same
+// budget. It waits while the workload is at its limit and reports the context's
+// error if the wait ends first.
+//
+// It waits rather than refuses because its callers have no client to hand a
+// refusal to: a queue worker that cannot be admitted would have to return an
+// error for a task it already dequeued, which burns a retry attempt and
+// eventually archives the work, while the honest answer to "the workload is
+// busy" is to wait until it is not. The context is what bounds the wait, and
+// its caller chooses it: a task's own context for a queue handler, the pool's
+// stop context for an executor task, so the wait never outlives the work.
+//
+// No fairness is promised. Every waiter re-checks under the mutex when a slot
+// is given back, so a long wait is possible under sustained contention and a
+// slot is never lost -- only the order in which waiters are served is
+// unspecified.
+func (budget *workloadBudget) acquire(ctx context.Context, workload plugin.WorkloadKey) (plugin.WorkloadKey, error) {
+	if !budget.bounded || workload == "" {
+		return "", nil
+	}
+	budget.mu.Lock()
+	defer budget.mu.Unlock()
+	limit, limited := budget.limits[workload]
+	if !limited {
+		return "", nil
+	}
+	for budget.running[workload] >= limit {
+		freed := budget.freed
+		if freed == nil {
+			freed = make(chan struct{})
+			budget.freed = freed
+		}
+		budget.waiting++
+		budget.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			budget.mu.Lock()
+			budget.waiting--
+			return "", ctx.Err()
+		case <-freed:
+		}
+		budget.mu.Lock()
+		budget.waiting--
+		// The unlock above is what lets a release run at all, so the loop has
+		// to re-check the limit rather than assume the wake-up was for it: the
+		// release may have freed a slot another waiter took first.
+	}
+	budget.running[workload]++
+	return workload, nil
+}
+
+// release gives back the slot charge or acquire took. The empty key is what
+// both answer for a submission they charged nothing, so releasing it is a
+// no-op.
 func (budget *workloadBudget) release(workload plugin.WorkloadKey) {
 	if workload == "" {
 		return
@@ -437,14 +561,37 @@ func (budget *workloadBudget) release(workload plugin.WorkloadKey) {
 	} else {
 		delete(budget.running, workload)
 	}
+	if budget.waiting > 0 && budget.freed != nil {
+		close(budget.freed)
+		budget.freed = nil
+	}
 	budget.mu.Unlock()
+}
+
+// workloadAdmission is the plugin.Admission view of one workload's budget.
+type workloadAdmission struct {
+	budget   *workloadBudget
+	workload plugin.WorkloadKey
+}
+
+// Acquire implements plugin.Admission.
+func (admission *workloadAdmission) Acquire(ctx context.Context) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	charged, err := admission.budget.acquire(ctx, admission.workload)
+	if err != nil {
+		return nil, err
+	}
+	return sync.OnceFunc(func() { admission.budget.release(charged) }), nil
 }
 
 // workloadBudgetReport is one bounded workload's budget state, for diagnostics.
 type workloadBudgetReport struct {
 	Workload plugin.WorkloadKey
 	Limit    int
-	// Running is how many of the workload's managed tasks are alive right now.
+	// Running is how many units of the workload's work are alive right now:
+	// its managed tasks plus every unit an admission took.
 	Running int
 	// Rejected is how many submissions this workload has refused so far.
 	Rejected uint64
@@ -476,8 +623,8 @@ func (runtime *taskRuntime) workloadBudgets() []workloadBudgetReport {
 	return reports
 }
 
-// workloadTaskLimits reads the per-workload managed-task budgets out of the
-// workloads root.
+// workloadTaskLimits reads the per-workload work budgets out of the workloads
+// root: the count each workload's managed tasks and admitted units share.
 //
 // It runs at bootstrap, which is before a plan exists, so it reads every
 // declared workload rather than this process's hosted set. That is not a
@@ -515,4 +662,24 @@ func workloadTaskLimits(bundles []plugin.Bundle, env *config.Environment) (map[p
 // answers "no workload" rather than panicking.
 func (a *App) workloadOf(identity plugin.Identity) (plugin.WorkloadKey, bool) {
 	return a.plan.WorkloadOf(identity)
+}
+
+// hostsWorkload reports whether this process carries a workload: whether the
+// plan declares it as hosted.
+//
+// It is the admission half of attribution. Attribution says which workload a
+// Plugin belongs to and is answered per Plugin; this says whether a workload is
+// here at all and is asked only when a shared Plugin names a workload it acts
+// for. Like workloadOf it reads the plan assigned before the first Start hook
+// ran and answers "not here" for a nil plan.
+func (a *App) hostsWorkload(key plugin.WorkloadKey) bool {
+	if key == "" {
+		return false
+	}
+	for _, workload := range a.plan.Workloads() {
+		if workload.Workload.Key == key {
+			return workload.Hosted
+		}
+	}
+	return false
 }

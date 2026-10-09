@@ -17,10 +17,13 @@ type Entry[T any] struct {
 	// than what the producer's own declaration says in isolation, so an
 	// application can account for a value against the workload that owns it.
 	//
-	// It is the producer's membership, not the submitter's. The per-workload
-	// task budgets the runtime enforces attribute a submission to the Plugin
-	// that made it, never to a producer's Entry, so reading this answers a
-	// different question than the budget does.
+	// It is the producer's membership, not the submitter's, and both matter to
+	// a budget. Work a Plugin starts for itself -- Context.Go, or a unit taken
+	// from Context.Admission -- is charged to its own workload, whatever a
+	// value it read belonged to. Work it runs on a workload's behalf is charged
+	// to that workload's quota instead, through Context.AdmissionFor, whose key
+	// comes from exactly this field: that is how a shared integration serving
+	// several workloads keeps each one's work inside the budget it declared.
 	Workload WorkloadKey
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/plugin"
@@ -65,19 +66,45 @@ func (p *healthProbe) HealthChecks() []health.NamedChecker {
 	}}
 }
 
-// renewalHealth reports the first held slot whose most recent renewal was not
-// confirmed, and is nil when every held slot is confirmed or none is held.
+// renewalHealth reports the first held slot whose ownership has gone
+// unconfirmed for longer than its ttl, and is nil while every held slot is
+// confirmed, only recently unconfirmed, or none is held.
 //
-// It stays down until a later renewal succeeds, which is the honest answer: the
-// process is still doing the work, and an operator is being told that its claim
-// on the capacity is not, so a takeover elsewhere may already be under way.
+// The grace period is the part that matters. A renewal that fails says the
+// store did not answer this round, not that the claim is gone: the key keeps
+// the ttl it was last written with, so a holder whose store blipped for a
+// moment still owns its slot and is still the process doing the work. Reporting
+// readiness down on the first failed round would take every holder of a
+// workload out of rotation at the same instant -- they share the store, so they
+// share the blip -- and hand all of their traffic to the standbys, which is a
+// worse answer than the one the blip itself produced. It also contradicts the
+// premise the lease design rests on: the store is not required to be highly
+// available, so a renewal that cannot reach it must be survivable.
+//
+// Once a full ttl has passed without confirmation the answer changes, and it is
+// deliberately the same quantity the store works in: the key expires a ttl
+// after it was last written, so from that moment another process may legitimately
+// have won the slot and this one may be a second copy of the workload. That is
+// the state readiness exists to report.
+//
+// The in-between state is not silent -- it is a metric, not a probe. Degraded
+// slots stay visible in Stats.Held, and every unconfirmed round is counted in
+// Stats.RenewFailures, so an alert can fire on a store that is failing without
+// the orchestrator being told to stop routing to processes that are still the
+// only ones running their workload.
 func (p *Placement) renewalHealth() error {
+	now := time.Now()
 	var degraded []string
 	for _, slot := range p.snapshotHeld() {
 		state := slot.snapshot()
-		if state.degraded {
-			degraded = append(degraded, fmt.Sprintf("%s slot %d", state.workload, state.index))
+		if !state.degraded {
+			continue
 		}
+		unconfirmed := now.Sub(state.renewed)
+		if unconfirmed <= p.ttl {
+			continue
+		}
+		degraded = append(degraded, fmt.Sprintf("%s slot %d (unconfirmed for %s)", state.workload, state.index, unconfirmed.Round(time.Second)))
 	}
 	if len(degraded) == 0 {
 		return nil

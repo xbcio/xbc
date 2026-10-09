@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime/pprof"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/xbcio/xbc/plugin"
 )
 
-func TestCollectHandlersUsesDeterministicTypedEntriesAndFreezesRegistrations(t *testing.T) {
+func TestGroupHandlersKeepsContributorOrderAndFreezesRegistrations(t *testing.T) {
 	calls := []string{}
 	first := &testContributor{name: "first", calls: &calls, registrations: []HandlerRegistration{{Type: "one", Handler: HandlerFunc(func(context.Context, Task) error { return nil })}}}
 	second := &testContributor{name: "second", calls: &calls, registrations: []HandlerRegistration{{Type: "two", Handler: HandlerFunc(func(context.Context, Task) error { return nil })}}}
@@ -21,13 +22,17 @@ func TestCollectHandlersUsesDeterministicTypedEntriesAndFreezesRegistrations(t *
 		{Identity: plugin.Identity{Plugin: "second", Instance: "named"}, Value: second},
 	}
 
-	dispatch, err := collectHandlers(contributors)
+	groups, err := groupHandlers(contributors)
 	if err != nil {
-		t.Fatalf("collectHandlers() error = %v", err)
+		t.Fatalf("groupHandlers() error = %v", err)
 	}
 	if !reflect.DeepEqual(calls, []string{"first", "second"}) {
 		t.Fatalf("contributor call order = %v", calls)
 	}
+	if len(groups) != 1 || groups[0].workload != "" {
+		t.Fatalf("groups = %v, want one unowned group", workloadsOf(groups))
+	}
+	dispatch := groups[0].dispatcher
 	if len(dispatch.handlers) != 2 || dispatch.handlers["one"] == nil || dispatch.handlers["two"] == nil {
 		t.Fatalf("handlers = %v", dispatch.handlers)
 	}
@@ -37,7 +42,63 @@ func TestCollectHandlersUsesDeterministicTypedEntriesAndFreezesRegistrations(t *
 	}
 }
 
-func TestCollectHandlersRejectsInvalidContributorContracts(t *testing.T) {
+func TestGroupHandlersSplitsContributorsByWorkload(t *testing.T) {
+	valid := HandlerFunc(func(context.Context, Task) error { return nil })
+	entry := func(key plugin.Key, workload plugin.WorkloadKey, types ...string) plugin.Entry[HandlerContributor] {
+		registrations := make([]HandlerRegistration, 0, len(types))
+		for _, taskType := range types {
+			registrations = append(registrations, HandlerRegistration{Type: taskType, Handler: valid})
+		}
+		return plugin.Entry[HandlerContributor]{
+			Identity: plugin.Identity{Plugin: key},
+			Workload: workload,
+			Value:    &testContributor{registrations: registrations},
+		}
+	}
+
+	groups, err := groupHandlers([]plugin.Entry[HandlerContributor]{
+		entry("housekeeping", "", "housekeeping"),
+		entry("sast", "sast", "sast.scan"),
+		entry("saas", "saas", "saas.report"),
+		entry("sast-tools", "sast", "sast.cleanup"),
+	})
+	if err != nil {
+		t.Fatalf("groupHandlers() error = %v", err)
+	}
+	want := []plugin.WorkloadKey{"", "sast", "saas"}
+	if !reflect.DeepEqual(workloadsOf(groups), want) {
+		t.Fatalf("groups = %v, want one group per workload in first-appearance order %v", workloadsOf(groups), want)
+	}
+	if len(groups[1].dispatcher.handlers) != 2 {
+		t.Fatalf("sast handlers = %v, want both contributors' registrations", groups[1].dispatcher.handlers)
+	}
+	if _, ok := groups[0].dispatcher.handlers["sast.scan"]; ok {
+		t.Fatal("a workload handler was registered in the unowned group")
+	}
+}
+
+func TestGroupHandlersLeavesNothingBehindForAProcessThatContributesNothing(t *testing.T) {
+	groups, err := groupHandlers(nil)
+	if err != nil {
+		t.Fatalf("groupHandlers(nil) error = %v", err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("groups = %v, want none", workloadsOf(groups))
+	}
+
+	groups, err = groupHandlers([]plugin.Entry[HandlerContributor]{
+		{Identity: plugin.Identity{Plugin: "empty"}, Value: &testContributor{}},
+		{Identity: plugin.Identity{Plugin: "empty-workload"}, Workload: "sast", Value: &testContributor{}},
+	})
+	if err != nil {
+		t.Fatalf("groupHandlers(empty contributors) error = %v", err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("groups = %v, want none: a worker with no handler would only fail what it fetched", workloadsOf(groups))
+	}
+}
+
+func TestGroupHandlersRejectsInvalidContributorContracts(t *testing.T) {
 	valid := HandlerFunc(func(context.Context, Task) error { return nil })
 	var typedNil *testPointerHandler
 	entry := func(key plugin.Key, contributor HandlerContributor) plugin.Entry[HandlerContributor] {
@@ -48,8 +109,6 @@ func TestCollectHandlersRejectsInvalidContributorContracts(t *testing.T) {
 		contributors []plugin.Entry[HandlerContributor]
 		want         string
 	}{
-		{name: "no contributors", want: "no task handlers"},
-		{name: "empty contributor", contributors: []plugin.Entry[HandlerContributor]{entry("empty", &testContributor{})}, want: "no task handlers"},
 		{name: "empty type", contributors: []plugin.Entry[HandlerContributor]{entry("bad", &testContributor{registrations: []HandlerRegistration{{Handler: valid}}})}, want: "invalid task type"},
 		{name: "type whitespace", contributors: []plugin.Entry[HandlerContributor]{entry("bad", &testContributor{registrations: []HandlerRegistration{{Type: " task", Handler: valid}}})}, want: "invalid task type"},
 		{name: "nil handler", contributors: []plugin.Entry[HandlerContributor]{entry("bad", &testContributor{registrations: []HandlerRegistration{{Type: "task"}}})}, want: "nil handler"},
@@ -62,12 +121,98 @@ func TestCollectHandlersRejectsInvalidContributorContracts(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := collectHandlers(test.contributors)
+			_, err := groupHandlers(test.contributors)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("collectHandlers() error = %v, want %q", err, test.want)
+				t.Fatalf("groupHandlers() error = %v, want %q", err, test.want)
 			}
 		})
 	}
+}
+
+// TestGroupHandlersNamesTheWorkloadInItsErrors keeps the diagnosis useful in a
+// process that runs several workers: "invalid task type" alone would not say
+// which workload's contributor returned it.
+func TestGroupHandlersNamesTheWorkloadInItsErrors(t *testing.T) {
+	valid := HandlerFunc(func(context.Context, Task) error { return nil })
+	groups, err := groupHandlers([]plugin.Entry[HandlerContributor]{
+		{Identity: plugin.Identity{Plugin: "sast"}, Workload: "sast", Value: &testContributor{registrations: []HandlerRegistration{{Type: "sast.scan", Handler: valid}}}},
+		{Identity: plugin.Identity{Plugin: "sast-tools"}, Workload: "sast", Value: &testContributor{registrations: []HandlerRegistration{{Type: "sast.scan", Handler: valid}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `in workload "sast"`) {
+		t.Fatalf("groupHandlers() error = %v, groups = %v", err, workloadsOf(groups))
+	}
+
+	_, err = groupHandlers([]plugin.Entry[HandlerContributor]{
+		{Identity: plugin.Identity{Plugin: "first"}, Value: &testContributor{registrations: []HandlerRegistration{{Type: "task", Handler: valid}}}},
+		{Identity: plugin.Identity{Plugin: "second"}, Value: &testContributor{registrations: []HandlerRegistration{{Type: "task", Handler: valid}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "in the unowned group") {
+		t.Fatalf("groupHandlers() error = %v, want the unowned group named", err)
+	}
+}
+
+// TestDispatcherFilesEachTaskUnderItsWorkloadLabel pins the attribution a CPU
+// profile is read by once one process runs several workloads' workers.
+//
+// The label is the same word the runtime files its managed tasks under, and
+// that is the point: a reader joining a profile by workload cannot join two
+// spellings of it. The literal below is therefore part of the test -- the
+// runtime's own label test writes the same string -- and the unowned group is
+// asserted to stay unlabelled for the reason the runtime leaves unowned
+// plugins unlabelled.
+func TestDispatcherFilesEachTaskUnderItsWorkloadLabel(t *testing.T) {
+	type observation struct {
+		value   string
+		present bool
+	}
+	observations := make(chan observation, 2)
+	sastErr := errors.New("retry the scan")
+	handlerFor := func(err error) Handler {
+		return HandlerFunc(func(ctx context.Context, _ Task) error {
+			value, present := pprof.Label(ctx, "workload")
+			observations <- observation{value: value, present: present}
+			return err
+		})
+	}
+	entry := func(key plugin.Key, workload plugin.WorkloadKey, taskType string, handler Handler) plugin.Entry[HandlerContributor] {
+		return plugin.Entry[HandlerContributor]{
+			Identity: plugin.Identity{Plugin: key},
+			Workload: workload,
+			Value:    &testContributor{registrations: []HandlerRegistration{{Type: taskType, Handler: handler}}},
+		}
+	}
+
+	groups, err := groupHandlers([]plugin.Entry[HandlerContributor]{
+		entry("scanner", "sast", "sast.scan", handlerFor(sastErr)),
+		entry("housekeeping", "", "housekeeping", handlerFor(nil)),
+	})
+	if err != nil {
+		t.Fatalf("groupHandlers() error = %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("groups = %v, want one group per workload", workloadsOf(groups))
+	}
+
+	if err := groups[0].dispatcher.ProcessTask(context.Background(), hibiken.NewTask("sast.scan", nil)); !errors.Is(err, sastErr) {
+		t.Fatalf("ProcessTask() error = %v, want the handler's own error through the labelling wrapper", err)
+	}
+	if got := <-observations; got.value != "sast" || !got.present {
+		t.Fatalf("a task of workload sast observed label %q/%v, want it filed under its workload", got.value, got.present)
+	}
+	if err := groups[1].dispatcher.ProcessTask(context.Background(), hibiken.NewTask("housekeeping", nil)); err != nil {
+		t.Fatalf("ProcessTask() error = %v", err)
+	}
+	if got := <-observations; got.present || got.value != "" {
+		t.Fatalf("a task of the unowned group observed label %q/%v, want it left unlabelled like every shared contributor", got.value, got.present)
+	}
+}
+
+func workloadsOf(groups []handlerGroup) []plugin.WorkloadKey {
+	workloads := make([]plugin.WorkloadKey, 0, len(groups))
+	for _, group := range groups {
+		workloads = append(workloads, group.workload)
+	}
+	return workloads
 }
 
 func TestDispatcherCopiesPayloadAndHeadersAndPropagatesErrors(t *testing.T) {

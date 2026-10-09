@@ -25,6 +25,11 @@ type fakeHost struct {
 	shutdowns []fakeShutdown
 	admit     bool
 	stopped   bool
+	// admission and admissionFor are what the host reports for the two
+	// admission questions; nil is what a host with no budget reports, and what
+	// Context has to turn into an unbounded limiter.
+	admission    Admission
+	admissionFor Admission
 }
 
 type fakeSubmit struct {
@@ -46,6 +51,10 @@ func (h *fakeHost) Logger() log.Logger { return h.logger }
 func (h *fakeHost) ProcessInstance() string { return h.process }
 
 func (h *fakeHost) TrafficGate() <-chan struct{} { return h.gate }
+
+func (h *fakeHost) Admission(Identity) Admission { return h.admission }
+
+func (h *fakeHost) AdmissionFor(Identity, WorkloadKey) Admission { return h.admissionFor }
 
 func (h *fakeHost) SubmitTask(id Identity, fn func(context.Context), critical bool) bool {
 	h.mu.Lock()
@@ -244,6 +253,48 @@ func TestContextWithoutHostDegradesInsteadOfPanicking(t *testing.T) {
 			assert.False(t, ctx.Go(func(context.Context) { t.Fatal("must not run") }))
 			assert.False(t, ctx.GoCritical(func(context.Context) { t.Fatal("must not run") }))
 			assert.False(t, ctx.RequestShutdown("ignored"))
+
+			// Admission degrades the other way round: with nothing to bound,
+			// the limiter admits immediately rather than blocking forever on a
+			// quota no host will ever give back.
+			for name, admission := range map[string]Admission{
+				"own workload": ctx.Admission(),
+				"named":        ctx.AdmissionFor("sast"),
+			} {
+				release, err := admission.Acquire(context.Background())
+				assert.NoError(t, err, "%s: a missing host never fails the acquisition", name)
+				assert.NotNil(t, release, "%s: and still hands back a release", name)
+				release()
+			}
+			_, err := ctx.AdmissionFor("").Acquire(context.TODO())
+			assert.NoError(t, err)
 		})
 	}
 }
+
+// TestContextAdmissionReportsWhatTheHostSaysAboutTheWorkload pins the two
+// answers the facade must keep apart: the Plugin's own workload and a named
+// one. A host that reports no limiter -- a composition whose workloads declare
+// no budget -- must read as unbounded, never as an error.
+func TestContextAdmissionReportsWhatTheHostSaysAboutTheWorkload(t *testing.T) {
+	t.Parallel()
+	host := newFakeHost()
+	ctx := NewRuntimeContext(host, Identity{Plugin: "worker"})
+
+	assert.IsType(t, noAdmission{}, ctx.Admission(), "a host with no budget reports an unbounded limiter")
+	assert.IsType(t, noAdmission{}, ctx.AdmissionFor("sast"))
+	assert.IsType(t, noAdmission{}, ctx.AdmissionFor(""),
+		"the empty key names no workload, so the host is not even consulted")
+
+	own := &recordingAdmission{}
+	named := &recordingAdmission{}
+	host.admission = own
+	host.admissionFor = named
+	assert.Same(t, own, ctx.Admission(), "the own-workload limiter comes from the host")
+	assert.Same(t, named, ctx.AdmissionFor("sast"), "and the named one is asked for by key")
+}
+
+// recordingAdmission is a limiter that stands in for the runtime's own.
+type recordingAdmission struct{}
+
+func (*recordingAdmission) Acquire(context.Context) (func(), error) { return func() {}, nil }

@@ -23,10 +23,14 @@ type healthTestHost struct {
 
 var _ plugin.RuntimeHost = healthTestHost{}
 
-func (h healthTestHost) ExecutionContext() context.Context { return h.execution }
-func (healthTestHost) Logger() corelog.Logger              { return corelog.Nop() }
-func (healthTestHost) ProcessInstance() string             { return "test-process" }
-func (healthTestHost) TrafficGate() <-chan struct{}        { return nil }
+func (h healthTestHost) ExecutionContext() context.Context        { return h.execution }
+func (healthTestHost) Logger() corelog.Logger                     { return corelog.Nop() }
+func (healthTestHost) ProcessInstance() string                    { return "test-process" }
+func (healthTestHost) TrafficGate() <-chan struct{}               { return nil }
+func (healthTestHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (healthTestHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }
+
 func (healthTestHost) SubmitTask(plugin.Identity, func(context.Context), bool) bool {
 	return false
 }

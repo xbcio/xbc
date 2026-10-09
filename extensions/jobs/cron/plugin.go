@@ -98,6 +98,12 @@ type Plugin struct {
 	ownedRedis    *redis.Client
 	jobs          []*scheduledJob
 
+	// admissions is the quota an invocation charges, one limiter per workload
+	// the job contributors belong to ("" for contributors that belong to none).
+	// It is resolved at Init and read by the runners without a lock: nothing
+	// writes it afterwards, and Start admits those runners only after Init.
+	admissions map[plugin.WorkloadKey]plugin.Admission
+
 	mu              sync.Mutex
 	initialized     bool
 	startAttempted  bool
@@ -308,6 +314,7 @@ func buildScheduledJobs(config Config, parser robfigcron.Parser, contributors []
 			entry := &scheduledJob{
 				job:        job,
 				label:      label,
+				workload:   contributor.Workload,
 				lockKey:    lockKey(config.Distributed.KeyPrefix, label),
 				schedule:   schedule,
 				runnerDone: make(chan struct{}),
@@ -318,9 +325,12 @@ func buildScheduledJobs(config Config, parser robfigcron.Parser, contributors []
 			entries = append(entries, entry)
 		}
 	}
-	if len(entries) == 0 {
-		return nil, errors.New("cron: no jobs discovered; configure at least one JobContributor")
-	}
+	// No jobs is not an error. A process whose Plugins contribute none -- the
+	// standby half of a role handover, or a deployment where this replica is
+	// configured but has nothing to schedule -- starts, schedules nothing, and
+	// provides the long-lived task the runtime needs (see start). Refusing
+	// construction was what made the takeover model unusable: the process that
+	// must stay alive is the one with no work at that moment.
 	return entries, nil
 }
 
@@ -399,8 +409,33 @@ func (p *Plugin) init(ctx *plugin.Context) error {
 	default:
 		p.initialized = true
 		p.process = ctx.ProcessInstance()
+		p.admissions = p.resolveAdmissions(ctx)
 		return nil
 	}
+}
+
+// resolveAdmissions asks the runtime for one limiter per workload its job
+// contributors belong to, plus the scheduler's own for the contributors that
+// belong to none.
+//
+// The submission path cannot express this by itself: the scheduler submits
+// every runner with its own identity, so a workload's budget would never see an
+// invocation run on its behalf. Asking per declared workload is what keeps a
+// job's work inside the same quota the workload's managed tasks and queue
+// handlers charge.
+func (p *Plugin) resolveAdmissions(ctx *plugin.Context) map[plugin.WorkloadKey]plugin.Admission {
+	admissions := make(map[plugin.WorkloadKey]plugin.Admission)
+	for _, entry := range p.jobs {
+		if _, resolved := admissions[entry.workload]; resolved {
+			continue
+		}
+		if entry.workload == "" {
+			admissions[entry.workload] = ctx.Admission()
+			continue
+		}
+		admissions[entry.workload] = ctx.AdmissionFor(entry.workload)
+	}
+	return admissions
 }
 
 // drain stops every runner from scheduling another invocation and waits,

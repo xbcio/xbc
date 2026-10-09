@@ -118,10 +118,7 @@ type Client struct {
 var _ Enqueuer = (*Client)(nil)
 
 func newClient(backend enqueueBackend, cfg Config) *Client {
-	queues := make(map[string]struct{}, len(cfg.Queues))
-	for name := range cfg.Queues {
-		queues[name] = struct{}{}
-	}
+	queues := cfg.knownQueues()
 	return &Client{
 		backend: backend,
 		queues:  queues,

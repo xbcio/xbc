@@ -45,6 +45,12 @@ func (*testRuntimeHost) RequestShutdown(plugin.Identity, string) bool {
 	return false
 }
 
+func (host *testRuntimeHost) Admission(plugin.Identity) plugin.Admission { return nil }
+
+func (host *testRuntimeHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission {
+	return nil
+}
+
 func (host *testRuntimeHost) SubmitTask(_ plugin.Identity, task func(context.Context), _ bool) bool {
 	host.mu.Lock()
 	if !host.accepting || task == nil {

@@ -53,6 +53,17 @@ type inFlightGate struct {
 	// limit, so "the channel is full" and "the process is saturated" are one
 	// state rather than two that could drift apart.
 	slots chan struct{}
+	// frozen and index are the route table's publish switch and its
+	// method+path index, captured by pointer exactly as recordCurrentRoute
+	// captures them: the gate is built in Start, before any route is
+	// registered, and freeze fills the index in OpenTraffic -- which every
+	// participant has to reach before the runtime opens the traffic gate that
+	// lets this gate see a request at all. The frozen flag is read first for
+	// the same reason it is there: until freeze has published the index there
+	// is nothing to look up, and an unmetered route is unknown rather than
+	// metered.
+	frozen *bool
+	index  *map[string]RouteInfo
 	// rejections counts requests refused for want of a slot, so the gate can be
 	// seen firing even though it deliberately writes into no business metric.
 	rejections atomic.Int64
@@ -77,9 +88,41 @@ type saturationReport struct {
 // newInFlightGate builds a gate around an already-resolved positive ceiling.
 // Refusing to admit anything is never the intent -- a limit of zero would make
 // the process permanently unavailable -- so the caller must pass a resolved
-// value; resolveMaxInFlight is the only such source.
-func newInFlightGate(limit int) *inFlightGate {
-	return &inFlightGate{limit: limit, slots: make(chan struct{}, limit)}
+// value; resolveMaxInFlight is the only such source. The route table pointers
+// are the same pair the root Router and every recordCurrentRoute closure hold;
+// see the field comments for why they are captured before the table exists.
+func newInFlightGate(limit int, frozen *bool, index *map[string]RouteInfo) *inFlightGate {
+	return &inFlightGate{
+		limit:  limit,
+		slots:  make(chan struct{}, limit),
+		frozen: frozen,
+		index:  index,
+	}
+}
+
+// unmetered reports whether this request is for a route that declared itself
+// exempt from admission.
+//
+// The lookup is the request's own method and path against the frozen table, not
+// a route match: the gate must keep refusing before any handler runs, and
+// asking the engine to resolve the route would put routing inside the gate. A
+// pattern path would therefore never be found, which is why freeze rejects an
+// unmetered route that has one (validateUnmeteredRoute).
+//
+// Every request that is not a registered unmetered route takes a slot, including
+// one that matches no route at all: a 404 is cheap to answer, but the next
+// request on the same unmatched path is a client that has not noticed yet, and
+// an unmatched path is not a declaration the process agreed to serve for free.
+func (g *inFlightGate) unmetered(c *Ctx) bool {
+	if g.frozen == nil || g.index == nil || !*g.frozen {
+		return false
+	}
+	request := c.Request()
+	if request == nil || request.URL == nil {
+		return false
+	}
+	info, found := (*g.index)[routeKey(request.Method, request.URL.Path)]
+	return found && info.Unmetered
 }
 
 // acquire takes one slot without blocking. A false return means limit requests
@@ -206,6 +249,15 @@ func (g *inFlightGate) stats() InFlightStats {
 // line of an episode cannot be lost.
 func (g *inFlightGate) handler(logger log.Logger) Handler {
 	return func(_ context.Context, c *Ctx) error {
+		// A route that declared itself unmetered runs the rest of the chain
+		// without a slot, and so is answered while the process is at its
+		// ceiling. It costs nothing in accounting either way: it takes no
+		// token, so it neither delays a client nor keeps a saturation episode
+		// open when it is the last request to finish.
+		if g.unmetered(c) {
+			c.Next()
+			return nil
+		}
 		if !g.acquire() {
 			if report, opened := g.openSaturation(); opened {
 				logger.Warn("web: in-flight limit reached, refusing requests until in-flight work drains",

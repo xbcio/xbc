@@ -130,7 +130,7 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	// refused before any of them run. It is assembled here rather than
 	// contributed because an admission ceiling a composition root can leave out
 	// is not a ceiling; see inflight.go for the whole argument.
-	inflight := newInFlightGate(resolveMaxInFlight(cfg.MaxInFlight))
+	inflight := newInFlightGate(resolveMaxInFlight(cfg.MaxInFlight), frozen, index)
 	handlers := []Handler{
 		inflight.handler(logger),
 		capRequestBody(cfg.MaxRequestBodyBytes),

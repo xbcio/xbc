@@ -9,20 +9,20 @@ import (
 	"github.com/xbcio/xbc/plugin"
 )
 
-// start admits this placement's managed work: the renewal loop when the process
-// won slots, or the standby retry loop when it won none.
+// start admits this placement's managed work: nothing when the process won
+// slots, or the standby retry loop when it won none.
 //
-// The renewal loop is submitted with Go rather than GoCritical on purpose. A
-// renewal failure is soft placement -- the process keeps hosting what it has --
-// so it must never be the reason the runtime decides the process should exit. A
-// critical task that returns without being asked to would do exactly that.
+// The renewal loop is not submitted here. It exists from the moment the
+// decision does -- the round that won a slot started it, in Resolve -- because
+// keeping a claim alive is part of holding it, and a keepalive that waited for
+// Start left the ttl unguarded for the whole of construction and migration. See
+// startRenewalLoop.
 //
-// It is submitted here, in Start, rather than in OpenTraffic, because task
-// admission is open only while a Start hook runs: a submission from
-// OpenTraffic would be refused and the loop would silently never exist. The
-// loop learns the traffic gate from the Context and waits on it before its
-// first renewal, so it still does no externally visible work before the gate
-// opens.
+// The standby loop still begins in Start because it needs the plugin Context:
+// winning a slot makes the process ask to be restarted, and RequestShutdown is
+// the Context's. It is submitted with Go rather than GoCritical on purpose: a
+// standby that keeps losing has nothing to report, and neither loop may ever be
+// the reason the runtime decides the process should exit.
 func (p *Placement) start(ctx *plugin.Context) error {
 	if ctx == nil {
 		return errors.New("placement: Start requires a non-nil plugin context")
@@ -57,42 +57,34 @@ func (p *Placement) start(ctx *plugin.Context) error {
 	p.logger = ctx.Log()
 	held := append([]*heldSlot(nil), p.held...)
 	standby := len(held) == 0
-	// Whichever loop is submitted below, PreStop has one to wait for. Both of
-	// them talk to the store, so both are loops the release has to be ordered
-	// after: the renewal loop can write a slot back, and the standby loop can
-	// win one.
-	p.looping = true
+	if standby {
+		// The standby loop is this placement's only loop, and PreStop has to
+		// have one to wait for. It talks to the store -- it can win a slot --
+		// so it is a loop the release has to be ordered after.
+		p.looping = true
+	}
 	p.mu.Unlock()
 
-	// The managed loops quit on this context rather than on their own
-	// managed-task context: the managed-task context is cancelled only after
-	// Stop returns, which is far too late for PreStop to be able to wait for a
-	// quiet loop before it releases. This one is cancelled when the run is asked
-	// to stop, which is exactly the moment the slots have to stop being renewed.
-	runCtx, cancelRun := context.WithCancel(ctx)
-	if standby {
-		p.loops.Add(1)
-		if !ctx.Go(func(context.Context) {
-			defer p.loops.Done()
-			defer cancelRun()
-			defer p.markLoopDone()
-			p.runStandby(runCtx, cancelRun, ctx)
-		}) {
-			p.abandonLoop(cancelRun)
-			return errors.New("placement: the runtime is not accepting the standby retry task outside Start")
-		}
+	if !standby {
 		return nil
 	}
 
+	// The standby loop quits on this context rather than on its own
+	// managed-task context: the managed-task context is cancelled only after
+	// Stop returns, which is far too late for PreStop to be able to wait for a
+	// quiet loop before it releases. This one is cancelled when the run is asked
+	// to stop, which is exactly the moment the loop has to stop asking for
+	// capacity.
+	runCtx, cancelRun := context.WithCancel(ctx)
 	p.loops.Add(1)
 	if !ctx.Go(func(context.Context) {
 		defer p.loops.Done()
 		defer cancelRun()
 		defer p.markLoopDone()
-		p.runRenewal(runCtx, ctx)
+		p.runStandby(runCtx, cancelRun, ctx)
 	}) {
 		p.abandonLoop(cancelRun)
-		return errors.New("placement: the runtime is not accepting the lease renewal task outside Start")
+		return errors.New("placement: the runtime is not accepting the standby retry task outside Start")
 	}
 	return nil
 }
@@ -113,9 +105,31 @@ func (p *Placement) abandonLoop(cancelRun context.CancelFunc) {
 	cancelRun()
 }
 
-// runRenewal renews every held slot on a ticker until the run is asked to stop.
-func (p *Placement) runRenewal(runCtx context.Context, ctx *plugin.Context) {
-	if !p.awaitTrafficGate(runCtx, ctx.TrafficGate()) {
+// runRenewal renews every held slot on a ticker until the placement is
+// quiesced.
+//
+// The loop begins with the decision rather than with Start (startRenewalLoop
+// says why) and its first round runs at once rather than after a tick, because
+// the claim it keeps alive already exists by the time it is started.
+//
+// It does not wait for the traffic gate. Renewal is not traffic: it publishes
+// nothing to users, serves no request, and is invisible until the process fails
+// to do it, so the gate that holds back externally visible work has nothing to
+// hold back here. Ownership starts when the slot is won, and waiting for the
+// gate is what left a slow startup's claim unguarded long enough to expire and
+// be handed to a standby -- which then restarted into the same role, putting a
+// second copy of the workload in front of users.
+//
+// The store calls run on a context the loop owns and nothing cancels, so a
+// round that is already in flight when the placement quiesces finishes instead
+// of failing: a stop is not a renewal failure, and a clean shutdown must not
+// make xbc_workload_lease_renew_failures_total fire. The loop still exits
+// promptly, between rounds, on the quiet signal. Bounding the wait for a round
+// in flight is not this loop's job: the Locker contract requires implementations
+// to bound their own calls, and Resolve already reads the store on the same
+// terms.
+func (p *Placement) runRenewal() {
+	if !p.renewTick() {
 		return
 	}
 	ticker := time.NewTicker(p.renewEvery)
@@ -124,10 +138,8 @@ func (p *Placement) runRenewal(runCtx context.Context, ctx *plugin.Context) {
 		select {
 		case <-p.quiet:
 			return
-		case <-runCtx.Done():
-			return
 		case <-ticker.C:
-			if !p.renewTick(runCtx) {
+			if !p.renewTick() {
 				return
 			}
 		}
@@ -137,26 +149,20 @@ func (p *Placement) runRenewal(runCtx context.Context, ctx *plugin.Context) {
 // renewTick performs one scheduled renewal round and reports whether the loop
 // should keep running.
 //
-// Its guard is not redundant with the select that led here. select picks
+// The guard is not redundant with the select that led here. select picks
 // uniformly among the cases that are ready, so a tick that becomes ready in the
-// same moment the run is asked to stop is chosen about half the time, and the
-// round would then run against a context that is already cancelled: every store
-// call fails, the renewal-failure counter records failures no store ever caused,
-// and readiness reports this process as degraded while it is on its way out.
-// That would make xbc_workload_lease_renew_failures_total fire on every clean
-// shutdown, which is precisely the alert it is supposed to earn -- a stop is not
-// a renewal failure.
-//
-// The guard belongs here rather than in renewHeld's error handling. "The run has
-// ended" is knowable without touching the store, while suppressing a cancelled
-// store call at the error site would hide the failure that matters: a real
-// renewal that was cancelled or timed out on its way to a store that had stopped
-// answering.
-func (p *Placement) renewTick(runCtx context.Context) bool {
-	if p.stopRequested(runCtx) {
+// same moment the placement is quiesced is chosen about half the time, and the
+// round would run after the signal to stop renewing. The slot mutex keeps such a
+// round from writing anything back after a release, but it is still store
+// traffic nobody can act on: everything downstream is already waiting for this
+// loop to go quiet.
+func (p *Placement) renewTick() bool {
+	select {
+	case <-p.quiet:
 		return false
+	default:
 	}
-	p.renewHeld(runCtx)
+	p.renewHeld(context.Background())
 	return true
 }
 
@@ -168,10 +174,14 @@ func (p *Placement) renewTick(runCtx context.Context) bool {
 // resource problem, while the alternative -- giving the slot up -- is a
 // cluster-wide reshuffle triggered by a blip in a store whose availability the
 // contract deliberately does not promise.
-func (p *Placement) renewHeld(runCtx context.Context) {
+//
+// The context bounds one store round, and the renewal loop passes a background
+// one on purpose: a round cut short by this placement's own shutdown would be
+// recorded as a renewal failure the store never caused.
+func (p *Placement) renewHeld(ctx context.Context) {
 	logger := p.currentLogger()
 	for _, slot := range p.snapshotHeld() {
-		outcome, err := slot.renew(runCtx, p.ttl)
+		outcome, err := slot.renew(ctx, p.ttl)
 		switch {
 		case err != nil:
 			p.renewFailures.Add(1)
@@ -185,6 +195,21 @@ func (p *Placement) renewHeld(runCtx context.Context) {
 	}
 }
 
+// standbyWait is how long this standby waits before its next attempt: the
+// configured interval with up to half of it added or subtracted.
+//
+// The jitter is what keeps a fleet of standbys from retrying in lockstep. A
+// fixed period has no memory of which processes are asking together, so
+// processes that started together -- a rolling restart, a node whose pods all
+// came back at once -- keep their phase for the life of the run, and the round
+// that finds a freed slot finds it for all of them at once. The mean wait stays
+// the configured interval, so the store sees the same load; the cost is that
+// the worst case is half an interval longer, which is the half the arithmetic
+// in the deployment documentation accounts for.
+func (p *Placement) standbyWait() time.Duration {
+	return p.standbyEvery + p.randomJitter(p.standbyEvery/2)
+}
+
 // runStandby retries acquisition until the process either wins a slot or is
 // asked to stop.
 //
@@ -194,20 +219,26 @@ func (p *Placement) renewHeld(runCtx context.Context) {
 // The release-then-restart window is benign competition rather than a lost
 // slot -- another standby may take it, and if none does this process wins it
 // again on its next start.
+//
+// The retry period is jittered per round (standbyWait) because the round that
+// wins is the round that restarts the process: standbys polling in lockstep
+// win, release and restart together, and a fleet that restarts together is the
+// state the jitter exists to leave.
 func (p *Placement) runStandby(runCtx context.Context, cancelRun context.CancelFunc, ctx *plugin.Context) {
 	if !p.awaitTrafficGate(runCtx, ctx.TrafficGate()) {
 		return
 	}
 	logger := ctx.Log()
-	ticker := time.NewTicker(p.standbyEvery)
-	defer ticker.Stop()
 	for {
+		timer := time.NewTimer(p.standbyWait())
 		select {
 		case <-p.quiet:
+			timer.Stop()
 			return
 		case <-runCtx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 
 		// Same reason the renewal loop rechecks: a tick that is ready at the
@@ -339,6 +370,35 @@ func (p *Placement) quiesce() {
 	p.quietOnce.Do(func() { close(p.quiet) })
 }
 
+// awaitLoopQuiet waits for this placement's loop to stop touching the store, or
+// for ctx to run out.
+//
+// Every release is ordered after this wait, because a loop that is still running
+// can write a slot back: the renewal loop can extend a claim the release is
+// taking back, and the standby loop can win one. The wait is bounded by the
+// caller's context -- a phase budget for PreStop, the caller's own for Release
+// -- and it is deliberately not an error to run out: the release still runs
+// afterwards, and the slot mutex is what actually guarantees a late renewal
+// cannot write a released slot back.
+//
+// Only a placement that actually started a loop has one to wait for. A release
+// can run for an instance whose Start never completed -- PreStop is declared
+// independently of it, and Release covers every path between the decision and a
+// constructed plugin -- and waiting on a loop that does not exist would burn the
+// whole budget and then release late anyway.
+func (p *Placement) awaitLoopQuiet(ctx context.Context) {
+	p.mu.Lock()
+	looping := p.looping
+	p.mu.Unlock()
+	if !looping {
+		return
+	}
+	select {
+	case <-p.loopDone:
+	case <-ctx.Done():
+	}
+}
+
 // preStop gives back every slot before the process's work is unwound.
 //
 // Retracting ownership is the whole reason this phase exists: Stop runs after
@@ -346,32 +406,19 @@ func (p *Placement) quiesce() {
 // fail on its first remote call, and the process would hold a slot until its
 // TTL expired -- holding capacity for work it is no longer doing.
 //
-// The order matters. The managed loop is asked to go quiet and waited for
-// first, so the release is not racing a store call that is already in flight and
-// so an operator reading the logs sees the loop stop before the handover. That
+// The order matters. The loops are asked to go quiet and waited for first, so
+// the release is not racing a store call that is already in flight and so an
+// operator reading the logs sees the loops stop before the handover. That
 // applies to the standby loop as much as to the renewal loop: a renewal can
 // write a slot back, and a standby can win one, so both are calls the release
-// has to come after. The wait is bounded by the phase's own budget; if it
-// expires, the release still runs, and the slot mutex is what actually
-// guarantees a late renewal cannot write the slot back.
+// has to come after. See awaitLoopQuiet for why running out of budget is not an
+// error.
 func (p *Placement) preStop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	p.quiesce()
-	// Only a placement that actually started a loop has one to wait for. A
-	// PreStop can run for an instance whose Start never completed -- the hook is
-	// declared independently of it -- and waiting on a loop that does not exist
-	// would burn the whole phase budget and then release late anyway.
-	p.mu.Lock()
-	looping := p.looping
-	p.mu.Unlock()
-	if looping {
-		select {
-		case <-p.loopDone:
-		case <-ctx.Done():
-		}
-	}
+	p.awaitLoopQuiet(ctx)
 	return releaseAll(ctx, p.releasable())
 }
 
@@ -392,8 +439,9 @@ func (p *Placement) stop(ctx context.Context) error {
 	return releaseAll(ctx, p.releasable())
 }
 
-// markLoopDone closes loopDone at most once. It is called by the managed loop
-// when it returns, and by every path that never started one, so a PreStop
+// markLoopDone closes loopDone at most once. It is called by a loop when it
+// returns, and by every path that will never start one -- a refused submission,
+// a stop that raced the decision, the Stop backstop -- so a PreStop or a Release
 // waiting on it always has something to wait for.
 func (p *Placement) markLoopDone() {
 	p.loopDoneOnce.Do(func() { close(p.loopDone) })

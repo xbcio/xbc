@@ -10,6 +10,13 @@
 //     any other non-exclusive workload.
 //   - heartbeat, an unowned plugin: it belongs to no workload, so every process
 //     shape carries it.
+//   - asynq, the queue integration: a shared plugin, not a workload. Its worker
+//     for a workload exists only in the processes that carry that workload, so
+//     the ingest group above brings its queue consumer along with its timer.
+//     This file leaves it unconfigured -- see application.yml -- which is what
+//     starts the example without a Redis. Where it is configured, a process
+//     carrying ingest consumes ingest's queue and one that carries transcode
+//     does not.
 //
 // Which of the two workloads this process carries is decided by
 // workloads.<key>.enabled under the default StaticPlacement. Nothing below
@@ -31,11 +38,14 @@
 //	XBC_WORKLOADS_INGEST_ENABLED=false \
 //	  go run ./examples/workloads --config examples/workloads/application.yml
 //
-// Use the doctor subcommand to see the decision without constructing anything.
-// It prints the placement source, each declared workload's row, and the
-// definitions belonging to none of them:
+// Use the doctor subcommand to see the decision without constructing anything,
+// or the validate subcommand to see what the role it decided would actually
+// serve. Doctor prints the placement source, each declared workload's row, and
+// the definitions belonging to none of them; validate constructs only the
+// definitions that survived the decision, so its route table is the role's own:
 //
 //	go run ./examples/workloads doctor --config examples/workloads/application.yml
+//	go run ./examples/workloads validate --config examples/workloads/application.yml
 package main
 
 import (
@@ -43,6 +53,7 @@ import (
 	"github.com/xbcio/xbc/examples/workloads/internal/heartbeat"
 	"github.com/xbcio/xbc/examples/workloads/internal/ingest"
 	"github.com/xbcio/xbc/examples/workloads/internal/transcode"
+	"github.com/xbcio/xbc/extensions/jobs/asynq"
 	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
 	"github.com/xbcio/xbc/transport/web/prelude"
 )
@@ -68,6 +79,15 @@ func main() {
 			// no configuration binding, and no route.
 			transcode.Bundle(),
 			ingest.Bundle(),
+			// The queue integration is selected here as unconditionally as
+			// everything else. It is a WhenConfigured plugin: without a
+			// plugins.asynq section it does not enter the plan at all, so this
+			// example still starts with nothing but its own config file and no
+			// Redis. Where it is configured, it collects the handler
+			// contributions of whichever workloads this process carries -- so
+			// the worker consuming ingest's queue is placed by placement, not
+			// by this line.
+			asynq.Bundle(),
 		),
 	)
 }

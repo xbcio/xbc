@@ -168,6 +168,47 @@ func TestRedisLockerContentionAndOwnerSafeRelease(t *testing.T) {
 	}
 }
 
+// TestRedisLockerRenewalReestablishesALapsedLock covers the half of
+// lease.Lease.Renew that keeps a lapsed lock from being reported as a lost one.
+// renewSession cancels a running job when a renewal reports ownership lost, so
+// without re-establishment a key that expired during a store outage -- with no
+// other replica having taken it -- would stop a job that never lost its turn.
+// The same token is re-established, because Release compares it against the
+// store.
+func TestRedisLockerRenewalReestablishesALapsedLock(t *testing.T) {
+	server, client, locker := newRedisLockerTest(t)
+	ctx := context.Background()
+
+	held, acquired, err := locker.TryAcquire(ctx, "locks:midnight", "replica-7", time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("TryAcquire() acquired = %v, error = %v", acquired, err)
+	}
+
+	server.FastForward(2 * time.Second)
+	if server.Exists("locks:midnight") {
+		t.Fatal("the lock did not lapse")
+	}
+	if owned, err := held.Renew(ctx, 5*time.Second); err != nil || !owned {
+		t.Fatalf("Renew() over a lapsed lock = (%v, %v), want the claim re-established", owned, err)
+	}
+	stored, err := client.Get(ctx, "locks:midnight").Result()
+	if err != nil {
+		t.Fatalf("GET locks:midnight error = %v", err)
+	}
+	if stored != held.Owner() {
+		t.Fatalf("stored value = %q, want the lease's own token %q", stored, held.Owner())
+	}
+	if ttl := server.TTL("locks:midnight"); ttl < 4*time.Second {
+		t.Fatalf("TTL after re-establishment = %s, want approximately the renewed 5s", ttl)
+	}
+	if released, err := held.Release(ctx); err != nil || !released {
+		t.Fatalf("Release() released = %v, error = %v", released, err)
+	}
+	if server.Exists("locks:midnight") {
+		t.Fatal("the re-established lock survived its own release")
+	}
+}
+
 func TestRedisLockerRenewExtendsTTLAndExpiredLockIsTakenOver(t *testing.T) {
 	server, _, locker := newRedisLockerTest(t)
 	ctx := context.Background()

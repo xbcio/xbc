@@ -73,39 +73,61 @@ func defaultBackendFactory() backendFactory {
 	}
 }
 
-// Plugin owns one Redis connection, enqueue client, and worker server. Its
-// Enqueuer contract is available to dependants after Init succeeds. A Plugin
-// must not be copied after first use.
-type Plugin struct {
-	cfg        Config
-	factory    backendFactory
+// workerGroup is one worker's share of the integration: the handler set of the
+// Plugins that share a workload, the queues it consumes, and its own lifecycle
+// state. Its server is created in Init, started by the managed task that group
+// owns, and stopped by drain and stop.
+type workerGroup struct {
+	// workload is the workload this group serves, empty for the group of
+	// contributors that belong to none.
+	workload plugin.WorkloadKey
+	// queues is the queue set this group's server consumes, with hibiken's
+	// relative-weight semantics. It is disjoint from every other group's set.
+	queues map[string]int
+	// concurrency is how many tasks this group's server runs at once.
+	concurrency int
+	// dispatcher routes a dequeued task to the handler that registered its type.
 	dispatcher *dispatcher
+	// handlers counts the handler invocations currently in flight, so drain can
+	// wait for work this worker already accepted without cancelling it.
+	handlers *handlerTracker
+	// admission charges one unit of the workload's quota for the duration of
+	// every handler invocation. It is never nil: a workload that declares no
+	// budget, like a contributor that belongs to none, gets a limiter that
+	// admits immediately.
+	admission plugin.Admission
+	// server is the worker's server. It is nil before Init built it and again
+	// once stop has taken it away; a managed task that finds it nil has lost
+	// the race with a shutdown and must not start it.
+	server workerServer
+}
+
+// Plugin owns one Redis connection and enqueue client, plus one worker per
+// group of contributing Plugins. Its Enqueuer contract is available to
+// dependants after Init succeeds. A Plugin must not be copied after first use.
+type Plugin struct {
+	cfg     Config
+	factory backendFactory
 
 	mu       sync.Mutex
 	workerMu sync.Mutex
 
 	redis       *goredis.Client
 	client      *Client
-	server      workerServer
+	groups      []*workerGroup
 	initialized bool
 	starting    bool
 	started     bool
-	opened      bool
 	stopping    bool
 	stopped     bool
 	stopDone    chan struct{}
 	stopErr     error
 
-	// handlers counts the handler invocations currently in flight, so drain
-	// can wait for work the worker already accepted without cancelling it.
-	handlers *handlerTracker
-
-	// drainDone is closed once the worker has been told to stop fetching new
-	// tasks; drainErr is the error that call left behind, replayed to every
-	// later drain call so drain is idempotent including its result. The
-	// handlers that were still running are waited for per drain call, within
-	// that call's own context, and any that outlive the drain budget are left
-	// to stop.
+	// drainDone is closed once every worker has been told to stop fetching new
+	// tasks; drainErr is the error that left behind, replayed to every later
+	// drain call so drain is idempotent including its result. The handlers that
+	// were still running are waited for per drain call, within that call's own
+	// context, and any that outlive the drain budget are left to stop.
 	drainDone chan struct{}
 	drainErr  error
 }
@@ -125,16 +147,85 @@ func buildPlugin(ctx plugin.BuildContext, cfg Config) (*Plugin, error) {
 }
 
 func newPlugin(cfg Config, contributors []plugin.Entry[HandlerContributor]) (*Plugin, error) {
-	dispatcher, err := collectHandlers(contributors)
+	groups, err := newWorkerGroups(cfg, contributors)
 	if err != nil {
 		return nil, err
 	}
 	return &Plugin{
-		cfg:        cfg.clone(),
-		factory:    defaultBackendFactory(),
-		dispatcher: dispatcher,
-		handlers:   newHandlerTracker(),
+		cfg:     cfg.clone(),
+		factory: defaultBackendFactory(),
+		groups:  groups,
 	}, nil
+}
+
+// newWorkerGroups resolves every handler group into the worker that serves it.
+//
+// The unowned group takes the top-level queues and concurrency, which is what
+// every composition that declares no workload keeps. A workload group takes its
+// own entry, and a workload whose Plugins contribute handlers without one is a
+// configuration error rather than a silent fallback to the top-level queues:
+// falling back would put the workload's handlers on a queue set shared with
+// everything unowned, which is the cross-consumption this split exists to stop.
+func newWorkerGroups(cfg Config, contributors []plugin.Entry[HandlerContributor]) ([]*workerGroup, error) {
+	grouped, err := groupHandlers(contributors)
+	if err != nil {
+		return nil, err
+	}
+	groups := make([]*workerGroup, 0, len(grouped))
+	for _, group := range grouped {
+		queues := cfg.Queues
+		concurrency := cfg.Concurrency
+		if group.workload != "" {
+			declared, ok := cfg.Workloads[string(group.workload)]
+			if !ok {
+				return nil, fmt.Errorf("asynq: workload %q contributes task handlers but plugins.asynq.workloads.%s is not configured; declare the queues its worker consumes", group.workload, group.workload)
+			}
+			queues = declared.Queues
+			if declared.Concurrency > 0 {
+				concurrency = declared.Concurrency
+			}
+		}
+		groups = append(groups, &workerGroup{
+			workload:    group.workload,
+			queues:      maps.Clone(queues),
+			concurrency: concurrency,
+			dispatcher:  group.dispatcher,
+			handlers:    newHandlerTracker(),
+		})
+	}
+	if err := requireDisjointQueues(groups); err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
+// requireDisjointQueues refuses a composition in which two workers consume the
+// same queue.
+//
+// A queue fetched by two servers in one process is delivered to whichever of
+// them polls it first, so the handler that runs would be decided by a race --
+// and a task meant for one workload would spend another workload's quota. The
+// queue sets are configuration, so this is checked where they become groups
+// rather than at every delivery, and the error names both groups.
+func requireDisjointQueues(groups []*workerGroup) error {
+	owner := make(map[string]plugin.WorkloadKey)
+	for _, group := range groups {
+		for queue := range group.queues {
+			if previous, taken := owner[queue]; taken {
+				return fmt.Errorf("asynq: queue %q is consumed by both %s and %s; a queue belongs to one worker", queue, groupName(previous), groupName(group.workload))
+			}
+			owner[queue] = group.workload
+		}
+	}
+	return nil
+}
+
+// groupName names a group in operator-facing text.
+func groupName(workload plugin.WorkloadKey) string {
+	if workload == "" {
+		return "the unowned group"
+	}
+	return fmt.Sprintf("workload %q", workload)
 }
 
 // Enqueue persists a task through the integration-owned client.
@@ -188,31 +279,59 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 	if isNilInterface(backend) {
 		return fmt.Errorf("asynq: initialize: enqueue backend factory returned nil")
 	}
-	server := p.factory.newServer(redisClient, hibiken.Config{
-		Concurrency:       cfg.Concurrency,
-		Queues:            maps.Clone(cfg.Queues),
-		StrictPriority:    cfg.StrictPriority,
-		TaskCheckInterval: cfg.TaskCheckInterval,
-		ShutdownTimeout:   cfg.ShutdownTimeout,
-		Logger:            asynqLogger{logger: ctx.Log()},
-	})
-	if isNilInterface(server) {
-		return fmt.Errorf("asynq: initialize: worker server factory returned nil")
+	for _, group := range p.groups {
+		server := p.factory.newServer(redisClient, hibiken.Config{
+			Concurrency:       group.concurrency,
+			Queues:            maps.Clone(group.queues),
+			StrictPriority:    cfg.StrictPriority,
+			TaskCheckInterval: cfg.TaskCheckInterval,
+			ShutdownTimeout:   cfg.ShutdownTimeout,
+			Logger:            asynqLogger{logger: ctx.Log()},
+		})
+		if isNilInterface(server) {
+			return fmt.Errorf("asynq: initialize: worker server factory returned nil")
+		}
+		group.server = server
+		group.admission = groupAdmission(ctx, group.workload)
 	}
 
 	p.cfg = cfg
 	p.redis = redisClient
 	p.client = newClient(backend, cfg)
-	p.server = server
 	p.initialized = true
 	committed = true
 	return nil
 }
 
-// start admits the worker as one critical managed task. The task itself waits
-// on XBC's global traffic gate before polling Redis, so task submission occurs
+// groupAdmission reports the limiter a group's handler invocations charge.
+//
+// A contributor that belongs to no workload charges nothing, which is the same
+// answer Context.Admission gives for an unowned plugin. A contributor that
+// belongs to one charges that workload's quota even though the submitting
+// Plugin is the integration rather than the contributor: the entry a
+// HandlerContributor was collected as carries the workload, and the work runs
+// on that workload's behalf. This is what keeps a shared worker plugin -- one
+// that serves several workloads in one process -- from escaping the budgets
+// those workloads declared.
+func groupAdmission(ctx *plugin.Context, workload plugin.WorkloadKey) plugin.Admission {
+	if workload == "" {
+		return ctx.Admission()
+	}
+	return ctx.AdmissionFor(workload)
+}
+
+// start admits one critical managed task per worker group. Each task waits on
+// XBC's global traffic gate before polling Redis, so task submission occurs
 // only inside Start while no work is consumed before all traffic preparation
 // succeeds.
+//
+// A process whose Plugins contribute no handlers still submits one critical
+// task, which does nothing but wait for the stop. It is not a decoration: the
+// runtime refuses to hand a process to its signal loop when nothing provides a
+// long-lived capability, and a worker that is between roles -- a standby
+// waiting for a restart that will give it handlers -- is exactly such a
+// process. Refusing to start was what made the takeover model unusable, since
+// the process that must survive to be restarted is the one with no work.
 func (p *Plugin) start(ctx *plugin.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("asynq: Start requires a non-nil plugin context")
@@ -239,24 +358,37 @@ func (p *Plugin) start(ctx *plugin.Context) error {
 	case p.drainDone != nil:
 		p.mu.Unlock()
 		return fmt.Errorf("asynq: cannot Start after Drain")
-	case p.server == nil || p.dispatcher == nil:
-		p.mu.Unlock()
-		return fmt.Errorf("asynq: Start called without a prepared worker")
+	}
+	for _, group := range p.groups {
+		if group.server == nil || group.dispatcher == nil {
+			p.mu.Unlock()
+			return fmt.Errorf("asynq: Start called without a prepared worker")
+		}
 	}
 	p.starting = true
-	server := p.server
-	dispatcher := p.dispatcher
+	groups := append([]*workerGroup(nil), p.groups...)
 	logger := ctx.Log()
 	p.mu.Unlock()
 
-	accepted := ctx.GoCritical(func(taskCtx context.Context) {
-		p.runWorker(taskCtx, gate, server, dispatcher, logger)
-	})
-	if !accepted {
-		p.mu.Lock()
-		p.starting = false
-		p.mu.Unlock()
-		return fmt.Errorf("asynq: worker task was not accepted during Start")
+	if len(groups) == 0 {
+		if !ctx.GoCritical(func(taskCtx context.Context) { <-taskCtx.Done() }) {
+			p.mu.Lock()
+			p.starting = false
+			p.mu.Unlock()
+			return fmt.Errorf("asynq: idle worker task was not accepted during Start")
+		}
+	} else {
+		for _, group := range groups {
+			accepted := ctx.GoCritical(func(taskCtx context.Context) {
+				p.runWorker(taskCtx, gate, group, logger)
+			})
+			if !accepted {
+				p.mu.Lock()
+				p.starting = false
+				p.mu.Unlock()
+				return fmt.Errorf("asynq: worker task for %s was not accepted during Start", groupName(group.workload))
+			}
+		}
 	}
 
 	p.mu.Lock()
@@ -270,7 +402,7 @@ func (p *Plugin) start(ctx *plugin.Context) error {
 	return nil
 }
 
-func (p *Plugin) runWorker(taskCtx context.Context, gate <-chan struct{}, server workerServer, dispatcher *dispatcher, logger interface {
+func (p *Plugin) runWorker(taskCtx context.Context, gate <-chan struct{}, group *workerGroup, logger interface {
 	Error(string, ...any)
 }) {
 	select {
@@ -283,18 +415,21 @@ func (p *Plugin) runWorker(taskCtx context.Context, gate <-chan struct{}, server
 	startErr := func() error {
 		defer p.workerMu.Unlock()
 		p.mu.Lock()
-		if p.stopping || p.stopped || p.drainDone != nil || p.server != server {
+		server := group.server
+		if p.stopping || p.stopped || p.drainDone != nil || server == nil {
 			p.mu.Unlock()
 			return nil
 		}
 		p.mu.Unlock()
 
-		if err := server.Start(p.handlers.wrap(dispatcher)); err != nil {
-			return fmt.Errorf("asynq: start worker: %w", err)
+		// The tracker is the outer wrapper: a task this worker already dequeued
+		// counts as accepted work for the whole of its invocation, including
+		// the wait for a quota slot, so drain never reports idle while a task
+		// the worker took is still pending.
+		handler := group.handlers.wrap(admittedHandler{admission: group.admission, inner: group.dispatcher})
+		if err := server.Start(handler); err != nil {
+			return fmt.Errorf("asynq: start worker for %s: %w", groupName(group.workload), err)
 		}
-		p.mu.Lock()
-		p.opened = true
-		p.mu.Unlock()
 		return nil
 	}()
 	if startErr != nil {
@@ -321,7 +456,7 @@ func (p *Plugin) runWorker(taskCtx context.Context, gate <-chan struct{}, server
 //
 // An expired context means stop waiting, never abort: handlers that outlive
 // the drain budget are left running, with their contexts untouched, for stop
-// to cancel. The worker is told to stop exactly once, on its own goroutine
+// to cancel. Every worker is told to stop exactly once, on its own goroutine
 // because the library call is not context-aware; every later drain call
 // replays that call's error and then waits for the handlers it left. A worker
 // that never opened is stopped as well, so the split is safe before Start,
@@ -334,15 +469,21 @@ func (p *Plugin) drain(ctx context.Context) error {
 
 	p.mu.Lock()
 	started := p.drainDone == nil
-	var server workerServer
+	var servers []workerServer
+	var groups []*workerGroup
 	if started {
 		p.drainDone = make(chan struct{})
-		server = p.server
+		groups = append([]*workerGroup(nil), p.groups...)
+		for _, group := range groups {
+			if group.server != nil {
+				servers = append(servers, group.server)
+			}
+		}
 	}
 	done := p.drainDone
 	p.mu.Unlock()
 	if started {
-		go p.stopWorkerForDrain(server, done)
+		go p.stopWorkersForDrain(servers, done)
 	}
 
 	select {
@@ -353,31 +494,40 @@ func (p *Plugin) drain(ctx context.Context) error {
 
 	p.mu.Lock()
 	err := p.drainErr
+	if !started {
+		groups = append([]*workerGroup(nil), p.groups...)
+	}
 	p.mu.Unlock()
 
 	// A failed worker stop does not mean the handlers already accepted have
 	// returned: wait for them first and report both outcomes joined, so the
-	// failure never turns into a shortcut that abandons running work.
-	waitErr := p.handlers.waitIdle(ctx)
-	if waitErr != nil {
-		waitErr = fmt.Errorf("asynq: drain running handlers: %w", waitErr)
+	// failure never turns into a shortcut that abandons running work. Every
+	// group is waited for within the same context, so their waits overlap
+	// rather than dividing the drain budget between them.
+	var waits []error
+	for _, group := range groups {
+		if waitErr := group.handlers.waitIdle(ctx); waitErr != nil {
+			waits = append(waits, fmt.Errorf("asynq: drain running handlers of %s: %w", groupName(group.workload), waitErr))
+		}
 	}
-	return errors.Join(err, waitErr)
+	return errors.Join(err, errors.Join(waits...))
 }
 
-// stopWorkerForDrain stops the worker from fetching new tasks and records the
-// result for every drain call to replay. It shares workerMu with the worker's
-// Start, so a worker that is already being brought up is stopped after it
-// opened, and one that has not started yet never opens after the drain.
-func (p *Plugin) stopWorkerForDrain(server workerServer, done chan struct{}) {
-	var err error
-	if server != nil {
+// stopWorkersForDrain stops every worker from fetching new tasks and records
+// the result for every drain call to replay. It shares workerMu with the
+// workers' Start, so a worker that is already being brought up is stopped after
+// it opened, and one that has not started yet never opens after the drain.
+func (p *Plugin) stopWorkersForDrain(servers []workerServer, done chan struct{}) {
+	var errs []error
+	for _, server := range servers {
 		p.workerMu.Lock()
-		err = stopWorker(server)
+		if err := stopWorker(server); err != nil {
+			errs = append(errs, err)
+		}
 		p.workerMu.Unlock()
 	}
 	p.mu.Lock()
-	p.drainErr = err
+	p.drainErr = errors.Join(errs...)
 	close(done)
 	p.mu.Unlock()
 }
@@ -405,16 +555,31 @@ func (p *Plugin) stop(ctx context.Context) error {
 		p.stopping = true
 		p.stopDone = make(chan struct{})
 		client := p.client
-		server := p.server
+		var servers []workerServer
+		for _, group := range p.groups {
+			if group.server != nil {
+				servers = append(servers, group.server)
+				// Clearing the field is what tells a managed task that has not
+				// reached its Start yet that the worker it would start is no
+				// longer this plugin's to run.
+				group.server = nil
+			}
+		}
 		redisClient := p.redis
 		if client != nil {
 			client.beginClose()
 		}
 		p.client = nil
-		p.server = nil
 		p.redis = nil
 		p.mu.Unlock()
-		go p.finishStop(client, server, redisClient)
+		// Nothing cancels the handlers' contexts here. Drain left them running
+		// on purpose, and the library Shutdown below is what gives them their
+		// remaining ShutdownTimeout to finish; cancelling them first would not
+		// abort the handlers, it would make asynq treat their tasks as failed
+		// and requeue them while the handler goroutines were still working.
+		// That same library timeout is what ends a handler parked on its
+		// workload's admission quota, by cancelling the context it waits on.
+		go p.finishStop(client, servers, redisClient)
 	} else {
 		p.mu.Unlock()
 	}
@@ -433,12 +598,12 @@ func (p *Plugin) stop(ctx context.Context) error {
 	return err
 }
 
-func (p *Plugin) finishStop(client *Client, server workerServer, redisClient *goredis.Client) {
+func (p *Plugin) finishStop(client *Client, servers []workerServer, redisClient *goredis.Client) {
 	if client != nil {
 		client.close()
 	}
 	var errs []error
-	if server != nil {
+	for _, server := range servers {
 		p.workerMu.Lock()
 		if err := shutdownWorker(server); err != nil {
 			errs = append(errs, err)
@@ -457,7 +622,7 @@ func (p *Plugin) finishStop(client *Client, server workerServer, redisClient *go
 	p.stopped = true
 	p.initialized = false
 	p.starting = false
-	p.dispatcher = nil
+	p.groups = nil
 	close(p.stopDone)
 	p.mu.Unlock()
 }

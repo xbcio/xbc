@@ -21,6 +21,11 @@
 #      curl localhost:8080/api/v1/ingest/status     # 200
 #      curl localhost:8080/api/v1/transcode/status  # 404
 #
+#    This is also the only role that consumes the ingest workload's queue, once
+#    the queue integration below is configured: a workload's worker comes with
+#    the workload. The other two roles configure it identically and run no
+#    worker for ingest at all.
+#
 # 2. Exclusive. Serves transcode and heartbeat. The ingest route 404s. Nothing
 #    in Go changes; only which workload this process is allowed to carry. The
 #    runtime knobs are the reason transcode asks for the whole process, so the
@@ -50,6 +55,13 @@
 # whether this process carries it, and the Definitions belonging to no workload:
 #
 #      go run ./examples/workloads doctor --config examples/workloads/application.yml
+#
+# The validate subcommand performs the decision instead: it constructs exactly
+# the Definitions this process carries and prints the route table that follows
+# from them, which is how the same file's role difference is read as routes
+# rather than as rows -- and still without binding the port:
+#
+#      go run ./examples/workloads validate --config examples/workloads/application.yml
 #
 # ─── Try the exclusivity guard ───────────────────────────────────────────────
 #
@@ -96,12 +108,12 @@ xbc:
   # tuned them would be tuning the whole process from inside one component, so
   # an architecture guard fails the build for one that tries.
   runtime:
-    # auto derives the processor count from this container's CPU quota rather
-    # than from the host's core count -- the distinction that stops a
-    # 4-core-quota container from starting 64 workers on a 64-core machine.
-    # Where no quota is derivable (a bare-metal host), auto leaves GOMAXPROCS at
-    # the Go default and says so on the startup line. A positive integer sets it
-    # outright; 0 leaves it alone.
+    # auto leaves the count to the Go runtime, which sizes the scheduler from
+    # this container's cgroup CPU quota rather than from the host's core count
+    # -- the difference between a 4-core-quota container starting 4 workers and
+    # starting 64 -- and keeps re-reading it as the container's quota changes.
+    # Installing a count here would turn that re-reading off. A positive integer
+    # sets the count outright; 0 also leaves the process value alone.
     max_procs: auto
     # Bytes, or a percentage of this container's memory limit such as "75%".
     # A percentage needs a derivable container limit: it is a startup error
@@ -149,8 +161,14 @@ web:
 #                  hard veto: no placement source may override it, because
 #                  excluding a process from a role outright is a deployment
 #                  decision rather than a placement one.
-#   max_goroutines how many managed tasks this process may run on behalf of the
-#                  workload at once. 0 means unbounded.
+#   max_goroutines how many units of work this process may run on behalf of the
+#                  workload at once: a managed task and a unit taken with
+#                  Context.Admission draw on the same number. 0 means unbounded.
+#                  Size it above the process-lifetime tasks the workload's own
+#                  plugins submit from Start -- those hold their units until
+#                  shutdown -- or the rest of the workload's work waits behind
+#                  them for the whole run; the runtime names the workload in a
+#                  warning when the last Start hook returns with nothing left.
 #
 # The workload's own placement constraints -- replicas and exclusivity -- are
 # deliberately not configurable here. They describe the cluster rather than one
@@ -167,13 +185,21 @@ workloads:
     # knobs are process-wide, which is precisely why the workload is declared
     # exclusive: a process-mate could not opt out of them. This file leaves them
     # at their defaults so that the same file can start every role.
+    #
+    # Under lease placement the caveat cuts the other way: the knobs are
+    # installed during bootstrap, before the process knows whether it will win
+    # this role, so every replica of this binary receives the same values. Tune
+    # them per process -- a deployment of its own for this role, or one setting
+    # for the whole fleet -- rather than expecting a role to pick them up.
     max_goroutines: 4
 
   ingest:
     enabled: true
-    # Above this example's actual usage: it submits one task. The budget is here
-    # to show the unit, and to be the knob a real deployment tightens when a
-    # workload's fan-out stops being bounded by anything else.
+    # Above this example's actual usage: the workload's ticker holds one unit
+    # from Start until shutdown, and the rest is the room an admitted queue
+    # delivery draws on when the queue integration is enabled. The budget is
+    # here to show the unit, and to be the knob a real deployment tightens when
+    # a workload's fan-out stops being bounded by anything else.
     max_goroutines: 8
 
 plugins:
@@ -217,7 +243,8 @@ plugins:
   # A workload probe reports down until its first unit of work lands, so a fresh
   # process answers /readyz with 503 for one interval and then settles; /healthz
   # is 200 from the start and is the anchor to look at if /readyz is flapping.
-  # The section must exist to make the capability active at all.
+  # The capability and its probes need no section: both are active as soon as
+  # their Bundle is selected, and this section only changes the budget.
   health:
     timeout: 2s
 
@@ -244,3 +271,48 @@ plugins:
   ingest:
     interval: 500ms
     batch_size: 100
+
+  # Shared integration, deliberately not configured. Its absence is what keeps
+  # the default run free of infrastructure: asynq is a WhenConfigured plugin, so
+  # selecting its Bundle in main.go does not build it until this section exists.
+  # Uncomment the block and start a Redis to turn it on:
+  #
+  #      docker run --rm -p 6379:6379 redis:7
+  #
+  # What appears then is placed, not merely configured. The ingest workload
+  # exports one handler, ingest.batch, so this process -- which carries ingest --
+  # gets a worker consuming the queue named below, and its deliveries are
+  # admitted against workloads.ingest.max_goroutines like any other work on that
+  # workload's behalf. A role that does not carry ingest reads the same section
+  # and builds no worker for it at all: enqueue a batch under the standby or
+  # exclusive role and it sits at the head of its queue, consumed by nobody,
+  # because no process running that role ever asks for it.
+  #
+  #      redis-cli -p 6379 LLEN "asynq:{ingest}:pending"
+  #      curl localhost:8080/api/v1/ingest/status
+  #
+  # The first command reports the batch still waiting under a role that does not
+  # carry the workload, and zero under the one that does, where /ingest/status
+  # counts the delivery like any other admitted batch.
+  #
+  # asynq:
+  #   redis:
+  #     addr: "127.0.0.1:6379"
+  #   # The queues Plugins that belong to no workload are served from. The
+  #   # default, {default: 1}, is enough for a topology where every handler
+  #   # belongs to a workload.
+  #   queues:
+  #     default: 1
+  #   # A workload whose Plugins contribute handlers must name its queues here:
+  #   # which queue a workload's tasks arrive on is a deployment decision, not
+  #   # something derivable from the task types its handlers register. Two
+  #   # compiled-in servers must not share a queue -- a task would be delivered
+  #   # to whichever fetches it first -- and the plugin refuses to construct a
+  #   # process whose groups overlap or whose contributing workload is unnamed,
+  #   # rather than silently dropping the tasks.
+  #   workloads:
+  #     ingest:
+  #       queues:
+  #         ingest: 1
+  #       # Zero takes the top-level concurrency.
+  #       concurrency: 4

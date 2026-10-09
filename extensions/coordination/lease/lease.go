@@ -35,10 +35,30 @@ type Locker interface {
 	TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease Lease, acquired bool, err error)
 }
 
-// Lease represents ownership established by Locker. Renew and Release return
-// false without error when ownership has already expired or moved to a new
-// owner. Both operations must compare Owner atomically with the stored token;
-// an old Lease must never extend or remove a successor's lock.
+// Lease represents ownership established by Locker. Release returns false
+// without error when ownership has already expired or moved to a new owner.
+// Renew confirms ownership, and when the stored key is gone because the lease
+// expired it re-establishes the key with the same owner token rather than
+// reporting the ownership lost; it returns false only when the key exists under
+// a different token, which is ownership that has actually moved. Both
+// operations must compare Owner atomically with the stored token; an old Lease
+// must never extend, remove, or reconstruct over a successor's lock.
+//
+// Re-establishing a lapsed key is required, not optional, because "lapsed" and
+// "taken over" call for opposite responses and only the backend can tell them
+// apart. A process whose lease merely lapsed -- a store outage longer than one
+// ttl, an unpersisted restart -- still hosts what it claimed, and reporting
+// that as lost would leave it permanently unconfirmed while a standby takes the
+// freed slot: the replica count stays above the declared one until somebody
+// restarts the process by hand. Re-confirming the claim on the next renewal is
+// what bounds that overlap to one renewal interval. A claim that was taken over
+// is the other case and stays a false: the process keeps hosting what it has
+// (the caller decides), but it must not overwrite the successor's token.
+//
+// The re-established key carries the same owner token, not a fresh one. Owner
+// is what Release compares against the store, so a renewal that rewrote the key
+// under a new token would make the lease unable to release itself -- a value
+// that is nobody's successor and that the process can no longer prove it owns.
 //
 // Owner is that token rather than the claimant the lease was acquired for. The
 // token is unique to one acquisition, which is what makes the comparison safe;

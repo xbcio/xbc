@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/xbcio/xbc/log"
+	"github.com/xbcio/xbc/plugin"
 )
 
 // Errors returned by Spawn and Pool.Spawn.
@@ -69,6 +70,12 @@ type Pool struct {
 	now func() time.Time
 
 	exec executor
+
+	// admission is the workload quota every executing task charges, resolved
+	// from the plugin context at Init. It is nil for a Pool built outside the
+	// framework (newPreparedPool), which means unbounded: the quota belongs to
+	// the workload the plugin is placed in, and such a Pool has none.
+	admission plugin.Admission
 
 	mu sync.Mutex
 	// changed is closed and replaced under mu every time running or queue
@@ -427,6 +434,15 @@ func (p *Pool) runWorker(name string, ctx context.Context, task func(context.Con
 // marks it done in inFlight. It never touches p.running: the caller
 // (runWorker) owns the running slot for as long as it keeps picking up
 // queued work.
+//
+// The task charges one unit of the pool's workload quota for as long as it
+// runs. The charge happens here, after the pool decided the task runs and
+// before the task body, so what the quota bounds is executing work rather than
+// accepted work -- a task still waiting for a running slot costs a place in the
+// queue, which MaxConcurrency and QueueCapacity already bound. Waiting for a
+// unit is what keeps a saturated workload's queue draining at the workload's
+// own pace instead of the executor's, and the wait ends with the task's
+// context, so stop does not leave a task parked here.
 func (p *Pool) runOne(name string, ctx context.Context, task func(context.Context)) {
 	defer p.inFlight.Done()
 	entry := &activeTask{name: name, started: p.now()}
@@ -445,6 +461,13 @@ func (p *Pool) runOne(name string, ctx context.Context, task func(context.Contex
 		}
 		p.mu.Unlock()
 	}()
+	release, err := p.acquireUnit(ctx)
+	if err != nil {
+		p.log.Warn("async: task abandoned while waiting for its workload's quota",
+			"name", name, "error", err.Error())
+		return
+	}
+	defer release()
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			p.log.Error("async: task panicked",
@@ -457,6 +480,17 @@ func (p *Pool) runOne(name string, ctx context.Context, task func(context.Contex
 	pprof.Do(ctx, pprof.Labels("async_task", name), func(taskCtx context.Context) {
 		task(taskCtx)
 	})
+}
+
+// acquireUnit takes one unit of the workload quota this Pool charges, or
+// reports the context error that ended the wait. A Pool with no workload --
+// one built outside the framework rather than through the Definition -- holds
+// no limiter and so bounds nothing here.
+func (p *Pool) acquireUnit(ctx context.Context) (func(), error) {
+	if p.admission == nil {
+		return func() {}, nil
+	}
+	return p.admission.Acquire(ctx)
 }
 
 // drain stops admitting new work and, if configured, waits for running and
