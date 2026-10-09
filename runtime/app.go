@@ -20,6 +20,11 @@ import (
 type App struct {
 	bundles []plugin.Bundle
 
+	// defaults is the configuration layer WithStarter selected, or the zero
+	// layer. It is read once per run, by bootstrap, and reaches the loader as
+	// its lowest-precedence source.
+	defaults config.Defaults
+
 	// placementSource is the source WithPlacement selected, or nil for
 	// StaticPlacement. It is consulted once per run, before the plan exists; the
 	// decision it returns is carried by the plan, which every later reader asks.
@@ -77,6 +82,8 @@ type Option func(*appOptions) error
 type appOptions struct {
 	bundles      []plugin.Bundle
 	hasBundles   bool
+	starter      Starter
+	hasStarter   bool
 	placement    PlacementSource
 	hasPlacement bool
 }
@@ -106,10 +113,22 @@ func New(options ...Option) (*App, error) {
 		}
 	}
 	bundles := append([]plugin.Bundle(nil), resolved.bundles...)
-	if !resolved.hasBundles {
+	if resolved.hasStarter {
+		// The starter's selections lead, so the caller's own Bundles read as
+		// what it added to the baseline. Order decides nothing: planning
+		// collapses repeated Definition handles and sorts the rest.
+		bundles = append(append([]plugin.Bundle(nil), resolved.starter.Bundles()...), bundles...)
+	}
+	if !resolved.hasBundles && !resolved.hasStarter {
+		// Composing nothing is the one case that asks for the process-global
+		// collector. Selecting a starter is an explicit composition even when
+		// the starter itself selects little, so it does not freeze autoload.
 		bundles = []plugin.Bundle{autoload.Freeze()}
 	}
 	app := newApp(bundles)
+	if resolved.hasStarter {
+		app.defaults = resolved.starter.Defaults()
+	}
 	if resolved.hasPlacement {
 		app.placementSource = resolved.placement
 	}

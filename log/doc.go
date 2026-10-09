@@ -42,6 +42,17 @@
 // Close just told it to close, growing a file callers were told had been
 // shut down.
 //
+// # Process scope
+//
+// The facade is process-global: Init installs one backend that every L()
+// caller in the process reaches, and Close replaces it for all of them. One
+// process therefore hosts one application, because a second one would share
+// this logger and each Init and Close would change the other's output. Where a
+// second logger is genuinely needed, NewContext binds one to a context and Ctx
+// retrieves it -- that path is per-context rather than global, and is how the
+// framework's own request handling carries a logger with trace fields. Ctx
+// falls back to the global when no logger was bound to the context.
+//
 // # Fatal
 //
 // Fatal logs, flushes, and then terminates the process with exit code 1 --

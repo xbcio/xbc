@@ -56,7 +56,8 @@ xbc/
 │       │   ├── reliability/{health,idempotency,
 │       │   │   ratelimit,timeout}/
 │       │   └── security/{cors,securityheaders}/
-│       └── prelude/                     # Side-effect-free production baseline Bundle
+│       ├── prelude/                     # Side-effect-free Web baseline: composes, never activates
+│       └── starter/                     # Product Web baseline: selects those Bundles, adds the layer that enables them
 ├── go.mod                               # Core module manifest
 ├── go.work                              # Workspace linking all repository modules
 ├── Makefile                             # Workspace-wide formatting and validation entry points
@@ -64,6 +65,8 @@ xbc/
 ```
 
 This layout follows four rules: the root-level `runtime` owns low-level process execution and private command parsing; the Plugin model, assembly, and optional collection mechanism stay under `plugin`; protocol-neutral authentication contracts live in `extensions/authentication`, while selectable RBAC policy belongs to the authorization extension group; and optional capabilities are grouped by purpose beneath `extensions` rather than collected under the narrower name `integrations`. Group directories are namespaces rather than packages. Protocol-neutral extension leaves are independently versioned modules. Under Web, lightweight leaves remain packages of `transport/web`, while dependency-heavy leaves, the engine adapter, and the RBAC adapter are independent modules in the same capability hierarchy. The Web RBAC leaf is deliberately a thin transport adapter rather than a plugin; the protocol-neutral RBAC leaf owns the Definition and lifecycle. Health follows the same split for the same reason: `extensions/reliability/health` owns the Contributor contract, the aggregation and the probe policy so a dependency plugin can contribute a check without inheriting a transport's dependency closure, while `transport/web/extensions/reliability/health` only serves the HTTP endpoints.
+
+One process hosts one App, and the three owners of that constraint are named where each one lives: the log facade's global logger (`log`), the selected engine adapter's process-global diagnostics (`transport/web`), and the `xbc.runtime` processor and memory knobs (`runtime`). Everything else -- plugin values, lifecycle contexts, servers -- is per-App.
 
 The root `xbc` package therefore stays a stable, thin facade. All Web plugins have one discoverable home under `transport/web/extensions`; lightweight plugins are released with the Web runtime while optional dependency-heavy modules remain isolated. Do not add vague `common`, `utils`, or `pkg` packages, and do not create empty directories or placeholder APIs for unimplemented capabilities. A new `transport/<stack>` should be created only once a new protocol runtime stack is genuinely implemented; gRPC is explicitly not implemented in this round. The full constraints are defined jointly by `AGENTS.md` and the guards in `tests/architecture/`.
 

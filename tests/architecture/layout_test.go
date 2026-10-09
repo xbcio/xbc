@@ -208,12 +208,23 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	_, err := os.Stat(filepath.Join(preludeRoot, "go.mod"))
 	require.ErrorIs(t, err, os.ErrNotExist, "Web prelude must belong to the transport/web module")
 
+	// The starter is the policy half of the same baseline the prelude composes,
+	// so it sits beside it and belongs to this module under the same constraint.
+	// A module of its own would not be harmless here: the first thing such a
+	// package is tempted to do is select an engine, and selecting one is what
+	// keeps a baseline unstartable rather than a matter of taste.
+	starterRoot := filepath.Join(webRoot, "starter")
+	require.NotEmpty(t, archProductionGoFilesInDir(t, starterRoot), "Web starter must be a production package")
+	_, err = os.Stat(filepath.Join(starterRoot, "go.mod"))
+	require.ErrorIs(t, err, os.ErrNotExist, "Web starter must belong to the transport/web module")
+
 	entries, err := os.ReadDir(webRoot)
 	require.NoError(t, err, "reading Web module root failed")
 	allowedDirectories := map[string]bool{
 		"autoload":   true,
 		"extensions": true,
 		"prelude":    true,
+		"starter":    true,
 		"engines":    true,
 		"enginetest": true,
 	}
@@ -357,23 +368,28 @@ func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expecte
 
 // TestArchRootPublicAPIIsFrozen keeps the application-facing facade narrow.
 // Runtime and assembly implementation stay behind the application-facing
-// facade; importing the root package must expose only the nine entry-point
+// facade; importing the root package must expose only the eleven entry-point
 // symbols below.
 //
 // The set below is deliberately tiny and should stay that way: an application
 // calls Run, an embedding host calls New and App.Execute, a test supplies its
-// own explicit composition through WithBundles, and a deployment whose roles
-// are assigned by placement names its source through WithPlacement -- with
-// StaticPlacement as the default it may also write down explicitly. Adding to
-// it is a real API decision and must be a deliberate edit to this list, not a
-// side effect of a rename.
+// own explicit composition through WithBundles, an application that wants a
+// documented product baseline selects it through WithStarter, and a deployment
+// whose roles are assigned by placement names its source through WithPlacement
+// -- with StaticPlacement as the default it may also write down explicitly.
+// Adding to it is a real API decision and must be a deliberate edit to this
+// list, not a side effect of a rename.
 //
 // A lease-backed PlacementSource is deliberately NOT among these. Constructing
 // one needs the lease contract, which lives beneath extensions, and core's
 // dependency closure excludes that whole subtree: the extension that owns the
 // constructor exports it, and the application passes its result to
 // WithPlacement. That is exactly why the source is a value here and not a
-// function of this package.
+// function of this package. Starter is aliased for the same reason -- the
+// baseline this repository ships is a package of the Web module, and a module
+// that owns a transport may not import runtime -- and both interfaces are
+// named here rather than only their options, so a caller can declare a
+// variable of the type it passes without reaching past the facade.
 //
 // Scope note: this collects exported top-level declarations plus exported
 // methods on exported types. An exported method on an unexported type is not
@@ -387,9 +403,11 @@ func TestArchRootPublicAPIIsFrozen(t *testing.T) {
 		"Option",
 		"PlacementSource",
 		"Run",
+		"Starter",
 		"StaticPlacement",
 		"WithBundles",
 		"WithPlacement",
+		"WithStarter",
 	}
 
 	root := archRepositoryRoot(t)

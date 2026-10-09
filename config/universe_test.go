@@ -3,6 +3,7 @@ package config
 import (
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -495,18 +496,25 @@ func TestEnvironmentLayerLeavesTheProfileVariableAlone(t *testing.T) {
 func TestConfigurationLayerPrecedence(t *testing.T) {
 	cases := []struct {
 		name     string
+		defaults string
 		file     string
 		profile  string
 		override string
 		env      string
 		want     string
 	}{
+		{name: "defaults only", defaults: ":defaults", want: ":defaults"},
 		{name: "file only", file: ":file", want: ":file"},
+		{name: "file beats defaults", defaults: ":defaults", file: ":file", want: ":file"},
 		{name: "profile beats file", file: ":file", profile: ":profile", want: ":profile"},
+		{name: "profile beats defaults", defaults: ":defaults", file: ":file", profile: ":profile", want: ":profile"},
 		{name: "override beats profile", file: ":file", profile: ":profile", override: ":override", want: ":override"},
+		{name: "override beats defaults", defaults: ":defaults", override: ":override", want: ":override"},
 		{name: "env beats override", file: ":file", profile: ":profile", override: ":override", env: ":env", want: ":env"},
+		{name: "env beats defaults", defaults: ":defaults", env: ":env", want: ":env"},
 		{name: "env beats file with no profile", file: ":file", env: ":env", want: ":env"},
 		{name: "env alone", env: ":env", want: ":env"},
+		{name: "every layer at once", defaults: ":defaults", file: ":file", profile: ":profile", override: ":override", env: ":env", want: ":env"},
 	}
 
 	for _, testCase := range cases {
@@ -520,6 +528,9 @@ func TestConfigurationLayerPrecedence(t *testing.T) {
 				writeYAML(t, filepath.Join(dir, "application-prod.yml"), "server:\n  addr: \""+testCase.profile+"\"\n")
 			}
 			options := Options{Profile: "prod", EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)}
+			if testCase.defaults != "" {
+				options.Defaults = Defaults{Label: "starter web", Values: map[string]any{"server.addr": testCase.defaults}}
+			}
 			if testCase.override != "" {
 				options.Overrides = map[string]any{"server.addr": testCase.override}
 			}
@@ -532,6 +543,134 @@ func TestConfigurationLayerPrecedence(t *testing.T) {
 			require.Equal(t, testCase.want, k.String("server.addr"))
 		})
 	}
+}
+
+// TestDefaultsAloneActivateAWhenConfiguredSection pins the one property that
+// makes the defaults layer worth having at all: a section contributed only by
+// the defaults is as present to activation as one a file wrote, so a
+// WhenConfigured plugin activates on a process that was given no configuration
+// file. It is the merged view, not the file, that activation reads.
+//
+// The negative half is asserted first, because "the section already existed"
+// is otherwise indistinguishable from "the defaults created it".
+func TestDefaultsAloneActivateAWhenConfiguredSection(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	bare, _, err := loadKoanf(Options{Universe: testUniverse(t)})
+	require.NoError(t, err)
+	require.False(t, bare.Exists("plugins.greeter"), "Nothing may exist before the defaults layer is contributed")
+
+	k, _, err := loadKoanf(Options{
+		Defaults: Defaults{Label: "starter web", Values: map[string]any{"plugins.greeter.enabled": true}},
+		Universe: testUniverse(t),
+	})
+	require.NoError(t, err)
+	require.True(t, k.Exists("plugins.greeter"),
+		"A section only the defaults layer wrote must still activate the plugin that watches it")
+	require.True(t, k.Bool("plugins.greeter.enabled"))
+}
+
+// TestDefaultsCannotNameAPathNobodyOwns keeps the fail-closed property of
+// ownership over the new layer. Defaults are Go values assembled by a
+// contributor rather than text a user typed, so a typo in them is a framework
+// bug -- and one that would otherwise reach a process as a silently ignored
+// section, since nothing binds a path no Definition declares.
+func TestDefaultsCannotNameAPathNobodyOwns(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	_, _, err := loadKoanf(Options{
+		Defaults: Defaults{Label: "starter web", Values: map[string]any{"plugins.heartbeat": true}},
+		Universe: testUniverse(t),
+	})
+	require.Error(t, err, "A defaults path no section owns must fail the load rather than be ignored")
+	require.Contains(t, err.Error(), "plugins.heartbeat", "The error must name the offending path")
+}
+
+// TestDefaultsAreBoundAsStrictlyAsAFile is the other half of the same
+// guarantee. Ownership stops at a declared section and leaves the interior to
+// strict bind, so the layer has to be checked there too -- otherwise a default
+// naming no field of the plugin's own Config would be accepted by the loader
+// and then fail, or worse not fail, wherever that section is bound.
+func TestDefaultsAreBoundAsStrictlyAsAFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	env, err := Load(Options{
+		Defaults: Defaults{Label: "starter web", Values: map[string]any{"server.base_pathz": "/v1"}},
+		Universe: testUniverse(t),
+	})
+	require.NoError(t, err, "Ownership deliberately stops at the declared section")
+
+	var sc serverSection
+	err = env.Bind("server", &sc)
+	require.Error(t, err, "A defaults leaf no field of the section spells must fail strict bind")
+	require.Contains(t, err.Error(), "base_pathz", "The error must name the field the defaults layer invented")
+}
+
+// TestDefaultsProvenanceNamesTheContributorNotTheValues pins both halves of the
+// layer's diagnostic contract: the label says which layer contributed and who
+// owns it, and it is printed in merge order so a reader sees the precedence
+// itself. Values never enter provenance -- a defaults layer is exactly the
+// place a framework would put a credential it wanted to keep out of a report.
+func TestDefaultsProvenanceNamesTheContributorNotTheValues(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeYAML(t, filepath.Join(dir, "application.yml"), "server:\n  addr: \":8080\"\n")
+	t.Setenv("XBC_PLUGINS_GREETER_ENABLED", "false")
+
+	env, err := Load(Options{
+		Defaults: Defaults{
+			Label:  "starter web",
+			Values: map[string]any{"server.addr": ":9000", "plugins.greeter.enabled": true},
+		},
+		Universe: testUniverse(t),
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"defaults (starter web)", "file application.yml", "env"}, env.Sources(),
+		"Sources are reported lowest precedence first, so the defaults layer leads")
+	require.Equal(t, []string{"defaults (starter web)", "file application.yml"}, env.OriginsUnder("server"))
+	require.Equal(t, []string{"defaults (starter web)", "env"}, env.OriginsUnder("plugins.greeter"))
+	require.Equal(t, ":8080", env.Get("server.addr"), "The file must win over the defaults layer")
+	require.Equal(t, false, env.Get("plugins.greeter.enabled"),
+		"A value the defaults layer set must stay switchable off from above it, ENV included")
+
+	printed := strings.Join(env.Sources(), " ")
+	require.NotContains(t, printed, ":9000")
+	require.NotContains(t, printed, "true")
+}
+
+// TestDefaultsWithoutALabelIsStillNamed pins the fallback spelling. A layer
+// that names no contributor is still a layer, and a provenance line that
+// printed an empty string would read as a section whose origin was lost.
+func TestDefaultsWithoutALabelIsStillNamed(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	env, err := Load(Options{
+		Defaults: Defaults{Values: map[string]any{"server.addr": ":9000"}},
+		Universe: testUniverse(t),
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"defaults"}, env.Sources())
+	require.Equal(t, ":9000", env.Get("server.addr"))
+}
+
+// TestEmptyDefaultsContributeNoLayer pins that an unset Defaults is not a
+// source. A contributor that offers values for a section the composition does
+// not contain must be able to say nothing rather than having to say it with an
+// empty map that still appears in the report.
+func TestEmptyDefaultsContributeNoLayer(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	env, err := Load(Options{Defaults: Defaults{Label: "starter web"}, Universe: testUniverse(t)})
+	require.NoError(t, err)
+
+	require.Empty(t, env.Sources())
 }
 
 func TestEnvironmentAloneMakesASectionExist(t *testing.T) {

@@ -19,16 +19,40 @@
 //
 // Web's Bundle contains the server, but no engine: exactly one engine Bundle
 // must be selected alongside it, and transport/web/engines/gin is the one this
-// repository ships. The prelude adds the lightweight production baseline: request
-// IDs, access logging, security headers, gzip, cooperative request
-// timeouts, and health probes. Business response envelopes, CORS,
-// authentication, authorization, persistence, telemetry exporters, and API
-// documentation remain explicit Bundles because they select application policy
-// or require optional dependencies.
+// repository ships. The prelude contributes the lightweight production
+// baseline: request IDs, access logging, security headers, gzip, cooperative
+// request timeouts, and health probes. Contributing is not enabling: the server
+// and the health probes are active as soon as the Bundle is selected, while
+// each remaining member stays dormant until its plugins.<key> section exists in
+// the merged configuration, from a file or from the environment. The starter
+// beside it is the policy half of that same baseline: it selects the prelude's
+// Bundles and contributes the lowest configuration layer that switches those
+// dormant members on, so a service obtains the baseline without shipping a
+// file that restates it. Business response envelopes, CORS, authentication,
+// authorization, persistence, telemetry exporters, and API documentation
+// remain explicit Bundles because they select application policy or require
+// optional dependencies.
 //
 // Executables that deliberately prefer process-global composition can blank
 // import the leaf transport/web/autoload adapter and call xbc.Run. Prelude and
 // implementation packages themselves never register from init.
+//
+// # Process scope
+//
+// A process hosts one App. Three owners make that a constraint rather than a
+// preference, and none of them can be made per-App without giving up the thing
+// it exists for: the selected engine adapter installs the engine's own
+// process-global diagnostics, because constructing one points Gin's writers at
+// the framework logger and picks Gin's mode from it, and no engine-neutral API
+// can express either; the runtime installs the xbc.runtime processor and memory
+// knobs, which describe the process rather than an App; and the log facade's
+// global logger is the one every L() caller in the process reaches. A second
+// App in one process would repoint the first App's engine diagnostics and
+// overwrite its knobs while both kept serving.
+//
+// The constraint is narrow: everything else is per-App. Two Apps constructed in
+// one process own their own plugin values, lifecycle contexts, task scopes, and
+// servers, and their shutdowns do not cancel each other.
 //
 // # Contributions
 //

@@ -28,7 +28,13 @@ func (a *App) bootstrap(cmd command) error {
 		File:      cmd.config,
 		Profile:   cmd.profile,
 		EnvPrefix: config.DefaultEnvPrefix,
-		Universe:  universe,
+		// The starter's layer is merged below the file, so an application that
+		// shipped a configuration disagrees with a baseline value by writing
+		// it rather than by having to route around it. It is also what lets a
+		// starter's capability be on in a process that was given no file at
+		// all, since a WhenConfigured plugin activates on the merged view.
+		Defaults: a.defaults,
+		Universe: universe,
 	})
 	if err != nil {
 		return err

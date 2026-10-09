@@ -39,4 +39,11 @@
 // alone cannot assemble a startable app either, for the same reason: the
 // composition root must still separately select an engine Bundle. Importing
 // prelude itself never mutates process-global state.
+//
+// An application that wants the baseline rather than the ingredients selects
+// the starter package beside this one: it contributes exactly this Bundle and
+// the lowest configuration layer that switches its dormant members on, so the
+// composition root does not have to write a file restating the framework's own
+// defaults. Composing prelude.Bundle() directly remains the explicit path, and
+// is what a deployment that disagrees with the baseline's policy uses.
 package prelude

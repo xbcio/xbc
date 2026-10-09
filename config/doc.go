@@ -13,10 +13,14 @@
 // The effective precedence, from lowest to highest, is a struct default tag,
 // which fills only a field the caller left at its zero value; the non-zero
 // values a caller pre-filled for a typed target (the Config a plugin's
-// ConfigSpec.Defaults returns, typically); the base YAML file; the profile
-// file; Options.Overrides; and environment variables. A pre-filled non-zero
-// value therefore wins over a default tag. YAML strings are literal; the
-// loader does not expand ${VAR}.
+// ConfigSpec.Defaults returns, typically); Options.Defaults; the base YAML
+// file; the profile file; Options.Overrides; and environment variables. A
+// pre-filled non-zero value therefore wins over a default tag, and
+// Options.Defaults wins over both because it is a merged layer rather than a
+// binding fallback. That layer is what a Starter contributes, so a product
+// baseline holds for a process that was given no configuration at all while
+// every source above it still overrides a value the baseline set. YAML
+// strings are literal; the loader does not expand ${VAR}.
 // NewEnvironment bypasses files and process environment for callers that
 // already own an in-memory configuration tree.
 //

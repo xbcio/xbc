@@ -12,12 +12,40 @@ import (
 	"github.com/knadh/koanf/v2"
 )
 
+// Defaults is one contributor's lowest-precedence configuration layer: the
+// product defaults a Starter hands the runtime, merged below every other
+// source so that a file, a profile overlay, an Override, and an environment
+// variable all still win over it.
+//
+// It is data rather than a construction step, which is what keeps it
+// compatible with the read-only commands: doctor reports where a section's
+// values came from without constructing the contributor, because this layer
+// enters provenance like any other source.
+type Defaults struct {
+	// Label names the contributor in provenance output, as in "starter web".
+	// It is the only thing reported about the layer, so it must name the
+	// contributor rather than carry a configured value. An empty Label is
+	// recorded as a bare "defaults".
+	Label string
+	// Values merges flat dotted-path -> value, exactly as Options.Overrides
+	// does and under the same strict typing: a value must already have the
+	// type of the field it lands in, since nothing coerces a string assembled
+	// from text into an int or a scalar into a list.
+	Values map[string]any
+}
+
 // Options carries every knob Load needs to locate and assemble the
 // configuration tree.
 type Options struct {
 	File      string // --config; when non-empty the file MUST exist
 	Profile   string // --profile or XBC_PROFILE
 	EnvPrefix string // "XBC_"; names the environment layer and later Bind calls
+	// Defaults merges below every other source, including the files. It is
+	// what a Starter contributes so that a product baseline holds for a
+	// process that was given no configuration at all, and it is the only
+	// layer a caller can override with a shipped file rather than having to
+	// disagree with it.
+	Defaults Defaults
 	// Overrides merges flat dotted-path -> value between the files and the
 	// environment layer. Strict binding applies no weak typing, so a value
 	// must already have the type of the field it lands in: a string assembled
@@ -38,10 +66,10 @@ type layer struct {
 	paths []string
 }
 
-// loadKoanf searches for the config file, merges the profile overlay,
-// Overrides and finally the environment layer, and returns the koanf instance
-// together with the ordered provenance of every path. Missing files are only
-// an error when Options.File named one explicitly (ruling R8).
+// loadKoanf merges the contributor defaults, the config file, the profile
+// overlay, Overrides and finally the environment layer, and returns the koanf
+// instance together with the ordered provenance of every path. Missing files
+// are only an error when Options.File named one explicitly (ruling R8).
 func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
 	if opts.EnvPrefix == "" {
 		// An empty prefix would make the environment layer claim every variable
@@ -66,6 +94,22 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
 	basePath, err := locateBaseFile(opts.File)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// The defaults layer merges first -- before the base file is even read --
+	// because that is the whole of what "default" means here: everything below
+	// can override it, including the file a deployment shipped. It is merged
+	// after the explicit-file lookup anyway so that a --config path that does
+	// not exist keeps reporting itself first, which is the error an operator
+	// can act on.
+	if len(opts.Defaults.Values) > 0 {
+		defaults := koanf.New(".")
+		if err := defaults.Load(confmap.Provider(opts.Defaults.Values, "."), nil); err != nil {
+			return nil, nil, fmt.Errorf("xbc: failed to apply configuration defaults: %w", err)
+		}
+		if err := merge(defaultsLabel(opts.Defaults.Label), defaults); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	if basePath != "" {
@@ -126,6 +170,17 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
 	}
 
 	return k, layers, nil
+}
+
+// defaultsLabel composes the provenance label of the defaults layer, pairing
+// the layer's kind with whoever contributed it -- the same way "file
+// application.yml" pairs the kind with the path. The label is provenance
+// output, so it names a contributor and never a value.
+func defaultsLabel(contributor string) string {
+	if contributor == "" {
+		return "defaults"
+	}
+	return "defaults (" + contributor + ")"
 }
 
 // profileSibling derives "application-prod.yml" from "application.yml" + "prod".

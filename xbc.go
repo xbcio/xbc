@@ -23,6 +23,16 @@
 //	if err != nil { /* handle */ }
 //	code, err := app.Execute(ctx, args)
 //
+// An application that wants a documented baseline rather than a hand-picked
+// Bundle list selects a Starter. A Starter carries both the Bundles it selects
+// and the configuration layer that turns its dormant capabilities on, so the
+// same value that chooses a capability is the one that has an opinion about it:
+//
+//	xbc.Run(
+//		xbc.WithStarter(webstarter.Web()),
+//		xbc.WithBundles(ginengine.Bundle(), orders.Bundle()),
+//	)
+//
 // A Bundle is side-effect-free composition data. Definitions are immutable
 // canonical handles; planning freezes configuration, contracts, typed inputs,
 // lifecycle descriptors, and the dependency graph before any factory runs.
@@ -48,6 +58,22 @@ type Option = appruntime.Option
 
 // WithBundles explicitly composes the application's canonical Definitions.
 func WithBundles(bundles ...plugin.Bundle) Option { return appruntime.WithBundles(bundles...) }
+
+// Starter is the product-level composition entry point WithStarter accepts: a
+// documented default policy for a kind of process, contributing both the
+// Bundles it selects and the configuration layer that turns its capabilities
+// on. It is re-exported for the same reason PlacementSource is, so an
+// application can name the value it passes without importing the runtime.
+//
+// The starter this repository ships for a Web service is
+// github.com/xbcio/xbc/transport/web/starter.
+type Starter = appruntime.Starter
+
+// WithStarter selects a product-level baseline instead of composing every
+// Bundle by hand. An engine Bundle is still selected beside it: a starter
+// decides which capabilities a Web service has, not which HTTP engine serves
+// them.
+func WithStarter(starter Starter) Option { return appruntime.WithStarter(starter) }
 
 // PlacementSource decides which of an application's declared workloads this
 // process carries. It is re-exported so an application can name the interface
