@@ -616,9 +616,6 @@ takeover latency = lease TTL + standby retry interval + process restart time
 
 The lease TTL dominates, and it is three times the renew interval by default. With a 10s renew interval, a 30s TTL, a standby retrying every 5s, and a 2s restart, the worst case is `30 + 5 + 2 = 37s`.
 
-That is acceptable here because these workloads are queue-backed. A task in flight when the holder died is redelivered by the queue, and mutual exclusion between the failed holder and its successor is the queue's, the distributed lock's, and the database's job rather than the lease's.
-
-Renewal failing is treated differently from a cold start, and the asymmetry is deliberate:
 The retry interval is jittered by up to half its length in either direction, so the arithmetic's worst case is `TTL + 1.5 x interval + restart` -- `30 + 7.5 + 2` in the example above -- and its average is the one in the formula. The jitter is there because a fleet of standbys started together keeps its phase for the life of the run: on a fixed period they find a freed slot in the same round, and they hand it back and restart together.
 
 One more term belongs to the observation rather than to the slot: the standby that wins **hands the slot back and restarts**, so the role is not served again until that process has finished its own graceful stop and come back up. Add the winner's own `pre_stop_timeout + shutdown_timeout` to the gap you actually observe, and expect the slot to sit free (or be taken by another standby, which restarts in turn) for that long. Nothing is lost by that -- the workloads are queue-backed -- but a deployment sized on the formula alone will find recovery slower than its arithmetic.
@@ -629,6 +626,9 @@ Changing `replicas`, or flipping `exclusive`, is a declaration change, and it ta
 
 The ordering that keeps this harmless is to roll out first and scale down last: add replicas before the rollout, remove them after it has finished, so no moment of the deployment declares less capacity than it is running. Give an exclusivity flip its own rollout rather than folding it into a count change, so that each intermediate fleet differs from its predecessor by one declaration, which is the difference an operator can read off `doctor` from any process in it.
 
+That is acceptable here because these workloads are queue-backed. A task in flight when the holder died is redelivered by the queue, and mutual exclusion between the failed holder and its successor is the queue's, the distributed lock's, and the database's job rather than the lease's.
+
+Renewal failing is treated differently from a cold start, and the asymmetry is deliberate:
 
 - **A running holder keeps its role.** A failed renewal is logged, counted, and otherwise ignored: the process does not release its slot and does not exit. The worst outcome is a workload briefly running more replicas than declared. That is a resource problem, not a correctness one, and the alternative -- dropping the role on a lease-store hiccup -- would reshuffle roles across the whole cluster.
 - **A cold start that cannot reach the lease store fails.** A process that cannot claim anything would have to guess, and the only guess available is "carry everything". That makes the process shape non-deterministic: `doctor` output, startup validation, snapshot diffing, and the exclusivity check all derive from the hosted set, and the capacity decision becomes fail-open. A holder has something to protect; a starter has nothing to guess with.
@@ -642,9 +642,6 @@ None of these series are published by the placement module itself. Core owns no 
 | `xbc_workload_held{workload}` | one series per `Stats().Held` entry |
 | `xbc_workload_lease_age_seconds{workload}` | `Stats().Held[].Age` |
 | `xbc_workload_lease_renew_failures_total` | `Stats().RenewFailures` |
-
-`Stats().Held[].Degraded` is the per-slot form of the same signal: it reports "still serving, but the claim is not being confirmed", which is the difference between a degraded store and a stopped process. A readiness probe already exported for the health aggregator (`placement-health`) carries the same verdict without any metrics stack, and it reads this process's own renewal state only -- never the store, and never other members.
-
 | `xbc_workload_declared_replicas{workload,exclusive}` | `Stats().Declared[].Replicas` / `.Exclusive` |
 | `xbc_placement_standby` | `Stats().Standby`, as 1 or 0 |
 
@@ -664,11 +661,14 @@ max by (workload) (xbc_workload_declared_replicas)
 ```
 
 `xbc_placement_standby` is the other side of the same arithmetic: it is how many takeovers the deployment currently has in reserve, and it reaching zero is the condition the sizing section above warns about rather than an alarm on its own. A workload this process vetoes by configuration contributes no declared row from that process, so a rule built on these series sees the declaration of the fleet that admits the workload rather than a count nobody would honour.
+
+`Stats().Held[].Degraded` is the per-slot form of the same signal: it reports "still serving, but the claim is not being confirmed", which is the difference between a degraded store and a stopped process. A readiness probe already exported for the health aggregator (`placement-health`) carries the same verdict without any metrics stack, and it reads this process's own renewal state only -- never the store, and never other members.
+
+The probe carries that verdict with a grace period, and the two readings are meant to differ. A claim reports `Degraded` from the first unconfirmed round onward, while `placement-health` turns down only once a claim has gone unconfirmed for longer than one TTL. One failed round says the store did not answer; it does not say the role is gone, because the key the previous round wrote is still inside its TTL. Reporting down there would withdraw every holder at once -- they share one store -- and move that traffic onto standbys that do not host these workloads, which is exactly the failure the lease store was never asked to be highly available for. Past one TTL the strongest local fact changes: the key cannot still exist, so a claim held in local memory may already be someone else's. That is the condition worth withdrawing for, and it is the one readiness reports. In between, the metrics and the log lines carry the episode.
+
 Two different identities appear when asking "who holds this slot", and they answer different questions. `xbc.instance_id` names the process: derived from the hostname, the boot second and a random suffix when left empty, and settable per process as `XBC_INSTANCE_ID` -- see [`xbc.instance_id`](quickstart.md#configuration) for the derivation and the whitespace rule. The slot's *owner token* is what the lease backend stores under the slot key and what it compares before renewing or releasing; it identifies one acquisition rather than a process.
 
 The identity is what gets reported, because it is the one an operator can act on. `doctor`'s `holder` line and `Stats().Instance` both carry it, so a report names a process you can go and look at rather than a token. The token remains available per slot as `Stats().Held[].Owner`.
-The probe carries that verdict with a grace period, and the two readings are meant to differ. A claim reports `Degraded` from the first unconfirmed round onward, while `placement-health` turns down only once a claim has gone unconfirmed for longer than one TTL. One failed round says the store did not answer; it does not say the role is gone, because the key the previous round wrote is still inside its TTL. Reporting down there would withdraw every holder at once -- they share one store -- and move that traffic onto standbys that do not host these workloads, which is exactly the failure the lease store was never asked to be highly available for. Past one TTL the strongest local fact changes: the key cannot still exist, so a claim held in local memory may already be someone else's. That is the condition worth withdrawing for, and it is the one readiness reports. In between, the metrics and the log lines carry the episode.
-
 
 The store is readable without either of them. The token the backend mints is `<instance_id>/<random>`, so reading a slot key answers who holds it:
 
@@ -897,6 +897,7 @@ Heap profiles carry no labels at all, so memory is not attributable this way. `x
 These boundaries are deliberate, and knowing them prevents several wrong deployments:
 
 - **No runtime re-placement.** Roles are claimed once at startup and held for the life of the process. Changing a process's role means restarting it, because a workload's registration work -- queue handlers, timer callbacks, consumers -- happens once at construction and cannot be undone.
+- **No role preservation across a restart.** A replacement process starts as a standby and wins a slot only once one frees, so a rolling update moves roles to whichever process wins next rather than keeping them where they were: a restored process may host nothing while a standby takes the role. That follows from roles being claims rather than labels, and it means a rolling update is not role-preserving.
 - **No in-process request forwarding and no cluster routing table.** A request for a workload this process does not host is a `404` here. A management tool talks to the process that holds the role rather than to "the service" as a whole.
 - **No member enumeration and no service-discovery contract.** Each process reports only what it holds. Aggregating that into "how many replicas of `sast` are running" is the monitoring side's job, which is why the metrics above are per-process.
 - **No fencing tokens, split-brain detection, or lease generations.** Those are what hard mutual exclusion needs, and the lease is not that.
@@ -933,6 +934,21 @@ Two bounds still apply and should not be worked around. `read_timeout` and `idle
 
 WebSocket needs none of this: hijacking the connection clears the server's deadlines with it.
 
+## Mounting a handler that owns its own routing
+
+`router.Mount(prefix, h)` takes any `http.Handler` that already knows how to route: an integration library's handler, a file server, another framework's engine. The handler is handed the request with the prefix stripped, `http.StripPrefix` style -- `/flow/status` under a mount at `/flow` arrives as `/status`, the prefix itself arrives with an empty path -- and everything beneath the prefix belongs to it.
+
+```go
+router.Mount("/flow", flowHandler)                // every method, the whole subtree
+router.Mount("/public-docs", docsHandler).Auth(web.Public())
+```
+
+The mount is an ordinary route registration, and the rest of the framework treats it that way. It writes one row per method to the route table, served by the same engine on the same listener under the same `web.base_path` -- a mount never opens a second listener, declares no configuration section, and has no lifecycle of its own. Global middleware runs ahead of the mounted handler, the request keeps its original path for `accesslog`, metrics and `CurrentRoute` even though the handler was handed a stripped copy, and the in-flight gate admits mounted requests like any other route's. Everything reads the prefix rather than a path inside it, so `web.security.default` decides for the whole subtree until the mount declares otherwise, and a tier-1 rule has to name the prefix (`/flow/**`); a rule naming `/flow/status` matches nothing, because there is no row for it.
+
+Two boundaries are worth stating outright. A path inside the prefix that the mounted handler does not recognize gets that handler's own 404 -- the framework's unmatched-request chains only see requests the matcher never routed, which for a mount means a method outside the covered set, answered as the usual 405 with `Allow`. And a registration that overlaps a mount on the same method is refused at the composition root: a route at or under a mounted prefix, a second mount at or under the first, and a mount swallowing an existing route all panic instead of leaving whichever registration the engine happens to prefer. `Unmetered` is refused on a mount too: the gate exempts a route by its exact method and path, so an exemption on a subtree could never match a request inside it, and a saturated process would meter the probe it meant to exempt. The startup report marks mounted rows `(mounted subtree)`, which is how an operator tells them from an `Any` registration at the same path.
+
+Constructing and mounting the handler must be safe before the process serves anything. The `validate` command runs the same construction and route registration a start performs, through Preflight, with no listener behind it; a handler that dials a dependency while being mounted makes that diagnostic command dial it too, and makes a boot fail in a phase that never intended to reach the network. Keep mounting inert and build the handler's snapshot on first use -- the shape the framework's own deferred surfaces use.
+
 ## Operational endpoints and secrets
 
 Health endpoints return aggregate status by default. Use `detail_policy: never` to prevent unauthenticated probes from receiving dependency errors. When XBC begins graceful shutdown, readiness changes to 503 immediately while liveness remains Up. `web.shutdown.pre_drain_delay` defaults to `0s`, which begins HTTP draining immediately; configure a nonzero, deployment-specific interval when probes or load balancers need time to observe the readiness transition:
@@ -942,6 +958,8 @@ web:
   shutdown:
     pre_drain_delay: 2s
 ```
+
+Both probes are registered public and unmetered: they answer before authentication and outside the process-level in-flight gate. The second exemption matters as much as the first. `web.max_in_flight` refuses work when the process is saturated, and a probe is not work; a busy process whose own liveness endpoint returned `503` would be restarted at exactly the moment it is carrying its full traffic ceiling, moving that traffic onto replicas that then fail their probes in turn. An orchestrator cannot tell "saturated" from "dead" unless the probe answers, and the two call for opposite responses. The price is that an unmetered probe is bounded by nothing but its own checks, which is why each check declares a timeout and the aggregator runs them concurrently. A probe that reaches a dependency is still a probe that spends that dependency's budget, so a saturated process answering them quickly is the design, not a gap in it.
 
 Readiness only reports what contributes to it: selecting the health capability alone yields an empty `checks` array. `redis.Bundle()` and `gorm.Bundle()` each select a readiness probe next to their client Definition, so every configured instance is probed once the health Bundle is also selected -- reported as `redis-health` and `gorm-health` for the default instance, or `redis-health/<instance>` for a named one. They need that second Definition because their primary value is a third-party type. `elasticsearch`, `objectstorage`, `kafka`, `asynq`, and `raft` own their primary type, so it carries the contract directly and each check is named after the producing identity: `elasticsearch[search]`, `objectstorage`, `kafka[events]`, `asynq`, `raft`. An application component contributes the same way, by exporting `health.Contributor` from its own Definition. Checks inherit `plugins.health.timeout` unless the contributor sets a per-check timeout, and the neutral `plugins.health` section is separate from the HTTP-facing `plugins.health-http` section below.
 
@@ -977,7 +995,6 @@ web:
 
 When Casbin is also selected, its `missing_permission` setting defaults to `deny`: a route with no `Perm` is rejected for everyone once Casbin's convention-based enforcement is active. The metrics route carries neither `Auth(web.Public())` nor a `.Perm`, so upgrading straight into that convention silently breaks Prometheus scraping with no startup warning. Fix this with a tier-1 `permit` rule for the exposition endpoint -- it takes effect before authentication and authorization run at all -- rather than flipping `missing_permission` to `allow`, which would also loosen every other `.Perm`-less route.
 
-- **No role preservation across a restart.** A replacement process starts as a standby and wins a slot only once one frees, so a rolling update moves roles to whichever process wins next rather than keeping them where they were: a restored process may host nothing while a standby takes the role. That follows from roles being claims rather than labels, and it means a rolling update is not role-preserving.
 ```yaml
 plugins:
   health:
@@ -1004,69 +1021,6 @@ XBC does not echo these values. `doctor` output and startup reports contain only
 Do not trust forwarded headers from the public network unless a trusted reverse proxy removes untrusted values first. Graceful shutdown, whichever way it is triggered, reuses the same unified cancellation, HTTP drain, and reverse-order plugin shutdown path, and it must not call `os.Exit` independently.
 
 
-## Diagnosing a slow boot or a slow shutdown
-
-Every boot logs how long it took to become servable on the released-gate line:
-
-```
-INFO  xbc: application traffic gate released  instances=14 order=... startup=7.562ms
-```
-
-Set `log.level` to `debug` to get the breakdown behind that number. It arrives as a single record listing the six ordered startup phases, then one line per instance naming only the stages that actually ran:
-
-```
-DEBUG xbc: startup timings, total 7.562ms
-  phases: bootstrap 1.488ms, planning 4.492ms, construct 368µs, migrate 0s, start 1.021ms, traffic 185µs
-  health                       factory 1.25µs, Init 3.041µs
-  web                          factory 22.583µs, Start 1.019ms, OpenTraffic 185µs
-```
-
-Read the phase line first: it separates a slow configuration source or a slow plugin graph from a plugin that is slow to start. A stage the plugin never declared is absent rather than reported as `0s`, and a stage that ended in an error still reports what it spent.
-
-The reverse unwind is reported the same way. A shutdown that stayed inside its budget records the per-instance waits at debug, which is what attributes a slow rolling restart to a plugin. The line states the pre-stop phase beside the walk, because the two are one stop to a supervisor:
-
-```
-DEBUG xbc: reverse unwind finished inside its budget  budget=15s pre_stop=1.583µs reason=signal total_budget=17s waited="[web 2.00123775s transcode 126.5µs heartbeat 38.75µs]"
-```
-
-A shutdown that ran out of budget warns instead, and the warning carries the same `waited` list alongside the plugins that were abandoned or never attempted -- the casualty list names who was cut off, the waits name who spent the budget.
-
-These reports contain only identities, stage names, and durations; no configured value reaches them.
-
-
-## Diagnosing why a plugin is in the graph
-
-`doctor` answers two questions the enabled-instances table cannot: who selected each plugin, and what is actually feeding it. It groups the graph the same way the workload rows do -- each declared workload, then `unowned` -- and walks that order, printing per instance the composition site that introduced it and one line per declared input:
-Both probes are registered public and unmetered: they answer before authentication and outside the process-level in-flight gate. The second exemption matters as much as the first. `web.max_in_flight` refuses work when the process is saturated, and a probe is not work; a busy process whose own liveness endpoint returned `503` would be restarted at exactly the moment it is carrying its full traffic ceiling, moving that traffic onto replicas that then fail their probes in turn. An orchestrator cannot tell "saturated" from "dead" unless the probe answers, and the two call for opposite responses. The price is that an unmetered probe is bounded by nothing but its own checks, which is why each check declares a timeout and the aggregator runs them concurrently. A probe that reaches a dependency is still a probe that spends that dependency's budget, so a saturated process answering them quickly is the design, not a gap in it.
-
-
-```
-unowned             plugins=14
-  health
-    selected at /Users/dev/xbc/extensions/reliability/health/plugin.go:48
-    requires    many      health.Contributor                     from greeter
-  health-http
-    selected at /Users/dev/xbc/transport/web/extensions/reliability/health/plugin.go:56
-    requires ref       *health.Plugin                         from health
-  web-engine-gin
-    selected at /Users/dev/xbc/transport/web/engines/gin/bundle.go:30
-    no declared inputs
-  web
-    selected at /Users/dev/xbc/transport/web/plugin.go:95
-    requires one       web.EngineFactory                      from web-engine-gin
-    requires many      web.Middleware                         from accesslog, biz, cors, gzip, requestid, securityheaders, timeout
-    requires many      web.ErrorMapper                        unsatisfied: no enabled plugin exports it
-    requires many      web.RouteContributor                   from greeter, health-http, swag
-    requires many      web.RouteCatalogListener               from swag
-    requires many      authentication.Authenticator           unsatisfied: no enabled plugin exports it
-    requires many      web.CredentialExtractor                unsatisfied: no enabled plugin exports it
-```
-
-`unsatisfied` is the line to look for. `ref` and `one` inputs cannot appear that way -- a missing or ambiguous producer fails planning with an error naming the consumer -- but `optional` and `many` inputs binding nothing is legal by design, which is what makes it dangerous: the application starts, nothing is logged, and the capability you selected a Bundle for is simply absent. The output above is the quickstart's own, and it is correct there: no authenticator or credential extractor Bundle is selected, which is exactly why its `web.security` rules may only `permit` and not `authenticate`, and no plugin contributes an error mapper, so errors fall back to Web's built-in problem mapping. The same three lines in a deployment that does select `jwt.Bundle()` mean the Bundle never reached the composition root, or its section is disabled -- and in that deployment the first authenticating rule would fail startup instead of silently letting a request through.
-
-`selected at` is the `BundleOf` call that first introduced the Definition, as an absolute `file:line`. For a plugin selected through an aggregate such as `prelude.Bundle()`, that site is the owning package's own `Bundle()` rather than the aggregate, because that is where the Definition entered a Bundle; for an application plugin it is the application's own file. Selecting the same Definition twice -- an aggregate plus an explicit selection -- stays legal and is not reported as a conflict; the first selection wins and is the one printed. Selections that disagree on workload ownership are the exception: a Definition tagged by a workload at one selection and left plain at another fails planning with `conflicting workload ownership`, naming both selection points, rather than letting Bundle order decide the membership. Two *different* Definitions claiming one key is the real conflict, and that fails planning with both declaration and selection sites named.
-
-Like the rest of `doctor`, this section prints only identities, contract type names, and source locations. Reading it constructs no plugin and starts no goroutine. The one thing `doctor` does reach for is the placement decision, which it resolves before planning: a lease source reads its store and wins its slots there, and the runtime gives them back before the command returns -- the acquisition is transient, and nothing it claims outlives the report that needed it.
 ## Reading the startup report
 
 Before it releases the traffic gate, a successful start prints the assembled request pipeline and the decision behind every route. The `validate` subcommand prints the same report for the same composition without binding a listener, so the decision can be read -- and a mistake found -- from a process that serves nothing:
@@ -1095,6 +1049,25 @@ Each policy row names the outcome and, in parentheses, the tier that decided it:
 This report is the only place route-level policy is visible, and the reason is structural: a route is contributed by its plugin during `Start`, and its decision needs the registered authenticators, so both exist only after construction. The start and `validate` are therefore the two commands that print it, and they print the same one: `validate` runs the identical assembly and stops before the listener. `doctor` deliberately constructs nothing, so it validates the configuration's shape -- `web.security.default` must be `deny` or `permit`, and every rule must be well-formed -- and reports the graph without ever printing a route table. Every check that needs the registered authenticators runs in that startup path instead, before the gate opens or the `validate` report is printed: a declared `web.security.schemes` order with no authenticator registered is refused, and so is a route that requires authentication with none available. Both fail the command rather than appearing as rows in the table above, which is the point -- a policy mistake fails the process instead of being served.
 
 
+## Diagnosing a slow boot or a slow shutdown
+
+Every boot logs how long it took to become servable on the released-gate line:
+
+```
+INFO  xbc: application traffic gate released  instances=14 order=... startup=7.562ms
+```
+
+Set `log.level` to `debug` to get the breakdown behind that number. It arrives as a single record listing the six ordered startup phases, then one line per instance naming only the stages that actually ran:
+
+```
+DEBUG xbc: startup timings, total 7.562ms
+  phases: bootstrap 1.488ms, planning 4.492ms, construct 368µs, migrate 0s, start 1.021ms, traffic 185µs
+  health                       factory 1.25µs, Init 3.041µs
+  web                          factory 22.583µs, Start 1.019ms, OpenTraffic 185µs
+```
+
+Read the phase line first: it separates a slow configuration source or a slow plugin graph from a plugin that is slow to start. A stage the plugin never declared is absent rather than reported as `0s`, and a stage that ended in an error still reports what it spent.
+
 A `validate` run has its own pair, measured from the same anchor -- the moment argument parsing succeeded -- rather than from a gate release, so the two totals are comparable across commands. It closes with the always-on line, and at debug it lists one line per instance whose `Preflight` hook ran, which is the only stage the command runs beyond construction:
 
 ```
@@ -1103,3 +1076,45 @@ DEBUG xbc: validation timings, total 8.203ms
   web                          Preflight 7.912ms
 ```
 
+The reverse unwind is reported the same way. A shutdown that stayed inside its budget records the per-instance waits at debug, which is what attributes a slow rolling restart to a plugin. The line states the pre-stop phase beside the walk, because the two are one stop to a supervisor:
+
+```
+DEBUG xbc: reverse unwind finished inside its budget  budget=15s pre_stop=1.583µs reason=signal total_budget=17s waited="[web 2.00123775s transcode 126.5µs heartbeat 38.75µs]"
+```
+
+A shutdown that ran out of budget warns instead, and the warning carries the same `waited` list alongside the plugins that were abandoned or never attempted -- the casualty list names who was cut off, the waits name who spent the budget.
+
+These reports contain only identities, stage names, and durations; no configured value reaches them.
+
+
+## Diagnosing why a plugin is in the graph
+
+`doctor` answers two questions the enabled-instances table cannot: who selected each plugin, and what is actually feeding it. It groups the graph the same way the workload rows do -- each declared workload, then `unowned` -- and walks that order, printing per instance the composition site that introduced it and one line per declared input:
+
+```
+unowned             plugins=14
+  health
+    selected at /Users/dev/xbc/extensions/reliability/health/plugin.go:48
+    requires    many      health.Contributor                     from greeter
+  health-http
+    selected at /Users/dev/xbc/transport/web/extensions/reliability/health/plugin.go:56
+    requires ref       *health.Plugin                         from health
+  web-engine-gin
+    selected at /Users/dev/xbc/transport/web/engines/gin/bundle.go:30
+    no declared inputs
+  web
+    selected at /Users/dev/xbc/transport/web/plugin.go:95
+    requires one       web.EngineFactory                      from web-engine-gin
+    requires many      web.Middleware                         from accesslog, biz, cors, gzip, requestid, securityheaders, timeout
+    requires many      web.ErrorMapper                        unsatisfied: no enabled plugin exports it
+    requires many      web.RouteContributor                   from greeter, health-http, swag
+    requires many      web.RouteCatalogListener               from swag
+    requires many      authentication.Authenticator           unsatisfied: no enabled plugin exports it
+    requires many      web.CredentialExtractor                unsatisfied: no enabled plugin exports it
+```
+
+`unsatisfied` is the line to look for. `ref` and `one` inputs cannot appear that way -- a missing or ambiguous producer fails planning with an error naming the consumer -- but `optional` and `many` inputs binding nothing is legal by design, which is what makes it dangerous: the application starts, nothing is logged, and the capability you selected a Bundle for is simply absent. The output above is the quickstart's own, and it is correct there: no authenticator or credential extractor Bundle is selected, which is exactly why its `web.security` rules may only `permit` and not `authenticate`, and no plugin contributes an error mapper, so errors fall back to Web's built-in problem mapping. The same three lines in a deployment that does select `jwt.Bundle()` mean the Bundle never reached the composition root, or its section is disabled -- and in that deployment the first authenticating rule would fail startup instead of silently letting a request through.
+
+`selected at` is the `BundleOf` call that first introduced the Definition, as an absolute `file:line`. For a plugin selected through an aggregate such as `prelude.Bundle()`, that site is the owning package's own `Bundle()` rather than the aggregate, because that is where the Definition entered a Bundle; for an application plugin it is the application's own file. Selecting the same Definition twice -- an aggregate plus an explicit selection -- stays legal and is not reported as a conflict; the first selection wins and is the one printed. Selections that disagree on workload ownership are the exception: a Definition tagged by a workload at one selection and left plain at another fails planning with `conflicting workload ownership`, naming both selection points, rather than letting Bundle order decide the membership. Two *different* Definitions claiming one key is the real conflict, and that fails planning with both declaration and selection sites named.
+
+Like the rest of `doctor`, this section prints only identities, contract type names, and source locations. Reading it constructs no plugin and starts no goroutine. The one thing `doctor` does reach for is the placement decision, which it resolves before planning: a lease source reads its store and wins its slots there, and the runtime gives them back before the command returns -- the acquisition is transient, and nothing it claims outlives the report that needed it.

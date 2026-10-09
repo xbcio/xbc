@@ -82,6 +82,24 @@
 // pointer preserves those states; absence is never interpreted as public
 // access.
 //
+// A contributor may also mount a handler that arrives with its own routing --
+// an integration library, a file server, another framework's engine -- with
+// Router.Mount, which registers the path as a subtree on every method and
+// hands that handler the request with the prefix stripped. The subtree is an
+// ordinary part of the same ingress: the same engine answers it on the same
+// listener under the same base path, global middleware runs ahead of the
+// mounted handler, and its requests resolve to the mount's own rows in the
+// frozen table, so web.security covers the whole subtree exactly as it covers
+// anywhere else -- a rule has to name the prefix itself ("/flow/**"), because
+// a path inside the prefix has no row to match. Paths inside the prefix that
+// the handler does not recognize are the handler's own 404; the framework's
+// unmatched-request chains still answer every request the matcher never
+// routed, which for a mount means the methods outside the covered set, as the
+// usual 405 with Allow. Mount is not a plugin: it declares no configuration
+// section, owns no lifecycle, and opens no listener, and constructing and
+// mounting the handler has to be safe under Preflight, which performs the
+// same route registration without ever binding one.
+//
 // Middleware identity is the producing plugin.Entry Identity. Phase is a hard
 // outer-to-inner boundary, while typed Before and After references refine
 // domain execution order. Missing preferred targets are reported; missing
