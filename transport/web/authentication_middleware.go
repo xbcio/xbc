@@ -264,7 +264,7 @@ func (*authenticationMiddleware) Order() Order { return Order{Phase: PhaseAuth} 
 // which is the whole point: a policy mistake must never degrade into a
 // silently permissive service.
 func (m *authenticationMiddleware) RoutesReady(catalog RouteCatalog) error {
-	routes := catalog.All()
+	routes := servingRoutes(catalog.All())
 
 	if err := m.policies.validateReachability(); err != nil {
 		return err
@@ -300,6 +300,28 @@ func (m *authenticationMiddleware) RoutesReady(catalog RouteCatalog) error {
 	m.resolved = decisions
 	m.permitAll = m.policies.defaultDecision == SecurityPermit
 	return nil
+}
+
+// servingRoutes drops the management-plane rows from a frozen catalog. This
+// middleware runs on the serving chain only, so every policy it compiles,
+// enforces, and reports is about that plane's routes.
+//
+// Filtering is not merely a tidy report. A management route reaches the
+// management listener, which runs no authentication middleware at all, so
+// compiling one here would first let a rule reach out of the serving plane and
+// then let the deny-by-default tier fail startup over a route it can never
+// protect -- a startup failure with no way to satisfy it, since the same route
+// is refused an authentication declaration when the table is frozen. See
+// validateManagementRoute and Router.Management.
+func servingRoutes(routes []RouteInfo) []RouteInfo {
+	serving := make([]RouteInfo, 0, len(routes))
+	for _, route := range routes {
+		if route.Management {
+			continue
+		}
+		serving = append(serving, route)
+	}
+	return serving
 }
 
 // Handler resolves policy with a single map lookup. The linear rule scan was

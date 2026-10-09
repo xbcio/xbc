@@ -75,6 +75,11 @@ var archRouterNonRegistrationMethods = map[string]bool{
 	"Group": true,
 	"Perm":  true,
 	"Auth":  true,
+	// Management returns the management-plane view for this router's subtree.
+	// The view registers routes, but the call that produces it does not: it is
+	// a derivation like Group, and the *Route that later registrations return
+	// comes from whatever registration method is called on the view.
+	"Management": true,
 }
 
 type archTopValue struct {

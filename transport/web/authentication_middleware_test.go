@@ -468,6 +468,40 @@ func TestAuthenticationMiddlewareFailsClosedOnUncompiledRoute(t *testing.T) {
 	}
 }
 
+// TestManagementRoutesStayOutOfTheServingPolicy pins the plane split at the one
+// place where getting it wrong is silent. This middleware reads the whole
+// shared route table, and it is the only thing standing between deny-by-default
+// and an unauthenticated service. A management route compiled here would do two
+// wrong things at once: let the security declaration reach across planes, and
+// fail startup on the deny default -- over a route no request on this chain can
+// reach, and which cannot be given a policy either, because the freeze refuses
+// an authentication declaration on a management route. The positive control
+// below is the same route on the serving plane, which must still fail.
+func TestManagementRoutesStayOutOfTheServingPolicy(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := web.NewAuthenticationMiddleware(web.SecurityConfig{Default: web.SecurityDeny}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewAuthenticationMiddleware() error = %v", err)
+	}
+
+	management := web.RouteInfo{Method: http.MethodGet, Path: "/-/metrics", Management: true}
+	if err := middleware.RoutesReady(web.NewRouteCatalog([]web.RouteInfo{management})); err != nil {
+		t.Fatalf("RoutesReady() error = %v; a management route must not be compiled, because its chain runs no authentication middleware", err)
+	}
+
+	serving := web.RouteInfo{Method: http.MethodGet, Path: "/-/metrics"}
+	err = middleware.RoutesReady(web.NewRouteCatalog([]web.RouteInfo{serving}))
+	if err == nil {
+		t.Fatal("RoutesReady() = nil; the same route on the serving plane must still fail the deny default")
+	}
+	for _, want := range []string{"GET /-/metrics", "requires authentication but no authenticator is registered"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("RoutesReady() error = %v, want it to contain %q", err, want)
+		}
+	}
+}
+
 func TestAuthenticationMiddlewarePermitsPublicRoute(t *testing.T) {
 	t.Parallel()
 

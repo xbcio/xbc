@@ -106,6 +106,15 @@ type RouteInfo struct {
 	// single literal path -- Unmetered above all -- from being made silently
 	// for a subtree; see validateUnmeteredRoute.
 	Mounted bool
+	// Management reports that this row is registered on the management plane:
+	// it was declared through the view Router.Management returns, and the
+	// listener that answers it is the management listener rather than the
+	// serving one. The two planes share one route table, so the flag is what
+	// lets the parts of the framework that read the whole table tell them
+	// apart -- the authentication middleware above all, which protects only
+	// the serving plane and must not compile, enforce, or report a policy for
+	// a route no request on its chain can reach. See Router.Management.
+	Management bool
 }
 
 // Route is the metadata handle returned by Router.Handle and the
@@ -237,6 +246,15 @@ type Router struct {
 	index       *map[string]RouteInfo
 	defaultPerm string
 	defaultAuth *AuthPolicy
+	// managementEngine is the engine Router.Management binds its view to, or
+	// nil when no management listener is configured -- the default. A nil
+	// engine is what makes Management return the receiver, so a composition
+	// that registers an operator route through it gets exactly the route it
+	// would have registered without it.
+	managementEngine Engine
+	// managementPlane marks a view Management built: its registrations are
+	// recorded as management-plane rows and reach the management engine.
+	managementPlane bool
 }
 
 // newRouteTable allocates the three pieces of shared, pointer-identity
@@ -302,6 +320,12 @@ func (r *Router) freeze() (RouteCatalog, error) {
 		if err := validateUnmeteredRoute(route); err != nil {
 			return nil, err
 		}
+		if err := validateManagementRoute(route); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateRouteScopes(*r.routes); err != nil {
+		return nil, err
 	}
 
 	idx := make(map[string]RouteInfo, len(*r.routes))
@@ -344,6 +368,59 @@ func validateUnmeteredRoute(route RouteInfo) error {
 		return fmt.Errorf(
 			"xbc: route %s %s is marked unmetered but its path is a pattern\n  → the in-flight gate exempts a route by its literal path, so this route would be metered anyway; give the probe a fixed path, or drop Unmetered and let it be admitted like any other route",
 			route.Method, route.Path)
+	}
+	return nil
+}
+
+// validateManagementRoute rejects the declarations that have no meaning on the
+// management plane.
+//
+// Its chain deliberately carries none of the framework stages that read these
+// fields -- no authentication middleware, no authorization, no in-flight gate
+// -- so a declaration made here would be recorded in the route table, reported
+// in the startup report, and enforced by nothing. An operator would read a
+// policy that does not exist, which is worse than either having one or
+// visibly not having one. A route that needs any of them belongs on the serving
+// plane, where the chain that enforces them runs.
+func validateManagementRoute(route RouteInfo) error {
+	if !route.Management {
+		return nil
+	}
+	switch {
+	case route.Auth != nil:
+		return fmt.Errorf(
+			"xbc: management route %s %s declares an authentication policy\n  → the management chain runs no authentication middleware, so this declaration would never be enforced; drop it, or register the route on the serving plane",
+			route.Method, route.Path)
+	case route.Perm != "":
+		return fmt.Errorf(
+			"xbc: management route %s %s declares permission %q\n  → the management chain runs no authorization middleware, so this declaration would never be enforced; drop it, or register the route on the serving plane",
+			route.Method, route.Path, route.Perm)
+	case route.Unmetered:
+		return fmt.Errorf(
+			"xbc: management route %s %s is marked unmetered\n  → the management chain has no in-flight gate for this route to be exempt from; drop the declaration",
+			route.Method, route.Path)
+	}
+	return nil
+}
+
+// validateRouteScopes rejects one method and path registered on both planes.
+// Each plane has its own engine, so each would accept the duplicate on its own;
+// the route table cannot. It records one entry per method and path, and both
+// the request-time lookup every route bakes in and the in-flight gate's
+// exemption read that entry -- so a request answered by one plane would be
+// recorded as, and reported under, the other plane's declaration. The
+// registration is a mistake to fix rather than a collision to resolve by
+// ordering, so it fails the freeze.
+func validateRouteScopes(routes []RouteInfo) error {
+	management := make(map[string]bool, len(routes))
+	for _, route := range routes {
+		key := routeKey(route.Method, route.Path)
+		if previous, seen := management[key]; seen && previous != route.Management {
+			return fmt.Errorf(
+				"xbc: route %s %s is registered on both the serving plane and the management plane\n  → the route table holds one entry per method and path, so the two registrations would share an entry and a request would be reported under whichever plane registered last; register the route on exactly one plane",
+				route.Method, route.Path)
+		}
+		management[key] = route.Management
 	}
 	return nil
 }
@@ -400,14 +477,56 @@ func appendChain(parent []Handler, extra ...Handler) []Handler {
 // failure mode unrepresentable.
 func (r *Router) Group(relativePath string, h ...Handler) *Router {
 	return &Router{
-		engine:      r.engine,
-		handlers:    appendChain(r.handlers, h...),
-		basePath:    joinPaths(r.basePath, relativePath),
-		routes:      r.routes,
-		frozen:      r.frozen,
-		index:       r.index,
-		defaultPerm: r.defaultPerm,
-		defaultAuth: cloneAuthPolicy(r.defaultAuth),
+		engine:           r.engine,
+		handlers:         appendChain(r.handlers, h...),
+		basePath:         joinPaths(r.basePath, relativePath),
+		routes:           r.routes,
+		frozen:           r.frozen,
+		index:            r.index,
+		defaultPerm:      r.defaultPerm,
+		defaultAuth:      cloneAuthPolicy(r.defaultAuth),
+		managementEngine: r.managementEngine,
+		managementPlane:  r.managementPlane,
+	}
+}
+
+// Management returns the registration view for the management plane: operator
+// endpoints -- metrics, pprof, and anything a deployment scrapes or debugs with
+// -- that a deployment may choose to keep off the listener that serves business
+// traffic.
+//
+// Without a configured management listener this returns the receiver itself, so
+// a route registered through it is indistinguishable from one registered
+// directly: same engine, same path, same authentication tier. That is what
+// keeps an unset web.management.addr a zero-difference default -- and it is why
+// a plugin can call Management unconditionally instead of branching on whether
+// this deployment separates the planes.
+//
+// With a listener configured, the view shares the route table and the freeze
+// flag but binds its registrations to the management engine and to the
+// management chain, which carries none of the serving plane's framework stages:
+// no authentication middleware, no in-flight gate, no business middleware. The
+// view keeps this router's base path, so a group offers a management view of
+// its own subtree -- but not the group's handlers, which were declared for the
+// routes that plane serves; middleware for management routes is declared by
+// grouping the view itself.
+//
+// A management route may not declare .Auth, .Perm, or .Unmetered: nothing on
+// its chain would enforce them, so freeze refuses the declaration rather than
+// recording a policy that never applies (see validateManagementRoute). Access
+// to the management plane is therefore a property of where its listener binds,
+// which web.management.addr and allow_remote decide.
+func (r *Router) Management() *Router {
+	if r.managementEngine == nil {
+		return r
+	}
+	return &Router{
+		engine:          r.managementEngine,
+		basePath:        r.basePath,
+		routes:          r.routes,
+		frozen:          r.frozen,
+		index:           r.index,
+		managementPlane: true,
 	}
 }
 
@@ -486,10 +605,11 @@ func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 	chain = appendChain(chain, h...)
 	r.engine.Handle(method, fullPath, chain)
 	*r.routes = append(*r.routes, RouteInfo{
-		Method: method,
-		Path:   fullPath,
-		Auth:   cloneAuthPolicy(r.defaultAuth),
-		Perm:   r.defaultPerm,
+		Method:     method,
+		Path:       fullPath,
+		Auth:       cloneAuthPolicy(r.defaultAuth),
+		Perm:       r.defaultPerm,
+		Management: r.managementPlane,
 	})
 	return &Route{Router: r, indexes: []int{len(*r.routes) - 1}}
 }
