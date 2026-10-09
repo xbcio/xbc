@@ -8,7 +8,8 @@
 // Mark only operations that are safe to replay, then require clients to send an
 // Idempotency-Key. For a replicated service, select the redis backend so every
 // replica observes the same reservation; the Definition-driven composition
-// resolves the named *redis.Client automatically:
+// resolves the named Redis client automatically, whatever topology it was
+// configured for:
 //
 //	func (*Orders) RegisterRoutes(r *web.Router) {
 //		r.POST("/orders", func(ctx context.Context, c *web.Ctx) error {

@@ -9,8 +9,11 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
 
+	xbcconfig "github.com/xbcio/xbc/config"
 	"github.com/xbcio/xbc/extensions/coordination/lease"
+	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
+	"github.com/xbcio/xbc/plugin/assembly"
 )
 
 func newRedisLockerTest(t *testing.T) (*miniredis.Miniredis, *redis.Client, lease.Locker) {
@@ -28,6 +31,12 @@ func newRedisLockerTest(t *testing.T) (*miniredis.Miniredis, *redis.Client, leas
 func TestRedisLockerRejectsNilClient(t *testing.T) {
 	if locker, err := newRedisLocker(nil); err == nil {
 		t.Fatalf("newRedisLocker(nil) = (%v, nil), want an error", locker)
+	}
+	// newRedisLocker takes the topology-neutral interface, so a typed nil must
+	// be rejected exactly like an untyped one.
+	var typedNil *redis.Client
+	if locker, err := newRedisLocker(typedNil); err == nil {
+		t.Fatalf("newRedisLocker(typed nil) = (%v, nil), want an error", locker)
 	}
 }
 
@@ -256,6 +265,88 @@ func TestRedisLockerRejectsUnusableArguments(t *testing.T) {
 	}
 	if owned, err := held.Renew(ctx, 999*time.Microsecond); err == nil || owned {
 		t.Fatalf("Renew() with a sub-millisecond TTL = (%v, %v), want an error", owned, err)
+	}
+}
+
+// TestPlannedDefinitionResolvesTheConfiguredRedisInstanceFromTheGraph pins the
+// distributed.redis_instance path at the level a contract mismatch fails
+// silently: the Ref it is declared as. A wrong Ref type is not a compile error,
+// and it does not fail the plan -- it produces a plugin that starts without a
+// locker -- so the test drives the real graph with a stub "redis" producer
+// exporting the same goredis.UniversalClient contract the real plugin exports,
+// and asserts cron took its lease over that client without owning it.
+func TestPlannedDefinitionResolvesTheConfiguredRedisInstanceFromTheGraph(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	redisDefinition := plugin.Define(
+		"redis",
+		func(plugin.BuildContext) (*redis.Client, error) { return client, nil },
+		plugin.Options[*redis.Client]{
+			Instances: plugin.MultipleInstances,
+			Exports: plugin.Contracts(
+				plugin.ExportAs[redis.UniversalClient](func(value *redis.Client) redis.UniversalClient { return value }),
+			),
+		},
+	)
+
+	environment, err := xbcconfig.NewEnvironment(map[string]any{
+		"plugins": map[string]any{
+			"cron": map[string]any{
+				"distributed": map[string]any{"enabled": true, "redis_instance": "locks"},
+			},
+			"redis": map[string]any{
+				"locks": map[string]any{},
+			},
+		},
+	}, "XBC_CRON_TEST_UNSET_")
+	if err != nil {
+		t.Fatalf("config.NewEnvironment: %v", err)
+	}
+
+	plan, err := assembly.BuildPlan(assembly.PlanOptions{
+		Bundles: []plugin.Bundle{plugin.BundleOf(redisDefinition), Bundle()},
+		Env:     environment,
+	})
+	if err != nil {
+		t.Fatalf("assembly.BuildPlan: %v", err)
+	}
+	host := newTestHost()
+	t.Cleanup(host.close)
+	constructed, err := assembly.Construct(plan, assembly.ConstructOptions{
+		ContextFactory: func(identity plugin.Identity, _ corelog.Logger) *plugin.Context {
+			return plugin.NewRuntimeContext(host, identity)
+		},
+	})
+	if err != nil {
+		t.Fatalf("assembly.Construct: %v", err)
+	}
+
+	instance, found := constructed.Instance(plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance})
+	if !found {
+		t.Fatal("cron instance not constructed")
+	}
+	p, ok := instance.Primary().(*Plugin)
+	if !ok {
+		t.Fatalf("primary = %T, want *Plugin", instance.Primary())
+	}
+	backing, ok := p.locker.(*redisLocker)
+	if !ok {
+		t.Fatalf("locker type = %T, want *redisLocker", p.locker)
+	}
+	if backing.client != client {
+		t.Fatal("plan did not wire the named Redis client")
+	}
+	if p.ownedRedis != nil {
+		t.Fatal("a graph-provided client must not be owned by cron")
+	}
+
+	if err := p.stop(context.Background()); err != nil {
+		t.Fatalf("stop() error = %v", err)
+	}
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("stop() closed a client cron does not own: %v", err)
 	}
 }
 

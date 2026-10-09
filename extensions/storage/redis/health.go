@@ -12,21 +12,22 @@ import (
 )
 
 // HealthKey is the stable identity of the readiness probe for configured Redis
-// clients. It is a second Definition rather than a contract on the primary
-// value because this plugin's primary is *goredis.Client: a third-party type
-// cannot be given a method, so it cannot implement health.Contributor itself.
+// clients. It stays a Definition of its own because it aggregates: it collects
+// every client instance and reports them under one name, "redis-health". A
+// contributor carried by the client Definition would answer only for the single
+// instance its primary represents.
 const HealthKey plugin.Key = "redis-health"
 
 // healthProbe reports one readiness check per configured Redis instance. It
 // collects every client this plugin produced, so a new configured instance is
 // probed without touching the composition root.
 type healthProbe struct {
-	clients []plugin.Entry[*goredis.Client]
+	clients []plugin.Entry[*Client]
 }
 
 var _ health.Contributor = (*healthProbe)(nil)
 
-var clientsInput = plugin.Collect[*goredis.Client]()
+var clientsInput = plugin.Collect[*Client]()
 
 var healthDefinition = plugin.Define(
 	HealthKey,
@@ -42,13 +43,13 @@ var healthDefinition = plugin.Define(
 	},
 )
 
-func newHealthProbe(clients []plugin.Entry[*goredis.Client]) (*healthProbe, error) {
+func newHealthProbe(clients []plugin.Entry[*Client]) (*healthProbe, error) {
 	for _, entry := range clients {
 		if entry.Value == nil {
 			return nil, fmt.Errorf("redis: instance %s produced a nil client", entry.Identity)
 		}
 	}
-	return &healthProbe{clients: append([]plugin.Entry[*goredis.Client](nil), clients...)}, nil
+	return &healthProbe{clients: append([]plugin.Entry[*Client](nil), clients...)}, nil
 }
 
 // HealthChecks returns one readiness check per configured instance. The default
@@ -73,8 +74,10 @@ func (p *healthProbe) HealthChecks() []health.NamedChecker {
 }
 
 // pingClient treats a closed client as down rather than as a probe defect: a
-// client closed by shutdown must not be reported as ready.
-func pingClient(ctx context.Context, client *goredis.Client) error {
+// client closed by shutdown must not be reported as ready. The ping reaches
+// whatever topology the instance addresses, so a sentinel-managed or clustered
+// instance answers through its own client.
+func pingClient(ctx context.Context, client *Client) error {
 	if err := client.Ping(ctx).Err(); err != nil {
 		if errors.Is(err, goredis.ErrClosed) {
 			return fmt.Errorf("redis: client is closed: %w", err)

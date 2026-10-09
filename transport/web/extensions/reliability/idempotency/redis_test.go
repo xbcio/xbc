@@ -10,6 +10,28 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 )
 
+// TestNewRedisStoreRejectsUnusableConstruction pins the construction guards.
+// The typed nil only became reachable once the constructor took the
+// topology-neutral interface: a plain nil comparison would let a nil
+// *goredis.Client through to fail on the first command instead.
+func TestNewRedisStoreRejectsUnusableConstruction(t *testing.T) {
+	if store, err := NewRedisStore(nil, "prefix:"); err == nil {
+		t.Fatalf("NewRedisStore(nil) = %v, want an error", store)
+	}
+	var typedNil *goredis.Client
+	if store, err := NewRedisStore(typedNil, "prefix:"); err == nil {
+		t.Fatalf("NewRedisStore(typed nil) = %v, want an error", store)
+	}
+	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
+	t.Cleanup(func() { _ = client.Close() })
+	if store, err := NewRedisStore(client, "bad\nprefix"); err == nil {
+		t.Fatalf("NewRedisStore(control prefix) = %v, want an error", store)
+	}
+	if _, err := NewRedisStore(client, "prefix:"); err != nil {
+		t.Fatalf("NewRedisStore() error = %v", err)
+	}
+}
+
 func TestRedisStoreAtomicLifecycleOwnershipAndTTLTakeover(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})

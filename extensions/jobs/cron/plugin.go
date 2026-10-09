@@ -60,10 +60,10 @@ func plan(config Config) (plugin.Plan[*Plugin], error) {
 	}
 
 	if instance := config.Distributed.RedisInstance; instance != "" {
-		redisClient := plugin.RefToInstance[*redis.Client]("redis", instance)
+		redisClient := plugin.RefToInstance[redis.UniversalClient]("redis", instance)
 		return plugin.PlanOf(plugin.Inputs(jobContributors, redisClient), func(ctx plugin.BuildContext) (*Plugin, error) {
 			client := redisClient.Get(ctx).Value
-			if client == nil {
+			if isNilInterface(client) {
 				return nil, fmt.Errorf("cron: Redis instance %q exported a nil client", instance)
 			}
 			return newConfiguredPlugin(config, jobContributors.Get(ctx), nil, client)
@@ -95,7 +95,7 @@ type Plugin struct {
 	location      *time.Location
 	renewInterval time.Duration
 	locker        lease.Locker
-	ownedRedis    *redis.Client
+	ownedRedis    redis.UniversalClient
 	jobs          []*scheduledJob
 
 	// admissions is the quota an invocation charges, one limiter per workload
@@ -137,7 +137,7 @@ func newConfiguredPlugin(
 	config Config,
 	contributors []plugin.Entry[JobContributor],
 	selectedLocker lease.Locker,
-	selectedRedis *redis.Client,
+	selectedRedis redis.UniversalClient,
 ) (_ *Plugin, err error) {
 	location, err := time.LoadLocation(config.Timezone)
 	if err != nil {
@@ -150,10 +150,10 @@ func newConfiguredPlugin(
 	}
 
 	var locker lease.Locker
-	var owned *redis.Client
+	var owned redis.UniversalClient
 	if config.Distributed.Enabled {
 		switch {
-		case selectedRedis != nil:
+		case !isNilInterface(selectedRedis):
 			locker, err = newRedisLocker(selectedRedis)
 		case !isNilInterface(selectedLocker):
 			locker = selectedLocker

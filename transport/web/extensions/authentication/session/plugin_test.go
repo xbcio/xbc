@@ -74,8 +74,10 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 // TestPlannedDefinitionResolvesNamedRedisClientFromGraph exercises plan(cfg)
 // through the real dependency graph: a stub "redis" producer stands in for
 // the sibling extensions/storage/redis plugin, proving the redis backend wires the
-// exact named *goredis.Client instance the configuration selects and never
-// closes that borrowed client on Stop.
+// exact named client instance the configuration selects and never closes that
+// borrowed client on Stop. The stub declares the same goredis.UniversalClient
+// contract the real plugin exports, because session resolves the client
+// through that topology-neutral contract rather than through a concrete type.
 func TestPlannedDefinitionResolvesNamedRedisClientFromGraph(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
@@ -84,7 +86,12 @@ func TestPlannedDefinitionResolvesNamedRedisClientFromGraph(t *testing.T) {
 	redisDefinition := plugin.Define(
 		redisPluginKey,
 		func(plugin.BuildContext) (*goredis.Client, error) { return client, nil },
-		plugin.Options[*goredis.Client]{Instances: plugin.MultipleInstances},
+		plugin.Options[*goredis.Client]{
+			Instances: plugin.MultipleInstances,
+			Exports: plugin.Contracts(
+				plugin.ExportAs[goredis.UniversalClient](func(value *goredis.Client) goredis.UniversalClient { return value }),
+			),
+		},
 	)
 
 	environment := sessionEnvironment(t, map[string]any{

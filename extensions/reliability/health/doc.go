@@ -60,11 +60,13 @@
 // extensions/jobs/asynq, and extensions/coordination/raft own their primary type
 // and use this direct shape.
 //
-// A plugin whose primary value is a third-party type cannot implement
-// Contributor, because a Definition may only declare contracts its primary type
-// is assignable to and a foreign type cannot be given a method. Such a plugin
-// contributes through a second Definition in the same Bundle whose primary is
-// its own type and which collects the values it should probe:
+// A plugin whose primary value cannot implement Contributor contributes
+// through a second Definition in the same Bundle whose primary is its own type
+// and which collects the values it should probe. extensions/storage/gorm is in
+// that position because its primary is the third-party *gorm.DB, which a
+// Definition cannot give a method; extensions/storage/redis is in it because it
+// aggregates -- its client Definition is selected once per configured instance,
+// so a contributor that Definition carried would answer only for one instance:
 //
 //	var clients = plugin.Collect[*goredis.Client]()
 //

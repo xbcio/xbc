@@ -253,6 +253,18 @@ func bindConfig(t *testing.T, values map[string]any) Config {
 	return cfg
 }
 
+// preparedConfig returns a configuration that has passed the whole assembly
+// path, so a construction test can rely on running only on sections the plugin
+// itself admits.
+func preparedConfig(t *testing.T, values map[string]any) Config {
+	t.Helper()
+	cfg, err := bindPreparedConfig(values)
+	if err != nil {
+		t.Fatalf("prepared config: %v", err)
+	}
+	return cfg
+}
+
 func bindConfigWithoutValidation(values map[string]any) (Config, error) {
 	env, err := xbcconfig.NewEnvironment(map[string]any{
 		"plugins": map[string]any{

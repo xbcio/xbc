@@ -251,7 +251,9 @@
       "key": "redis",
       "config_path": "plugins.redis",
       "cardinality": "multiple",
-      "contracts": []
+      "contracts": [
+        "github.com/redis/go-redis/v9.UniversalClient"
+      ]
     },
     {
       "key": "redis-health",

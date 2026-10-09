@@ -33,9 +33,9 @@ func TestHealthChecksReportOneReadinessCheckPerInstance(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 
-	probe, err := newHealthProbe([]plugin.Entry[*goredis.Client]{
-		{Identity: plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance}, Value: client},
-		{Identity: plugin.Identity{Plugin: Key, Instance: "cache"}, Value: client},
+	probe, err := newHealthProbe([]plugin.Entry[*Client]{
+		{Identity: plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance}, Value: wrapClient(client)},
+		{Identity: plugin.Identity{Plugin: Key, Instance: "cache"}, Value: wrapClient(client)},
 	})
 	if err != nil {
 		t.Fatalf("newHealthProbe: %v", err)
@@ -69,8 +69,8 @@ func TestHealthChecksReportOneReadinessCheckPerInstance(t *testing.T) {
 func TestHealthChecksReportDownForAnUnreachableInstance(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
-	probe, err := newHealthProbe([]plugin.Entry[*goredis.Client]{
-		{Identity: plugin.Identity{Plugin: Key, Instance: "cache"}, Value: client},
+	probe, err := newHealthProbe([]plugin.Entry[*Client]{
+		{Identity: plugin.Identity{Plugin: Key, Instance: "cache"}, Value: wrapClient(client)},
 	})
 	if err != nil {
 		t.Fatalf("newHealthProbe: %v", err)
@@ -89,18 +89,26 @@ func TestHealthChecksReportDownForAnUnreachableInstance(t *testing.T) {
 }
 
 func TestHealthProbeRejectsANilClient(t *testing.T) {
-	if _, err := newHealthProbe([]plugin.Entry[*goredis.Client]{
+	if _, err := newHealthProbe([]plugin.Entry[*Client]{
 		{Identity: plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance}},
 	}); err == nil {
 		t.Fatal("a nil client must fail construction instead of panicking during a probe")
 	}
 }
 
+// wrapClient builds the primary value a configured instance would carry around
+// an already-constructed go-redis client.
+func wrapClient(client *goredis.Client) *Client {
+	return &Client{UniversalClient: client}
+}
+
 // TestAssembledHealthPluginReportsEveryConfiguredInstance is the load-bearing
-// test for this Definition's existence. The probe exists because *redis.Client,
-// a third-party type, cannot implement health.Contributor: assembly rejects a
-// contract its declaring Definition's primary type is not assignable to. This
-// test proves the second-Definition shape actually reaches the aggregator.
+// test for this Definition's existence. A Definition is enabled per instance,
+// so a contributor it carries answers for exactly one configured Redis
+// instance; the probe is the Bundle member that collects every instance and
+// reports them under the redis-health namespace. This test proves that
+// aggregation still reaches the health aggregator now that the client primary
+// is the wrapper type.
 func TestAssembledHealthPluginReportsEveryConfiguredInstance(t *testing.T) {
 	server := miniredis.RunT(t)
 	environment, err := config.NewEnvironment(map[string]any{

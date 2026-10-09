@@ -148,6 +148,12 @@ func TestRedisStoreValidatesConstructionAndContext(t *testing.T) {
 	if _, err := NewRedisStore(nil, "prefix:"); err == nil {
 		t.Fatal("nil Redis client accepted")
 	}
+	// NewRedisStore takes the topology-neutral interface, so a typed nil must
+	// be rejected exactly like an untyped one.
+	var typedNil *goredis.Client
+	if _, err := NewRedisStore(typedNil, "prefix:"); err == nil {
+		t.Fatal("typed-nil Redis client accepted")
+	}
 	client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:1"})
 	t.Cleanup(func() { _ = client.Close() })
 	if _, err := NewRedisStore(client, "bad\nprefix"); err == nil {

@@ -85,15 +85,19 @@ return 0`)
 // responsible for closing it -- for the addr path that is the Plugin itself,
 // which closes the client it opened during finalization. Use newRedisLocker to
 // reject a nil client early.
+//
+// It addresses whatever topology the client was configured for: both scripts
+// below touch a single key, which is what a cluster client requires.
 type redisLocker struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
 var _ lease.Locker = (*redisLocker)(nil)
 
-// newRedisLocker constructs an owner-safe Redis-backed lease.Locker.
-func newRedisLocker(client *redis.Client) (*redisLocker, error) {
-	if client == nil {
+// newRedisLocker constructs an owner-safe Redis-backed lease.Locker. client may
+// be any topology's client, the configured Redis plugin's included.
+func newRedisLocker(client redis.UniversalClient) (*redisLocker, error) {
+	if isNilInterface(client) {
 		return nil, fmt.Errorf("cron: Redis locker requires a non-nil client")
 	}
 	return &redisLocker{client: client}, nil
@@ -127,7 +131,7 @@ func (l *redisLocker) TryAcquire(ctx context.Context, key, claimant string, ttl 
 }
 
 type redisLease struct {
-	client *redis.Client
+	client redis.UniversalClient
 	key    string
 	owner  string
 }

@@ -52,6 +52,14 @@ func TestNewLockerRejectsANilClient(t *testing.T) {
 	if locker != nil {
 		t.Fatalf("NewLocker(nil) = %v, want a nil locker", locker)
 	}
+
+	// NewLocker takes the topology-neutral interface, so a caller can store a
+	// typed nil in it. That value must be rejected exactly like an untyped nil:
+	// it would otherwise pass the comparison and panic on acquisition.
+	var typedNil *goredis.Client
+	if locker, err := NewLocker(typedNil); err == nil {
+		t.Fatalf("NewLocker(typed nil) = %v, want the same rejection as an untyped nil", locker)
+	}
 }
 
 func TestPrepareLeaseConfigDefaultsToTheUnnamedInstanceAndRejectsBadNames(t *testing.T) {

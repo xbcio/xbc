@@ -184,3 +184,72 @@ func (c Config) options() *goredis.Options {
 		MaxRetries:      c.MaxRetries,
 	}
 }
+
+// failoverOptions maps the sentinel fields. It is called only in sentinel mode,
+// where prepareConfig has already established that addrs and master_name are
+// set and the cluster-only fields are not.
+func (c Config) failoverOptions() *goredis.FailoverOptions {
+	return &goredis.FailoverOptions{
+		MasterName:       c.MasterName,
+		SentinelAddrs:    c.Addrs,
+		SentinelUsername: c.SentinelUsername,
+		SentinelPassword: c.SentinelPassword,
+		RouteByLatency:   c.RouteByLatency,
+		RouteRandomly:    c.RouteRandomly,
+		DB:               c.DB,
+		Username:         c.Username,
+		Password:         c.Password,
+		DialTimeout:      c.DialTimeout,
+		ReadTimeout:      c.ReadTimeout,
+		WriteTimeout:     c.WriteTimeout,
+		PoolTimeout:      c.PoolTimeout,
+		PoolSize:         c.PoolSize,
+		MinIdleConns:     c.MinIdleConns,
+		MaxIdleConns:     c.MaxIdleConns,
+		MaxActiveConns:   c.MaxActiveConns,
+		ConnMaxIdleTime:  c.ConnMaxIdleTime,
+		ConnMaxLifetime:  c.ConnMaxLifetime,
+		MaxRetries:       c.MaxRetries,
+	}
+}
+
+// clusterOptions maps the cluster fields. MaxRetries is mapped and not left to
+// the cluster client's own default of -1 (retries off, because the client
+// retries redirects internally): the framework's max_retries means the same
+// thing in every mode, and a configured value that one mode silently dropped
+// would be worse than a documented policy. A cluster deployment that wants the
+// library behaviour sets max_retries: -1.
+func (c Config) clusterOptions() *goredis.ClusterOptions {
+	return &goredis.ClusterOptions{
+		Addrs:           c.Addrs,
+		Username:        c.Username,
+		Password:        c.Password,
+		ReadOnly:        c.ReadOnly,
+		MaxRedirects:    c.MaxRedirects,
+		DialTimeout:     c.DialTimeout,
+		ReadTimeout:     c.ReadTimeout,
+		WriteTimeout:    c.WriteTimeout,
+		PoolTimeout:     c.PoolTimeout,
+		PoolSize:        c.PoolSize,
+		MinIdleConns:    c.MinIdleConns,
+		MaxIdleConns:    c.MaxIdleConns,
+		MaxActiveConns:  c.MaxActiveConns,
+		ConnMaxIdleTime: c.ConnMaxIdleTime,
+		ConnMaxLifetime: c.ConnMaxLifetime,
+		MaxRetries:      c.MaxRetries,
+	}
+}
+
+// topology names the configured deployment for error messages. It names
+// credentials never, and in the addressing modes it names the seeds rather than
+// the ignored Addr.
+func (c Config) topology() string {
+	switch c.Mode {
+	case ModeSentinel:
+		return fmt.Sprintf("sentinel master %q at %s", c.MasterName, strings.Join(c.Addrs, ", "))
+	case ModeCluster:
+		return fmt.Sprintf("cluster %s", strings.Join(c.Addrs, ", "))
+	default:
+		return c.Addr
+	}
+}

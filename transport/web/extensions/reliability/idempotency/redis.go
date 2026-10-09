@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -48,22 +49,43 @@ redis.call('DEL', KEYS[1])
 return 1
 `)
 
-// RedisStore is a distributed, Lua-atomic Store over go-redis.
+// RedisStore is a distributed, Lua-atomic Store over go-redis. It addresses
+// whatever topology the client was configured for: every script below touches
+// a single key, which is what a cluster client requires.
 type RedisStore struct {
-	client *goredis.Client
+	client goredis.UniversalClient
 	prefix string
 }
 
-// NewRedisStore builds a distributed store. key passed to methods should
+// NewRedisStore builds a distributed store. client may be any topology's
+// client, the configured Redis plugin's included. key passed to methods should
 // already be a fixed-width digest, preventing user-controlled Redis key shape.
-func NewRedisStore(client *goredis.Client, prefix string) (*RedisStore, error) {
-	if client == nil {
+func NewRedisStore(client goredis.UniversalClient, prefix string) (*RedisStore, error) {
+	if isNilClient(client) {
 		return nil, errors.New("idempotency: Redis client cannot be nil")
 	}
 	if prefix == "" || containsControl(prefix) {
 		return nil, errors.New("idempotency: Redis prefix is invalid")
 	}
 	return &RedisStore{client: client, prefix: prefix}, nil
+}
+
+// isNilClient reports whether client carries no client, including the typed nil
+// a caller can store in an interface. NewRedisStore accepts the topology-neutral
+// interface so that every topology's client is admissible, and a plain nil
+// comparison would let a nil *goredis.Client through to fail on the first
+// command instead of at construction.
+func isNilClient(client goredis.UniversalClient) bool {
+	if client == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(client)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func (s *RedisStore) redisKey(key string) string { return s.prefix + key }

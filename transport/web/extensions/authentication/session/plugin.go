@@ -68,10 +68,10 @@ func Definition() plugin.Definition { return definition }
 func Bundle() plugin.Bundle { return bundle }
 
 // plan selects the Store's inputs from the prepared config: the memory
-// backend needs none, while the redis backend requires the named
-// *goredis.Client instance the configuration selects. The planner itself
-// acquires no resource; the returned Plan's factory does that once the graph
-// has wired the declared inputs.
+// backend needs none, while the redis backend requires the named Redis client
+// instance the configuration selects. The planner itself acquires no resource;
+// the returned Plan's factory does that once the graph has wired the declared
+// inputs.
 func plan(cfg Config) (plugin.Plan[*Plugin], error) {
 	config, err := normalizeConfig(cfg)
 	if err != nil {
@@ -84,7 +84,7 @@ func plan(cfg Config) (plugin.Plan[*Plugin], error) {
 		}), nil
 	}
 
-	client := plugin.RefToInstance[*goredis.Client](redisPluginKey, config.redisInstance)
+	client := plugin.RefToInstance[goredis.UniversalClient](redisPluginKey, config.redisInstance)
 	return plugin.PlanOf(plugin.Inputs(client), func(context plugin.BuildContext) (*Plugin, error) {
 		value := client.Get(context).Value
 		if value == nil {

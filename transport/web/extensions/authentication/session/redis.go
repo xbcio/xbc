@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -79,20 +80,39 @@ return 1
 // rotation atomic across application replicas. The Redis client remains owned
 // by the base Redis plugin and is never closed here.
 type RedisStore struct {
-	client *goredis.Client
+	client goredis.UniversalClient
 	prefix string
 	now    func() time.Time
 }
 
-// NewRedisStore returns a distributed session store.
-func NewRedisStore(client *goredis.Client, prefix string) (*RedisStore, error) {
-	if client == nil {
+// NewRedisStore returns a distributed session store. client may be any
+// topology's client, the configured Redis plugin's included.
+func NewRedisStore(client goredis.UniversalClient, prefix string) (*RedisStore, error) {
+	if isNilClient(client) {
 		return nil, errors.New("session: Redis client cannot be nil")
 	}
 	if stringsInvalidPrefix(prefix) {
 		return nil, errors.New("session: Redis prefix cannot be empty or contain control characters")
 	}
 	return &RedisStore{client: client, prefix: prefix, now: time.Now}, nil
+}
+
+// isNilClient reports whether client carries no client, including the typed nil
+// a caller can store in an interface. NewRedisStore accepts the topology-neutral
+// interface so that every topology's client is admissible, and a plain nil
+// comparison would let a nil *goredis.Client through to fail on the first
+// command instead of at construction.
+func isNilClient(client goredis.UniversalClient) bool {
+	if client == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(client)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func stringsInvalidPrefix(prefix string) bool { return prefix == "" || containsControl(prefix) }

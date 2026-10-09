@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -101,7 +102,7 @@ func prepareLeaseConfig(config LeaseConfig) (LeaseConfig, error) {
 // It is pure. No client is touched and no connection is opened here: the whole
 // plan is a declaration of which already-planned producer the factory reads.
 func planLease(config LeaseConfig) (plugin.Plan[*locker], error) {
-	client := plugin.RefToInstance[*goredis.Client](Key, config.Instance)
+	client := plugin.RefToInstance[*Client](Key, config.Instance)
 	return plugin.PlanOf(plugin.Inputs(client), func(ctx plugin.BuildContext) (*locker, error) {
 		return newLocker(client.Get(ctx).Value)
 	}), nil
@@ -110,8 +111,12 @@ func planLease(config LeaseConfig) (plugin.Plan[*locker], error) {
 // locker implements lease.Locker with Redis SET NX PX and owner-checking Lua
 // scripts. It does not own client; the caller remains responsible for closing
 // it. Use NewLocker to reject a nil client early.
+//
+// It addresses whatever topology the instance was configured with: every
+// operation below is a single-key command, which is what a cluster client
+// requires, and none of them is a transaction or a multi-key script.
 type locker struct {
-	client *goredis.Client
+	client goredis.UniversalClient
 }
 
 var _ lease.Locker = (*locker)(nil)
@@ -119,8 +124,9 @@ var _ lease.Locker = (*locker)(nil)
 // NewLocker returns a lease.Locker backed by client. It is exported for
 // composition roots that need a lease before a plugin graph exists: placement
 // is decided before a plan is built, so the Locker that decides it cannot come
-// from a Definition.
-func NewLocker(client *goredis.Client) (lease.Locker, error) {
+// from a Definition. client may be any topology's client, the configured
+// plugin's *Client included.
+func NewLocker(client goredis.UniversalClient) (lease.Locker, error) {
 	implementation, err := newLocker(client)
 	if err != nil {
 		return nil, err
@@ -128,11 +134,29 @@ func NewLocker(client *goredis.Client) (lease.Locker, error) {
 	return implementation, nil
 }
 
-func newLocker(client *goredis.Client) (*locker, error) {
-	if client == nil {
+func newLocker(client goredis.UniversalClient) (*locker, error) {
+	if isNilClient(client) {
 		return nil, fmt.Errorf("redis: lease locker requires a non-nil client")
 	}
 	return &locker{client: client}, nil
+}
+
+// isNilClient reports whether client carries no client, including the typed nil
+// a caller can store in an interface. NewLocker accepts an interface so that
+// every topology's client is admissible, and a plain nil comparison would let a
+// nil *goredis.Client through to panic on the first acquisition -- exactly the
+// failure the nil check exists to turn into an error.
+func isNilClient(client goredis.UniversalClient) bool {
+	if client == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(client)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 // TryAcquire atomically creates key with a fresh owner token and a TTL. The
@@ -164,7 +188,7 @@ func (l *locker) TryAcquire(ctx context.Context, key, claimant string, ttl time.
 }
 
 type redisLease struct {
-	client *goredis.Client
+	client goredis.UniversalClient
 	key    string
 	owner  string
 }
