@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xbcio/xbc/plugin"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog"
 )
@@ -169,6 +170,33 @@ func TestStopBoundsCleanupWithConfiguredExportTimeout(t *testing.T) {
 	}
 	if calls := exporter.shutdownCalls.Load(); calls != 1 {
 		t.Fatalf("exporter shutdown calls = %d, want 1", calls)
+	}
+}
+
+// TestPluginStopsWithoutDeclaringADrainPhase pins the lifecycle decision the
+// package documentation's Shutdown section explains: Stop alone flushes the
+// accepted spans, so no Drain hook is offered and the framework never queues
+// this plugin into the drain phase's shared budget. Adding Drain means
+// redeciding that section, not just satisfying an interface.
+func TestPluginStopsWithoutDeclaringADrainPhase(t *testing.T) {
+	// The Stop half is a compile-time fact; the absence of Drain is the part
+	// that has to be asserted, since nothing in the framework requires it.
+	var _ plugin.Closer = (*Plugin)(nil)
+
+	if _, drains := any((*Plugin)(nil)).(plugin.Drainer); drains {
+		t.Fatal("*Plugin implements plugin.Drainer, which the package documentation's Shutdown section rules out")
+	}
+	// The assertion above only sees a Drain method on the primary type. The
+	// sanctioned way to add the phase is the Lifecycle adapter, which the
+	// framework accepts precisely because the primary type does not implement
+	// the interface, so the erased adapters have to be read as well or a
+	// declared phase would enter the drain queue unseen.
+	descriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(Definition()))
+	if !ok {
+		t.Fatal("Definition() returned a zero handle")
+	}
+	if descriptor.Lifecycle.Drain != nil {
+		t.Fatal("Definition declares a Drain phase, which the package documentation's Shutdown section rules out")
 	}
 }
 
