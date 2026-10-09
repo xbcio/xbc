@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -104,6 +105,12 @@ type assembledPipeline struct {
 	misses         []MiddlewareOrderMiss
 	authentication *authenticationMiddleware
 	inflight       *inFlightGate
+	// tlsConfig is what the listener is wrapped with, or nil for plain HTTP.
+	// It is built here -- reading the certificate files -- so Preflight
+	// validates the material a boot would terminate TLS with, without binding
+	// anything: a certificate that is missing or malformed fails the validate
+	// command instead of the first rollout.
+	tlsConfig *tls.Config
 }
 
 // assemblePipeline builds the immutable request pipeline and registers every
@@ -123,6 +130,11 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 	s.cfg = cfg
 
 	logger := ctx.Log()
+
+	tlsConfig, err := cfg.TLS.serverTLSConfig()
+	if err != nil {
+		return assembledPipeline{}, err
+	}
 
 	if s.factory == nil {
 		return assembledPipeline{}, errors.New("xbc: web Server has no EngineFactory configured; select an engine Bundle alongside web.Bundle()")
@@ -282,6 +294,7 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 		misses:         misses,
 		authentication: authenticator,
 		inflight:       inflight,
+		tlsConfig:      tlsConfig,
 	}, nil
 }
 
@@ -314,6 +327,11 @@ func (s *Server) Start(ctx *plugin.Context) error {
 			return fmt.Errorf("xbc: failed to listen on %s: %w", cfg.Addr, err)
 		}
 	}
+	// Wrapping the bound listener -- rather than a TLS-aware branch through the
+	// engine -- is what keeps TLS out of the Engine port: adapters accept
+	// connections from a listener and never ask whether it speaks TLS. See
+	// serverTLSConfig for why HSTS needs no code of ours behind this.
+	ln = wrapTLS(ln, pipeline.tlsConfig)
 
 	s.mu.Lock()
 	if s.started {
@@ -394,7 +412,7 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 	if ctx != nil {
 		logger = ctx.Log()
 	}
-	renderStartupReport(logger, ordered, misses, catalog, authenticator)
+	renderStartupReport(logger, s.cfg, ordered, misses, catalog, authenticator)
 
 	s.mu.Lock()
 	s.catalog = catalog
@@ -427,7 +445,7 @@ func (s *Server) Preflight(ctx *plugin.Context) error {
 	if err != nil {
 		return err
 	}
-	renderStartupReport(ctx.Log(), pipeline.ordered, pipeline.misses, catalog, pipeline.authentication)
+	renderStartupReport(ctx.Log(), pipeline.cfg, pipeline.ordered, pipeline.misses, catalog, pipeline.authentication)
 	return nil
 }
 
@@ -462,7 +480,10 @@ func freezeRoutes(router *Router, authenticator *authenticationMiddleware, liste
 // route falls under. OpenTraffic prints it just before the gate opens; Preflight
 // prints the same report for a process that will never serve, because the
 // decision an operator reads is the same decision either way.
-func renderStartupReport(logger log.Logger, ordered []plugin.Entry[Middleware], misses []MiddlewareOrderMiss, catalog RouteCatalog, authenticator *authenticationMiddleware) {
+func renderStartupReport(logger log.Logger, cfg Config, ordered []plugin.Entry[Middleware], misses []MiddlewareOrderMiss, catalog RouteCatalog, authenticator *authenticationMiddleware) {
+	if line := renderTLS(cfg.TLS); line != "" {
+		logger.Info(line)
+	}
 	if len(ordered) > 0 {
 		logger.Info(renderMiddlewareChain(ordered))
 	}
