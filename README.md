@@ -2,7 +2,7 @@
 
 xbc is a transport-protocol-agnostic Go plugin application runtime. A Definition is one runtime unit, with its Key and applicable configuration, contracts, dependencies, factory, and lifecycle; a Bundle is an explicit, side-effect-free static composition of zero or more Definitions. A package's Definition() accessor, when present, identifies its primary unit, while its Bundle() may select additional independent units or purely aggregate other Bundles. Core is responsible only for explicit composition, strict configuration binding, dependency planning, resource construction, lifecycle, managed tasks, and reverse-order shutdown; transport stacks and optional extensions are isolated by owner and dependency weight, and do not enter core's dependency closure.
 
-The repository is still ahead of its first stable tag. The root `go.work` currently links 34 modules: 33 product modules (core, examples, `transport/web`, 20 protocol-neutral extensions, 9 Web engine, extension, or adapter modules, and the `tests/composition` end-to-end module) and 1 tooling module (`scripts/plugin-snapshots`). Architecture tests guarantee that every `go.mod` in the repository is covered by the workspace, the Makefile, and CI. Publishable submodules must not use local `replace`, `v0.0.0`, or pseudo-versions; a real release must use real tags in dependency-topology order.
+The repository is still ahead of its first stable tag. The root `go.work` currently links 34 modules: 33 product modules (core, examples, `transport/web`, 20 protocol-neutral extensions, 9 Web engine, extension, or adapter modules, and the `tests/composition` end-to-end module) and 1 tooling module (`scripts/plugin-snapshots`). Architecture tests guarantee that every `go.mod` in the repository is covered by the workspace, the Makefile, and CI. Publishable submodules must not use local `replace`, `v0.0.0`, or pseudo-versions; a real release must use real tags in dependency-topology order, recorded wave by wave in the checked-in `tests/architecture/testdata/release-manifest.json`.
 
 ## Directories and boundaries
 
@@ -37,7 +37,8 @@ xbc/
 ├── runtime/                             # Low-level application execution and process lifecycle
 ├── scripts/                             # Repository validation and migration tooling
 │   ├── plugin-migration-inventory/
-│   └── plugin-snapshots/                # Independent tooling module
+│   ├── plugin-snapshots/                # Independent tooling module
+│   └── release-manifest/                # Release-train tag order generator and guard
 ├── tests/
 │   ├── architecture/                    # Dependency, API, side-effect, and module guards
 │   ├── composition/                     # Real-plugin end-to-end composition tests

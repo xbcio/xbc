@@ -1,0 +1,412 @@
+{
+  "modules": [
+    {
+      "path": "github.com/xbcio/xbc",
+      "directory": ".",
+      "tag_prefix": "",
+      "wave": 0,
+      "release": true,
+      "imports": []
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/authentication",
+      "directory": "extensions/authentication",
+      "tag_prefix": "extensions/authentication/",
+      "wave": 0,
+      "release": true,
+      "imports": []
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/coordination/lease",
+      "directory": "extensions/coordination/lease",
+      "tag_prefix": "extensions/coordination/lease/",
+      "wave": 0,
+      "release": true,
+      "imports": []
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/authorization/rbac",
+      "directory": "extensions/authorization/rbac",
+      "tag_prefix": "extensions/authorization/rbac/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/concurrency/async",
+      "directory": "extensions/concurrency/async",
+      "tag_prefix": "extensions/concurrency/async/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/jobs/cron",
+      "directory": "extensions/jobs/cron",
+      "tag_prefix": "extensions/jobs/cron/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/coordination/lease"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/messaging/outbox",
+      "directory": "extensions/messaging/outbox",
+      "tag_prefix": "extensions/messaging/outbox/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/messaging/webhook",
+      "directory": "extensions/messaging/webhook",
+      "tag_prefix": "extensions/messaging/webhook/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/reliability/gracefulshutdown",
+      "directory": "extensions/reliability/gracefulshutdown",
+      "tag_prefix": "extensions/reliability/gracefulshutdown/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/reliability/health",
+      "directory": "extensions/reliability/health",
+      "tag_prefix": "extensions/reliability/health/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/authorization/casbin",
+      "directory": "extensions/authorization/casbin",
+      "tag_prefix": "extensions/authorization/casbin/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authorization/rbac"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/coordination/raft",
+      "directory": "extensions/coordination/raft",
+      "tag_prefix": "extensions/coordination/raft/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/jobs/asynq",
+      "directory": "extensions/jobs/asynq",
+      "tag_prefix": "extensions/jobs/asynq/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/messaging/kafka",
+      "directory": "extensions/messaging/kafka",
+      "tag_prefix": "extensions/messaging/kafka/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/storage/elasticsearch",
+      "directory": "extensions/storage/elasticsearch",
+      "tag_prefix": "extensions/storage/elasticsearch/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/storage/gorm",
+      "directory": "extensions/storage/gorm",
+      "tag_prefix": "extensions/storage/gorm/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/storage/objectstorage",
+      "directory": "extensions/storage/objectstorage",
+      "tag_prefix": "extensions/storage/objectstorage/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/storage/redis",
+      "directory": "extensions/storage/redis",
+      "tag_prefix": "extensions/storage/redis/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/coordination/lease",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web",
+      "directory": "transport/web",
+      "tag_prefix": "transport/web/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/authorization/casbin-gorm",
+      "directory": "extensions/authorization/casbin-gorm",
+      "tag_prefix": "extensions/authorization/casbin-gorm/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authorization/casbin"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/authorization/casbin-redis",
+      "directory": "extensions/authorization/casbin-redis",
+      "tag_prefix": "extensions/authorization/casbin-redis/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authorization/casbin"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/coordination/placement",
+      "directory": "extensions/coordination/placement",
+      "tag_prefix": "extensions/coordination/placement/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/coordination/lease",
+        "github.com/xbcio/xbc/extensions/reliability/health",
+        "github.com/xbcio/xbc/extensions/storage/redis"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/engines/gin",
+      "directory": "transport/web/engines/gin",
+      "tag_prefix": "transport/web/engines/gin/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
+      "directory": "transport/web/extensions/authentication/jwt",
+      "tag_prefix": "transport/web/extensions/authentication/jwt/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/authentication/session",
+      "directory": "transport/web/extensions/authentication/session",
+      "tag_prefix": "transport/web/extensions/authentication/session/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
+      "directory": "transport/web/extensions/authorization/casbin",
+      "tag_prefix": "transport/web/extensions/authorization/casbin/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/authorization/rbac",
+      "directory": "transport/web/extensions/authorization/rbac",
+      "tag_prefix": "transport/web/extensions/authorization/rbac/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authorization/rbac",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/observability/metrics",
+      "directory": "transport/web/extensions/observability/metrics",
+      "tag_prefix": "transport/web/extensions/observability/metrics/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/observability/tracing",
+      "directory": "transport/web/extensions/observability/tracing",
+      "tag_prefix": "transport/web/extensions/observability/tracing/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/openapi/swag",
+      "directory": "transport/web/extensions/openapi/swag",
+      "tag_prefix": "transport/web/extensions/openapi/swag/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency",
+      "directory": "transport/web/extensions/reliability/idempotency",
+      "tag_prefix": "transport/web/extensions/reliability/idempotency/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/examples",
+      "directory": "examples",
+      "tag_prefix": "examples/",
+      "wave": 4,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/extensions/authorization/casbin-gorm",
+        "github.com/xbcio/xbc/extensions/authorization/casbin-redis",
+        "github.com/xbcio/xbc/extensions/authorization/rbac",
+        "github.com/xbcio/xbc/extensions/concurrency/async",
+        "github.com/xbcio/xbc/extensions/jobs/cron",
+        "github.com/xbcio/xbc/extensions/reliability/health",
+        "github.com/xbcio/xbc/extensions/storage/gorm",
+        "github.com/xbcio/xbc/transport/web",
+        "github.com/xbcio/xbc/transport/web/engines/gin",
+        "github.com/xbcio/xbc/transport/web/extensions/openapi/swag"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/scripts/plugin-snapshots",
+      "directory": "scripts/plugin-snapshots",
+      "tag_prefix": "scripts/plugin-snapshots/",
+      "wave": 4,
+      "release": false,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/extensions/authorization/casbin-gorm",
+        "github.com/xbcio/xbc/extensions/authorization/casbin-redis",
+        "github.com/xbcio/xbc/extensions/authorization/rbac",
+        "github.com/xbcio/xbc/extensions/concurrency/async",
+        "github.com/xbcio/xbc/extensions/coordination/placement",
+        "github.com/xbcio/xbc/extensions/coordination/raft",
+        "github.com/xbcio/xbc/extensions/jobs/asynq",
+        "github.com/xbcio/xbc/extensions/jobs/cron",
+        "github.com/xbcio/xbc/extensions/messaging/kafka",
+        "github.com/xbcio/xbc/extensions/messaging/outbox",
+        "github.com/xbcio/xbc/extensions/messaging/webhook",
+        "github.com/xbcio/xbc/extensions/reliability/gracefulshutdown",
+        "github.com/xbcio/xbc/extensions/reliability/health",
+        "github.com/xbcio/xbc/extensions/storage/elasticsearch",
+        "github.com/xbcio/xbc/extensions/storage/gorm",
+        "github.com/xbcio/xbc/extensions/storage/objectstorage",
+        "github.com/xbcio/xbc/extensions/storage/redis",
+        "github.com/xbcio/xbc/transport/web",
+        "github.com/xbcio/xbc/transport/web/engines/gin",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/session",
+        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/transport/web/extensions/observability/metrics",
+        "github.com/xbcio/xbc/transport/web/extensions/observability/tracing",
+        "github.com/xbcio/xbc/transport/web/extensions/openapi/swag",
+        "github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/tests/composition",
+      "directory": "tests/composition",
+      "tag_prefix": "tests/composition/",
+      "wave": 4,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/transport/web",
+        "github.com/xbcio/xbc/transport/web/engines/gin",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
+      ]
+    }
+  ]
+}
