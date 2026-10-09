@@ -15,7 +15,10 @@ const Key plugin.Key = "redis"
 
 var definition = plugin.DefineConfigured(
 	Key,
-	plugin.ConfigSpec[Config]{Defaults: func() Config { return Config{} }},
+	plugin.ConfigSpec[Config]{
+		Defaults: func() Config { return Config{} },
+		Prepare:  prepareConfig,
+	},
 	newClient,
 	plugin.Options[*goredis.Client]{
 		Instances:  plugin.MultipleInstances,
