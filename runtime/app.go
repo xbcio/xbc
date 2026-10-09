@@ -31,6 +31,12 @@ type App struct {
 	// decision it returns is carried by the plan, which every later reader asks.
 	placementSource PlacementSource
 
+	// commands are the consumer-defined subcommands WithCommand registered, in
+	// registration order. They are read when arguments are parsed, to recognize
+	// the token, and once more after bootstrap to run the one that was
+	// selected. A run that boots an application never touches them again.
+	commands []customCommand
+
 	env      *config.Environment
 	settings settings
 	logger   log.Logger
@@ -93,6 +99,7 @@ type appOptions struct {
 	hasStarter   bool
 	placement    PlacementSource
 	hasPlacement bool
+	commands     []customCommand
 }
 
 // WithBundles composes an App explicitly from side-effect-free Bundles.
@@ -115,8 +122,19 @@ func New(options ...Option) (*App, error) {
 		if option == nil {
 			return nil, optionError(index, "is nil")
 		}
+		registered := len(resolved.commands)
 		if err := option(&resolved); err != nil {
 			return nil, err
+		}
+		// A command registration is validated here rather than inside its
+		// option because only New knows which option the caller wrote: every
+		// refusal it reports has to name that index the way the other option
+		// errors do, and the duplicate check has to see the commands the
+		// earlier options registered.
+		for offset := registered; offset < len(resolved.commands); offset++ {
+			if detail := validateCommand(resolved.commands[offset], resolved.commands[:offset]); detail != "" {
+				return nil, optionError(index, detail)
+			}
 		}
 	}
 	bundles := append([]plugin.Bundle(nil), resolved.bundles...)
@@ -133,6 +151,7 @@ func New(options ...Option) (*App, error) {
 		bundles = []plugin.Bundle{autoload.Freeze()}
 	}
 	app := newApp(bundles)
+	app.commands = resolved.commands
 	if resolved.hasStarter {
 		app.defaults = resolved.starter.Defaults()
 	}

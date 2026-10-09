@@ -22,8 +22,8 @@ const (
 )
 
 // Execute drives this App once. Exit code 2 denotes command-line usage, 1 a
-// planning/runtime failure, and 0 a complete doctor, validate, migration, or
-// clean run.
+// planning/runtime failure, and 0 a complete doctor, validate, migration,
+// consumer-defined command, or clean run.
 func (a *App) Execute(ctx context.Context, args []string) (int, error) {
 	return a.execute(ctx, args, stopReasonContext)
 }
@@ -52,7 +52,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	stopWatching := context.AfterFunc(parent, func() { a.requestStop(cancelReason) })
 	defer stopWatching()
 
-	command, err := parseArgs(args, config.DefaultEnvPrefix)
+	command, err := parseArgs(args, config.DefaultEnvPrefix, a.commands)
 	if err != nil {
 		return 2, err
 	}
@@ -84,6 +84,24 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	defer stopWatch()
 	if err := a.ensureStarting("bootstrapping"); err != nil {
 		return 1, err
+	}
+
+	// A consumer-defined subcommand runs here, and only here: after bootstrap,
+	// so it reads the merged configuration through the same strict decoding a
+	// plugin's input gets and logs through the installed logger, and before
+	// everything else a boot does. Nothing below this branch has happened for
+	// it -- placement was not resolved, no factory ran, no migration ran, no
+	// listener was opened, no task was admitted -- which is what lets a
+	// management command run against a process that must not consume cluster
+	// capacity or serve traffic. A command that needs a dependency opens and
+	// closes its own connection; the failure it returns is reported as its own,
+	// with the command named, and exits 1.
+	if subcommand, ok := a.customCommand(command.subcommand); ok {
+		a.progress.enterPhase(phaseCommand)
+		if err := subcommand.run(executionCtx, a.env, command.args); err != nil {
+			return 1, fmt.Errorf("xbc: command %q failed: %w", subcommand.name, err)
+		}
+		return 0, nil
 	}
 
 	a.progress.enterPhase(phasePlanning)
@@ -193,7 +211,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 		}
 		phases.migrate = time.Since(migrateStarted)
 	}
-	if command.subcommand == "migrate" {
+	if command.subcommand == migrateSubcommand {
 		if !a.requestStop(stopReasonCompleted) && a.currentStopReason() != stopReasonCompleted {
 			return 1, a.abort(a.errStopDuringStartup("migration"))
 		}

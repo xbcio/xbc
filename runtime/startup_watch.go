@@ -13,11 +13,13 @@ import (
 // strings the timing breakdown prints (startupPhases.String), because an
 // operator who reads "phase start" in a slow-startup warning and "start 31s"
 // in the breakdown must not have to work out that those are two names for one
-// phase. phaseValidate is the exception: only the validate command enters it,
-// and only the watchdog reports it -- the timing breakdown belongs to a run
-// that reaches servable, which validate never does.
+// phase. phaseValidate and phaseCommand are the exceptions: only the validate
+// command and a consumer-defined subcommand enter them, and only the watchdog
+// reports them -- the timing breakdown belongs to a run that reaches
+// servable, which neither does.
 const (
 	phaseBootstrap = "bootstrap"
+	phaseCommand   = "command"
 	phasePlanning  = "planning"
 	phaseConstruct = "construct"
 	phaseMigrate   = "migrate"

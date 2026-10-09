@@ -68,7 +68,7 @@ func planUnderCapture(t *testing.T, app *App, extra string) (*assembly.Plan, *ca
 	contents := "log:\n  console:\n    enabled: false\n  file:\n    enabled: false\nxbc:\n  shutdown_timeout: 1s\n" + extra
 	cmd, err := parseArgs(
 		[]string{"doctor", "--config", writeRuntimeTestConfig(t, contents)},
-		config.DefaultEnvPrefix)
+		config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 

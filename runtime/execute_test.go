@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/config"
+	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -646,6 +650,283 @@ func TestAStopRequestArrivingAfterTheLastPreflightHookFailsTheCommand(t *testing
 		"the external request keeps its own reason")
 	assert.Equal(t, []string{"stop"}, stages,
 		"the interrupted validation still stops what it constructed")
+}
+
+// --- consumer-defined subcommands ---------------------------------------
+
+// commandObservation records what a consumer command saw from inside its own
+// run, which is the only moment those facts hold: the context is live only
+// until this command returns, and the App's fields are read on the same
+// goroutine the command runs on.
+type commandObservation struct {
+	ctx        context.Context
+	contextErr error
+	env        *config.Environment
+	args       []string
+	phase      string
+	logger     log.Logger
+}
+
+// TestAConsumerCommandRunsWithTheMergedConfigurationAndNothingElse is the whole
+// contract of the seam in one run: the command is handed the merged
+// configuration and the installed process logger, and nothing a boot would have
+// produced. Every negative assertion below fails if the dispatch moves below the
+// step it names -- a factory that ran, a placement source that was consulted, a
+// plan that exists, a gate that opened, or an unwind that happened.
+func TestAConsumerCommandRunsWithTheMergedConfigurationAndNothingElse(t *testing.T) {
+	var factories atomic.Int32
+	mustNotConstruct := plugin.Define("command-must-not-construct", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		factories.Add(1)
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		Start: func(*runtimeTestValue, *plugin.Context) error {
+			factories.Add(1)
+			return nil
+		},
+	}})
+	source := &recordingPlacement{placement: plugin.Placement{Source: "lease"}}
+	baseline := runtimeTestStarter{
+		bundles:  []plugin.Bundle{plugin.BundleOf(dormantDefinition("command-baseline"))},
+		defaults: config.Defaults{Label: "test baseline", Values: map[string]any{"plugins.command-baseline.enabled": true}},
+	}
+
+	observed := make(chan commandObservation, 1)
+	var app *App
+	var err error
+	app, err = New(
+		WithBundles(plugin.BundleOf(mustNotConstruct)),
+		WithStarter(baseline),
+		WithPlacement(source),
+		WithCommand("cleanup", "remove expired rows", func(ctx context.Context, env *config.Environment, args []string) error {
+			observed <- commandObservation{
+				ctx:        ctx,
+				contextErr: ctx.Err(),
+				env:        env,
+				args:       args,
+				phase:      app.progress.position().phase,
+				logger:     app.logger,
+			}
+			return nil
+		}),
+	)
+	require.NoError(t, err)
+
+	// A real sink rather than the quiet fixture, so that "the command logged
+	// through the installed process logger" is an observation: with every sink
+	// off, log.Init installs a no-op and the assertion could not tell an
+	// installed logger from doctor's deliberate one. It is the console sink and
+	// not a file one because a file sink's rotator outlives the run until the
+	// next Init, which this package's goroutine-leak guard would see.
+	configPath := filepath.Join(t.TempDir(), "application.yml")
+	require.NoError(t, os.WriteFile(configPath, []byte(
+		"log:\n  console:\n    enabled: true\n  file:\n    enabled: false\n"+
+			"xbc:\n  shutdown_timeout: 1s\n"+
+			"app:\n  cleanup:\n    retention: 30d\n"), 0o600))
+
+	code, runErr := app.Execute(context.Background(),
+		append([]string{"--config", configPath}, "cleanup", "--dry-run", "-config", "theirs.yml"))
+	require.NoError(t, runErr)
+	assert.Equal(t, 0, code, "a command that returned nil exits 0")
+
+	var observation commandObservation
+	select {
+	case observation = <-observed:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the registered command never ran")
+	}
+	assert.Equal(t, phaseCommand, observation.phase,
+		"the command runs in its own phase, so a slow one is reported where it is")
+	require.NotNil(t, observation.env)
+	assert.Same(t, app.env, observation.env,
+		"the command reads the App's merged configuration, not a second load")
+	assert.Equal(t, "30d", observation.env.Get("app.cleanup.retention"),
+		"the configuration file's own layers reach the command")
+	assert.Equal(t, true, observation.env.Get("plugins.command-baseline.enabled"),
+		"the starter's defaults layer reaches the command too")
+	assert.Equal(t, []string{"--dry-run", "-config", "theirs.yml"}, observation.args,
+		"the tail belongs to the command verbatim, flag-shaped arguments included")
+	assert.NoError(t, observation.contextErr,
+		"the context is live while the command runs; it is canceled only once execute returns")
+	assert.NotEqual(t, log.Nop(), observation.logger,
+		"a command logs through the installed process logger, unlike doctor")
+	assert.Equal(t, log.L(), observation.logger)
+
+	assert.Zero(t, factories.Load(), "a command runs before construction")
+	assert.Empty(t, source.requests,
+		"a command makes no placement decision, so the source is never consulted")
+	assert.Nil(t, app.plan, "planning never ran")
+	assert.Nil(t, app.owned)
+	assert.Empty(t, app.shutdownReport.Attempted,
+		"a finished command is not a stop, so no reverse walk ran")
+	assertChannelOpen(t, app.trafficGate, "a command releases no traffic gate")
+	assert.False(t, app.stopRequested(), "a command that returned is a completed run, not a stopped one")
+}
+
+// TestASlowCommandIsReportedUnderTheCommandPhase pins the one diagnostic a
+// command that hangs produces. The report is read while the command is still
+// running, through the same function the watchdog calls, because that is the
+// only moment the claim is true; the plugin field says "(none)" because a
+// command belongs to no plugin, and the phase is the command's own rather than
+// an unfinished bootstrap.
+func TestASlowCommandIsReportedUnderTheCommandPhase(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	app := newRuntimeTestApp()
+	app.commands = []customCommand{{
+		name:  "slow-command",
+		usage: "stand in for a command that takes minutes",
+		run: func(context.Context, *config.Environment, []string) error {
+			close(entered)
+			<-release
+			return nil
+		},
+	}}
+
+	result := executeRuntimeTest(app,
+		append([]string{"slow-command"}, runtimeTestConfigWith(t, time.Second, "  slow_startup_after: 20ms\n")...)...)
+	select {
+	case <-entered:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the slow command did not begin")
+	}
+
+	capture := &captureLogger{}
+	app.reportSlowStartup(capture, 90*time.Second, 20*time.Millisecond)
+	close(release)
+
+	completed := awaitRuntimeTestResult(t, result)
+	require.NoError(t, completed.err)
+	require.Equal(t, 0, completed.code)
+
+	require.Len(t, capture.entries, 1, "the whole position is one record, so it cannot interleave")
+	fields := capture.entries[0].fields()
+	assert.Equal(t, phaseCommand, fields["phase"],
+		"a command that takes minutes is reported in its own phase, not as a bootstrap that never finished")
+	assert.Equal(t, "(none)", fields["plugin"],
+		"a command belongs to no plugin, and the field says so rather than rendering blank")
+	assert.Equal(t, "", fields["stage"])
+}
+
+// TestAConsumerCommandFailureIsReportedWithTheCommandName pins the failure
+// boundary: the command's own error survives, the exit code is 1, and the
+// message names the command so an operator running several of them knows which
+// one failed. The composition is deliberately empty -- a command that needs
+// nothing but configuration must not be turned away by "no plugin was
+// declared", which is the message planning produces for the same composition.
+func TestAConsumerCommandFailureIsReportedWithTheCommandName(t *testing.T) {
+	failure := errors.New("rows are still referenced")
+	app := newRuntimeTestApp()
+	app.commands = []customCommand{{
+		name:  "boom",
+		usage: "fail on purpose",
+		run:   func(context.Context, *config.Environment, []string) error { return failure },
+	}}
+
+	code, err := app.Execute(context.Background(), append([]string{"boom"}, runtimeTestConfig(t, time.Second)...))
+	assert.Equal(t, 1, code)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, failure, "the command's own error must survive the command boundary")
+	assert.Contains(t, err.Error(), `xbc: command "boom" failed`)
+	assert.Nil(t, app.owned)
+	assertChannelOpen(t, app.trafficGate, "a failed command is not a boot that released the gate")
+}
+
+// TestACancelledRunReachesTheCommandThroughItsContext pins the other end of the
+// command's lifetime: a stop request cancels the context the command was handed,
+// so a long-running command can stop cooperating instead of being killed. The
+// exit code is whatever the command returned -- the runtime does not reinterpret
+// its result, which is why a command that treats cancellation as failure exits 1
+// while one that treats it as completion exits 0.
+func TestACancelledRunReachesTheCommandThroughItsContext(t *testing.T) {
+	entered := make(chan struct{})
+	cause := make(chan error, 1)
+	app := newRuntimeTestApp()
+	app.commands = []customCommand{{
+		name:  "wait-forever",
+		usage: "stand in for a command that waits on a remote system",
+		run: func(ctx context.Context, _ *config.Environment, _ []string) error {
+			close(entered)
+			<-ctx.Done()
+			cause <- context.Cause(ctx)
+			return ctx.Err()
+		},
+	}}
+
+	caller, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan runtimeTestResult, 1)
+	go func() {
+		code, err := app.Execute(caller, append([]string{"wait-forever"}, runtimeTestConfig(t, time.Second)...))
+		result <- runtimeTestResult{code: code, err: err}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the command did not begin")
+	}
+
+	cancel()
+	select {
+	case err := <-cause:
+		assert.ErrorIs(t, err, context.Canceled, "the command is told why its context ended")
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the command's context was never canceled")
+	}
+
+	completed := awaitRuntimeTestResult(t, result)
+	assert.Equal(t, 1, completed.code)
+	require.Error(t, completed.err)
+	assert.ErrorIs(t, completed.err, context.Canceled)
+	assert.Contains(t, completed.err.Error(), `xbc: command "wait-forever" failed`)
+}
+
+// TestARegisteredCommandNeverDisplacesABuiltinSubcommand pins that registration
+// adds to the command surface rather than replacing part of it: "doctor" still
+// builds the plan and stops, and the registered command's body never runs.
+func TestARegisteredCommandNeverDisplacesABuiltinSubcommand(t *testing.T) {
+	var ran atomic.Int32
+	definition := plugin.Define("registered-beside-doctor", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+	app := newRuntimeTestApp(definition)
+	app.commands = []customCommand{{
+		name:  "cleanup",
+		usage: "remove expired rows",
+		run: func(context.Context, *config.Environment, []string) error {
+			ran.Add(1)
+			return nil
+		},
+	}}
+
+	code, err := app.Execute(context.Background(), append([]string{"doctor"}, runtimeTestConfig(t, time.Second)...))
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Zero(t, ran.Load(), "a registered command must not shadow a built-in subcommand")
+	require.NotNil(t, app.plan, "doctor ran its own path")
+	assert.Nil(t, app.owned)
+}
+
+// TestMigratingTogetherWithAConsumerCommandIsAUsageError pins the exit code of
+// the one refused combination: it is a command line the runtime cannot read, so
+// it exits 2 like every other usage error, and the command's body never runs.
+func TestMigratingTogetherWithAConsumerCommandIsAUsageError(t *testing.T) {
+	var ran atomic.Int32
+	app := newRuntimeTestApp()
+	app.commands = []customCommand{{
+		name:  "cleanup",
+		usage: "remove expired rows",
+		run: func(context.Context, *config.Environment, []string) error {
+			ran.Add(1)
+			return nil
+		},
+	}}
+
+	code, err := app.Execute(context.Background(),
+		append([]string{"--migrate", "cleanup"}, runtimeTestConfig(t, time.Second)...))
+	assert.Equal(t, 2, code)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `--migrate cannot be combined with the "cleanup" command`)
+	assert.Zero(t, ran.Load(), "a refused command line runs nothing")
 }
 
 func TestLifecycleContextForwardsTheCallerScopeAndTheHostIdentity(t *testing.T) {

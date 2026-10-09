@@ -277,7 +277,7 @@ func stopUnderDrainCapture(t *testing.T, app *App, drainTimeout, shutdownTimeout
 	contents := "log:\n  console:\n    enabled: false\n  file:\n    enabled: false\n" +
 		"xbc:\n  shutdown_timeout: " + shutdownTimeout.String() + "\n  drain_timeout: " + drainTimeout.String() + "\n  pre_stop_timeout: 0s\n"
 	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
-	cmd, err := parseArgs([]string{"doctor", "--config", path}, config.DefaultEnvPrefix)
+	cmd, err := parseArgs([]string{"doctor", "--config", path}, config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 

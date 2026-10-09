@@ -73,7 +73,7 @@ func placementTestConfig(t *testing.T, extra string) []string {
 // enabled.
 func TestStaticPlacementHostsEveryEnabledWorkload(t *testing.T) {
 	app := newApp(placementTestBundles())
-	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sca:\n    enabled: false\n"), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sca:\n    enabled: false\n"), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -97,7 +97,7 @@ func TestWithPlacementReplacesTheDefaultDecision(t *testing.T) {
 	require.NoError(t, err)
 	app.ready = make(chan struct{})
 
-	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sast:\n    enabled: false\n"), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sast:\n    enabled: false\n"), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -128,7 +128,7 @@ func TestAPlacementSourceIsToldWhichProcessIsAsking(t *testing.T) {
 	require.NoError(t, err)
 	app.ready = make(chan struct{})
 
-	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -151,7 +151,7 @@ func TestAConfiguredInstanceIdentityReachesThePlacementSource(t *testing.T) {
 	require.NoError(t, err)
 	app.ready = make(chan struct{})
 
-	cmd, err := parseArgs(placementTestConfig(t, "  instance_id: scanner-2\n"), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, "  instance_id: scanner-2\n"), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -177,7 +177,7 @@ func TestOnePlacementIdentityIsAlsoWhatPluginsPublish(t *testing.T) {
 	require.NoError(t, err)
 	app.ready = make(chan struct{})
 
-	cmd, err := parseArgs(placementTestConfig(t, "  instance_id: scanner-2\n"), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, "  instance_id: scanner-2\n"), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -204,7 +204,7 @@ func TestWithPlacementOmittedIsStaticPlacement(t *testing.T) {
 	explicit, err := New(WithBundles(placementTestBundles()...), WithPlacement(StaticPlacement()))
 	require.NoError(t, err)
 
-	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sca:\n    enabled: false\n"), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sca:\n    enabled: false\n"), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, omitted.bootstrap(cmd))
 	require.NoError(t, explicit.bootstrap(cmd))
@@ -231,7 +231,7 @@ func TestPlacementFailsStartupOnAnUnsatisfiableAnswer(t *testing.T) {
 				placement: plugin.Placement{Source: "lease", Hosted: hosted},
 			}))
 			require.NoError(t, err)
-			cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+			cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 			require.NoError(t, err)
 			require.NoError(t, app.bootstrap(cmd))
 
@@ -256,7 +256,7 @@ func TestPlacementRejectsAnUnattributedDecision(t *testing.T) {
 		placement: plugin.Placement{},
 	}))
 	require.NoError(t, err)
-	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -282,7 +282,7 @@ func TestPlacementHonoursAnAttributedEmptyHostedSet(t *testing.T) {
 		placement: plugin.Placement{Source: "lease", Hosted: nil},
 	}))
 	require.NoError(t, err)
-	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -315,7 +315,7 @@ func TestPlacementFailsStartupWhenTheSourceCannotAnswer(t *testing.T) {
 		err: errPlacementUnavailable,
 	}))
 	require.NoError(t, err)
-	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -332,7 +332,7 @@ func TestWorkloadSectionAcceptsThePlainEnvironmentSpelling(t *testing.T) {
 	t.Setenv("XBC_WORKLOADS_SAST_MAX_GOROUTINES", "64")
 
 	app := newApp(placementTestBundles())
-	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -347,7 +347,7 @@ func TestWorkloadSectionAcceptsThePlainEnvironmentSpelling(t *testing.T) {
 // the declared keys beneath it answer for a variable or a block.
 func TestUndeclaredWorkloadKeyIsRejectedByName(t *testing.T) {
 	app := newApp(placementTestBundles())
-	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sasst:\n    enabled: true\n"), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sasst:\n    enabled: true\n"), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	err = app.bootstrap(cmd)
 	require.Error(t, err)
@@ -363,7 +363,7 @@ func TestUndeclaredWorkloadKeyIsRejectedByName(t *testing.T) {
 // to survive a restart.
 func TestInstanceIDIsStablePerProcessAndOverridable(t *testing.T) {
 	app := newApp(placementTestBundles())
-	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -378,7 +378,7 @@ func TestInstanceIDIsStablePerProcessAndOverridable(t *testing.T) {
 
 	t.Setenv("XBC_INSTANCE_ID", "sast-3")
 	override := newApp(placementTestBundles())
-	cmd, err = parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err = parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, override.bootstrap(cmd))
 	assert.Equal(t, "sast-3", override.settings.Instance())
@@ -396,7 +396,7 @@ func TestInstanceIDIsStablePerProcessAndOverridable(t *testing.T) {
 // that would refuse every real composition.
 func TestExclusiveWorkloadIsRefusedBesideAnotherWorkload(t *testing.T) {
 	app := newApp(placementTestBundles())
-	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -416,7 +416,7 @@ func TestExclusiveWorkloadIsRefusedBesideAnotherWorkload(t *testing.T) {
 // others off there, and that process must start.
 func TestExclusiveWorkloadAloneInItsProcessIsHosted(t *testing.T) {
 	app := newApp(placementTestBundles())
-	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sca:\n    enabled: false\n"), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sca:\n    enabled: false\n"), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -441,7 +441,7 @@ func TestAnyHostedSetIsAllowedWithoutAnExclusiveWorkload(t *testing.T) {
 		workload("beta", "beta-worker"),
 		workload("gamma", "gamma-worker"),
 	})
-	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -510,7 +510,7 @@ func TestValidateExclusiveHostingCoversEveryShape(t *testing.T) {
 // and one lease owner token.
 func TestInstanceIDRejectsWhitespace(t *testing.T) {
 	app := newApp(placementTestBundles())
-	cmd, err := parseArgs(placementTestConfig(t, "  instance_id: \"host 7\"\n"), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, "  instance_id: \"host 7\"\n"), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	err = app.bootstrap(cmd)
 	require.Error(t, err)
@@ -532,7 +532,7 @@ func TestPlacementCannotOverrideADeploymentVeto(t *testing.T) {
 	require.NoError(t, err)
 	app.ready = make(chan struct{})
 
-	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sca:\n    enabled: false\n"), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, "workloads:\n  sca:\n    enabled: false\n"), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -569,7 +569,7 @@ func TestResolvedPlacementSortsTheHostedSet(t *testing.T) {
 	), WithPlacement(source))
 	require.NoError(t, err)
 
-	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(placementTestConfig(t, ""), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 

@@ -304,7 +304,7 @@ func TestSettingsDrainTimeoutComesFromTheEnvironment(t *testing.T) {
 	t.Setenv("XBC_DRAIN_TIMEOUT", "3s")
 
 	app := newRuntimeTestApp()
-	cmd, err := parseArgs(runtimeTestConfig(t, 10*time.Second), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(runtimeTestConfig(t, 10*time.Second), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -328,7 +328,7 @@ func TestSettingsRuntimeKnobsComeFromTheEnvironment(t *testing.T) {
 	t.Setenv("XBC_RUNTIME_GC_PERCENT", "50")
 
 	app := newRuntimeTestApp()
-	cmd, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -354,7 +354,7 @@ func TestBootstrapLeavesAutoToTheRuntimeAndInstallsOnlyAnExplicitCount(t *testin
 	writeCgroupFile(t, cgroupRoot, "cpu.max", "200000 100000")
 
 	app := newRuntimeTestApp()
-	cmd, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -363,7 +363,7 @@ func TestBootstrapLeavesAutoToTheRuntimeAndInstallsOnlyAnExplicitCount(t *testin
 
 	t.Setenv("XBC_RUNTIME_MAX_PROCS", "3")
 	app = newRuntimeTestApp()
-	cmd, err = parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix)
+	cmd, err = parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -384,7 +384,7 @@ func TestBootstrapInstallsTheConfiguredRuntimeKnobs(t *testing.T) {
 	t.Setenv("XBC_RUNTIME_GC_PERCENT", "200")
 
 	app := newRuntimeTestApp()
-	cmd, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
@@ -403,7 +403,7 @@ func TestBootstrapRejectsTheDoubledEnvironmentSpellingForItsOwnSection(t *testin
 	t.Setenv("XBC_XBC_RUNTIME_MAX_PROCS", "4")
 
 	app := newRuntimeTestApp()
-	cmd, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix)
+	cmd, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	err = app.bootstrap(cmd)
 	require.Error(t, err)

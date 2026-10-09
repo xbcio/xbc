@@ -197,7 +197,7 @@ func TestUnwindClosesAdmissionWhenTheStopPrecedesTheTaskRuntime(t *testing.T) {
 	app.requestStop(stopReasonSignal)
 	require.Nil(t, app.tasks, "the fixture must not have a task runtime yet, or the case under test is not exercised")
 
-	command, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix)
+	command, err := parseArgs(runtimeTestConfig(t, time.Second), config.DefaultEnvPrefix, nil)
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(command), "bootstrap publishes the runtime even though a stop is already pending")
 	require.NotNil(t, app.tasks)
