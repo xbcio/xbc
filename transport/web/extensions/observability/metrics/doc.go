@@ -2,29 +2,31 @@
 //
 // # Usage
 //
-// A business plugin declares a dependency on Registry and registers collectors
-// during Init. Those collectors are then served by the same endpoint as the
-// built-in bounded-cardinality HTTP metrics:
+// A business plugin declares an input on this Definition's primary value and
+// registers its collectors with the private registry that value exposes. Those
+// collectors are then served by the same endpoint as the built-in
+// bounded-cardinality HTTP metrics:
+//
+//	var metricsInput = plugin.RefTo[*metrics.Plugin](metrics.Key)
 //
 //	type Orders struct {
 //		completed prometheus.Counter
 //	}
 //
-//	func (*Orders) Dependencies() plugin.Deps {
-//		return plugin.Deps{Types: []plugin.Dep{plugin.Need[*metrics.Registry]()}}
-//	}
-//
-//	func (p *Orders) Init(ctx *plugin.Context) error {
-//		completed := prometheus.NewCounter(prometheus.CounterOpts{
-//			Name: "orders_completed_total",
-//			Help: "Total number of completed orders.",
-//		})
-//		if err := plugin.MustGet[*metrics.Registry](ctx).Register(completed); err != nil {
-//			return err
-//		}
-//		p.completed = completed
-//		return nil
-//	}
+//	var ordersDefinition = plugin.Define(
+//		"orders",
+//		func(ctx plugin.BuildContext) (*Orders, error) {
+//			completed := prometheus.NewCounter(prometheus.CounterOpts{
+//				Name: "orders_completed_total",
+//				Help: "Total number of completed orders.",
+//			})
+//			if err := metricsInput.Get(ctx).Value.Registry().Register(completed); err != nil {
+//				return nil, err
+//			}
+//			return &Orders{completed: completed}, nil
+//		},
+//		plugin.Options[*Orders]{Inputs: plugin.Inputs(metricsInput)},
+//	)
 //
 //	func (p *Orders) MarkCompleted() {
 //		p.completed.Inc()
