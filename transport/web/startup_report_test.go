@@ -155,3 +155,37 @@ func TestRenderPolicyDecisionsLabelsDefaultTierAuthenticationNotDeny(t *testing.
 		t.Fatalf("report = %q, must not label a default-tier authenticated route \"deny\"", got)
 	}
 }
+
+// TestMountedRowsAreMarkedInEveryRouteReport pins that a Router.Mount's rows
+// are recognisable as a subtree wherever the startup report lists routes. A
+// mount writes one row per method at its prefix -- the same rows an Any
+// registration writes -- while the declarations that can cover it are written
+// against the prefix, so an operator who cannot tell the two apart is reading
+// a report that hides the mounted surface. The unmarked half matters just as
+// much: a mark on every row would carry no information.
+func TestMountedRowsAreMarkedInEveryRouteReport(t *testing.T) {
+	t.Parallel()
+
+	mounted := RouteInfo{Method: http.MethodGet, Path: "/flow", Mounted: true}
+	plain := RouteInfo{Method: http.MethodGet, Path: "/orders"}
+	decision := func(route RouteInfo) policyDecision {
+		return policyDecision{
+			route:  route,
+			policy: effectivePolicy{tier: tierDefault, ruleIndex: -1, selection: authentication.DefaultSelection()},
+		}
+	}
+
+	reports := map[string]string{
+		"route table":      renderRouteTable([]RouteInfo{mounted}),
+		"public endpoints": renderPublicEndpoints([]RouteInfo{mounted}, false),
+		"policy decisions": renderPolicyDecisions([]policyDecision{decision(mounted)}, nil),
+	}
+	for name, report := range reports {
+		if !strings.Contains(report, "(mounted subtree)") {
+			t.Fatalf("%s = %q, want the mounted row marked as a subtree", name, report)
+		}
+	}
+	if strings.Contains(renderRouteTable([]RouteInfo{plain}), "(mounted subtree)") {
+		t.Fatal("a route that covers a single path must not be marked as a mounted subtree")
+	}
+}

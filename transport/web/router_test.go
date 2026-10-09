@@ -30,6 +30,7 @@ var (
 	_ func(*web.Router, string, ...web.Handler) *web.Route           = (*web.Router).OPTIONS
 	_ func(*web.Router, string, ...web.Handler) *web.Route           = (*web.Router).Any
 	_ func(*web.Router, []string, string, ...web.Handler) *web.Route = (*web.Router).Match
+	_ func(*web.Router, string, http.Handler) *web.Route             = (*web.Router).Mount
 	_ func(*web.Router, string, ...web.Handler) *web.Router          = (*web.Router).Group
 )
 

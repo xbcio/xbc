@@ -99,6 +99,13 @@ type RouteInfo struct {
 	// process-level in-flight gate, so it is answered even when every slot is
 	// taken. See Route.Unmetered for when that is the right declaration.
 	Unmetered bool
+	// Mounted reports that this row covers a subtree rather than a single
+	// path: Router.Mount registered an external http.Handler at Path, and
+	// every path at or beneath it on this method belongs to that handler.
+	// The flag is what keeps the declarations that only make sense for a
+	// single literal path -- Unmetered above all -- from being made silently
+	// for a subtree; see validateUnmeteredRoute.
+	Mounted bool
 }
 
 // Route is the metadata handle returned by Router.Handle and the
@@ -328,6 +335,11 @@ func validateUnmeteredRoute(route RouteInfo) error {
 	if !route.Unmetered {
 		return nil
 	}
+	if route.Mounted {
+		return fmt.Errorf(
+			"xbc: mounted route %s %s is marked unmetered\n  → a mount answers a whole subtree, and the in-flight gate exempts a route by its exact method and path, so the exemption could never match a request inside it; drop Unmetered from the mount, or declare it on a route that really is a single literal path",
+			route.Method, route.Path)
+	}
 	if strings.ContainsAny(route.Path, ":*") {
 		return fmt.Errorf(
 			"xbc: route %s %s is marked unmetered but its path is a pattern\n  → the in-flight gate exempts a route by its literal path, so this route would be metered anyway; give the probe a fixed path, or drop Unmetered and let it be admitted like any other route",
@@ -429,6 +441,15 @@ func (r *Router) Auth(policy AuthPolicy) *Router {
 	return r
 }
 
+// requireMutable panics when the route table has been frozen. It is the guard
+// every registration path shares -- Handle and Mount alike -- so the refusal
+// and its message cannot drift apart between them.
+func (r *Router) requireMutable() {
+	if *r.frozen {
+		panic("xbc: route table is frozen, RouteCatalogListener phase cannot add routes")
+	}
+}
+
 // Handle registers a route and records it in the route table. The recorded
 // RouteInfo starts from this Router's current defaultPerm/defaultAuth (see
 // Router.Perm and Router.Auth), so group-level policy is written in at
@@ -447,11 +468,18 @@ func (r *Router) Auth(policy AuthPolicy) *Router {
 // it, so even running first still sees a request that matched this route, and
 // running first is what lets every later handler -- including global
 // middleware that aborts or fails before reaching h -- call CurrentRoute.
+//
+// A path at or below a mounted prefix on the same method panics here: the
+// mount already owns that whole subtree, so the engine could not route to
+// both. See Router.Mount for the rule and why xbc refuses the overlap itself.
 func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
-	if *r.frozen {
-		panic("xbc: route table is frozen, RouteCatalogListener phase cannot add routes")
-	}
+	r.requireMutable()
 	fullPath := joinPaths(r.basePath, relativePath)
+	if existing, conflict := conflictingRegistration(method, fullPath, false, *r.routes); conflict {
+		panic(fmt.Sprintf(
+			"xbc: route %s %s is at or under the mount %s %s registered on the same method, and a mount owns its whole subtree",
+			method, fullPath, existing.Method, existing.Path))
+	}
 	chain := appendChain([]Handler{recordCurrentRoute(method, fullPath, r.frozen, r.index)}, r.handlers...)
 	chain = appendChain(chain, h...)
 	r.engine.Handle(method, fullPath, chain)

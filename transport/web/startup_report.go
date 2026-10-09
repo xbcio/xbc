@@ -55,8 +55,23 @@ func renderRouteTable(routes []RouteInfo) string {
 	fmt.Fprintf(&b, "web: route table (%d)", len(routes))
 	for i, route := range routes {
 		fmt.Fprintf(&b, "\n  %d. %-*s  %s", i+1, methodWidth, route.Method, route.Path)
+		b.WriteString(mountedMark(route))
 	}
 	return b.String()
+}
+
+// mountedMark labels a report row that covers a subtree rather than a single
+// path. A Router.Mount writes one row per method at its prefix -- without the
+// mark, indistinguishable from an Any registration at the same path -- while
+// the rules and declarations that can cover it are written against the prefix,
+// so an operator reading the report has to be able to tell the two apart. The
+// mark is appended after the row's own columns so it cannot disturb their
+// alignment.
+func mountedMark(route RouteInfo) string {
+	if route.Mounted {
+		return "  (mounted subtree)"
+	}
+	return ""
 }
 
 // renderAuthenticationOrder prints the manager's effective authentication-
@@ -90,6 +105,7 @@ func renderPublicEndpoints(routes []RouteInfo, defaultPermit bool) string {
 	}
 	for i, route := range routes {
 		fmt.Fprintf(&b, "\n  %d. %-*s  %s", i+1, methodWidth, route.Method, route.Path)
+		b.WriteString(mountedMark(route))
 	}
 	return b.String()
 }
@@ -144,6 +160,7 @@ func renderPolicyDecisions(decisions []policyDecision, defaultSchemes []authenti
 		}
 		tier += ")"
 		fmt.Fprintf(&b, "\n  %d. %-*s  %-*s  -> %-8s  %s", i+1, methodWidth, d.route.Method, pathWidth, d.route.Path, outcome, tier)
+		b.WriteString(mountedMark(d.route))
 	}
 	return b.String()
 }

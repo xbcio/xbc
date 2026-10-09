@@ -61,6 +61,7 @@ var archRouteRegistrationMethods = map[string]bool{
 	"Handle":  true,
 	"Any":     true,
 	"Match":   true,
+	"Mount":   true,
 }
 
 // archRouterNonRegistrationMethods are Router's remaining exported methods:
