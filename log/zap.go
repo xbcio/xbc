@@ -257,6 +257,11 @@ func Init(cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// The level moves before the cores are built and only past the parse
+	// failure above: a rejected config leaves the running backend untouched,
+	// while every core built from here on reads this one object -- which is
+	// what makes SetLevel reach loggers that already exist (see level.go).
+	applyLevel(lv)
 
 	var (
 		cores []zapcore.Core
@@ -271,7 +276,7 @@ func Init(cfg Config) error {
 		cores = append(cores, newMaskCore(zapcore.NewCore(
 			buildEncoder(cfg.Console.Format, wantColor(cfg.Console.Color, os.Stdout)),
 			zapcore.Lock(os.Stdout),
-			zapcore.Level(lv),
+			levelState.level,
 		), m))
 	}
 
@@ -283,7 +288,7 @@ func Init(cfg Config) error {
 		}
 		cls = append(cls, closeFn)
 		cores = append(cores, newMaskCore(zapcore.NewCore(
-			buildEncoder(cfg.File.Format, false), w, zapcore.Level(lv)), m))
+			buildEncoder(cfg.File.Format, false), w, levelState.level), m))
 
 		if cfg.File.ErrorPath != "" {
 			ew, ecloseFn, err := buildFileWriter(cfg.File, cfg.File.ErrorPath)
