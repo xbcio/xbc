@@ -71,7 +71,7 @@ func TestUniverseRejectsTopLevelKeyNobodyOwns(t *testing.T) {
 	t.Chdir(dir)
 	writeYAML(t, filepath.Join(dir, "application.yml"), "wbe:\n  addr: \":8080\"\n")
 
-	_, _, err := loadKoanf(Options{Universe: testUniverse(t)})
+	_, _, _, err := loadKoanf(Options{Universe: testUniverse(t)})
 	require.Error(t, err, "A misspelled top-level section must fail rather than be silently ignored")
 	require.Contains(t, err.Error(), "wbe", "The error must name the offending path")
 	require.Contains(t, err.Error(), "app, plugins, server", "The error must list what is actually declared")
@@ -82,7 +82,7 @@ func TestUniverseAcceptsDeclaredFreeformApplicationRoot(t *testing.T) {
 	t.Chdir(dir)
 	writeYAML(t, filepath.Join(dir, "application.yml"), "app:\n  anything: {nested: 1}\n")
 
-	k, _, err := loadKoanf(Options{Universe: testUniverse(t)})
+	k, _, _, err := loadKoanf(Options{Universe: testUniverse(t)})
 	require.NoError(t, err, "A declared freeform root accepts keys the framework never interprets")
 	require.Equal(t, 1, k.Int("app.anything.nested"))
 }
@@ -105,7 +105,7 @@ func TestUniverseRejectsUnownedKeyBesideADeepSection(t *testing.T) {
 	writeYAML(t, filepath.Join(dir, "application.yml"),
 		"plugins:\n  group:\n    actual:\n      enabled: true\n    typo:\n      enabled: true\n")
 
-	_, _, err = loadKoanf(Options{Universe: universe})
+	_, _, _, err = loadKoanf(Options{Universe: universe})
 	require.Error(t, err, "A sibling of a renamed section is owned by nobody and must fail")
 	require.Contains(t, err.Error(), "plugins.group.typo", "The error must name the full path, not just its root")
 	require.Contains(t, err.Error(), "plugins.group.actual",
@@ -124,7 +124,7 @@ func TestUniverseLeavesTheInteriorOfADeclaredSectionToBind(t *testing.T) {
 			"app:\n  anything:\n    nested: 1\n"+
 			"plugins:\n  store:\n    primary:\n      dsn: from-file\n")
 
-	k, _, err := loadKoanf(Options{Universe: testUniverse(t)})
+	k, _, _, err := loadKoanf(Options{Universe: testUniverse(t)})
 	require.NoError(t, err)
 	require.Equal(t, 4, k.Int("server.pool.max_idle"), "a nested schema leaf is the owning section's business")
 	require.Equal(t, "from-file", k.String("plugins.store.primary.dsn"),
@@ -425,7 +425,7 @@ func TestEnvironmentLayerKeepsAnInferredCandidateForADeclaredInstance(t *testing
 		"plugins:\n  redis:\n    lease:\n      pool_size: 3\n")
 	t.Setenv("XBC_PLUGINS_REDIS_LEASE_ENABLED", "true")
 
-	_, _, err = loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: universe})
+	_, _, _, err = loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: universe})
 	require.Error(t, err, "a variable aimed at a declared instance must not be redirected to a declared sibling")
 	require.Contains(t, err.Error(), "XBC_PLUGINS_REDIS_LEASE_ENABLED")
 	require.Contains(t, err.Error(), "ambiguous")
@@ -538,7 +538,7 @@ func TestConfigurationLayerPrecedence(t *testing.T) {
 				t.Setenv("XBC_SERVER_ADDR", testCase.env)
 			}
 
-			k, _, err := loadKoanf(options)
+			k, _, _, err := loadKoanf(options)
 			require.NoError(t, err)
 			require.Equal(t, testCase.want, k.String("server.addr"))
 		})
@@ -557,11 +557,11 @@ func TestDefaultsAloneActivateAWhenConfiguredSection(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 
-	bare, _, err := loadKoanf(Options{Universe: testUniverse(t)})
+	bare, _, _, err := loadKoanf(Options{Universe: testUniverse(t)})
 	require.NoError(t, err)
 	require.False(t, bare.Exists("plugins.greeter"), "Nothing may exist before the defaults layer is contributed")
 
-	k, _, err := loadKoanf(Options{
+	k, _, _, err := loadKoanf(Options{
 		Defaults: Defaults{Label: "starter web", Values: map[string]any{"plugins.greeter.enabled": true}},
 		Universe: testUniverse(t),
 	})
@@ -580,7 +580,7 @@ func TestDefaultsCannotNameAPathNobodyOwns(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 
-	_, _, err := loadKoanf(Options{
+	_, _, _, err := loadKoanf(Options{
 		Defaults: Defaults{Label: "starter web", Values: map[string]any{"plugins.heartbeat": true}},
 		Universe: testUniverse(t),
 	})
@@ -678,7 +678,7 @@ func TestEnvironmentAloneMakesASectionExist(t *testing.T) {
 	t.Chdir(dir)
 	t.Setenv("XBC_PLUGINS_GREETER_ENABLED", "true")
 
-	k, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
+	k, _, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
 	require.NoError(t, err)
 	require.True(t, k.Exists("plugins.greeter"),
 		"A WhenConfigured plugin can only be activated by ENV alone if the ENV layer is part of the merged view")
@@ -691,7 +691,7 @@ func TestEnvironmentAloneCanDeclareMultipleInstances(t *testing.T) {
 	t.Setenv("XBC_PLUGINS_STORE_PRIMARY_DSN", "primary-dsn")
 	t.Setenv("XBC_PLUGINS_STORE_REPLICA_DSN", "replica-dsn")
 
-	k, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
+	k, _, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
 	require.NoError(t, err)
 	require.Equal(t, "primary-dsn", k.String("plugins.store.primary.dsn"))
 	require.Equal(t, "replica-dsn", k.String("plugins.store.replica.dsn"))
@@ -713,7 +713,7 @@ func TestEnvironmentCannotSilentlyForkAHyphenatedInstance(t *testing.T) {
 		"plugins:\n  store:\n    my-db:\n      dsn: from-file\n")
 	t.Setenv("XBC_PLUGINS_STORE_MY_DB_DSN", "from-env")
 
-	_, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
+	_, _, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
 	require.Error(t, err, "The override would have forked a second instance rather than replacing the first")
 	require.Contains(t, err.Error(), "XBC_PLUGINS_STORE_MY_DB_DSN", "The error must name the variable")
 	require.Contains(t, err.Error(), `"my-db"`, "The error must name the instance that cannot be reached")
@@ -732,7 +732,7 @@ func TestEnvironmentOverridesAnInstanceItCanSpell(t *testing.T) {
 		"plugins:\n  store:\n    my_db:\n      dsn: from-file\n      pool_size: 3\n")
 	t.Setenv("XBC_PLUGINS_STORE_MY_DB_DSN", "from-env")
 
-	k, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
+	k, _, _, err := loadKoanf(Options{EnvPrefix: DefaultEnvPrefix, Universe: testUniverse(t)})
 	require.NoError(t, err)
 	require.Equal(t, "from-env", k.String("plugins.store.my_db.dsn"))
 	require.Equal(t, 3, k.Int("plugins.store.my_db.pool_size"), "The rest of the instance survives the override")

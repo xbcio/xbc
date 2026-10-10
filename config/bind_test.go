@@ -294,7 +294,7 @@ func TestBindEnvBeatsOverridesOnSameKey(t *testing.T) {
 	// already there. That happens to produce exactly the global rule, so on
 	// the same key ENV beats Overrides here as it does everywhere else.
 	t.Chdir(t.TempDir())
-	k, _, err := loadKoanf(Options{Overrides: map[string]any{"plugins.gorm.default.max_open_conn": 7}})
+	k, _, _, err := loadKoanf(Options{Overrides: map[string]any{"plugins.gorm.default.max_open_conn": 7}})
 	require.NoError(t, err)
 	t.Setenv("XBC_PLUGINS_GORM_DEFAULT_MAX_OPEN_CONN", "77")
 

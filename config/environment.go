@@ -22,7 +22,12 @@ type Environment struct {
 	envPrefix string
 	universe  *Universe
 	sources   []string
-	origins   map[string][]string
+	// files holds the configuration files the merge read, in merge order,
+	// captured by loadKoanf as it resolves them -- the text of a source label
+	// is provenance output, and parsing it back into paths would be a second
+	// and drifting source of truth.
+	files   []string
+	origins map[string][]string
 }
 
 // Load merges the configured sources and returns the resulting Environment.
@@ -30,7 +35,7 @@ func Load(opts Options) (*Environment, error) {
 	if opts.EnvPrefix == "" {
 		opts.EnvPrefix = DefaultEnvPrefix
 	}
-	k, layers, err := loadKoanf(opts)
+	k, layers, files, err := loadKoanf(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -38,6 +43,7 @@ func Load(opts Options) (*Environment, error) {
 		k:         k,
 		envPrefix: opts.EnvPrefix,
 		universe:  opts.Universe,
+		files:     files,
 		origins:   make(map[string][]string, 64),
 	}
 	for _, source := range layers {
@@ -66,6 +72,21 @@ func (e *Environment) Sources() []string {
 		return nil
 	}
 	return append([]string(nil), e.sources...)
+}
+
+// Files returns the configuration files the merge read, in merge order: the
+// base file first, then the profile overlay. A profile this Environment was
+// told to load is listed even when the file does not exist, because it may
+// still appear -- the overlay is then a change the caller has to hear about.
+// Environments assembled without a file layer return nil.
+//
+// The result feeds WatchFiles: these are exactly the paths whose change can
+// alter what a reload of this configuration would produce.
+func (e *Environment) Files() []string {
+	if e == nil {
+		return nil
+	}
+	return append([]string(nil), e.files...)
 }
 
 // OriginsUnder returns the distinct sources that set path or anything below

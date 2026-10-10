@@ -68,9 +68,16 @@ type layer struct {
 
 // loadKoanf merges the contributor defaults, the config file, the profile
 // overlay, Overrides and finally the environment layer, and returns the koanf
-// instance together with the ordered provenance of every path. Missing files
-// are only an error when Options.File named one explicitly (ruling R8).
-func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
+// instance together with the ordered provenance of every path and the file
+// paths the merge resolved. Missing files are only an error when Options.File
+// named one explicitly (ruling R8).
+//
+// The files are returned as paths rather than left to be parsed back out of
+// the "file <path>" labels: a label is provenance output, and deriving watch
+// targets from it would be a second source of truth that drifts the moment a
+// label changes. The profile path is included whether or not it exists -- see
+// Environment.Files.
+func loadKoanf(opts Options) (*koanf.Koanf, []layer, []string, error) {
 	if opts.EnvPrefix == "" {
 		// An empty prefix would make the environment layer claim every variable
 		// in the process, so it is defaulted here as well as in Load.
@@ -93,7 +100,11 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
 
 	basePath, err := locateBaseFile(opts.File)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	var files []string
+	if basePath != "" {
+		files = append(files, basePath)
 	}
 
 	// The defaults layer merges first -- before the base file is even read --
@@ -105,31 +116,35 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
 	if len(opts.Defaults.Values) > 0 {
 		defaults := koanf.New(".")
 		if err := defaults.Load(confmap.Provider(opts.Defaults.Values, "."), nil); err != nil {
-			return nil, nil, fmt.Errorf("xbc: failed to apply configuration defaults: %w", err)
+			return nil, nil, nil, fmt.Errorf("xbc: failed to apply configuration defaults: %w", err)
 		}
 		if err := merge(defaultsLabel(opts.Defaults.Label), defaults); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 
 	if basePath != "" {
 		base := koanf.New(".")
 		if err := base.Load(file.Provider(basePath), yaml.Parser()); err != nil {
-			return nil, nil, fmt.Errorf("xbc: failed to read configuration file %s: %w", basePath, err)
+			return nil, nil, nil, fmt.Errorf("xbc: failed to read configuration file %s: %w", basePath, err)
 		}
 		if err := merge("file "+basePath, base); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		if opts.Profile != "" {
 			profilePath := profileSibling(basePath, opts.Profile)
+			// Watched whether or not it is there: a profile overlay that
+			// appears after startup is a change the caller's reload should
+			// see, exactly as if it had been present from the start.
+			files = append(files, profilePath)
 			if _, statErr := os.Stat(profilePath); statErr == nil {
 				overlay := koanf.New(".")
 				if err := overlay.Load(file.Provider(profilePath), yaml.Parser()); err != nil {
-					return nil, nil, fmt.Errorf("xbc: failed to read profile configuration file %s: %w", profilePath, err)
+					return nil, nil, nil, fmt.Errorf("xbc: failed to read profile configuration file %s: %w", profilePath, err)
 				}
 				if err := merge("profile "+profilePath, overlay); err != nil {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 			}
 			// A missing profile file is silently skipped: it is an optional
@@ -140,10 +155,10 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
 	if len(opts.Overrides) > 0 {
 		overrides := koanf.New(".")
 		if err := overrides.Load(confmap.Provider(opts.Overrides, "."), nil); err != nil {
-			return nil, nil, fmt.Errorf("xbc: failed to apply configuration override: %w", err)
+			return nil, nil, nil, fmt.Errorf("xbc: failed to apply configuration override: %w", err)
 		}
 		if err := merge("override", overrides); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 
@@ -153,23 +168,23 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, error) {
 	if opts.Universe != nil {
 		values, err := opts.Universe.envOverlay(opts.EnvPrefix, os.Environ(), k)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if len(values) > 0 {
 			environment := koanf.New(".")
 			if err := environment.Load(confmap.Provider(values, "."), nil); err != nil {
-				return nil, nil, fmt.Errorf("xbc: failed to apply environment configuration: %w", err)
+				return nil, nil, nil, fmt.Errorf("xbc: failed to apply environment configuration: %w", err)
 			}
 			if err := merge("env", environment); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		}
 		if err := opts.Universe.checkOwnership(k); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 
-	return k, layers, nil
+	return k, layers, files, nil
 }
 
 // defaultsLabel composes the provenance label of the defaults layer, pairing
