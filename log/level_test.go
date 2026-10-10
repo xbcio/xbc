@@ -146,3 +146,51 @@ func TestSetLevelAcceptsEverySpellingParseLevelDoes(t *testing.T) {
 		requireCurrentLevel(t, want)
 	}
 }
+
+// A failed Init must change nothing about the running backend: its sinks stay
+// open and its level stays where it was. The sink build happens after the
+// level parses, so seating the level any earlier would silently move a config
+// that never took effect.
+func TestFailedInitLeavesTheCurrentLevelIntact(t *testing.T) {
+	path := fileOnlyInits(t, "info")
+	defer SetLevel("info")
+	_, err := SetLevel("debug")
+	require.NoError(t, err)
+
+	// A config whose sink cannot open: the path's parent is a regular file, so
+	// MkdirAll over it fails after the level has parsed.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
+	bad := DefaultConfig()
+	bad.Level = "warn"
+	bad.Console.Enabled = false
+	bad.File.Enabled = true
+	bad.File.Path = filepath.Join(blocker, "app.jsonl")
+
+	require.Error(t, Init(bad))
+
+	requireCurrentLevel(t, DebugLevel)
+	assert.True(t, L().Enabled(DebugLevel), "the running backend must stay at its level after a failed Init")
+
+	// And the running backend is otherwise untouched: it still writes.
+	L().Debug("still alive")
+	assert.Contains(t, logFile(t, path), "still alive")
+}
+
+// With every sink disabled the backend becomes Nop, but the level decision
+// still lands: CurrentLevel reports what the config decided, exactly as it
+// does for SetLevel while logging is disabled.
+func TestInitWithoutSinksStillRecordsTheConfiguredLevel(t *testing.T) {
+	defer SetLevel("info")
+	_, err := SetLevel("debug") // a stale value would be visible below
+	require.NoError(t, err)
+
+	cfg := DefaultConfig()
+	cfg.Level = "error"
+	cfg.Console.Enabled = false
+	cfg.File.Enabled = false
+	require.NoError(t, Init(cfg))
+	t.Cleanup(func() { SetLogger(Nop()) })
+
+	requireCurrentLevel(t, ErrorLevel)
+}

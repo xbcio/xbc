@@ -257,11 +257,6 @@ func Init(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	// The level moves before the cores are built and only past the parse
-	// failure above: a rejected config leaves the running backend untouched,
-	// while every core built from here on reads this one object -- which is
-	// what makes SetLevel reach loggers that already exist (see level.go).
-	applyLevel(lv)
 
 	var (
 		cores []zapcore.Core
@@ -301,6 +296,15 @@ func Init(cfg Config) error {
 				buildEncoder(cfg.File.errorFormat, false), ew, zapcore.ErrorLevel), m))
 		}
 	}
+
+	// The level moves only now: every sink could still fail to open above, and
+	// a failed Init must change nothing about the running backend, level
+	// included. The cores built above already reference this one object
+	// regardless of when its value lands -- that sharing is what makes
+	// SetLevel reach loggers that already exist (see level.go). It moves even
+	// when no sink is enabled, so a disabled backend still reports the level
+	// its config decided.
+	applyLevel(lv)
 
 	if len(cores) == 0 { // everything off is equivalent to Nop, common in test environments
 		SetLogger(Nop()) // swap the global first, then close -- see the swap/close ordering note below
