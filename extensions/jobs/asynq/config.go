@@ -38,6 +38,12 @@ type Config struct {
 	// the ordinary case of a workload this process does not host.
 	Workloads map[string]WorkloadConfig `yaml:"workloads"`
 
+	// Tasks is the per-task deployment configuration of the tasks in
+	// extensions/tasks, keyed by task name: the queue, retry policy, and
+	// timeout its submissions get, and whether this process consumes the task.
+	// A task with no entry is enqueued with the defaults below.
+	Tasks map[string]TaskConfig `yaml:"tasks"`
+
 	DefaultQueue      string        `yaml:"default_queue"       default:"default" validate:"required"`
 	DefaultMaxRetries int           `yaml:"default_max_retries" default:"25"      validate:"min=0"`
 	DefaultTimeout    time.Duration `yaml:"default_timeout"     default:"30m"     validate:"gt=0"`
@@ -63,6 +69,32 @@ type WorkloadConfig struct {
 	// Concurrency bounds how many tasks this workload's worker runs at once.
 	// Zero takes the top-level concurrency.
 	Concurrency int `yaml:"concurrency"`
+}
+
+// TaskConfig is the deployment configuration of one tasks.New or
+// tasks.Method task, keyed in Tasks by the task name. The queue it names is
+// also what a worker consuming the task must fetch: an entry that points a
+// consumed task at a queue its worker does not poll is refused at construction
+// rather than leaving submissions to sit in Redis unconsumed.
+type TaskConfig struct {
+	// Queue is the queue the task's submissions are enqueued to. Empty takes
+	// the top-level default_queue.
+	Queue string `yaml:"queue"`
+	// MaxRetries bounds redelivery attempts after a failed handler run. Nil
+	// takes the top-level default_max_retries, which is high on purpose; zero
+	// means a failed attempt is never retried, and a pointer rather than a
+	// plain int is what keeps that zero distinguishable from the default.
+	MaxRetries *int `yaml:"max_retries"`
+	// Timeout bounds one handler attempt. Zero takes the top-level
+	// default_timeout.
+	Timeout time.Duration `yaml:"timeout"`
+	// Consume makes this process consume the task even though no Plugin
+	// provides it: the task must be a tasks.New definition, and its handler
+	// joins the unowned worker. A tasks.Method task is consumed by selecting
+	// the Plugin that provides it and needs no entry here. A task that is
+	// enqueued but never consumed here stays enqueueable and is executed by
+	// whichever process declares the entry (or provides it).
+	Consume bool `yaml:"consume"`
 }
 
 // RedisConfig configures the Redis connection owned exclusively by the plugin.
@@ -107,6 +139,16 @@ func (c Config) clone() Config {
 		for key, workload := range c.Workloads {
 			workload.Queues = maps.Clone(workload.Queues)
 			out.Workloads[key] = workload
+		}
+	}
+	if c.Tasks != nil {
+		out.Tasks = make(map[string]TaskConfig, len(c.Tasks))
+		for name, task := range c.Tasks {
+			if task.MaxRetries != nil {
+				retries := *task.MaxRetries
+				task.MaxRetries = &retries
+			}
+			out.Tasks[name] = task
 		}
 	}
 	return out
@@ -162,6 +204,28 @@ func (c Config) validate() error {
 		}
 		if workload.Concurrency < 0 {
 			return fmt.Errorf("asynq: workload %q concurrency cannot be negative, got %d", key, workload.Concurrency)
+		}
+	}
+	if len(c.Tasks) > 0 {
+		known := c.knownQueues()
+		for name, task := range c.Tasks {
+			if strings.TrimSpace(name) != name || name == "" {
+				return fmt.Errorf("asynq: task name %q must be non-empty and have no surrounding whitespace", name)
+			}
+			if task.Queue != "" {
+				if strings.TrimSpace(task.Queue) != task.Queue {
+					return fmt.Errorf("asynq: task %q queue must have no surrounding whitespace", name)
+				}
+				if _, ok := known[task.Queue]; !ok {
+					return fmt.Errorf("asynq: task %q queue %q is not present in queues", name, task.Queue)
+				}
+			}
+			if task.MaxRetries != nil && *task.MaxRetries < 0 {
+				return fmt.Errorf("asynq: task %q max_retries cannot be negative, got %d", name, *task.MaxRetries)
+			}
+			if task.Timeout < 0 {
+				return fmt.Errorf("asynq: task %q timeout cannot be negative, got %s", name, task.Timeout)
+			}
 		}
 	}
 	if strings.TrimSpace(c.DefaultQueue) != c.DefaultQueue || c.DefaultQueue == "" {

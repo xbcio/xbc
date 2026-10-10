@@ -47,6 +47,44 @@
 // Keeping enqueueing and handler contribution in separate Definitions avoids a
 // dependency cycle.
 //
+// # Tasks
+//
+// Application work is usually expressed through extensions/tasks, the
+// protocol-neutral task facade: a task defined once with tasks.New or
+// tasks.Method is submitted with tasks.Submit, run with tasks.Run, or
+// dispatched fire-and-forget with tasks.Go. Selecting this Bundle installs the
+// Plugin as the process-wide remote executor at Init, so a submission is
+// enqueued to Redis -- carrying the queue, retries, and timeout its name
+// resolves to under plugins.asynq.tasks -- until Stop uninstalls it again.
+// Enqueuer and HandlerContributor remain the lower-level exits for submissions
+// and handlers that work with the vendor types directly.
+//
+// A tasks.Provider export is consumed exactly like a HandlerContributor: the
+// providing Plugin's workload decides which worker runs its tasks, under that
+// worker's queues, concurrency, and admission quota. A tasks.New task is
+// consumed only where plugins.asynq.tasks.<name>.consume: true says so, on the
+// unowned worker: defining a task in a package a process imports must not make
+// that process start consuming it, or every enqueue-only process would quietly
+// join the queue. A consumed task's queue must be one its consuming worker
+// fetches; pointing one at a queue the worker does not consume is refused at
+// construction rather than left to sit in Redis. Queue, retry count, and
+// timeout come from deployment configuration:
+//
+//	plugins:
+//	  asynq:
+//	    tasks:
+//	      mail.send_confirmation:
+//	        queue: mail          # defaults to default_queue
+//	        max_retries: 3       # defaults to default_max_retries
+//	        timeout: 2m          # defaults to default_timeout
+//	      stats.recount:
+//	        consume: true        # run this tasks.New task on the unowned worker
+//
+// A failure the handler marks with tasks.Permanent, and a payload the binding
+// cannot decode, are not retried: both are returned to the queue as SkipRetry
+// and the task is archived after its first attempt. Every other handler
+// failure follows the task's configured retry policy.
+//
 // # Workloads
 //
 // A worker serves the handlers of the Plugins that share a workload. A

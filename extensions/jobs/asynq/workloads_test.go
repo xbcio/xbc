@@ -99,30 +99,30 @@ func TestWorkerGroupsChargeTheWorkloadTheirHandlersBelongTo(t *testing.T) {
 	}
 }
 
-func TestNewPluginRefusesAWorkloadThatDeclaresNoQueues(t *testing.T) {
+func TestAssemblePluginRefusesAWorkloadThatDeclaresNoQueues(t *testing.T) {
 	cfg := defaultConfig()
-	_, err := newPlugin(cfg, []plugin.Entry[HandlerContributor]{
+	_, err := assemblePlugin(cfg, []plugin.Entry[HandlerContributor]{
 		contributorEntry("sast", "sast", "sast.scan"),
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "plugins.asynq.workloads.sast") {
-		t.Fatalf("newPlugin() error = %v, want the missing workload entry named", err)
+		t.Fatalf("assemblePlugin() error = %v, want the missing workload entry named", err)
 	}
 }
 
-func TestNewPluginRefusesAQueueTwoWorkersWouldBothConsume(t *testing.T) {
+func TestAssemblePluginRefusesAQueueTwoWorkersWouldBothConsume(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Queues = map[string]int{"shared": 1}
 	cfg.Workloads = map[string]WorkloadConfig{"sast": {Queues: map[string]int{"shared": 2}}}
-	_, err := newPlugin(cfg, []plugin.Entry[HandlerContributor]{
+	_, err := assemblePlugin(cfg, []plugin.Entry[HandlerContributor]{
 		contributorEntry("housekeeping", "", "housekeeping.sweep"),
 		contributorEntry("sast", "sast", "sast.scan"),
-	})
+	}, nil)
 	if err == nil {
-		t.Fatal("newPlugin() error = nil")
+		t.Fatal("assemblePlugin() error = nil")
 	}
 	for _, want := range []string{`queue "shared"`, `the unowned group`, `workload "sast"`} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("newPlugin() error = %v, want %q named", err, want)
+			t.Fatalf("assemblePlugin() error = %v, want %q named", err, want)
 		}
 	}
 }
@@ -366,9 +366,9 @@ func TestProcessWithoutHandlersIdlesInsteadOfRefusing(t *testing.T) {
 	redisServer := miniredis.RunT(t)
 	cfg := validTestConfig(redisServer.Addr())
 	built := 0
-	p, err := newPlugin(cfg, nil)
+	p, err := assemblePlugin(cfg, nil, nil)
 	if err != nil {
-		t.Fatalf("newPlugin() with no contributors error = %v", err)
+		t.Fatalf("assemblePlugin() with no contributors error = %v", err)
 	}
 	p.factory.newServer = func(goredis.UniversalClient, hibiken.Config) workerServer {
 		built++
@@ -436,9 +436,9 @@ func TestEnqueueAcceptsQueuesDeclaredForAnyWorkload(t *testing.T) {
 // test can decide which workload each contributor belongs to.
 func newWorkloadPlugin(t *testing.T, cfg Config, contributors ...plugin.Entry[HandlerContributor]) *Plugin {
 	t.Helper()
-	p, err := newPlugin(cfg, contributors)
+	p, err := assemblePlugin(cfg, contributors, nil)
 	if err != nil {
-		t.Fatalf("newPlugin() error = %v", err)
+		t.Fatalf("assemblePlugin() error = %v", err)
 	}
 	return p
 }

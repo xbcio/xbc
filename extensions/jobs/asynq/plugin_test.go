@@ -26,9 +26,9 @@ func testHandlerEntries(handler Handler) []plugin.Entry[HandlerContributor] {
 
 func newTestPlugin(t *testing.T, cfg Config, handler Handler) *Plugin {
 	t.Helper()
-	p, err := newPlugin(cfg, testHandlerEntries(handler))
+	p, err := assemblePlugin(cfg, testHandlerEntries(handler), nil)
 	if err != nil {
-		t.Fatalf("newPlugin() error = %v", err)
+		t.Fatalf("assemblePlugin() error = %v", err)
 	}
 	return p
 }

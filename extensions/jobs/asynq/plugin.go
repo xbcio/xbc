@@ -11,6 +11,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/xbcio/xbc/extensions/reliability/health"
+	"github.com/xbcio/xbc/extensions/tasks"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -29,7 +30,7 @@ var definition = plugin.DefineConfigured(
 	plugin.Options[*Plugin]{
 		Instances:  plugin.SingleInstance,
 		Activation: plugin.WhenConfigured("plugins.asynq"),
-		Inputs:     plugin.Inputs(handlerContributors),
+		Inputs:     plugin.Inputs(handlerContributors, taskProviders),
 		Exports: plugin.Contracts(
 			plugin.ExportAs(func(value *Plugin) Enqueuer { return value }),
 			plugin.ExportAs(func(value *Plugin) health.Contributor { return value }),
@@ -109,6 +110,16 @@ type Plugin struct {
 	cfg     Config
 	factory backendFactory
 
+	// taskBindings is the binding of every task name this process consumes,
+	// and taskOptions the enqueue options every configured task name resolves
+	// to. Both are read-only after construction; init hands them to the remote
+	// task executor it installs.
+	taskBindings map[string]tasks.Binding
+	taskOptions  map[string][]TaskOption
+	// uninstallTasks unregisters this Plugin's remote task executor, set by
+	// init when it wins the process-wide slot and cleared by stop.
+	uninstallTasks func()
+
 	mu       sync.Mutex
 	workerMu sync.Mutex
 
@@ -143,19 +154,7 @@ func prepareConfig(cfg Config) (Config, error) {
 }
 
 func buildPlugin(ctx plugin.BuildContext, cfg Config) (*Plugin, error) {
-	return newPlugin(cfg, handlerContributors.Get(ctx))
-}
-
-func newPlugin(cfg Config, contributors []plugin.Entry[HandlerContributor]) (*Plugin, error) {
-	groups, err := newWorkerGroups(cfg, contributors)
-	if err != nil {
-		return nil, err
-	}
-	return &Plugin{
-		cfg:     cfg.clone(),
-		factory: defaultBackendFactory(),
-		groups:  groups,
-	}, nil
+	return assemblePlugin(cfg, handlerContributors.Get(ctx), taskProviders.Get(ctx))
 }
 
 // newWorkerGroups resolves every handler group into the worker that serves it.
@@ -166,11 +165,7 @@ func newPlugin(cfg Config, contributors []plugin.Entry[HandlerContributor]) (*Pl
 // configuration error rather than a silent fallback to the top-level queues:
 // falling back would put the workload's handlers on a queue set shared with
 // everything unowned, which is the cross-consumption this split exists to stop.
-func newWorkerGroups(cfg Config, contributors []plugin.Entry[HandlerContributor]) ([]*workerGroup, error) {
-	grouped, err := groupHandlers(contributors)
-	if err != nil {
-		return nil, err
-	}
+func newWorkerGroups(cfg Config, grouped []handlerGroup) ([]*workerGroup, error) {
 	groups := make([]*workerGroup, 0, len(grouped))
 	for _, group := range grouped {
 		queues := cfg.Queues
@@ -298,6 +293,11 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 	p.cfg = cfg
 	p.redis = redisClient
 	p.client = newClient(backend, cfg)
+	p.uninstallTasks = installRemoteExecutor(&remoteExecutor{
+		client:   p.client,
+		options:  p.taskOptions,
+		bindings: p.taskBindings,
+	}, ctx.Log())
 	p.initialized = true
 	committed = true
 	return nil
@@ -568,6 +568,15 @@ func (p *Plugin) stop(ctx context.Context) error {
 		redisClient := p.redis
 		if client != nil {
 			client.beginClose()
+		}
+		// Uninstalling the remote executor right after its client stops
+		// admitting submissions keeps the two consistent: a Submit that still
+		// finds the executor reports the client's closed error (tasks.ErrClosed),
+		// and one that arrives after the uninstall routes to the local executor
+		// or reports nothing installed -- never to a closed client.
+		if p.uninstallTasks != nil {
+			p.uninstallTasks()
+			p.uninstallTasks = nil
 		}
 		p.client = nil
 		p.redis = nil

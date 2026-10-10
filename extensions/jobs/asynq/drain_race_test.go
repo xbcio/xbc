@@ -50,6 +50,13 @@ func TestConcurrentDrainsReplayTheWorkerStopFailure(t *testing.T) {
 			t.Fatalf("iteration %d: worker Stop count = %d, want 1", iteration, worker.stopCount())
 		}
 		host.stopTasks()
+		// Init installs the process-wide remote task executor and only stop
+		// uninstalls it, so every iteration ends with a stop: the first
+		// iteration's executor would otherwise outlive the miniredis it
+		// points at and take over the slot for every later test in the binary.
+		if err := p.stop(context.Background()); err != nil {
+			t.Fatalf("iteration %d: stop() error = %v", iteration, err)
+		}
 	}
 }
 

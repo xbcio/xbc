@@ -22,7 +22,7 @@ func TestGroupHandlersKeepsContributorOrderAndFreezesRegistrations(t *testing.T)
 		{Identity: plugin.Identity{Plugin: "second", Instance: "named"}, Value: second},
 	}
 
-	groups, err := groupHandlers(contributors)
+	groups, err := groupHandlers(contributors, nil)
 	if err != nil {
 		t.Fatalf("groupHandlers() error = %v", err)
 	}
@@ -61,7 +61,7 @@ func TestGroupHandlersSplitsContributorsByWorkload(t *testing.T) {
 		entry("sast", "sast", "sast.scan"),
 		entry("saas", "saas", "saas.report"),
 		entry("sast-tools", "sast", "sast.cleanup"),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("groupHandlers() error = %v", err)
 	}
@@ -78,7 +78,7 @@ func TestGroupHandlersSplitsContributorsByWorkload(t *testing.T) {
 }
 
 func TestGroupHandlersLeavesNothingBehindForAProcessThatContributesNothing(t *testing.T) {
-	groups, err := groupHandlers(nil)
+	groups, err := groupHandlers(nil, nil)
 	if err != nil {
 		t.Fatalf("groupHandlers(nil) error = %v", err)
 	}
@@ -89,7 +89,7 @@ func TestGroupHandlersLeavesNothingBehindForAProcessThatContributesNothing(t *te
 	groups, err = groupHandlers([]plugin.Entry[HandlerContributor]{
 		{Identity: plugin.Identity{Plugin: "empty"}, Value: &testContributor{}},
 		{Identity: plugin.Identity{Plugin: "empty-workload"}, Workload: "sast", Value: &testContributor{}},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("groupHandlers(empty contributors) error = %v", err)
 	}
@@ -121,7 +121,7 @@ func TestGroupHandlersRejectsInvalidContributorContracts(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := groupHandlers(test.contributors)
+			_, err := groupHandlers(test.contributors, nil)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("groupHandlers() error = %v, want %q", err, test.want)
 			}
@@ -137,7 +137,7 @@ func TestGroupHandlersNamesTheWorkloadInItsErrors(t *testing.T) {
 	groups, err := groupHandlers([]plugin.Entry[HandlerContributor]{
 		{Identity: plugin.Identity{Plugin: "sast"}, Workload: "sast", Value: &testContributor{registrations: []HandlerRegistration{{Type: "sast.scan", Handler: valid}}}},
 		{Identity: plugin.Identity{Plugin: "sast-tools"}, Workload: "sast", Value: &testContributor{registrations: []HandlerRegistration{{Type: "sast.scan", Handler: valid}}}},
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), `in workload "sast"`) {
 		t.Fatalf("groupHandlers() error = %v, groups = %v", err, workloadsOf(groups))
 	}
@@ -145,7 +145,7 @@ func TestGroupHandlersNamesTheWorkloadInItsErrors(t *testing.T) {
 	_, err = groupHandlers([]plugin.Entry[HandlerContributor]{
 		{Identity: plugin.Identity{Plugin: "first"}, Value: &testContributor{registrations: []HandlerRegistration{{Type: "task", Handler: valid}}}},
 		{Identity: plugin.Identity{Plugin: "second"}, Value: &testContributor{registrations: []HandlerRegistration{{Type: "task", Handler: valid}}}},
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "in the unowned group") {
 		t.Fatalf("groupHandlers() error = %v, want the unowned group named", err)
 	}
@@ -185,7 +185,7 @@ func TestDispatcherFilesEachTaskUnderItsWorkloadLabel(t *testing.T) {
 	groups, err := groupHandlers([]plugin.Entry[HandlerContributor]{
 		entry("scanner", "sast", "sast.scan", handlerFor(sastErr)),
 		entry("housekeeping", "", "housekeeping", handlerFor(nil)),
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("groupHandlers() error = %v", err)
 	}

@@ -2,6 +2,7 @@ package asynq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 
 	hibiken "github.com/hibiken/asynq"
 
+	"github.com/xbcio/xbc/extensions/tasks"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -49,32 +51,49 @@ func (d *dispatcher) ProcessTask(ctx context.Context, task *hibiken.Task) error 
 	// makes for unowned plugins: those contributors are the shared ones, and a
 	// label naming no workload is the truth about them.
 	if d.workload == "" {
-		return work(ctx)
+		return permanentToSkipRetry(task.Type(), work(ctx))
 	}
 	var err error
 	pprof.Do(ctx, pprof.Labels(workloadProfileLabel, d.workload.String()), func(taskCtx context.Context) {
 		err = work(taskCtx)
 	})
-	return err
+	return permanentToSkipRetry(task.Type(), err)
 }
 
-// handlerGroup is one worker's handler set: the handlers contributed by the
-// Plugins that share a workload, plus the workload they belong to (empty for
-// the group of contributors that belong to none).
+// permanentToSkipRetry translates the task contract's permanent-failure
+// signals -- an error the handler marked with tasks.Permanent, and a payload
+// the binding could not decode -- into the queue library's SkipRetry, so a
+// task that can never succeed is archived after one attempt instead of being
+// redelivered default_max_retries times. The original error stays reachable
+// through the returned one, and the unwrapped errors pass through unchanged.
+func permanentToSkipRetry(taskType string, err error) error {
+	if !errors.Is(err, tasks.ErrPermanent) && !errors.Is(err, tasks.ErrPayload) {
+		return err
+	}
+	return fmt.Errorf("%w: task %q: %w", hibiken.SkipRetry, taskType, err)
+}
+
+// handlerGroup is one worker's handler set: the asynq handlers contributed by
+// the Plugins that share a workload and the task bindings collected for it,
+// plus the workload they belong to (empty for the group of contributors that
+// belong to none).
 type handlerGroup struct {
 	workload   plugin.WorkloadKey
 	dispatcher *dispatcher
 }
 
-// groupHandlers splits the collected contributors into one handler set per
-// workload, in the order the workloads first appear.
+// groupHandlers splits the collected contributors and task bindings into one
+// handler set per workload, in the order the workloads first appear.
 //
 // A workload's Plugins are served by that workload's server, so its queue set,
 // concurrency and admission quota are the workload's own; Plugins that belong
 // to no workload -- the ones a standby process exists to run -- share the
 // top-level worker. Splitting here rather than by running every handler through
 // one server is what keeps "which queues does this process consume" tied to
-// "which workloads does it host".
+// "which workloads does it host". Task bindings join the group of the workload
+// they were collected with, and a consumed function task joins the unowned
+// group, so the same worker serves a workload's Plugins, their tasks, and their
+// asynq handlers.
 //
 // An empty result is not an error. A process that contributes no handlers is a
 // standby between two roles, or a process that composes the integration only to
@@ -83,54 +102,93 @@ type handlerGroup struct {
 // was about to be decided. The plugin idles instead (see Plugin.start).
 //
 // Duplicate registration is refused within a group, where it would make the
-// handler a task gets depend on registration order. Across groups the same task
-// type may appear more than once: the groups consume disjoint queues, so which
-// handler runs is decided by the queue the task was enqueued to rather than by
-// the order contributors were collected in.
-func groupHandlers(contributors []plugin.Entry[HandlerContributor]) ([]handlerGroup, error) {
-	var groups []handlerGroup
-	index := make(map[plugin.WorkloadKey]int)
-	handlers := make(map[plugin.WorkloadKey]map[string]Handler)
-	owners := make(map[plugin.WorkloadKey]map[string]plugin.Identity)
-
+// handler a task gets depend on registration order -- whether the collision is
+// between two contributors, or between a task binding and an asynq handler.
+// Across groups the same task type may appear more than once: the groups
+// consume disjoint queues, so which handler runs is decided by the queue the
+// task was enqueued to rather than by the order contributors were collected in.
+func groupHandlers(contributors []plugin.Entry[HandlerContributor], taskBindings []taskBinding) ([]handlerGroup, error) {
+	sets := newHandlerSets()
 	for _, contributor := range contributors {
 		registrations, err := contributorHandlers(contributor)
 		if err != nil {
 			return nil, err
 		}
-		workload := contributor.Workload
-		if _, known := index[workload]; !known {
-			index[workload] = len(groups)
-			groups = append(groups, handlerGroup{workload: workload, dispatcher: &dispatcher{workload: workload, handlers: map[string]Handler{}}})
-			handlers[workload] = groups[len(groups)-1].dispatcher.handlers
-			owners[workload] = make(map[string]plugin.Identity)
-		}
 		for position, registration := range registrations {
 			if strings.TrimSpace(registration.Type) != registration.Type || registration.Type == "" {
-				return nil, fmt.Errorf("asynq: HandlerContributor %s returned invalid task type %q at index %d%s", contributor.Identity, registration.Type, position, inWorkload(workload))
+				return nil, fmt.Errorf("asynq: HandlerContributor %s returned invalid task type %q at index %d%s", contributor.Identity, registration.Type, position, inWorkload(contributor.Workload))
 			}
 			if isNilInterface(registration.Handler) {
-				return nil, fmt.Errorf("asynq: HandlerContributor %s returned nil handler for type %q at index %d%s", contributor.Identity, registration.Type, position, inWorkload(workload))
+				return nil, fmt.Errorf("asynq: HandlerContributor %s returned nil handler for type %q at index %d%s", contributor.Identity, registration.Type, position, inWorkload(contributor.Workload))
 			}
-			if previous, duplicate := owners[workload][registration.Type]; duplicate {
-				return nil, fmt.Errorf("asynq: duplicate handler for task type %q from %s and %s%s", registration.Type, previous, contributor.Identity, inWorkload(workload))
+			if err := sets.add(contributor.Workload, registration.Type, registration.Handler, contributor.Identity); err != nil {
+				return nil, err
 			}
-			handlers[workload][registration.Type] = registration.Handler
-			owners[workload][registration.Type] = contributor.Identity
 		}
 	}
+	// Task bindings join the group of the workload they were collected with,
+	// so a workload's worker serves its Plugins' tasks and their asynq
+	// handlers alike -- and the two sources collide through the same owner
+	// check instead of silently overwriting each other's types. The binding's
+	// byte handler is what dispatch invokes; Run reaches the same binding
+	// through the executor's lookup instead.
+	for _, task := range taskBindings {
+		binding := task.binding
+		handler := HandlerFunc(func(ctx context.Context, delivered Task) error {
+			return binding.Handler()(ctx, delivered.Payload)
+		})
+		if err := sets.add(task.workload, binding.Name(), handler, task.owner); err != nil {
+			return nil, err
+		}
+	}
+	return sets.serve(), nil
+}
 
-	// A contributor that registered nothing leaves no group behind. A server
-	// that consumes a queue set while holding no handler for the tasks on it
-	// would fetch work it can only fail, so an empty handler set means the
-	// workload has no worker here rather than an idle one.
-	served := make([]handlerGroup, 0, len(groups))
-	for _, group := range groups {
+// handlerSets accumulates one handler set per workload while a grouping reads
+// its sources, in the order the workloads first appear.
+type handlerSets struct {
+	groups []handlerGroup
+	index  map[plugin.WorkloadKey]int
+	owners map[plugin.WorkloadKey]map[string]plugin.Identity
+}
+
+func newHandlerSets() *handlerSets {
+	return &handlerSets{
+		index:  make(map[plugin.WorkloadKey]int),
+		owners: make(map[plugin.WorkloadKey]map[string]plugin.Identity),
+	}
+}
+
+// add registers one handler under one type for one workload, creating the
+// workload's group on first use. A type registered twice within a group is
+// refused: which handler a task reaches must not depend on registration order.
+func (s *handlerSets) add(workload plugin.WorkloadKey, name string, handler Handler, owner plugin.Identity) error {
+	if _, known := s.index[workload]; !known {
+		s.index[workload] = len(s.groups)
+		s.groups = append(s.groups, handlerGroup{workload: workload, dispatcher: &dispatcher{workload: workload, handlers: map[string]Handler{}}})
+		s.owners[workload] = make(map[string]plugin.Identity)
+	}
+	if previous, duplicate := s.owners[workload][name]; duplicate {
+		return fmt.Errorf("asynq: duplicate handler for task type %q from %s and %s%s", name, previous, owner, inWorkload(workload))
+	}
+	s.groups[s.index[workload]].dispatcher.handlers[name] = handler
+	s.owners[workload][name] = owner
+	return nil
+}
+
+// serve returns the groups that hold at least one handler. A source that
+// registered nothing leaves no group behind: a server that consumes a queue
+// set while holding no handler for the tasks on it would fetch work it can
+// only fail, so an empty handler set means the workload has no worker here
+// rather than an idle one.
+func (s *handlerSets) serve() []handlerGroup {
+	served := make([]handlerGroup, 0, len(s.groups))
+	for _, group := range s.groups {
 		if len(group.dispatcher.handlers) > 0 {
 			served = append(served, group)
 		}
 	}
-	return served, nil
+	return served
 }
 
 // inWorkload names the workload a message is about, for errors that would
