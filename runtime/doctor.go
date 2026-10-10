@@ -29,10 +29,11 @@ const doctorInstanceLabelWidth = len("selected at")
 
 // reportDoctor writes the outcome of a complete, read-only assembly, grouped by
 // the placement question an operator is actually asking: where this process's
-// hosting decision came from, which workloads it carries and why, which plugins
-// those turned on, which section each instance binds, where each instance was
-// selected, what feeds its declared inputs, why the remaining Definitions
-// stayed off, and which sources contributed.
+// hosting decision came from, which files a running process would watch, which
+// workloads it carries and why, which plugins those turned on, which section
+// each instance binds, where each instance was selected, what feeds its
+// declared inputs, why the remaining Definitions stayed off, and which sources
+// contributed.
 //
 // Everything printed here is a path, an identity, a contract type name or a
 // source label. No configured value is ever written, which is what makes the
@@ -59,6 +60,7 @@ func (a *App) reportDoctor(plan *assembly.Plan, migrate bool) {
 	fmt.Fprintln(out)
 
 	a.reportDoctorConfiguration(out)
+	a.reportDoctorReload(out)
 
 	order := plan.Order()
 	disabled := plan.DisabledDetail()
@@ -115,6 +117,37 @@ func (a *App) reportDoctorConfiguration(out io.Writer) {
 		fmt.Fprintf(out, "  sources  %s\n", strings.Join(sources, ", "))
 	}
 	fmt.Fprintf(out, "  roots    %s\n", strings.Join(a.env.Roots(), ", "))
+	fmt.Fprintln(out)
+}
+
+// reportDoctorReload answers what an edit to this configuration does under a
+// running process: which files it re-reads, and the fate of a change to each
+// kind of path.
+//
+// The three outcome lines mirror classifyReload's outcomes and reuse the very
+// constants the classifier switches on, so the report cannot drift from the
+// behavior it describes. The watched list is Environment.Files: the files a
+// watch would arm on, each listed even when it does not exist yet, because a
+// profile overlay that may still appear is exactly the change the watch has
+// to report.
+//
+// A plugin or workload section cannot change in place -- that is what the
+// restart line's tail states, once for every instance rather than as a
+// constant printed under each one. The per-instance spelling becomes real
+// data only when plugin.Reloader lands (a deferred seam, deliberately), and
+// until then a line under every instance would be per-instance structure
+// fabricated for a datum that does not exist.
+func (a *App) reportDoctorReload(out io.Writer) {
+	fmt.Fprintln(out, "reload")
+	files := a.env.Files()
+	if len(files) == 0 {
+		fmt.Fprintln(out, "  watches  (none; no configuration file was read, so a running process has nothing to watch)")
+	} else {
+		fmt.Fprintf(out, "  watches  %s\n", strings.Join(files, ", "))
+	}
+	fmt.Fprintf(out, "  applies  %s (moves the running log backend in place)\n", logLevelPath)
+	fmt.Fprintf(out, "  accepts  %s.* (held and reported; the runtime never interprets it)\n", applicationSection)
+	fmt.Fprintln(out, "  restart  every other path, including every plugin and workload section")
 	fmt.Fprintln(out)
 }
 

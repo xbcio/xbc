@@ -217,6 +217,21 @@ XBC_SHUTDOWN_TIMEOUT=20s \
 
 Environment variables are a complete configuration layer. They can activate a selected plugin whose section is absent from YAML and can declare named instances such as `redis.cache`. They cannot activate code whose Bundle was not selected. A variable that names no declared section, or no field of the section it names, fails startup rather than being ignored. `XBC_PROFILE` is reserved for the loader itself and never names a section.
 
+### Reloading at runtime
+
+A running process watches the files its boot read — the base file and the profile sibling, watched whether or not the overlay exists yet, so `application-prod.yml` appearing after the start is picked up like any other change. On a change, the whole configuration is re-read and validated exactly as it was at startup: the same strict decoding, the same section ownership, the same environment overlay. A reload is all-or-nothing: a save caught mid-write, a parse error, or a key that would not have been accepted at boot rejects the entire reload, the process keeps running the configuration it already holds, and the warning names the paths that failed. A file that mixes a change the process can take with one it cannot applies neither half.
+
+**What a reload can and cannot move.** `log.level` is the one leaf that moves in place: the running backend switches to the new level, and every logger a plugin already holds observes it. Anything under `app` is accepted and reported but never interpreted — the runtime will not reject a reload over the section that belongs to the application author. Everything else requires a restart: any change under `plugins.*` or `workloads.*` is a graph change (an `enabled` flip is as much one as a new instance), and every `xbc.*` value was consumed once during startup — the budgets sized a shutdown that is already planned, `instance_id` names a lease the process holds, `auto_migrate` gated a stage that has run. The rejection warns with the paths and the files that set them, so the operator knows which file to edit:
+
+```
+xbc: log level changed  level=debug previous=info
+xbc: configuration reload rejected; these paths require a restart  paths="[plugins.gorm.enabled (file /etc/app/application.yml)]"
+```
+
+**Environment variables never change at runtime.** They are read once by the boot and a reload re-reads the same process environment, so a value that only environment variables can change requires a restart. Reload is driven by file changes alone: there is no SIGHUP handler, and no signal re-reads the configuration.
+
+If a watched file is deleted, the watch re-arms rather than going deaf — a file that reappears is reported, which is the ConfigMap-style atomic swap — and a change landing in the brief re-arm gap is reported by the next round rather than dropped. If the watch cannot be armed at all, the process logs a warning and serves on without reload rather than failing to start. `xbc doctor` prints the watched files and the same applies/accepts/restart summary without arming anything, so a rollout can answer "what would a reload do with this change" before it swaps the file.
+
 ## Exercise the API
 
 In another terminal, call the example routes:

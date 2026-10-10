@@ -3,6 +3,8 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"regexp"
 	goruntime "runtime"
 	"strings"
@@ -74,6 +76,45 @@ func TestDoctorRejectsEveryConfigurationARunRejects(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "log.level", "the diagnostic names the key to fix")
 	assert.Nil(t, app.plan, "the command fails while bootstrapping, before planning starts")
+}
+
+// TestDoctorReportsWhatAReloadWouldReReadAndApply pins the reload section:
+// which files a running process watches, and what a change to each kind of
+// path would do to it. It is doctor's answer to "does editing this file take
+// effect without a restart", and it must agree with reloadOnce's
+// classification, whose constants the report reuses.
+//
+// The watched list includes the profile overlay even though the file does not
+// exist: a profile file that appears later is exactly the change the watch
+// has to report, so doctor lists what a run would watch, not what is on disk.
+// (That doctor starts no watch of its own is pinned by
+// TestReadOnlyCommandsStartNoConfigurationWatch.)
+func TestDoctorReportsWhatAReloadWouldReReadAndApply(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "application.yml")
+	overlay := filepath.Join(dir, "application-prod.yml")
+	require.NoError(t, os.WriteFile(base, []byte("xbc:\n  shutdown_timeout: 1s\n"), 0o600))
+
+	app := newRuntimeTestApp(reloadTestDefinition())
+	out := runDoctor(t, app, "--config", base, "--profile", "prod")
+
+	assert.Contains(t, out, "reload\n  watches  "+base+", "+overlay,
+		"a run watches the profile overlay even before it exists, so doctor lists it")
+	assert.Contains(t, out, "applies  log.level",
+		"the one leaf a running process moves in place is named")
+	assert.Contains(t, out, "accepts  app.*",
+		"an application-owned change is accepted without runtime action")
+	assert.Contains(t, out, "restart  every other path, including every plugin and workload section",
+		"no plugin or workload section can change in place: doctor's per-instance answer, stated once")
+
+	// A process started without a configuration file has nothing to watch,
+	// and the report says so rather than leaving the section out.
+	bare := newRuntimeTestApp(reloadTestDefinition())
+	bareOut := runDoctor(t, bare)
+	assert.Contains(t, bareOut, "watches  (none; no configuration file was read",
+		"no file layer means nothing to watch, spelled out")
+	assert.Contains(t, bareOut, "applies  log.level",
+		"the in-place and restart answers hold whether or not a file was configured")
 }
 
 // TestDoctorReportsGraphInstancesSourcesAndDisableReasons covers the four
