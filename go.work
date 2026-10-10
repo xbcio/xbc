@@ -21,6 +21,7 @@ use (
 	./extensions/authorization/casbin-gorm
 	./extensions/authorization/casbin-redis
 	./extensions/authorization/rbac
+	./extensions/tasks
 	./extensions/concurrency/async
 	./extensions/coordination/lease
 	./extensions/coordination/placement
