@@ -15,13 +15,14 @@ var definition = plugin.DefineConfigured(
 		Defaults: DefaultConfig,
 		Prepare:  prepareConfig,
 	},
-	func(_ plugin.BuildContext, cfg Config) (*Pool, error) {
-		return newPool(cfg, nil)
+	func(ctx plugin.BuildContext, cfg Config) (*Pool, error) {
+		return newPool(cfg, nil, taskProviders.Get(ctx))
 	},
 	plugin.Options[*Pool]{
 		Exports: plugin.Contracts(
 			plugin.ExportAs[Spawner](func(pool *Pool) Spawner { return pool }),
 		),
+		Inputs: plugin.Inputs(taskProviders),
 		Lifecycle: plugin.Lifecycle[*Pool]{
 			Init:  initPool,
 			Drain: (*Pool).drain,
@@ -69,5 +70,6 @@ func initPool(pool *Pool, ctx *plugin.Context) error {
 		return ErrDrainedBeforeInit
 	}
 	bindGlobal(pool, ctx.Log())
+	pool.uninstallTasks = installLocalExecutor(pool, ctx.Log())
 	return nil
 }

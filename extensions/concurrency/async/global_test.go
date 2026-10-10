@@ -82,6 +82,9 @@ func TestUnbindGlobalOnlyClearsItsOwnBinding(t *testing.T) {
 	resetGlobal(t)
 	first := mustNewPool(t, DefaultConfig(), nil)
 	require.NoError(t, initPool(first, runtimeContext(newFakeHost(), "")))
+	// Init also installs the process-wide local task executor, which only
+	// stop uninstalls; unbinding the Spawner by hand must not leave it behind.
+	t.Cleanup(func() { _ = first.stop(context.Background()) })
 
 	second := mustNewPool(t, DefaultConfig(), nil)
 	// second never bound (first already holds the slot); stopping it must be

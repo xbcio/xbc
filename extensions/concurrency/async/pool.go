@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xbcio/xbc/extensions/tasks"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -77,6 +78,17 @@ type Pool struct {
 	// the workload the plugin is placed in, and such a Pool has none.
 	admission plugin.Admission
 
+	// bindings is the Pool's private task dispatch table, built at
+	// construction from the collected tasks.Provider exports and the
+	// process's tasks.Funcs. It is never mutated afterward, so the local
+	// executor reads it without locking.
+	bindings map[string]tasks.Binding
+
+	// uninstallTasks unregisters this Pool as the process-wide local task
+	// executor at the end of stop. It is nil when this Pool never installed
+	// itself (Init never ran, or another executor already held the slot).
+	uninstallTasks func()
+
 	mu sync.Mutex
 	// changed is closed and replaced under mu every time running or queue
 	// occupancy changes (or shutdown begins), so a Spawn call parked in admit
@@ -135,7 +147,7 @@ func newPreparedPool(cfg Config, logger log.Logger) (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	pool, err := newPool(prepared, logger)
+	pool, err := newPool(prepared, logger, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -143,16 +155,24 @@ func newPreparedPool(cfg Config, logger log.Logger) (*Pool, error) {
 	return pool, nil
 }
 
-// newPool constructs a Pool with its configured executor. cfg is expected to
-// have already passed prepareConfig/validate; newPool itself only fails if
-// building the configured executor fails (currently only possible for
-// ExecutorAnts, whose pool construction can reject an invalid ants.* value
-// prepareConfig did not already catch).
-func newPool(cfg Config, logger log.Logger) (*Pool, error) {
+// newPool constructs a Pool with its configured executor and its task
+// dispatch table. cfg is expected to have already passed
+// prepareConfig/validate; newPool fails if building the configured executor
+// fails (currently only possible for ExecutorAnts, whose pool construction can
+// reject an invalid ants.* value prepareConfig did not already catch) or if
+// the collected task providers do not form a valid table (a provider callback
+// panic, an invalid binding, or two providers offering the same task).
+// providers is empty for a Pool built outside the framework, whose table then
+// holds the process's function tasks alone.
+func newPool(cfg Config, logger log.Logger, providers []plugin.Entry[tasks.Provider]) (*Pool, error) {
 	if logger == nil {
 		logger = log.Nop()
 	}
 	exec, err := newExecutor(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	bindings, err := buildTaskTable(providers)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +185,7 @@ func newPool(cfg Config, logger log.Logger) (*Pool, error) {
 		execCtx:    execCtx,
 		execCancel: execCancel,
 		changed:    make(chan struct{}),
+		bindings:   bindings,
 	}, nil
 }
 
@@ -656,6 +677,14 @@ func (p *Pool) stop(ctx context.Context) error {
 		}
 
 		unbindGlobal(p)
+		// Unregistered last: submissions and tasks.Go reach a draining Pool
+		// and report tasks.ErrClosed for as long as this Pool owns the slot,
+		// and only a fully stopped Pool stops answering as the local executor
+		// at all. The function is the no-op installLocalExecutor returns when
+		// this Pool never installed itself.
+		if p.uninstallTasks != nil {
+			p.uninstallTasks()
+		}
 	})
 	return p.stopErr
 }

@@ -61,10 +61,11 @@ func newTestPool(t *testing.T, cfg Config) *Pool {
 }
 
 // mustNewPool builds an unopened Pool directly, for tests that call open,
-// drain, or Init themselves rather than going through newPreparedPool.
+// drain, or Init themselves rather than going through newPreparedPool. Its
+// task table holds the process's function tasks and no provider bindings.
 func mustNewPool(t *testing.T, cfg Config, logger log.Logger) *Pool {
 	t.Helper()
-	pool, err := newPool(cfg, logger)
+	pool, err := newPool(cfg, logger, nil)
 	if err != nil {
 		t.Fatalf("newPool: %v", err)
 	}

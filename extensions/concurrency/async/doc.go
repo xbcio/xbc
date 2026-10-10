@@ -4,6 +4,20 @@
 // composition with async.Bundle(); executables that intentionally use
 // process-wide autoload may blank-import the autoload subpackage.
 //
+// # Tasks
+//
+// Application work is usually expressed through extensions/tasks, the
+// protocol-neutral task facade: a task defined once with tasks.New or
+// tasks.Method is submitted with tasks.Submit, run with tasks.Run, or
+// dispatched fire-and-forget with tasks.Go. Selecting this Bundle makes the
+// Pool the process-wide local executor for those calls, collecting the
+// tasks.Provider export of every plugin and every tasks.New definition; when
+// asynq is selected as well, submissions go to it instead and this Pool keeps
+// serving Run lookups, Go, and any remotely consumed task whose handler runs
+// locally. Spawn and Spawner, the entry points below, remain the lower-level
+// exit for work with no task handle -- loose closures and framework internals
+// -- and both paths obey the same admission and shutdown behavior.
+//
 // # Usage
 //
 // Selecting the Bundle both constructs one Pool as a Definition's primary
