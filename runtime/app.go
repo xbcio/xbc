@@ -44,6 +44,12 @@ type App struct {
 	owned    *assembly.Constructed
 	tasks    *taskRuntime
 
+	// reload is the configuration watch this App owns: the locators a reload
+	// re-reads, the configuration the process last accepted, and the watch's
+	// stop function. bootstrap fills it; the watch's callback and unwind are
+	// its only touchers after that -- see configReload.
+	reload configReload
+
 	// out receives read-only command output. Tests set it; otherwise the
 	// process adapter's stream is used.
 	out io.Writer

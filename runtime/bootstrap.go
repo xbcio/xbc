@@ -85,6 +85,16 @@ func (a *App) bootstrap(cmd command) error {
 	}
 	a.env = env
 	a.settings = settings
+	// The reload state starts here, where the boot's configuration does: the
+	// locators a reload re-reads, the ownership it validates against, and the
+	// configuration it diffs from. Whether a watch ever starts is decided
+	// much later, once the run is servable -- see startConfigWatch.
+	a.reload = configReload{
+		file:     cmd.config,
+		profile:  cmd.profile,
+		universe: universe,
+		last:     env,
+	}
 	tasks := newTaskRuntime(a.logger, a.onCritical)
 	tasks.configureWorkloadBudget(limits, a.workloadOf, a.hostsWorkload)
 	// Published under stateMu, not before: the parent-context AfterFunc

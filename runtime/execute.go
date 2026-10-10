@@ -247,6 +247,14 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	stopWatch()
 	a.reportStarted(instances, migrate)
 	a.reportStartupTimings(instances)
+	// The process is servable: every Start hook has returned, the traffic
+	// gate is open, and something will keep the process busy. The
+	// configuration watch starts here and nowhere earlier -- a reload must
+	// never race plugin startup or interleave with the startup report -- and
+	// before wait, so wait and every path that reaches unwind hand it the
+	// same watch state, and a run that observed its running state is already
+	// watching.
+	a.startConfigWatch()
 	return a.wait()
 }
 
