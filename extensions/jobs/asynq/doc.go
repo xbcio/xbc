@@ -80,9 +80,18 @@
 //	      stats.recount:
 //	        consume: true        # run this tasks.New task on the unowned worker
 //
+// Entries under plugins.asynq.tasks are keyed by task name, which has no
+// environment-variable spelling, so they are configured in a file: a variable
+// such as XBC_PLUGINS_ASYNQ_TASKS_MAIL_TIMEOUT is refused at startup as naming
+// no configuration field rather than applied. The section-wide defaults
+// (XBC_PLUGINS_ASYNQ_DEFAULT_TIMEOUT and its siblings) remain overridable.
+//
 // A failure the handler marks with tasks.Permanent, and a payload the binding
 // cannot decode, are not retried: both are returned to the queue as SkipRetry
-// and the task is archived after its first attempt. Every other handler
+// and the task is archived after its first attempt. The match is by
+// errors.Is, so a handler that returns a wrapped tasks.ErrPayload from a
+// chained Submit whose argument would not encode is archived the same way:
+// an encoding failure does not heal on redelivery. Every other handler
 // failure follows the task's configured retry policy.
 //
 // # Workloads

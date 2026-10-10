@@ -47,7 +47,7 @@
 //	dependencies           none                 a plugin value, injected by the framework
 //	runnable locally       as soon as defined   once the providing plugin is selected
 //	remote consumption     opt-in by name       follows the providing plugin's selection
-//	shutdown ordering      unconstrained        executor stops after the providing plugin
+//	shutdown ordering      unconstrained        executor stops before the providing plugin
 //
 // A function task is consumed remotely only when the application opts it in by
 // name in the remote executor's configuration; a method task is consumed
@@ -89,6 +89,30 @@
 //	context values        preserved                   not carried across the queue
 //	no handler present    Submit reports ErrNoHandler consumer logs the miss and retries or archives
 //	payload               used in-process and gone   stored in Redis across versions: evolve compatibly
+//
+// # Ordering, cycles, and quotas
+//
+// An executor collects every tasks.Provider, so a providing plugin sits
+// upstream of the executor in the composition graph: the executor stops
+// first, and a method handler never outlives the plugin it is bound to. A
+// plugin that also depends on an executor explicitly -- plugin.RefTo of
+// async.Spawner, say -- closes a cycle the graph rejects at composition time;
+// split such a plugin into one Definition that provides the tasks and another
+// that needs the executor.
+//
+// Submitting through a handle adds no graph edge. A plugin that submits from
+// its own Init or Stop must therefore depend on the executor explicitly, or
+// whether the executor is already, or still, installed is left to graph order.
+// Submissions from request handlers and from Start need no such edge: every
+// Init has run before any Start, and ingress stops before the executors drain.
+//
+// The two executors shut down independently. During shutdown a remote handler
+// that chains Submit keeps reaching the queue for as long as the remote
+// client accepts, while a Go call from the same handler may already be refused
+// with ErrClosed by the local executor's drain.
+//
+// Locally executed tasks charge the workload quota of the async pool that runs
+// them, not the workload of the plugin that provides them.
 //
 // # Definition rules
 //
