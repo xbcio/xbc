@@ -1,6 +1,7 @@
 package placement
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestSlotSearchSpreadsEvenWithoutEntropy(t *testing.T) {
 
 	for round := 0; round < rounds; round++ {
 		value := mustNew(t, locker)
-		_, err := value.Resolve(workloadRequest(ordinary("offset", replicas)))
+		_, err := value.Resolve(context.Background(), workloadRequest(ordinary("offset", replicas)))
 		require.NoError(t, err)
 	}
 

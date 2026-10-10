@@ -40,7 +40,7 @@ func StaticPlacement() PlacementSource { return staticPlacement{} }
 
 type staticPlacement struct{}
 
-func (staticPlacement) Resolve(request plugin.PlacementRequest) (plugin.Placement, error) {
+func (staticPlacement) Resolve(_ context.Context, request plugin.PlacementRequest) (plugin.Placement, error) {
 	hosted := make([]plugin.WorkloadKey, 0, len(request.Workloads))
 	for _, workload := range request.Workloads {
 		if request.Admits(workload.Key) {
@@ -109,7 +109,7 @@ func (a *App) placement() PlacementSource {
 // backstop behind that, on every path out of the command; see releasePlacement.
 // A decision that is only read therefore never holds capacity, which is what
 // makes doctor safe against a live deployment.
-func (a *App) resolvePlacement() (plugin.Placement, error) {
+func (a *App) resolvePlacement(ctx context.Context) (plugin.Placement, error) {
 	sections, err := assembly.ReadWorkloadSections(a.bundles, a.env)
 	if err != nil {
 		return plugin.Placement{}, err
@@ -124,7 +124,12 @@ func (a *App) resolvePlacement() (plugin.Placement, error) {
 		enabled[section.Workload.Key] = section.Enabled
 	}
 	source := a.placement()
-	placement, err := source.Resolve(plugin.PlacementRequest{
+	// The run's context travels with the request so a stop request reaches a
+	// source that is waiting on a store: without it a cold start against an
+	// unreachable backend would ignore SIGTERM until the backend answered.
+	// Bounding the call is the source's own business -- see the interface doc
+	// in plugin/placement.go.
+	placement, err := source.Resolve(ctx, plugin.PlacementRequest{
 		Workloads: workloads,
 		// The identity travels with the request rather than being read by the
 		// source, because a source is built at the composition root, before any

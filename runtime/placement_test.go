@@ -51,7 +51,7 @@ type recordingPlacement struct {
 	requests  []plugin.PlacementRequest
 }
 
-func (source *recordingPlacement) Resolve(request plugin.PlacementRequest) (plugin.Placement, error) {
+func (source *recordingPlacement) Resolve(_ context.Context, request plugin.PlacementRequest) (plugin.Placement, error) {
 	source.requests = append(source.requests, request)
 	if source.err != nil {
 		return plugin.Placement{}, source.err
@@ -77,7 +77,7 @@ func TestStaticPlacementHostsEveryEnabledWorkload(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	placement, err := app.resolvePlacement()
+	placement, err := app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "static", placement.Source)
 	assert.Equal(t, []plugin.WorkloadKey{"sast"}, placement.Hosted,
@@ -101,7 +101,7 @@ func TestWithPlacementReplacesTheDefaultDecision(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	placement, err := app.resolvePlacement()
+	placement, err := app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "lease", placement.Source)
 	assert.Equal(t, "host-7-1726-9f3c1a2b", placement.Holder)
@@ -132,7 +132,7 @@ func TestAPlacementSourceIsToldWhichProcessIsAsking(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	_, err = app.resolvePlacement()
+	_, err = app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 
 	require.Len(t, source.requests, 1)
@@ -155,7 +155,7 @@ func TestAConfiguredInstanceIdentityReachesThePlacementSource(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	_, err = app.resolvePlacement()
+	_, err = app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 
 	require.Len(t, source.requests, 1)
@@ -181,7 +181,7 @@ func TestOnePlacementIdentityIsAlsoWhatPluginsPublish(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	_, err = app.resolvePlacement()
+	_, err = app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 	require.Len(t, source.requests, 1)
 
@@ -209,9 +209,9 @@ func TestWithPlacementOmittedIsStaticPlacement(t *testing.T) {
 	require.NoError(t, omitted.bootstrap(cmd))
 	require.NoError(t, explicit.bootstrap(cmd))
 
-	want, err := omitted.resolvePlacement()
+	want, err := omitted.resolvePlacement(context.Background())
 	require.NoError(t, err)
-	got, err := explicit.resolvePlacement()
+	got, err := explicit.resolvePlacement(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 }
@@ -235,7 +235,7 @@ func TestPlacementFailsStartupOnAnUnsatisfiableAnswer(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, app.bootstrap(cmd))
 
-			_, err = app.resolvePlacement()
+			_, err = app.resolvePlacement(context.Background())
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "placement source")
 			assert.Contains(t, err.Error(), string(hosted[0]))
@@ -260,7 +260,7 @@ func TestPlacementRejectsAnUnattributedDecision(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	_, err = app.resolvePlacement()
+	_, err = app.resolvePlacement(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty Source")
 	assert.Contains(t, err.Error(), "would host every enabled workload",
@@ -286,7 +286,7 @@ func TestPlacementHonoursAnAttributedEmptyHostedSet(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	placement, err := app.resolvePlacement()
+	placement, err := app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "lease", placement.Source)
 	assert.Empty(t, placement.Hosted)
@@ -319,7 +319,7 @@ func TestPlacementFailsStartupWhenTheSourceCannotAnswer(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	_, err = app.resolvePlacement()
+	_, err = app.resolvePlacement(context.Background())
 	require.ErrorIs(t, err, errPlacementUnavailable)
 }
 
@@ -336,7 +336,7 @@ func TestWorkloadSectionAcceptsThePlainEnvironmentSpelling(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	placement, err := app.resolvePlacement()
+	placement, err := app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, []plugin.WorkloadKey{"sca"}, placement.Hosted,
 		"an environment veto removes a workload from the hosted set")
@@ -400,7 +400,7 @@ func TestExclusiveWorkloadIsRefusedBesideAnotherWorkload(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	_, err = app.resolvePlacement()
+	_, err = app.resolvePlacement(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `workload "sast" requires a process of its own`)
 	assert.Contains(t, err.Error(), `also hosts "sca"`, "the message names the other side of the conflict")
@@ -420,7 +420,7 @@ func TestExclusiveWorkloadAloneInItsProcessIsHosted(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	placement, err := app.resolvePlacement()
+	placement, err := app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, []plugin.WorkloadKey{"sast"}, placement.Hosted)
 }
@@ -445,7 +445,7 @@ func TestAnyHostedSetIsAllowedWithoutAnExclusiveWorkload(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	placement, err := app.resolvePlacement()
+	placement, err := app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, []plugin.WorkloadKey{"alpha", "beta", "gamma"}, placement.Hosted)
 }
@@ -536,7 +536,7 @@ func TestPlacementCannotOverrideADeploymentVeto(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	_, err = app.resolvePlacement()
+	_, err = app.resolvePlacement(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "workloads.sca.enabled",
 		"the message names the key the deployment actually set")
@@ -573,7 +573,7 @@ func TestResolvedPlacementSortsTheHostedSet(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, app.bootstrap(cmd))
 
-	placement, err := app.resolvePlacement()
+	placement, err := app.resolvePlacement(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, []plugin.WorkloadKey{"alpha", "beta", "gamma"}, placement.Hosted,
 		"the accepted hosted set is reported in key order whatever order the source produced")
@@ -607,7 +607,7 @@ type claimingPlacement struct {
 	releases atomic.Int32
 }
 
-func (source *claimingPlacement) Resolve(plugin.PlacementRequest) (plugin.Placement, error) {
+func (source *claimingPlacement) Resolve(context.Context, plugin.PlacementRequest) (plugin.Placement, error) {
 	source.claimed.Store(true)
 	return source.placement, nil
 }
@@ -626,7 +626,7 @@ type refusingReleasePlacement struct {
 	releases  atomic.Int32
 }
 
-func (source *refusingReleasePlacement) Resolve(plugin.PlacementRequest) (plugin.Placement, error) {
+func (source *refusingReleasePlacement) Resolve(context.Context, plugin.PlacementRequest) (plugin.Placement, error) {
 	return source.placement, nil
 }
 
@@ -649,7 +649,7 @@ type stoppingPlacement struct {
 	cancelledReleases atomic.Int32
 }
 
-func (source *stoppingPlacement) Resolve(plugin.PlacementRequest) (plugin.Placement, error) {
+func (source *stoppingPlacement) Resolve(context.Context, plugin.PlacementRequest) (plugin.Placement, error) {
 	source.stop()
 	return source.placement, nil
 }
@@ -660,6 +660,68 @@ func (source *stoppingPlacement) Release(ctx context.Context) error {
 		source.cancelledReleases.Add(1)
 	}
 	return nil
+}
+
+// blockedPlacement is a PlacementSource whose store never answers on its own:
+// Resolve waits until the context it is handed ends, then reports that. It is
+// how "a cold start against an unreachable backend" is spelled for a test, and
+// it makes the context's provenance observable -- the source returns only when
+// the run's cancellation reaches it, never because of a deadline the framework
+// added.
+type blockedPlacement struct {
+	entered chan struct{}
+	seen    chan error
+}
+
+func newBlockedPlacement() *blockedPlacement {
+	return &blockedPlacement{entered: make(chan struct{}), seen: make(chan error, 1)}
+}
+
+func (source *blockedPlacement) Resolve(ctx context.Context, _ plugin.PlacementRequest) (plugin.Placement, error) {
+	close(source.entered)
+	<-ctx.Done()
+	source.seen <- ctx.Err()
+	return plugin.Placement{}, ctx.Err()
+}
+
+// TestACancelledRunReachesAPlacementSourceStillWaitingOnItsStore pins the
+// context the runtime hands a source: it is the run's, so a stop request during
+// startup reaches a source that is waiting on a store, rather than leaving the
+// process deaf, and unable to stop, until the backend answers or the client's
+// own timeout expires. The source is only released by that cancellation, so a
+// framework deadline in place of the run's context would fail the reading, not
+// pass it.
+func TestACancelledRunReachesAPlacementSourceStillWaitingOnItsStore(t *testing.T) {
+	source := newBlockedPlacement()
+	app, err := New(WithBundles(placementTestBundles()...), WithPlacement(source))
+	require.NoError(t, err)
+
+	parent, cancel := context.WithCancel(context.Background())
+	result := make(chan runtimeTestResult, 1)
+	go func() {
+		code, err := app.Execute(parent, runtimeTestConfig(t, time.Second))
+		result <- runtimeTestResult{code: code, err: err}
+	}()
+
+	select {
+	case <-source.entered:
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the placement source was never asked")
+	}
+	cancel()
+
+	completed := awaitRuntimeTestResult(t, result)
+	assert.Equal(t, 1, completed.code)
+	require.Error(t, completed.err)
+	assert.ErrorIs(t, completed.err, context.Canceled,
+		"the run's cancellation is the failure, so the source did see it")
+	select {
+	case observed := <-source.seen:
+		assert.ErrorIs(t, observed, context.Canceled)
+	default:
+		t.Fatal("the source never observed the run's context ending")
+	}
+	assert.Nil(t, app.owned, "nothing is constructed after an abandoned decision")
 }
 
 // placementUnwiredContract is exported by nothing in the compositions below,

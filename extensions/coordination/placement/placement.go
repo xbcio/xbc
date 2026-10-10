@@ -303,7 +303,19 @@ func (p *Placement) Bundle() plugin.Bundle { return bundle }
 // final: a Placement that has already resolved returns the same decision rather
 // than competing again, because the runtime and the doctor command may both ask
 // and a second round would leak the first round's slots.
-func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, error) {
+//
+// The caller's context bounds the round: a stop request during startup cancels
+// the store calls this is waiting on, and the slots won before the
+// cancellation are given back on the way out. The context carries no deadline
+// of this package's own, and that is the contract's call rather than an
+// omission: lease.Locker requires implementations to bound their own calls,
+// because only the implementation knows what its client's dial, read and write
+// timeouts are. A bound added here would either cut off a store that is
+// answering slowly or be so long it bounds nothing, and it would be a second
+// source of truth for a number the backend already owns. The handback path is
+// the exception for a reason of its own -- it drops the caller's cancellation,
+// so something has to replace it (handbackBudget).
+func (p *Placement) Resolve(ctx context.Context, request plugin.PlacementRequest) (plugin.Placement, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.resolved {
@@ -314,17 +326,7 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 	if err != nil {
 		return plugin.Placement{}, err
 	}
-	// The round runs on a background context with no deadline of this
-	// package's own, and that is the contract's call rather than an omission:
-	// lease.Locker requires implementations to bound their own calls, because
-	// only the implementation knows what its client's dial, read and write
-	// timeouts are. A bound added here would either cut off a store that is
-	// answering slowly or be so long it bounds nothing, and it would be a
-	// second source of truth for a number the backend already owns. The
-	// handback path is the exception for a reason of its own -- it drops the
-	// caller's cancellation, so something has to replace it (handbackBudget) --
-	// and this path inherits no cancellation to drop.
-	held, heldNotes, err := p.acquireAll(context.Background(), admitted, request.Instance)
+	held, heldNotes, err := p.acquireAll(ctx, admitted, request.Instance)
 	if err != nil {
 		// The slots won before the failure come back with the error instead of
 		// being disposed of inside acquireAll -- see there for why the disposal
@@ -336,8 +338,13 @@ func (p *Placement) Resolve(request plugin.PlacementRequest) (plugin.Placement, 
 		// answering takes the slot back here and nothing is left over, which is
 		// what keeps a failed cold start from reporting slots it does not have.
 		// The hard error is unchanged either way -- a process that cannot read
-		// the store fails rather than guessing that it hosts everything.
-		owed, releaseErr := p.handBack(context.Background(), held)
+		// the store fails rather than guessing that it hosts everything. The
+		// the round most often failed *because* the caller's context ended,
+		// and a release that inherited that cancellation would fail on its
+		// first store call and leave the slot to expire instead -- which is
+		// why handBack drops the cancellation and puts its own budget in its
+		// place.
+		owed, releaseErr := p.handBack(ctx, held)
 		p.handback = append(p.handback, owed...)
 		if releaseErr != nil {
 			p.logger.Warn("placement: a slot won before the placement round failed could not be given back, it stays owed to the store",

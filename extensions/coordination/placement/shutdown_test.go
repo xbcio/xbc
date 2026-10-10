@@ -156,7 +156,7 @@ func (l *stopWindowLease) Release(ctx context.Context) (bool, error) {
 func TestACleanStopIsNotRecordedAsARenewalFailure(t *testing.T) {
 	store := newStopWindowLocker()
 	value := mustNew(t, store, WithRenewInterval(5*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
 	// A real stop on a placement whose keepalive is running: the run's context is
@@ -194,7 +194,7 @@ func TestACancelledStoreCallIsStillARenewalFailure(t *testing.T) {
 	locker := newMemoryLocker()
 	locker.renewErr = context.Canceled
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
 	// The loop drives this rather than a single round called directly: a counter
@@ -229,7 +229,7 @@ func TestAStandbyThatWinsInsideTheStopWindowStillHandsTheSlotBack(t *testing.T) 
 	store := newStopWindowLocker()
 	store.inner.deny = true
 	value := mustNew(t, store, WithStandbyRetry(time.Millisecond))
-	decision, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.Empty(t, decision.Hosted, "the slot is held elsewhere, so this process starts as a standby")
 	const key = "xbc:workload:sast:0"
@@ -278,7 +278,7 @@ func TestARefusedStandbyHandoverIsRetriedByTheStopBackstop(t *testing.T) {
 	store := newStopWindowLocker()
 	store.inner.deny = true
 	value := mustNew(t, store, WithStandbyRetry(time.Millisecond))
-	decision, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.Empty(t, decision.Hosted)
 	const key = "xbc:workload:sast:0"
@@ -328,7 +328,7 @@ func TestPreStopWaitsForTheStandbyLoopToGoQuiet(t *testing.T) {
 	store := newStopWindowLocker()
 	store.inner.deny = true
 	value := mustNew(t, store, WithStandbyRetry(time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
 	store.holdAcquisitions()
@@ -383,7 +383,7 @@ func TestARefusedLoopGivesBackItsDoneSignalAndItsRunContext(t *testing.T) {
 	locker := newMemoryLocker()
 	locker.deny = true
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond), WithStandbyRetry(10*time.Millisecond))
-	decision, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.Empty(t, decision.Hosted, "every slot is held elsewhere, so start takes the standby branch")
 

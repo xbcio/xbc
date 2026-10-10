@@ -136,7 +136,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	// A source that cannot answer fails the run rather than defaulting, because
 	// every downstream decision -- what is constructed, what doctor reports,
 	// which exclusive constraints apply -- is derived from this one.
-	placement, err := a.resolvePlacement()
+	placement, err := a.resolvePlacement(executionCtx)
 	if err != nil {
 		return 1, err
 	}

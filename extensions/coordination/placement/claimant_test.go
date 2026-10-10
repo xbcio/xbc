@@ -23,7 +23,7 @@ func TestTheClaimantIsTheProcessRatherThanTheStoreToken(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
 
-	decision, err := value.Resolve(instanceRequest("scanner-2", ordinary("sast", 2)))
+	decision, err := value.Resolve(context.Background(), instanceRequest("scanner-2", ordinary("sast", 2)))
 	require.NoError(t, err)
 
 	assert.Equal(t, "scanner-2", decision.Holder)
@@ -48,7 +48,7 @@ func TestAClaimWithNoIdentityStillNamesSomething(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
 
-	decision, err := value.Resolve(workloadRequest(ordinary("sast", 2)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 2)))
 	require.NoError(t, err)
 
 	stats := value.Stats()
@@ -68,7 +68,7 @@ func TestAStandbyNamesNoClaimantEvenWhenItHasAnIdentity(t *testing.T) {
 	locker.deny = true
 	value := mustNew(t, locker)
 
-	decision, err := value.Resolve(instanceRequest("scanner-2", ordinary("sast", 3)))
+	decision, err := value.Resolve(context.Background(), instanceRequest("scanner-2", ordinary("sast", 3)))
 	require.NoError(t, err)
 
 	assert.Empty(t, decision.Hosted)
@@ -89,7 +89,7 @@ func TestTheIdentityReachesTheStoreAndNotOnlyTheReport(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
 
-	_, err := value.Resolve(instanceRequest("scanner-2", ordinary("sast", 2)))
+	_, err := value.Resolve(context.Background(), instanceRequest("scanner-2", ordinary("sast", 2)))
 	require.NoError(t, err)
 
 	stats := value.Stats()
@@ -114,7 +114,7 @@ func TestASlotWonOnARetryNamesTheSameProcess(t *testing.T) {
 	locker.deny = true
 	value := mustNew(t, locker, WithStandbyRetry(10*time.Millisecond))
 
-	decision, err := value.Resolve(instanceRequest("scanner-2", ordinary("sast", 1)))
+	decision, err := value.Resolve(context.Background(), instanceRequest("scanner-2", ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.Empty(t, decision.Hosted, "every slot is held elsewhere, so this process starts as a standby")
 

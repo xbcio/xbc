@@ -18,9 +18,11 @@ import (
 // and the capacity sits idle until its ttl expires.
 //
 // The two call sites are covered separately because they differ in exactly the
-// way that makes the fix awkward: Resolve runs under p.mu and on a context that
-// is never cancelled, while the standby loop holds no lock and runs on the run
-// context, which the stop request cancels underneath it.
+// way that makes the fix awkward: Resolve runs under p.mu, and the standby loop
+// holds no lock and runs on the run context, which the stop request cancels
+// underneath it. Both now run on that same run context -- Resolve's caller
+// passes its own -- so both can meet a cancellation mid-round, and a partial
+// win has to come back either way.
 
 // ── Resolve ────────────────────────────────────────────────────────────────
 
@@ -39,12 +41,32 @@ func TestAPartialWinTheStoreAcceptsBackIsNotRecordedAsOwed(t *testing.T) {
 	locker.failOnAttempt = 2
 	value := mustNew(t, locker)
 
-	_, err := value.Resolve(workloadRequest(ordinary("alpha", 1), ordinary("beta", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("alpha", 1), ordinary("beta", 1)))
 	require.Error(t, err)
 
 	assert.Empty(t, locker.heldKeys(), "the slot won before the failure is handed back")
 	assert.Empty(t, value.releasable(), "a handover the store confirmed leaves nothing owed")
 	assert.Empty(t, value.Stats().Held, "a slot that was given back is not a workload this process hosts")
+}
+
+// TestAPartialWinOnARoundTheStopCancelledComesBack pins Resolve's half of the
+// context contract: the round runs on the caller's context, so a stop request
+// arriving during startup ends it where it stands. The slot won before the
+// cancellation is handed back on the way out -- a process that will never host
+// the workload must not keep its capacity -- and the cancellation is reported
+// as the cause, because the run, not the store, is what ended the round.
+func TestAPartialWinOnARoundTheStopCancelledComesBack(t *testing.T) {
+	store := newMemoryLocker()
+	ctx, cancel := context.WithCancel(context.Background())
+	locker := &cancellingLocker{memoryLocker: store, cancel: cancel}
+	value := mustNew(t, locker)
+
+	_, err := value.Resolve(ctx, workloadRequest(ordinary("alpha", 1), ordinary("beta", 1)))
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled, "the refusal carries the run's cancellation, not a store failure")
+	assert.Empty(t, store.heldKeys(), "the slot won before the stop is handed back")
+	assert.Empty(t, value.releasable(), "a handover the store confirmed leaves nothing owed")
 }
 
 // TestARefusedPartialWinFromResolveIsRetriedByTheStopBackstop is the other half:
@@ -67,7 +89,7 @@ func TestARefusedPartialWinFromResolveIsRetriedByTheStopBackstop(t *testing.T) {
 	locker.releaseErr = errStoreUnreachable
 	value := mustNew(t, locker)
 
-	_, err := value.Resolve(workloadRequest(ordinary("alpha", 1), ordinary("beta", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("alpha", 1), ordinary("beta", 1)))
 
 	// The startup semantics are unchanged: the failure is the store's, it names
 	// the workload it could not decide, and it says why guessing is not an
@@ -109,7 +131,7 @@ func TestAStandbyPartialWinInsideTheStopWindowIsGivenBackNotLeaked(t *testing.T)
 	store := newStopWindowLocker()
 	store.inner.deny = true
 	value := mustNew(t, store, WithStandbyRetry(time.Millisecond))
-	decision, err := value.Resolve(workloadRequest(ordinary("alpha", 1), ordinary("beta", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("alpha", 1), ordinary("beta", 1)))
 	require.NoError(t, err)
 	require.Empty(t, decision.Hosted, "both slots are held elsewhere, so this process starts as a standby")
 	const key = "xbc:workload:alpha:0"
@@ -158,7 +180,7 @@ func TestARefusedStandbyPartialWinIsRetriedByTheStopBackstop(t *testing.T) {
 	locker := newMemoryLocker()
 	locker.deny = true
 	value := mustNew(t, locker, WithStandbyRetry(time.Millisecond))
-	decision, err := value.Resolve(workloadRequest(ordinary("alpha", 1), ordinary("beta", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("alpha", 1), ordinary("beta", 1)))
 	require.NoError(t, err)
 	require.Empty(t, decision.Hosted)
 	const key = "xbc:workload:alpha:0"

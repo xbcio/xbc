@@ -85,7 +85,7 @@ func awaitStop(t *testing.T, value *Placement) {
 func TestAWinnerAsksTheRuntimeForNoAdmissionToKeepItsSlotsAlive(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 
@@ -113,7 +113,7 @@ func TestARefusedStandbyTaskDoesNotWedgeStop(t *testing.T) {
 	locker := newMemoryLocker()
 	locker.deny = true
 	value := mustNew(t, locker, WithStandbyRetry(10*time.Millisecond))
-	decision, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.Empty(t, decision.Hosted, "every slot is held elsewhere, so start takes the standby branch")
 
@@ -138,7 +138,7 @@ func TestARefusedStandbyTaskDoesNotWedgeStop(t *testing.T) {
 func TestStartRefusesANilContextASecondStartAndAStartAfterStop(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
 	err = value.start(nil)
@@ -171,7 +171,7 @@ func TestStartRefusesANilContextASecondStartAndAStartAfterStop(t *testing.T) {
 // loop that would then have no quiet moment to observe.
 func TestStartRefusesARunThatIsAlreadyStopping(t *testing.T) {
 	value := mustNew(t, newMemoryLocker())
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
 	host := newTestHost()
@@ -216,7 +216,7 @@ func TestASupersededPlacementNamesTheReplacement(t *testing.T) {
 	// A second New replaces it process-wide, decides the hosted set, and holds
 	// a slot: from the outside this composition looks correct.
 	replacement := mustNew(t, locker)
-	decision, err := replacement.Resolve(workloadRequest(ordinary("sast", 1)))
+	decision, err := replacement.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.Equal(t, []plugin.WorkloadKey{"sast"}, decision.Hosted)
 	assert.False(t, superseded.resolved, "the superseded placement is not the one the runtime decided with")

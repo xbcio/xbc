@@ -75,6 +75,28 @@ func newMemoryLocker() *memoryLocker {
 	return &memoryLocker{held: make(map[string]string)}
 }
 
+// cancellingLocker makes the stop land while a decision is in flight: it
+// cancels the round's context the moment it grants a slot, and honors that
+// cancellation the way the lease contract requires of a backend -- a call made
+// on a context that has ended reports the context's error rather than
+// proceeding. It is how "SIGTERM arrives during the cold start" is spelled
+// without a real store to hang on.
+type cancellingLocker struct {
+	*memoryLocker
+	cancel context.CancelFunc
+}
+
+func (l *cancellingLocker) TryAcquire(ctx context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	value, won, err := l.memoryLocker.TryAcquire(ctx, key, claimant, ttl)
+	if won {
+		l.cancel()
+	}
+	return value, won, err
+}
+
 func (l *memoryLocker) TryAcquire(_ context.Context, key, claimant string, _ time.Duration) (lease.Lease, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

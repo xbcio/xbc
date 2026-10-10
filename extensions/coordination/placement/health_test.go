@@ -35,7 +35,7 @@ func TestReadinessToleratesABlipAndReportsASustainedLoss(t *testing.T) {
 	checks := make([]health.Contributor, 0, holders)
 	for i := 0; i < holders; i++ {
 		value := mustNew(t, locker, WithRenewInterval(5*time.Millisecond), WithTTL(40*time.Millisecond))
-		_, err := value.Resolve(workloadRequest(ordinary("sast", holders)))
+		_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", holders)))
 		require.NoError(t, err)
 		// The keepalive begins with the decision, so it is stopped here: this
 		// test drives the rounds itself, and a background ticker would confirm
@@ -113,7 +113,7 @@ func TestReadinessStaysUpForAStandby(t *testing.T) {
 	locker := newMemoryLocker()
 	locker.deny = true
 	value := mustNew(t, locker)
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 3)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 3)))
 	require.NoError(t, err)
 
 	checks := newHealthProbe(value).HealthChecks()

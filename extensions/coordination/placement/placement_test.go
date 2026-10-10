@@ -1,6 +1,7 @@
 package placement
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -97,7 +98,7 @@ func TestResolveHostsOneSlotPerAdmittedWorkload(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
 
-	decision, err := value.Resolve(workloadRequest(ordinary("beta", 3), ordinary("alpha", 2)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("beta", 3), ordinary("alpha", 2)))
 	require.NoError(t, err)
 
 	assert.Equal(t, placementSourceLease, decision.Source)
@@ -116,7 +117,7 @@ func TestExclusiveWorkloadIsAttemptedFirstAndStopsAcquisition(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
 
-	decision, err := value.Resolve(workloadRequest(ordinary("aardvark", 4), exclusive("zebra", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("aardvark", 4), exclusive("zebra", 1)))
 	require.NoError(t, err)
 
 	assert.Equal(t, []plugin.WorkloadKey{"zebra"}, decision.Hosted)
@@ -134,7 +135,7 @@ func TestAFailedExclusiveAttemptFallsThroughToOrdinaryWorkloads(t *testing.T) {
 	// The exclusive workload is already taken elsewhere.
 	locker.held["xbc:workload:zebra:0"] = "someone-else"
 
-	decision, err := value.Resolve(workloadRequest(ordinary("aardvark", 4), exclusive("zebra", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("aardvark", 4), exclusive("zebra", 1)))
 	require.NoError(t, err)
 
 	assert.Equal(t, []plugin.WorkloadKey{"aardvark"}, decision.Hosted)
@@ -151,7 +152,7 @@ func TestDisabledWorkloadIsNeverAttempted(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
 
-	decision, err := value.Resolve(plugin.PlacementRequest{
+	decision, err := value.Resolve(context.Background(), plugin.PlacementRequest{
 		Workloads: []plugin.Workload{ordinary("alpha", 2), ordinary("beta", 2)},
 		Enabled:   func(key plugin.WorkloadKey) bool { return key != "beta" },
 	})
@@ -169,7 +170,7 @@ func TestEverySlotHeldElsewhereMakesTheProcessAStandby(t *testing.T) {
 	locker.deny = true
 	value := mustNew(t, locker)
 
-	decision, err := value.Resolve(workloadRequest(ordinary("sast", 3)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 3)))
 	require.NoError(t, err)
 
 	assert.Empty(t, decision.Hosted)
@@ -196,7 +197,7 @@ func TestSlotSearchStartsAtARandomOffset(t *testing.T) {
 
 	for round := 0; round < rounds; round++ {
 		value := mustNew(t, locker)
-		_, err := value.Resolve(workloadRequest(ordinary("offset", replicas)))
+		_, err := value.Resolve(context.Background(), workloadRequest(ordinary("offset", replicas)))
 		require.NoError(t, err)
 	}
 
@@ -255,7 +256,7 @@ func TestASearchNeverLeavesItsOwnDeclaration(t *testing.T) {
 	locker.deny = true
 	value := mustNew(t, locker)
 
-	_, err := value.Resolve(workloadRequest(ordinary("sast", replicas)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", replicas)))
 	require.NoError(t, err)
 
 	attempts := locker.attempts()
@@ -273,7 +274,7 @@ func TestASearchNeverLeavesItsOwnDeclaration(t *testing.T) {
 		granting.held[fmt.Sprintf("xbc:workload:sast:%d", index)] = "another-process/owner"
 	}
 	winner := mustNew(t, granting)
-	decision, err := winner.Resolve(workloadRequest(ordinary("sast", replicas)))
+	decision, err := winner.Resolve(context.Background(), workloadRequest(ordinary("sast", replicas)))
 	require.NoError(t, err)
 	require.Equal(t, []plugin.WorkloadKey{"sast"}, decision.Hosted)
 
@@ -303,7 +304,7 @@ func TestStatsReportsTheDeclarationThisProcessWasAssembledWith(t *testing.T) {
 	)
 	request.Enabled = func(key plugin.WorkloadKey) bool { return key != "webscan" }
 
-	decision, err := value.Resolve(request)
+	decision, err := value.Resolve(context.Background(), request)
 	require.NoError(t, err)
 	require.Empty(t, decision.Hosted, "every slot is held elsewhere, so this process is a standby")
 
@@ -318,7 +319,7 @@ func TestStatsReportsTheDeclarationThisProcessWasAssembledWith(t *testing.T) {
 	// A process that won its slots reports the same declaration: the fields are
 	// the deployment's statement, not this process's outcome.
 	granting := mustNew(t, newMemoryLocker())
-	decision, err = granting.Resolve(workloadRequest(ordinary("sast", 2), exclusive("coderanger", 1)))
+	decision, err = granting.Resolve(context.Background(), workloadRequest(ordinary("sast", 2), exclusive("coderanger", 1)))
 	require.NoError(t, err)
 	require.Len(t, decision.Hosted, 1)
 	assert.Equal(t, []Declared{
@@ -337,7 +338,7 @@ func TestUnreachableStoreFailsResolveInsteadOfHostingEverything(t *testing.T) {
 	locker.failAcquire = errStoreUnreachable
 	value := mustNew(t, locker)
 
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 3)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 3)))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `workload "sast"`)
 	assert.Contains(t, err.Error(), "xbc:workload:sast:")
@@ -355,7 +356,7 @@ func TestAPartialWinIsGivenBackWhenTheStoreFailsMidDecision(t *testing.T) {
 	locker.failOnAttempt = 2
 	value := mustNew(t, locker)
 
-	_, err := value.Resolve(workloadRequest(ordinary("alpha", 1), ordinary("beta", 2)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("alpha", 1), ordinary("beta", 2)))
 	require.Error(t, err)
 	assert.Empty(t, locker.heldKeys(), "the slot won before the failure must be handed back")
 }
@@ -367,11 +368,11 @@ func TestResolveIsDecidedOnce(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
 
-	first, err := value.Resolve(workloadRequest(ordinary("sast", 2)))
+	first, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 2)))
 	require.NoError(t, err)
 	attempts := len(locker.attempts())
 
-	second, err := value.Resolve(workloadRequest(ordinary("sast", 2)))
+	second, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 2)))
 	require.NoError(t, err)
 
 	assert.Equal(t, first, second)
@@ -380,7 +381,7 @@ func TestResolveIsDecidedOnce(t *testing.T) {
 
 func TestWorkloadWithoutAReplicaIsRejected(t *testing.T) {
 	value := mustNew(t, newMemoryLocker())
-	_, err := value.Resolve(workloadRequest(plugin.Workload{Key: "sast", Replicas: 0}))
+	_, err := value.Resolve(context.Background(), workloadRequest(plugin.Workload{Key: "sast", Replicas: 0}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "declares 0 replicas")
 }
@@ -398,7 +399,7 @@ func TestARepeatedWorkloadKeyIsRefusedWithoutTakingASlot(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
 
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 4), ordinary("sast", 4)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 4), ordinary("sast", 4)))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `workload "sast"`)
 	assert.Contains(t, err.Error(), "declared twice")
@@ -441,7 +442,7 @@ func TestStatsReportsTheDecisionAndItsSlots(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
 
-	decision, err := value.Resolve(workloadRequest(ordinary("beta", 2), ordinary("alpha", 2)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("beta", 2), ordinary("alpha", 2)))
 	require.NoError(t, err)
 	require.Equal(t, []plugin.WorkloadKey{"alpha", "beta"}, decision.Hosted)
 
@@ -462,7 +463,7 @@ func TestStatsReportsTheDecisionAndItsSlots(t *testing.T) {
 
 func TestResolveWithoutWorkloadsIsAStandby(t *testing.T) {
 	value := mustNew(t, newMemoryLocker())
-	decision, err := value.Resolve(plugin.PlacementRequest{})
+	decision, err := value.Resolve(context.Background(), plugin.PlacementRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, decision.Hosted)
 	assert.Contains(t, decision.Notes[len(decision.Notes)-1], "starts as a standby")

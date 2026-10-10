@@ -276,7 +276,7 @@ func TestAStandbyStartsReadyWithOnlyTheUnownedPlugins(t *testing.T) {
 	// Another process already holds the only slot.
 	holder, err := placement.New(newLocker(t, client))
 	require.NoError(t, err)
-	held, err := holder.Resolve(plugin.PlacementRequest{
+	held, err := holder.Resolve(context.Background(), plugin.PlacementRequest{
 		Workloads: []plugin.Workload{{Key: e2eWorkloadKey, Replicas: 1}},
 	})
 	require.NoError(t, err)

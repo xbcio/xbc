@@ -115,7 +115,7 @@ func TestAReadinessProbeAndStatsDoNotWaitForASlowRenewal(t *testing.T) {
 	// the direct one below is: the reads under test race a renewal that provably
 	// cannot return.
 	value := mustNew(t, store, WithRenewInterval(time.Hour))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
 	checks := newHealthProbe(value).HealthChecks()
@@ -157,7 +157,7 @@ func TestTheReadinessProbeAndStatsMakeNoStoreCall(t *testing.T) {
 	// one it takes at the decision, and that round is waited for below: the count
 	// taken afterwards can then only move if a read reaches the store.
 	value := mustNew(t, recorder, WithRenewInterval(time.Hour))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	await(t, "the decision and the keepalive's first round to reach the store", func() bool {
 		return recorder.storeCalls() >= 2
@@ -198,7 +198,7 @@ func (l *recordingLocker) storeCalls() int {
 func TestStopWaitsForAnInFlightRenewalAndThenReturnsPromptly(t *testing.T) {
 	store := newGatedRenewLocker()
 	value := mustNew(t, store, WithRenewInterval(20*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
 	host := newTestHost()

@@ -82,11 +82,18 @@ func (r PlacementRequest) Admits(key WorkloadKey) bool {
 // doctor output, startup validation, exclusivity, snapshot diffing -- is
 // derived from the hosted set.
 //
+// The context is the run's, so a stop request during startup reaches a source
+// that is waiting on a store rather than leaving the process deaf until the
+// store answers. It carries no deadline of the framework's own: bounding a
+// store call belongs to the source, because only the implementation knows what
+// its client's dial, read and write timeouts are -- the same division of
+// responsibility the lease contract states for its backend.
+//
 // A source that has to acquire something to answer -- a lease slot, a lock, a
 // reservation -- also implements PlacementReleaser, so the runtime can give
 // that claim back on every path that does not reach the plugin which owns it.
 type PlacementSource interface {
-	Resolve(PlacementRequest) (Placement, error)
+	Resolve(ctx context.Context, request PlacementRequest) (Placement, error)
 }
 
 // PlacementReleaser is the optional second half of a PlacementSource: it gives

@@ -34,7 +34,7 @@ func TestReleaseGivesBackWhatResolveWonWhenNoPluginOwnsIt(t *testing.T) {
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
 	// One replica pins the slot index the key is asserted on: the search for a
 	// slot within a larger replica set starts at a random index.
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 	require.True(t, locker.holds(key))
@@ -65,7 +65,7 @@ func TestReleaseGivesBackWhatResolveWonWhenNoPluginOwnsIt(t *testing.T) {
 func TestReleaseDoesNotTurnAHolderIntoAStandby(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.False(t, value.Stats().Standby)
 
@@ -84,7 +84,7 @@ func TestReleaseKeepsAStandbyAStandby(t *testing.T) {
 	locker := newMemoryLocker()
 	locker.deny = true
 	value := mustNew(t, locker)
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.True(t, value.Stats().Standby)
 
@@ -99,7 +99,7 @@ func TestReleaseKeepsAStandbyAStandby(t *testing.T) {
 func TestReleaseReportsASlotTheStoreDidNotConfirm(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 
@@ -126,7 +126,7 @@ func TestReleaseReportsASlotTheStoreDidNotConfirm(t *testing.T) {
 func TestAFailedReleaseIsReportedAndRetriedByTheStopBackstop(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 	require.True(t, locker.holds(key))

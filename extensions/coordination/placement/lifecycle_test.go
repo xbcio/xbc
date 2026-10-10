@@ -30,7 +30,7 @@ import (
 func TestHeldSlotsAreKeptAliveFromTheMomentTheyAreWon(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 
@@ -59,7 +59,7 @@ func TestHeldSlotsAreKeptAliveFromTheMomentTheyAreWon(t *testing.T) {
 func TestAFailedRenewalKeepsHostingAndNeverAsksToExit(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 
@@ -107,7 +107,7 @@ func TestAFailedRenewalKeepsHostingAndNeverAsksToExit(t *testing.T) {
 func TestASlotLostElsewhereIsAlsoKept(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 
@@ -168,7 +168,7 @@ func TestPreStopReleasesAndALaterRenewalDoesNotWriteTheSlotBack(t *testing.T) {
 	recorder := newRecordingLocker(newRedisLocker(t, client))
 	value := mustNew(t, recorder, WithRenewInterval(10*time.Millisecond))
 
-	decision, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.Equal(t, []plugin.WorkloadKey{"sast"}, decision.Hosted)
 	const key = "xbc:workload:sast:0"
@@ -210,7 +210,7 @@ func TestAReleaseIsNotUndoneByAConformingRenewal(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
 
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 
@@ -235,7 +235,7 @@ func TestAReleaseIsNotUndoneByAConformingRenewal(t *testing.T) {
 func TestStopAlsoReleasesWhenThePreStopPhaseIsConfiguredAway(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker, WithRenewInterval(10*time.Millisecond))
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	const key = "xbc:workload:sast:0"
 
@@ -257,7 +257,7 @@ func TestStopAlsoReleasesWhenThePreStopPhaseIsConfiguredAway(t *testing.T) {
 func TestReleasedSlotsAreReleasedOnlyOnce(t *testing.T) {
 	locker := newMemoryLocker()
 	value := mustNew(t, locker)
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
 	host := newTestHost()
@@ -291,7 +291,7 @@ func TestAStandbyWinsARestartRatherThanHosting(t *testing.T) {
 	locker.deny = true
 	value := mustNew(t, locker, WithStandbyRetry(10*time.Millisecond))
 
-	decision, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	decision, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.Empty(t, decision.Hosted)
 	const key = "xbc:workload:sast:0"
@@ -327,7 +327,7 @@ func TestAStandbyKeepsTryingWhileTheStoreIsUnreachable(t *testing.T) {
 	locker.deny = true
 	value := mustNew(t, locker, WithStandbyRetry(5*time.Millisecond))
 
-	_, err := value.Resolve(workloadRequest(ordinary("sast", 1)))
+	_, err := value.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 
 	// The store goes away after the decision was taken.
@@ -393,7 +393,7 @@ func TestConcurrentProcessesConvergeOnExactlyTheDeclaredReplicas(t *testing.T) {
 				outcomes[index] = outcome{err: err}
 				return
 			}
-			decision, err := value.Resolve(instanceRequest(fmt.Sprintf("host-a-1758091200-%02d", index), ordinary("sast", replicas)))
+			decision, err := value.Resolve(context.Background(), instanceRequest(fmt.Sprintf("host-a-1758091200-%02d", index), ordinary("sast", replicas)))
 			if err != nil {
 				outcomes[index] = outcome{err: err}
 				return
@@ -445,7 +445,7 @@ func TestAFreedSlotIsTakenOverAfterItsTTLExpires(t *testing.T) {
 	ttl := 500 * time.Millisecond
 	first := mustNew(t, newRedisLocker(t, client), WithTTL(ttl), WithRenewInterval(100*time.Millisecond))
 
-	decision, err := first.Resolve(workloadRequest(ordinary("sast", 1)))
+	decision, err := first.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	require.Equal(t, []plugin.WorkloadKey{"sast"}, decision.Hosted)
 
@@ -464,7 +464,7 @@ func TestAFreedSlotIsTakenOverAfterItsTTLExpires(t *testing.T) {
 	})
 
 	candidate := mustNew(t, newRedisLocker(t, client), WithTTL(ttl), WithRenewInterval(100*time.Millisecond))
-	taken, err := candidate.Resolve(workloadRequest(ordinary("sast", 1)))
+	taken, err := candidate.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	assert.Empty(t, taken.Hosted, "the slot is still held while the dead holder's ttl has not run out")
 
@@ -473,7 +473,7 @@ func TestAFreedSlotIsTakenOverAfterItsTTLExpires(t *testing.T) {
 	server.FastForward(ttl + time.Second)
 
 	successor := mustNew(t, newRedisLocker(t, client), WithTTL(ttl), WithRenewInterval(100*time.Millisecond))
-	takeover, err := successor.Resolve(workloadRequest(ordinary("sast", 1)))
+	takeover, err := successor.Resolve(context.Background(), workloadRequest(ordinary("sast", 1)))
 	require.NoError(t, err)
 	assert.Equal(t, []plugin.WorkloadKey{"sast"}, takeover.Hosted)
 
