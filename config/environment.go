@@ -26,7 +26,13 @@ type Environment struct {
 	// captured by loadKoanf as it resolves them -- the text of a source label
 	// is provenance output, and parsing it back into paths would be a second
 	// and drifting source of truth.
-	files   []string
+	files []string
+	// loaded is the merged tree the sources produced, flattened, captured
+	// before the first Bind syncs bound, defaulted and zero values back into
+	// k. It is the base ChangedPaths compares against: a bound tree carries
+	// leaves nobody configured, so comparing bound views would report every
+	// defaulted leaf a later load reproduces as a change.
+	loaded  map[string]any
 	origins map[string][]string
 }
 
@@ -44,6 +50,7 @@ func Load(opts Options) (*Environment, error) {
 		envPrefix: opts.EnvPrefix,
 		universe:  opts.Universe,
 		files:     files,
+		loaded:    captureLoaded(k),
 		origins:   make(map[string][]string, 64),
 	}
 	for _, source := range layers {
@@ -130,7 +137,7 @@ func NewEnvironment(values map[string]any, envPrefix string) (*Environment, erro
 			return nil, fmt.Errorf("xbc: failed to construct in-memory configuration environment: %w", err)
 		}
 	}
-	return &Environment{k: k, envPrefix: envPrefix}, nil
+	return &Environment{k: k, envPrefix: envPrefix, loaded: captureLoaded(k)}, nil
 }
 
 // Get returns the value at path, or nil when absent. Maps and slices are
