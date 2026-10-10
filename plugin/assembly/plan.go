@@ -1353,13 +1353,15 @@ func instanceWorkload(instances map[plugin.Identity]*plannedInstance, identity p
 }
 
 // checkDirection applies the four rules to the producers one query actually
-// bound.
+// bound, and it is only half of the direction check: a producer the hosting
+// decision removed is not among them, so an edge to one is answered where the
+// absence is discovered instead -- as a Ref naming an absent key, or as any
+// query a workload aims at another workload's declaration. See
+// unhostedProducerError, which resolveToken asks before this runs.
 //
 // It runs after resolution rather than before, because three of the four rules
 // are about who the producers turned out to be and cannot be answered from the
-// token alone. The fourth -- a Ref naming a producer this process does not
-// carry -- has no producer to inspect, so it is answered where the absence is
-// discovered; see unhostedProducerError.
+// token alone.
 func checkDirection(
 	consumer plugin.Identity,
 	consumerWorkload plugin.WorkloadKey,
@@ -1387,16 +1389,12 @@ func checkDirection(
 			return unownedRequiresWorkloadError(consumer, token, producer, producerWorkload)
 		default:
 			// Every kind is refused here, including the two that tolerate
-			// finding no producers at all. That is deliberate but carries a
-			// residual worth naming: a QueryMany or QueryOptional edge between
-			// two workloads fails when both are carried, yet resolves to empty
-			// when the producer's workload is not -- resolveToken never routes
-			// an empty candidate set through unhostedProducerError for these
-			// kinds. Co-residence, a placement outcome, therefore decides
-			// whether the process starts. The rule stays as it is because the
-			// alternative -- admitting the edge and letting placement silently
-			// choose -- is what direction checking exists to prevent; this is
-			// recorded so such a failure is read as possibly placement-induced.
+			// finding no producers at all: the tolerance is about the absence
+			// of a producer, not about which workload the edge points at. This
+			// branch sees the edge only when both ends are in the graph;
+			// resolveToken refuses the same edge a step earlier when the other
+			// workload is not carried, so the verdict does not depend on which
+			// shape the process happens to have.
 			return crossWorkloadError(consumer, consumerWorkload, token, producer, producerWorkload)
 		}
 	}
@@ -1414,6 +1412,12 @@ func checkDirection(
 // root did select can still be absent from this process -- and the cause is a
 // deployment decision the operator has to change, not a wiring mistake in the
 // declaration they are reading.
+//
+// It is also how the direction rule reaches an edge whose far end the hosting
+// decision removed: resolveToken asks it for every query a workload aims at
+// another workload's declaration, before the producers that did resolve are
+// judged, because that edge is illegal by declaration whether or not this
+// process carries both ends.
 func unhostedProducerError(
 	consumer plugin.Identity,
 	consumerWorkload plugin.WorkloadKey,
@@ -1541,6 +1545,21 @@ func resolveToken(consumer plugin.Identity, consumerWorkload plugin.WorkloadKey,
 			// Empty is valid and self is deliberately retained for graph validation.
 		default:
 			return nil, fmt.Errorf("xbc: plugin %s has input token %d with unknown query kind %d", consumer, token.ID, token.Kind)
+		}
+	}
+	// A workload may not depend on another workload through any query kind,
+	// and the declaration is what makes that edge illegal. checkDirection can
+	// see the edge only when both ends are in the graph, so an exporter the
+	// hosting decision removed would otherwise leave the same assembly
+	// starting here and failing in a process that carries both workloads --
+	// which is what the direction rules exist to prevent. The kinds that
+	// tolerate finding nothing are asked too: their tolerance is about a
+	// missing producer, not about which workload the edge points at. Every
+	// unhosted supplier is another workload's by construction, because a
+	// workload this process does not carry contributes no Definition at all.
+	if consumerWorkload != "" {
+		if err := unhostedProducerError(consumer, consumerWorkload, token, unhosted); err != nil {
+			return nil, err
 		}
 	}
 	if err := checkDirection(consumer, consumerWorkload, token, candidates, instances); err != nil {

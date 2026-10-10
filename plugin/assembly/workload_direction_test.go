@@ -488,6 +488,96 @@ func TestDependencyDirectionLeavesOptionallyRequiringAPlacementAbsenceAlone(t *t
 		"an unsatisfied optional injects the zero entry -- no value, no identity, no workload")
 }
 
+// TestDependencyDirectionRefusesACrossWorkloadEdgeTheHostedSetHides is the
+// regression for the tolerance's blind side: an edge to a workload this process
+// does not carry leaves nothing in the graph to judge, so the verdict has to
+// come from the declaration. Without it the same assembly starts here and fails
+// in a process that carries both workloads -- placement deciding whether the
+// process starts, which is what the direction rules exist to prevent.
+//
+// Collect and OptionalOne are the two kinds that tolerate finding nothing, so
+// they are the two that used to slip through when the other workload was
+// absent. The message names both workloads and the placement reason, because
+// the operator reading it has the same two fixes available as in the carried
+// case.
+func TestDependencyDirectionRefusesACrossWorkloadEdgeTheHostedSetHides(t *testing.T) {
+	t.Parallel()
+	contract := directionContractName()
+	// Only alpha is carried, so every producer placed in beta is absent from
+	// the graph for a reason that has nothing to do with the declaration.
+	onlyAlpha := plugin.Placement{Source: "lease", Hosted: []plugin.WorkloadKey{"alpha"}}
+
+	for _, query := range directionQueries {
+		if query.name != "Collect" && query.name != "OptionalOne" {
+			continue
+		}
+		t.Run(query.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := directionPlanIn(t, onlyAlpha, slotBeta, slotAlpha, query.declare)
+			require.Error(t, err, "%s must be refused even when the other workload is not carried", query.name)
+			assert.Contains(t, err.Error(), "xbc: plugin consumer ")
+			assert.Contains(t, err.Error(), contract)
+			assert.Contains(t, err.Error(), `from workload "beta", which this process does not carry`,
+				"the absence is named as a placement one, not a wiring one")
+			assert.Contains(t, err.Error(), `workload "alpha" cannot depend on workload "beta" directly`)
+			assert.NotContains(t, err.Error(), "found none",
+				"the cause is the direction rule, not an empty composition")
+		})
+	}
+}
+
+// TestDependencyDirectionRefusesACrossWorkloadEdgeEvenWhenAnotherProducerAnswers
+// covers the shape that a check against the resolved producers cannot see: a
+// workload collects a contract another (unhosted) workload also exports while a
+// third, unowned producer does answer. The edge is still illegal by
+// declaration, so the hosted candidate must not launder it.
+//
+// The twin plan without the unhosted exporter is the control: it proves the
+// refusal comes from the declaration and not from Collect being broken for a
+// workload consumer.
+func TestDependencyDirectionRefusesACrossWorkloadEdgeEvenWhenAnotherProducerAnswers(t *testing.T) {
+	t.Parallel()
+	collect := func(plugin.Key) plugin.InputSet {
+		return plugin.Inputs(plugin.Collect[directionContract]())
+	}
+	defineProducer := func(key plugin.Key) plugin.Definition {
+		return plugin.Define(key, func(plugin.BuildContext) (*directionValue, error) {
+			return &directionValue{marker: string(key)}, nil
+		}, plugin.Options[*directionValue]{
+			Exports: plugin.Contracts(plugin.ExportAs(func(value *directionValue) directionContract { return value })),
+		})
+	}
+	consumer := plugin.Define(directionConsumerKey, func(plugin.BuildContext) (*directionValue, error) {
+		return &directionValue{marker: "consumer"}, nil
+	}, plugin.Options[*directionValue]{Inputs: collect(directionProducerKey)})
+
+	onlyAlpha := plugin.Placement{Source: "lease", Hosted: []plugin.WorkloadKey{"alpha"}}
+	planOption := func(bundles ...plugin.Bundle) PlanOptions {
+		return PlanOptions{Bundles: bundles, Env: testEnvironment(t, nil), Placement: onlyAlpha}
+	}
+	unownedProducer := defineProducer("unowned-producer")
+	alphaConsumer := plugin.WorkloadOf(plugin.WorkloadKey(slotAlpha), plugin.BundleOf(consumer))
+
+	_, err := BuildPlan(planOption(
+		plugin.BundleOf(unownedProducer),
+		plugin.WorkloadOf(plugin.WorkloadKey(slotBeta), plugin.BundleOf(defineProducer("beta-producer"))),
+		alphaConsumer,
+	))
+	require.Error(t, err, "a hosted candidate does not make the edge to the unhosted workload legal")
+	assert.Contains(t, err.Error(), `from workload "beta", which this process does not carry`)
+	assert.Contains(t, err.Error(), `workload "alpha" cannot depend on workload "beta" directly`)
+	assert.NotContains(t, err.Error(), "is ambiguous",
+		"the refusal is the direction rule, not a resolution failure")
+
+	plan, err := BuildPlan(planOption(plugin.BundleOf(unownedProducer), alphaConsumer))
+	require.NoError(t, err, "the same edge without the other workload's exporter is legal")
+	edges := plan.InstanceInputs(directionConsumerIdentity())
+	require.Len(t, edges, 1)
+	assert.Equal(t, []plugin.Identity{
+		{Plugin: "unowned-producer", Instance: plugin.DefaultInstance},
+	}, edges[0].Producers, "the control plan still binds its one legitimate producer")
+}
+
 // TestDependencyDirectionExplainsARefThatIsMerelyUnwired keeps the placement
 // explanation from swallowing the ordinary one. A Ref whose target is in this
 // process and simply does not export the contract is a wiring mistake in the
