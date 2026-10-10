@@ -38,10 +38,11 @@ var watchRearm = 250 * time.Millisecond
 // the watch starts and appear later: the watch arms itself on the parent
 // directory, which is also how it follows a symlinked file to whatever target
 // a ConfigMap swap points it at -- as far as the platform reports the swap:
-// macOS's kqueue never reports the rename over the link, so a swap there can
-// emit no event at all. Every parent directory must exist, because a watch
-// armed nowhere would never report anything; a path without one is refused at
-// the call.
+// macOS never reports the rename over the link, and where resolving the
+// path rewrites its spelling (the /var paths the system's temp directories
+// live under), the watch stops delivering for the new target after the swap.
+// Every parent directory must exist, because a watch armed nowhere would
+// never report anything; a path without one is refused at the call.
 //
 // The call returns once every file's first arm attempt has completed: a file
 // already on disk is watched when it returns, and a file that had not

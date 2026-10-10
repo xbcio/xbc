@@ -140,10 +140,12 @@ func TestWatchFilesSurvivesAtomicReplacement(t *testing.T) {
 // The atomic retarget half of the story is asserted only where the platform
 // reports it. macOS's kqueue reports the directory write a swap causes and
 // then re-scans the directory, but the rename over the link itself is never
-// reported: after a swap the watch can stop delivering for that name
-// altogether, and no event leaves the kernel for this package to act on.
-// Linux's inotify reports the retarget as a create for the link path, which is
-// the behavior the swap phase below exercises.
+// reported -- and delivery would not survive it even if it were: the path
+// resolves to a /private spelling while its events keep the /var spelling
+// they were watched under, so after at most one straggler the provider stops
+// delivering for the new target and there is no callback left to assert.
+// Linux's inotify reports the retarget as a create for the link path, which
+// is the behavior the swap phase below exercises.
 func TestWatchFilesFollowsASymlinkToItsTarget(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "..data-1.yml")
@@ -164,7 +166,7 @@ func TestWatchFilesFollowsASymlinkToItsTarget(t *testing.T) {
 	}
 
 	if runtime.GOOS == "darwin" {
-		t.Skip("kqueue does not report the atomic retarget of a symlink: there is no event for the watch to deliver")
+		t.Skip("macOS cannot follow the retarget: kqueue never reports the rename over the link, and the /private spelling the path resolves to never equals the /var spelling its events carry, so delivery for the new target ends")
 	}
 
 	// The swap: a second target, then a new link pointing at it.
