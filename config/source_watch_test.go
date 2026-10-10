@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -57,9 +58,19 @@ func TestFilesIsEmptyWithoutAFileLayer(t *testing.T) {
 // without every caller growing a timing surface.
 func startWatching(t *testing.T, paths []string) (<-chan []string, func()) {
 	t.Helper()
+	return startWatchingWith(t, paths, 20*time.Millisecond, 10*time.Millisecond)
+}
+
+// startWatchingWith is startWatching with explicit knobs for the tests that
+// need their own timing (the burst collapse, the re-arm gap). WatchFiles does
+// not return before every file's first arm attempt has completed, so a write
+// issued after this helper returns cannot miss the arming; the tests below
+// write immediately and mean it.
+func startWatchingWith(t *testing.T, paths []string, debounce, rearm time.Duration) (<-chan []string, func()) {
+	t.Helper()
 
 	oldDebounce, oldRearm := watchDebounce, watchRearm
-	watchDebounce, watchRearm = 20*time.Millisecond, 10*time.Millisecond
+	watchDebounce, watchRearm = debounce, rearm
 
 	changes := make(chan []string, 16)
 	stop, err := WatchFiles(paths, func(changed []string) {
@@ -122,9 +133,17 @@ func TestWatchFilesSurvivesAtomicReplacement(t *testing.T) {
 	}
 }
 
-// Follow the symlink, not the name: a ConfigMap swap replaces the target and
-// retargets the link, and the watch must report the file whose content
-// changed.
+// Follow the symlink, not the name: a ConfigMap-style setup points the watched
+// name at a target through a link, and the watch must report the file the link
+// resolves to, under the name it was given.
+//
+// The atomic retarget half of the story is asserted only where the platform
+// reports it. macOS's kqueue reports the directory write a swap causes and
+// then re-scans the directory, but the rename over the link itself is never
+// reported: after a swap the watch can stop delivering for that name
+// altogether, and no event leaves the kernel for this package to act on.
+// Linux's inotify reports the retarget as a create for the link path, which is
+// the behavior the swap phase below exercises.
 func TestWatchFilesFollowsASymlinkToItsTarget(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "..data-1.yml")
@@ -134,9 +153,23 @@ func TestWatchFilesFollowsASymlinkToItsTarget(t *testing.T) {
 
 	changes, _ := startWatching(t, []string{link})
 
+	// A write to the file the link resolves to is a change to the watched
+	// name, and has to reach the callback.
+	writeYAML(t, target, "a: 2\n")
+	select {
+	case got := <-changes:
+		assert.Equal(t, []string{link}, got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a write to the linked target must reach the callback")
+	}
+
+	if runtime.GOOS == "darwin" {
+		t.Skip("kqueue does not report the atomic retarget of a symlink: there is no event for the watch to deliver")
+	}
+
 	// The swap: a second target, then a new link pointing at it.
 	next := filepath.Join(dir, "..data-2.yml")
-	writeYAML(t, next, "a: 2\n")
+	writeYAML(t, next, "a: 3\n")
 	replacement := filepath.Join(dir, "..data-link")
 	require.NoError(t, os.Symlink(next, replacement))
 	require.NoError(t, os.Rename(replacement, link))
@@ -146,6 +179,15 @@ func TestWatchFilesFollowsASymlinkToItsTarget(t *testing.T) {
 		assert.Equal(t, []string{link}, got)
 	case <-time.After(2 * time.Second):
 		t.Fatal("a symlink swap must reach the callback")
+	}
+
+	// And the watch keeps following the link's new target.
+	writeYAML(t, next, "a: 4\n")
+	select {
+	case got := <-changes:
+		assert.Equal(t, []string{link}, got)
+	case <-time.After(2 * time.Second):
+		t.Fatal("the watch must keep reporting writes after the swap")
 	}
 }
 
@@ -240,6 +282,77 @@ func TestWatchFilesReArmsAfterARemoval(t *testing.T) {
 	}
 }
 
+// A watch over a file that is already where it was must stay silent: the
+// caller read the configuration before arming the watch, and re-reporting
+// the state it read would start every process with a spurious reload.
+func TestWatchFilesStaysQuietWhileNothingChanges(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "application.yml")
+	writeYAML(t, base, "a: 1\n")
+
+	changes, _ := startWatching(t, []string{base})
+
+	time.Sleep(5 * watchDebounce)
+	select {
+	case got := <-changes:
+		t.Fatalf("nothing wrote to the file, yet the callback fired with %v", got)
+	default:
+	}
+}
+
+// The retry loop for a file that has not materialized yet must stay silent
+// too: a caller whose reload watches a not-yet-existing overlay must not be
+// told to reload for the condition it already read, however many rounds go
+// by before the file appears.
+func TestWatchFilesStaysQuietWhileTheFileIsStillAbsent(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "application.yml")
+
+	changes, _ := startWatching(t, []string{base})
+
+	time.Sleep(5 * (watchDebounce + watchRearm))
+	select {
+	case got := <-changes:
+		t.Fatalf("the file never appeared, yet the callback fired with %v", got)
+	default:
+	}
+}
+
+// A restore that lands while nothing is watching -- the ConfigMap update
+// shape, landing inside the re-arm gap -- leaves no event for the next
+// watch, so the round that re-arms has to carry the report itself. The
+// re-arm delay here outlasts the debounce, which puts the write provably
+// inside the unwatched gap: by the time the next round arms, the file is
+// already back and its arrival can no longer fire an event.
+func TestWatchFilesReportsARestoreThatLandsWhileNothingWatches(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "application.yml")
+	writeYAML(t, base, "a: 1\n")
+
+	changes, _ := startWatchingWith(t, []string{base}, 20*time.Millisecond, 200*time.Millisecond)
+
+	require.NoError(t, os.Remove(base))
+	select {
+	case <-changes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the removal must reach the callback")
+	}
+
+	writeYAML(t, base, "a: 2\n")
+	select {
+	case <-changes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a restore inside the re-arm gap must reach the callback")
+	}
+
+	writeYAML(t, base, "a: 3\n")
+	select {
+	case <-changes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the re-armed watch must keep reporting later writes")
+	}
+}
+
 // One burst of writes is one reload request: the debounce is what keeps an
 // editor's save (or a formatter's several writes) from compiling into a
 // reload storm.
@@ -248,20 +361,7 @@ func TestWatchFilesCollapsesABurstIntoOneCallback(t *testing.T) {
 	base := filepath.Join(dir, "application.yml")
 	writeYAML(t, base, "a: 0\n")
 
-	oldDebounce, oldRearm := watchDebounce, watchRearm
-	watchDebounce, watchRearm = 150*time.Millisecond, 10*time.Millisecond
-	calls := make(chan []string, 16)
-	stop, err := WatchFiles([]string{base}, func(changed []string) {
-		select {
-		case calls <- changed:
-		default:
-		}
-	})
-	require.NoError(t, err)
-	defer func() {
-		require.NoError(t, stop())
-		watchDebounce, watchRearm = oldDebounce, oldRearm
-	}()
+	calls, _ := startWatchingWith(t, []string{base}, 150*time.Millisecond, 10*time.Millisecond)
 
 	for i := 1; i <= 8; i++ {
 		writeYAML(t, base, "a: "+string(rune('0'+i))+"\n")
