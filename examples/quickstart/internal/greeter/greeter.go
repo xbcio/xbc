@@ -6,8 +6,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/xbcio/xbc/extensions/concurrency/async"
 	"github.com/xbcio/xbc/extensions/reliability/health"
+	"github.com/xbcio/xbc/extensions/tasks"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
@@ -112,18 +112,21 @@ func (*Plugin) createGreeting(ctx context.Context, c *web.Ctx) error {
 	}
 	greeting := Greeting{Message: "hello " + request.Name + " from xbc"}
 
-	// Spawn a best-effort follow-up on the process-wide pool installed by
-	// async.Bundle(). The task keeps ctx's values but not its cancellation, so
-	// it outlives this request; on shutdown the async plugin's Drain waits for
-	// it within xbc.drain_timeout, after the Web server has stopped and before
-	// any resource is closed. A plugin that needs the pool guaranteed present
-	// declares plugin.RefTo[async.Spawner](async.Key) instead.
-	if err := async.Spawn(ctx, "greeter.welcome", func(context.Context) {
+	// Dispatch a best-effort follow-up through extensions/tasks, the
+	// protocol-neutral task facade: tasks.Go runs the function on the
+	// process-wide local executor that async.Bundle() installs. The task keeps
+	// ctx's values but not its cancellation, so it outlives this request; on
+	// shutdown the async plugin's Drain waits for it within xbc.drain_timeout,
+	// after the Web server has stopped and before any resource is closed. A
+	// plugin that needs the pool guaranteed present declares
+	// plugin.RefTo[async.Spawner](async.Key) instead.
+	if err := tasks.Go(ctx, func(context.Context) {
 		log.L().Info("greeter: welcome sent", "name", request.Name)
-	}); err != nil {
-		// Best-effort: ErrSaturated, ErrShuttingDown, or ErrNotInstalled (async
-		// not selected) never fail the request itself.
-		log.L().Warn("greeter: welcome follow-up not spawned", "error", err)
+	}, tasks.Named("greeter.welcome")); err != nil {
+		// Best-effort: tasks.ErrSaturated, tasks.ErrClosed, or
+		// tasks.ErrNotInstalled (no local executor selected) never fail the
+		// request itself.
+		log.L().Warn("greeter: welcome follow-up not dispatched", "error", err)
 	}
 
 	return biz.OK(c, greeting)
