@@ -67,6 +67,7 @@ type fileWatch struct {
 	mu       sync.Mutex
 	stopping bool
 	pending  bool
+	running  bool
 	timer    *time.Timer
 
 	done     chan struct{}
@@ -118,45 +119,80 @@ func (w *fileWatch) start() error {
 
 // watchOne arms the watch on path's parent directory and keeps it armed.
 //
-// Every round builds a fresh provider, and nothing ever calls Unwatch on one.
-// The reuse and the release are both off the table for the same hazard: the
-// provider leaves its internal lock held on some paths out of its watch loop
-// (the loop's terminal cleanup -- the code that resets its watching flag and
-// closes the watcher -- is skipped when the symlink resolution inside an event
-// fails, which the re-arm window makes reachable), and both a second Watch and
-// an Unwatch on such an instance block on that lock forever. A fresh provider
-// per round never touches the poisoned instance again. Nothing is leaked:
-// every round's watcher is closed by the round's own loop, and the provider
-// becomes garbage with it.
+// The koanf file provider arms asynchronously: (*File).Watch registers the
+// watcher and returns, and the loop that actually reports runs on the
+// provider's own goroutine until the file is removed or something inside the
+// watch fails. A round here is therefore one armed provider kept for as long
+// as its loop lasts, with the loop's end -- delivered to the callback as an
+// error -- as the signal to arm the next one. Re-arming on a timer instead
+// builds a fresh watcher every cycle and abandons the previous one mid-loop,
+// which grows the process by a provider goroutine and an fsnotify watcher per
+// cycle, forever.
+//
+// Instances are used once and only after a successful arm are they ever
+// touched again. The arm can poison an instance: when the file is absent,
+// Watch's symlink resolution returns with the instance's internal lock still
+// held, so a second Watch or an Unwatch on that instance blocks forever. A
+// round therefore builds a fresh provider, and stop unwatches only an
+// instance whose arm succeeded.
 func (w *fileWatch) watchOne(path string) {
 	w.joined.Add(1)
 	go func() {
 		defer w.joined.Done()
 		for {
 			provider := file.Provider(path)
+			ended := make(chan struct{})
+			var endedOnce sync.Once
 
-			_ = provider.Watch(func(_ any, err error) {
+			armErr := provider.Watch(func(_ any, err error) {
 				select {
 				case <-w.done:
 					return
 				default:
 				}
-				// err non-nil means the provider ended its loop: the file
-				// was removed, or something inside the watch failed. Either
-				// way the watch is gone and the re-arm below is what brings
-				// it back -- and either way the caller hears about it,
-				// because what it reads next is up to it.
+				// The caller hears about every callback, an ending one
+				// included: err non-nil means the provider's loop is over --
+				// the file was removed, or something inside the watch failed
+				// -- and what to read next is up to the caller.
 				w.changedUnderWatch()
+				if err != nil {
+					endedOnce.Do(func() { close(ended) })
+				}
 			})
+			if armErr != nil {
+				// Not armed: the file is not on disk yet, or the parent
+				// directory could not be watched. The instance is poisoned
+				// and must not be touched again; fall through to the re-arm
+				// wait, which is also the retry loop for a file that has not
+				// materialized yet.
+				endedOnce.Do(func() { close(ended) })
+			}
 
-			// The round is over. The gap to the next round is a window in
-			// which the file can be written with no watch on it -- exactly
-			// what a ConfigMap-style swap does -- so a file that is back when
-			// the gap ends is reported as the change it is. Deciding before
-			// the wait is what separates that from a file that was simply
-			// never there, which reports nothing: a caller whose reload
-			// watches a not-yet-materialized file must not be told to reload
-			// for the condition it already read.
+			select {
+			case <-ended:
+			case <-w.done:
+				// Stopping while the loop still runs. This instance is armed
+				// and healthy, and only Unwatch ends its goroutine -- nothing
+				// else will, because its file is still there.
+				if armErr == nil {
+					_ = provider.Unwatch()
+				}
+				return
+			}
+			select {
+			case <-w.done:
+				return
+			default:
+			}
+
+			// The gap to the next arm is a window in which the file can be
+			// written with no watch on it -- exactly what a ConfigMap-style
+			// swap does -- so a file that is back when the gap ends is
+			// reported as the change it is. Deciding before the wait is what
+			// separates that from a file that was simply never there, which
+			// reports nothing: a caller whose reload watches a
+			// not-yet-materialized file must not be told to reload for the
+			// condition it already read.
 			_, errBefore := os.Stat(path)
 
 			select {
@@ -199,23 +235,44 @@ func (w *fileWatch) changedUnderWatch() {
 	w.timer.Reset(watchDebounce)
 }
 
-// fire runs one callback, then reopens the collapse window. The callback runs
-// without the lock so a slow reload cannot make the watcher deaf to fsnotify
-// events: those are buffered by the provider and by pending, not by blocking
-// this goroutine.
+// fire runs one callback at a time, then reopens the collapse window. The
+// callback runs without the lock so a slow reload cannot make the watcher
+// deaf to fsnotify events: those are buffered by the provider and by pending,
+// not by blocking this goroutine.
+//
+// A report that comes due while a callback is running is left owed rather
+// than run beside it: the running callback re-arms the timer as it finishes,
+// so a slow reload sees the events that arrived during it as one follow-up
+// report, and changed is never called concurrently with itself.
 func (w *fileWatch) fire() {
 	w.mu.Lock()
 	if w.stopping {
 		w.mu.Unlock()
 		return
 	}
+	if w.running {
+		// Owed to the callback in flight; its completion re-arms the timer.
+		w.pending = true
+		w.mu.Unlock()
+		return
+	}
 	w.pending = false
+	w.running = true
 	// Registered under the lock, so stop cannot miss a callback that has
 	// already passed the stopping check.
 	w.callback.Add(1)
 	w.mu.Unlock()
 
-	defer w.callback.Done()
+	defer func() {
+		w.mu.Lock()
+		w.running = false
+		if w.pending && !w.stopping {
+			w.pending = false
+			w.timer.Reset(watchDebounce)
+		}
+		w.mu.Unlock()
+		w.callback.Done()
+	}()
 	w.changed(append([]string(nil), w.paths...))
 }
 
