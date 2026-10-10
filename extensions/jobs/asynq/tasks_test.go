@@ -555,3 +555,35 @@ func (l *captureLogger) recorded(msg string) bool {
 	}
 	return false
 }
+
+// localStub is a local executor that holds no bindings, standing in for an
+// async pool that installed itself and has since been stopped.
+type localStub struct{}
+
+func (localStub) Go(context.Context, string, func(context.Context)) error { return nil }
+func (localStub) Submit(context.Context, string, []byte) error            { return nil }
+func (localStub) Lookup(string) (tasks.Binding, bool)                     { return tasks.Binding{}, false }
+
+// TestDispatchOutlivesTheLocalExecutor pins that a delivered method task
+// reaches its handler through asynq's own dispatch table: async stops before
+// asynq under the default shutdown sequence, and a task asynq's worker
+// dequeues after that must still run rather than fail with no handler.
+func TestDispatchOutlivesTheLocalExecutor(t *testing.T) {
+	uninstall, installed := tasks.InstallLocal(localStub{})
+	if !installed {
+		t.Fatal("InstallLocal() did not install the stub; a previous test left the slot taken")
+	}
+	uninstall()
+	if err := tasks.Go(context.Background(), func(context.Context) {}); !errors.Is(err, tasks.ErrNotInstalled) {
+		t.Fatalf("Go() after uninstall error = %v, want ErrNotInstalled", err)
+	}
+
+	service := &remoteService{calls: make(chan string, 1)}
+	dispatch := dispatchGroup(t, service)
+	if err := dispatch.ProcessTask(context.Background(), hibiken.NewTask("test.asynq.remotable", []byte(`"after-async"`))); err != nil {
+		t.Fatalf("ProcessTask() after the local executor left error = %v", err)
+	}
+	if got := receiveCall(t, service); got != "after-async" {
+		t.Fatalf("handler observed %q", got)
+	}
+}

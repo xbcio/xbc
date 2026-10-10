@@ -176,3 +176,115 @@ func TestSubmissionWithoutAnExecutorIsNotInstalled(t *testing.T) {
 	err = e2eConfirm.Submit(context.Background(), "too-late")
 	assert.True(t, errors.Is(err, tasks.ErrNotInstalled), "Submit after exit returned %v, want ErrNotInstalled", err)
 }
+
+// cyclicProvider both depends on async explicitly and exports tasks.Provider.
+// async collects every Provider, so the provider sits upstream of async while
+// its own RefTo puts it downstream: the composition is a cycle that must be
+// split into two Definitions, and the graph must say so rather than hang.
+type cyclicProvider struct{}
+
+func (*cyclicProvider) Tasks() []tasks.Binding { return nil }
+
+// TestProviderThatAlsoDependsOnAsyncIsACycle pins the rule the tasks package
+// documents: a plugin may provide tasks or depend on the executor explicitly,
+// not both. The failure must name the cycle at composition time.
+func TestProviderThatAlsoDependsOnAsyncIsACycle(t *testing.T) {
+	spawner := plugin.RefTo[async.Spawner](async.Key)
+	cyclic := plugin.Define("tasks-cyclic-provider", func(ctx plugin.BuildContext) (*cyclicProvider, error) {
+		_ = spawner.Get(ctx)
+		return &cyclicProvider{}, nil
+	}, plugin.Options[*cyclicProvider]{
+		Inputs: plugin.Inputs(spawner),
+		Exports: plugin.Contracts(
+			plugin.ExportAs[tasks.Provider](func(value *cyclicProvider) tasks.Provider { return value }),
+		),
+	})
+
+	app, err := xbc.New(xbc.WithBundles(async.Bundle(), plugin.BundleOf(cyclic)))
+	if err == nil {
+		code, execErr := app.Execute(context.Background(), []string{"--config", writeAppConfig(t)})
+		assert.NotZero(t, code)
+		err = execErr
+	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin dependency cycle")
+	assert.Contains(t, err.Error(), "tasks-cyclic-provider")
+}
+
+// residentDefinition is a plugin that only keeps its application resident, so
+// a test can run an application whose executor slot is taken by another one.
+func residentDefinition(started chan<- struct{}) plugin.Definition {
+	type resident struct{}
+	return plugin.Define("tasks-coexist-resident", func(plugin.BuildContext) (*resident, error) {
+		return &resident{}, nil
+	}, plugin.Options[*resident]{
+		Lifecycle: plugin.Lifecycle[*resident]{
+			Start: func(_ *resident, ctx *plugin.Context) error {
+				if !ctx.GoCritical(func(taskCtx context.Context) { <-taskCtx.Done() }) {
+					return errors.New("tasks-coexist-resident: the resident task was refused")
+				}
+				started <- struct{}{}
+				return nil
+			},
+		},
+	})
+}
+
+// TestTwoApplicationsCoexistInOneProcess pins the first-come-first-served
+// slot: a second application in the same process finds the local executor
+// already installed, keeps running without it rather than failing to start,
+// and leaves the first one's binding untouched.
+func TestTwoApplicationsCoexistInOneProcess(t *testing.T) {
+	started := make(chan struct{}, 2)
+	first, err := xbc.New(xbc.WithBundles(async.Bundle(), plugin.BundleOf(residentDefinition(started))))
+	require.NoError(t, err)
+	second, err := xbc.New(xbc.WithBundles(async.Bundle(), plugin.BundleOf(residentDefinition(started))))
+	require.NoError(t, err)
+
+	run := func(app *xbc.App) (context.CancelFunc, <-chan int) {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		done := make(chan int, 1)
+		go func() {
+			code, _ := app.Execute(ctx, []string{"--config", writeAppConfig(t)})
+			done <- code
+		}()
+		return cancel, done
+	}
+	awaitStart := func() {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("an application did not start")
+		}
+	}
+	awaitExit := func(done <-chan int) {
+		select {
+		case code := <-done:
+			assert.Equal(t, 0, code)
+		case <-time.After(5 * time.Second):
+			t.Fatal("application did not exit")
+		}
+	}
+
+	cancelFirst, firstDone := run(first)
+	awaitStart()
+	cancelSecond, secondDone := run(second)
+	awaitStart()
+
+	// The second application stopping must not uninstall the first one's
+	// executor: its own uninstall is a no-op because it never held the slot.
+	cancelSecond()
+	awaitExit(secondDone)
+	ran := make(chan struct{})
+	require.NoError(t, tasks.Go(context.Background(), func(context.Context) { close(ran) }))
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first application's executor did not run the task")
+	}
+
+	cancelFirst()
+	awaitExit(firstDone)
+	assert.ErrorIs(t, tasks.Go(context.Background(), func(context.Context) {}), tasks.ErrNotInstalled)
+}
