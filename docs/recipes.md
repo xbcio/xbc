@@ -326,7 +326,7 @@ Shutdown splits in two. Drain stops every worker fetching new tasks and waits, w
 
 ## Background tasks that finish before shutdown
 
-Three mechanisms submit background work, and they answer different questions. `async.Spawn` is for a best-effort task fired from a request or any other call site that must not wait on it -- a cache warm, a notification, a metrics flush -- where losing the task on a crash is an acceptable cost. `plugin.Context.Go` (and `GoCritical`) is for a plugin-owned, long-lived loop submitted once from that plugin's own `Start` hook, such as the sweeper in [Background-only service](#background-only-service); submission is accepted only while `Start` is executing, so it is not a per-request API. `outbox` or `asynq` are for work that must survive a crash: a `Spawn`ed task is lost outright on SIGKILL or an OOM kill, drain or no drain, while outbox commits the pending event in the same database transaction as the business write, and asynq's queue is Redis rather than process memory.
+Three mechanisms submit background work, and they answer different questions. `tasks.Go` -- dispatched to the process-wide local executor `async.Bundle()` installs -- is for a best-effort task fired from a request or any other call site that must not wait on it -- a cache warm, a notification, a metrics flush -- where losing the task on a crash is an acceptable cost. `plugin.Context.Go` (and `GoCritical`) is for a plugin-owned, long-lived loop submitted once from that plugin's own `Start` hook, such as the sweeper in [Background-only service](#background-only-service); submission is accepted only while `Start` is executing, so it is not a per-request API. `outbox` or `asynq` are for work that must survive a crash: a task dispatched to the local pool is lost outright on SIGKILL or an OOM kill, drain or no drain, while outbox commits the pending event in the same database transaction as the business write, and asynq's queue is Redis rather than process memory.
 
 ```go
 app, err := xbc.New(xbc.WithBundles(
@@ -339,10 +339,10 @@ app, err := xbc.New(xbc.WithBundles(
 ```go
 func (p *Plugin) createGreeting(ctx context.Context, c *web.Ctx) error {
 	greeting := p.build(c)
-	if err := async.Spawn(ctx, "notify-greeting", func(taskCtx context.Context) {
+	if err := tasks.Go(ctx, func(taskCtx context.Context) {
 		p.notify(taskCtx, greeting)
-	}); err != nil {
-		if errors.Is(err, async.ErrSaturated) || errors.Is(err, async.ErrShuttingDown) {
+	}, tasks.Named("notify-greeting")); err != nil {
+		if errors.Is(err, tasks.ErrSaturated) || errors.Is(err, tasks.ErrClosed) {
 			p.notify(ctx, greeting) // fall back inline rather than losing the work
 		} else {
 			return err
@@ -352,7 +352,7 @@ func (p *Plugin) createGreeting(ctx context.Context, c *web.Ctx) error {
 }
 ```
 
-`ctx` here only bounds how long `Spawn` waits for capacity (`plugins.async.submit_timeout`, `0s` by default rejects immediately); the task itself keeps running after `Spawn` returns and stops only when the Pool stops. A plugin that would rather depend on the capability explicitly than reach for the process-wide `async.Spawn` declares the same typed input every other consumer of a Definition's primary value does:
+`ctx` here only bounds how long the submission waits for capacity (`plugins.async.submit_timeout`, `0s` by default rejects immediately); the task itself keeps running after `tasks.Go` returns and stops only when the Pool stops. The facade also carries defined tasks -- `tasks.New` and `tasks.Method` handles submitted with `Submit` or run synchronously with `Run` -- while `async.Spawn` and `async.Spawner` remain the lower-level exit for work with no task handle. A plugin that would rather depend on the capability explicitly than rely on the process-wide binding declares the same typed input every other consumer of a Definition's primary value does:
 
 ```go
 var spawnerInput = plugin.RefTo[async.Spawner](async.Key)
@@ -376,17 +376,17 @@ plugins:
     executor: goroutine          # or "ants"
     max_concurrency: 256         # tasks running at once; 0 = unlimited (ants requires > 0)
     queue_capacity: 1024         # tasks waiting once max_concurrency is reached; 0 = no queue
-    submit_timeout: 0s           # how long Spawn waits for capacity; 0s = reject immediately
+    submit_timeout: 0s           # how long a submission waits for capacity; 0s = reject immediately
     shutdown:
       await_termination: true          # Drain waits for running and queued tasks
       await_termination_period: 0s     # extra cap on that wait; 0s = bounded only by xbc.drain_timeout
 ```
 
-Shutdown walks through this Pool the same way it walks through `asynq` above. SIGTERM runs `PreStop` on every started plugin, then ingress -- the Web server and anything else depending on a `TrafficOpener` -- stops first and finishes requests already in flight. Only then does the drain phase run: the Pool stops admitting (`Spawn` now returns `ErrShuttingDown`) and, since `await_termination` defaults to `true`, waits for running and queued tasks to finish within `min(xbc.drain_timeout, plugins.async.shutdown.await_termination_period)` -- `0s` for the period means the wait is bounded only by `xbc.drain_timeout`. Databases, Redis clients, and every other resource a still-running task depends on stay open through this phase; nothing is closed yet. `Stop` then cancels whatever outlived the drain, discards any still-queued tasks (logging their names), waits for the goroutines it just cancelled to actually return, and only after that releases the executor and closes what Drain left open.
+Shutdown walks through this Pool the same way it walks through `asynq` above. SIGTERM runs `PreStop` on every started plugin, then ingress -- the Web server and anything else depending on a `TrafficOpener` -- stops first and finishes requests already in flight. Only then does the drain phase run: the Pool stops admitting (`tasks.Go` now fails with `tasks.ErrClosed`, wrapping `async.ErrShuttingDown`) and, since `await_termination` defaults to `true`, waits for running and queued tasks to finish within `min(xbc.drain_timeout, plugins.async.shutdown.await_termination_period)` -- `0s` for the period means the wait is bounded only by `xbc.drain_timeout`. Databases, Redis clients, and every other resource a still-running task depends on stay open through this phase; nothing is closed yet. `Stop` then cancels whatever outlived the drain, discards any still-queued tasks (logging their names), waits for the goroutines it just cancelled to actually return, and only after that releases the executor and closes what Drain left open.
 
 The drain budget comes out of the same arithmetic as [The supervisor's stop grace period](#the-supervisors-stop-grace-period): `xbc.drain_timeout` defaults to 60% of the effective `xbc.shutdown_timeout` (`25s` → `15s`), and it runs *inside* that budget rather than adding to it, so the total a supervisor must allow is still `xbc.pre_stop_timeout + xbc.shutdown_timeout` (`2s + 25s = 27s` at the defaults). Keep the deployment's `terminationGracePeriodSeconds` (or `TimeoutStopSec` / `stop_grace_period`) above that sum, exactly as that section describes, rather than sizing it from `drain_timeout` alone.
 
-`executor: ants` reuses a fixed pool of goroutines sized to `max_concurrency` instead of starting one per task; both executors honor identical `Spawn`/Drain/Stop semantics, so switching this key changes only how an admitted task runs. It is not a default-safe upgrade: measured on the async package's own `BenchmarkSpawn`/`BenchmarkSpawnQueued` (Apple M3), `ExecutorGoroutine` was consistently as fast as or faster than `ExecutorAnts` for a tiny task, both unsaturated (~1.2us/op vs ~1.3us/op) and queued (~1.08us/op for both, no measurable difference). Worker reuse did not pay for its own overhead on a task this cheap; reach for `ants` only when profiling an application's actual workload shows goroutine creation and stack-allocation GC pressure are the measured bottleneck, and benchmark that workload rather than trusting this one.
+`executor: ants` reuses a fixed pool of goroutines sized to `max_concurrency` instead of starting one per task; both executors honor identical admission and Drain/Stop semantics, so switching this key changes only how an admitted task runs. It is not a default-safe upgrade: measured on the async package's own `BenchmarkSpawn`/`BenchmarkSpawnQueued` (Apple M3), `ExecutorGoroutine` was consistently as fast as or faster than `ExecutorAnts` for a tiny task, both unsaturated (~1.2us/op vs ~1.3us/op) and queued (~1.08us/op for both, no measurable difference). Worker reuse did not pay for its own overhead on a task this cheap; reach for `ants` only when profiling an application's actual workload shows goroutine creation and stack-allocation GC pressure are the measured bottleneck, and benchmark that workload rather than trusting this one.
 
 ## Distributed Cron
 
