@@ -1160,23 +1160,39 @@ func TestMaskExtraNameCandidatesDoNotOverreach(t *testing.T) {
 }
 
 // assertFloatKeyName asserts that the member name written on disk for a float
-// map key matches encoding/json byte-for-byte. The expected value is cut
-// directly out of json.Marshal's raw bytes (the shape is always fixed as
-// {"<name>":1}), without going through Unmarshal -- decoding would restore
-// escapes, which would no longer be a byte-for-byte comparison.
+// map key matches encoding/json byte-for-byte. The expected name comes from
+// json.Marshal's raw bytes without going through Unmarshal -- decoding would
+// restore escapes, which would no longer be a byte-for-byte comparison.
 func assertFloatKeyName[T float32 | float64](t *testing.T, v T) {
 	t.Helper()
-	b, err := json.Marshal(map[T]int{v: 1})
-	require.NoError(t, err)
-	s := string(b)
-	require.True(t, strings.HasPrefix(s, `{"`) && strings.HasSuffix(s, `":1}`), "Unexpected shape: %s", s)
-	want := s[2 : len(s)-4]
+	want := jsonFloatKeyName(t, v)
 
 	raw, m := logJSON(t, zap.Any("v", map[T]mapCreds{v: {User: "alice", Password: "hunter2"}}))
 	assert.NotContains(t, raw, "hunter2", "Disk: %s", raw)
 	assert.Contains(t, raw, `"`+want+`":{`, "Member name must be exactly the same as encoding/json (%v), disk: %s", v, raw)
 	assert.Equal(t, maskPlaceholder,
 		subMap(t, raw, subMap(t, raw, m, "v"), want)["password"], "Disk: %s", raw)
+}
+
+// jsonFloatKeyName returns the bytes encoding/json writes as the member name
+// of a float map key.
+//
+// The map form is preferred -- the shape is always fixed as {"<name>":1} --
+// because it reads the name from the key path itself. Go 1.25's
+// implementation cannot encode a float-keyed map at all (unsupported type),
+// so there the number's own JSON text stands in: the value path and the key
+// path share one number formatter, down to the -0 case (measured), so both
+// forms produce the same bytes.
+func jsonFloatKeyName[T float32 | float64](t *testing.T, v T) string {
+	t.Helper()
+	if b, err := json.Marshal(map[T]int{v: 1}); err == nil {
+		s := string(b)
+		require.True(t, strings.HasPrefix(s, `{"`) && strings.HasSuffix(s, `":1}`), "Unexpected shape: %s", s)
+		return s[2 : len(s)-4]
+	}
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(b)
 }
 
 // 34: the ECMAScript boundary for float member names.
@@ -1400,11 +1416,18 @@ func TestMaskChecksWholeTagAfterComma(t *testing.T) {
 }
 
 func TestMaskWindowDoesNotOverreachBenignSandwich(t *testing.T) {
-	// v2's member name is truncated at the first reserved character, so the
-	// member written on disk is svc; keeping the value as-is is correct here.
+	// The member name written on disk is decided by encoding/json and differs
+	// between implementations: v2 truncates the invalid tag at the first
+	// reserved character (svc), while v1 rejects the tag and falls back to
+	// the Go field name (Count). So this only asserts that the value is kept
+	// as-is, not on the member name.
 	raw, m := logJSON(t, zap.Any("v", sMaskSandwichBenign{Count: 7}))
 
-	assert.Equal(t, float64(7), subMap(t, raw, m, "v")["svc"], "Persisted: %s", raw)
+	v := subMap(t, raw, m, "v")
+	require.Len(t, v, 1, "Persisted: %s", raw)
+	for name, val := range v {
+		assert.Equal(t, float64(7), val, "member %q must keep the benign count as-is, persisted: %s", name, raw)
+	}
 }
 
 // sMaskReservedThenComma: a reserved character comes first, then a comma. A
