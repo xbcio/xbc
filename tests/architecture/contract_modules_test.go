@@ -27,10 +27,10 @@ import (
 // import nothing outside the standard library.
 //
 // A contract module sits either directly beneath the extensions namespace
-// (authentication) or inside one of its capability groups (coordination/lease).
-// It cannot live in core, whose dependency closure must exclude everything
-// beneath extensions, and it cannot be a capability group leaf beside plugins,
-// because it is not a plugin itself.
+// (authentication, tasks) or inside one of its capability groups
+// (coordination/lease). It cannot live in core, whose dependency closure must
+// exclude everything beneath extensions, and it cannot be a capability group
+// leaf beside plugins, because it is not a plugin itself.
 //
 // Every consumer that must tell a contract module apart from a plugin reads this
 // list -- archPluginImplementationRoots is the one today -- so adding a member
@@ -40,6 +40,7 @@ import (
 var archContractModules = []string{
 	"extensions/authentication",
 	"extensions/coordination/lease",
+	"extensions/tasks",
 }
 
 // archContractModuleRoots returns the absolute path of every declared contract

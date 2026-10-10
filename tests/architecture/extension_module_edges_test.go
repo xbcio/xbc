@@ -53,6 +53,11 @@ import (
 //     interfaces over the standard library, owning no Definition, Config, or
 //     Bundle. TestArchContractModulesOwnNoDefinitionConfigOrBundle is what makes
 //     that a checked claim rather than a description.
+//   - extensions/tasks is the same shape: a contract module publishing the
+//     task vocabulary -- Task handles, Provider bindings, the Local and Remote
+//     executor interfaces -- that async and asynq implement and every plugin
+//     may define tasks with. The executors depend on its types; they never
+//     compose a Definition, Config, or Bundle from it, because it owns none.
 //   - reliability/health is a plugin module, and is listed anyway. It publishes
 //     the probe vocabulary -- Contributor, NamedChecker, CheckFunc, Readiness --
 //     that every capability implements in order to be observable at all, and its
@@ -70,6 +75,7 @@ var archExtensionSharedVocabularyModules = []string{
 	"extensions/authorization/casbin",
 	"extensions/authorization/rbac",
 	"extensions/coordination/lease",
+	"extensions/tasks",
 	"extensions/reliability/health",
 }
 

@@ -87,13 +87,14 @@ var archProtocolNeutralExtensionGroups = []string{
 // everything beneath extensions, and it cannot be a capability group leaf,
 // because it is not a plugin. Adding one is an architecture decision.
 //
-// The category has a second member, extensions/coordination/lease, which sits
-// inside the coordination capability group instead. archContractModules in
+// Other members of the category sit inside capability groups instead --
+// extensions/coordination/lease today. archContractModules in
 // contract_modules_test.go is the complete list and is what the rest of the
 // architecture suite excludes by; a consistency test there keeps the two from
 // drifting apart.
 var archProtocolNeutralContractModules = []string{
 	"authentication",
+	"tasks",
 }
 
 var archWebExtensionGroups = []string{

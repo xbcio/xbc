@@ -25,6 +25,14 @@
       "imports": []
     },
     {
+      "path": "github.com/xbcio/xbc/extensions/tasks",
+      "directory": "extensions/tasks",
+      "tag_prefix": "extensions/tasks/",
+      "wave": 0,
+      "release": true,
+      "imports": []
+    },
+    {
       "path": "github.com/xbcio/xbc/extensions/authorization/rbac",
       "directory": "extensions/authorization/rbac",
       "tag_prefix": "extensions/authorization/rbac/",
@@ -41,7 +49,8 @@
       "wave": 1,
       "release": true,
       "imports": [
-        "github.com/xbcio/xbc"
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/tasks"
       ]
     },
     {
@@ -125,7 +134,8 @@
       "release": true,
       "imports": [
         "github.com/xbcio/xbc",
-        "github.com/xbcio/xbc/extensions/reliability/health"
+        "github.com/xbcio/xbc/extensions/reliability/health",
+        "github.com/xbcio/xbc/extensions/tasks"
       ]
     },
     {
@@ -354,6 +364,7 @@
         "github.com/xbcio/xbc/extensions/messaging/outbox",
         "github.com/xbcio/xbc/extensions/reliability/health",
         "github.com/xbcio/xbc/extensions/storage/gorm",
+        "github.com/xbcio/xbc/extensions/tasks",
         "github.com/xbcio/xbc/transport/web",
         "github.com/xbcio/xbc/transport/web/engines/gin",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
