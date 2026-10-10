@@ -189,3 +189,25 @@ func TestMountedRowsAreMarkedInEveryRouteReport(t *testing.T) {
 		t.Fatal("a route that covers a single path must not be marked as a mounted subtree")
 	}
 }
+
+// TestUnmeteredRowsAreMarkedInTheRouteTable pins that an exemption from the
+// in-flight gate is visible where routes are listed. It is the one property of
+// a route the table would otherwise hide: everything else about the row -- the
+// method, the path, the mount mark -- reads the same as a metered route's, and
+// the exemption is a deliberate hole in the process's load shedder, so an
+// operator reading the startup report or the validate output has to be able to
+// see which paths are answered from a saturated process.
+func TestUnmeteredRowsAreMarkedInTheRouteTable(t *testing.T) {
+	t.Parallel()
+
+	unmetered := RouteInfo{Method: http.MethodGet, Path: "/healthz", Unmetered: true}
+	plain := RouteInfo{Method: http.MethodGet, Path: "/orders"}
+
+	report := renderRouteTable([]RouteInfo{unmetered})
+	if !strings.Contains(report, "(unmetered)") {
+		t.Fatalf("route table = %q, want the exempt row marked", report)
+	}
+	if strings.Contains(renderRouteTable([]RouteInfo{plain}), "(unmetered)") {
+		t.Fatal("a metered route must not be marked as unmetered")
+	}
+}

@@ -56,9 +56,25 @@ func renderRouteTable(routes []RouteInfo) string {
 	for i, route := range routes {
 		fmt.Fprintf(&b, "\n  %d. %-*s  %s", i+1, methodWidth, route.Method, route.Path)
 		b.WriteString(mountedMark(route))
+		b.WriteString(unmeteredMark(route))
 		b.WriteString(managementMark(route))
 	}
 	return b.String()
+}
+
+// unmeteredMark labels a report row that bypasses the in-flight gate. An
+// exemption is a deliberate hole in the process's load shedder, and it is
+// invisible in every other column of the report -- the route looks exactly like
+// a metered one -- so the operator reading the table, or the validate output it
+// is printed from, is the one who has to be told. The two marks cannot collide:
+// a mounted route may not be marked unmetered, because the gate exempts by
+// exact method and path and a subtree exemption could never match (see
+// validateUnmeteredRoute).
+func unmeteredMark(route RouteInfo) string {
+	if route.Unmetered {
+		return "  (unmetered)"
+	}
+	return ""
 }
 
 // mountedMark labels a report row that covers a subtree rather than a single
