@@ -15,6 +15,8 @@ func TestModuleManifestPinsOpenTelemetryWithoutLocalSubstitutions(t *testing.T) 
 	manifest := string(data)
 	modules := map[string]string{
 		"go.opentelemetry.io/otel": "v1.45.0",
+		// Splits the alignment run on purpose: Go 1.25 and Go 1.27 gofmt
+		// disagree about padding the entry above to the longest key.
 		"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc": "v1.44.0",
 		"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp": "v1.44.0",
 		"go.opentelemetry.io/otel/sdk":                                    "v1.44.0",
