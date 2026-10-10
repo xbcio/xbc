@@ -647,6 +647,10 @@ func retryAfter(value string, now time.Time, maximum time.Duration) time.Duratio
 	return delay
 }
 
+// retryDelay is a deliberate second copy: extensions/messaging/outbox's
+// worker.go carries an equivalent one, and one capability plugin module may
+// not import another. Keep both copies in sync -- each package's tests pin
+// the same values.
 func retryDelay(attempt int, initial, maximum time.Duration, jitter float64) time.Duration {
 	base := float64(initial) * math.Pow(2, float64(max(attempt-1, 0)))
 	if base > float64(maximum) {

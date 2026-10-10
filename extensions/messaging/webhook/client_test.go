@@ -293,6 +293,23 @@ func (r *countingReadCloser) Read(buffer []byte) (int, error) {
 }
 func (*countingReadCloser) Close() error { return nil }
 
+func TestRetryDelayIsExponentialAndCapped(t *testing.T) {
+	for _, testCase := range []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{attempt: 1, want: time.Second},
+		{attempt: 2, want: 2 * time.Second},
+		{attempt: 3, want: 4 * time.Second},
+		{attempt: 4, want: 5 * time.Second},
+		{attempt: 100, want: 5 * time.Second},
+	} {
+		if got := retryDelay(testCase.attempt, time.Second, 5*time.Second, 0); got != testCase.want {
+			t.Errorf("retryDelay(%d) = %v, want %v", testCase.attempt, got, testCase.want)
+		}
+	}
+}
+
 func TestResponseBodyHardLimit(t *testing.T) {
 	for _, test := range []struct {
 		name          string

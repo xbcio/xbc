@@ -259,6 +259,10 @@ func (w *worker) stopAndWait(ctx context.Context) error {
 	}
 }
 
+// retryDelay is a deliberate second copy: extensions/messaging/webhook's
+// client.go carries an equivalent one, and one capability plugin module may
+// not import another. Keep both copies in sync -- each package's tests pin
+// the same values.
 func retryDelay(attempt int, initial, maximum time.Duration, jitter float64) time.Duration {
 	exponent := max(attempt-1, 0)
 	base := float64(initial)
