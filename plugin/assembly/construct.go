@@ -483,7 +483,7 @@ func (report ShutdownReport) Identities(outcome StopOutcome) []plugin.Identity {
 // StopBounded stops one owned value at most once and abandons a stuck Stop
 // when the shared deadline expires.
 func (instance *Instance) StopBounded(deadline context.Context, budget time.Duration) error {
-	_, _, err := instance.stopBounded(deadline, budget)
+	_, _, err := instance.stopBounded(deadline, deadline, budget)
 	return err
 }
 
@@ -492,7 +492,18 @@ type stopResult struct {
 	err     error
 }
 
-func (instance *Instance) stopBounded(deadline context.Context, budget time.Duration) (StopOutcome, time.Duration, error) {
+// stopBounded runs instance's Stop at most once and abandons it once the walk
+// stops waiting for it.
+//
+// The hook is handed hookCtx; the walk waits for it until waitCtx is done.
+// They are the same context everywhere except phase A under a stop reserve,
+// where waitCtx outlives hookCtx by a settle window: a Stop that honours its
+// context still returns only after the context is done -- an HTTP server
+// force-closes what refused to drain after Shutdown gives up -- and judging it
+// at the very instant its deadline passed would report a well-behaved ingress
+// as abandoned.
+func (instance *Instance) stopBounded(hookCtx, waitCtx context.Context, budget time.Duration) (StopOutcome, time.Duration, error) {
+	deadline := waitCtx
 	instance.stopMu.Lock()
 	if instance.stopped {
 		instance.stopMu.Unlock()
@@ -507,7 +518,7 @@ func (instance *Instance) stopBounded(deadline context.Context, budget time.Dura
 	done := make(chan stopResult, 1)
 	go func() {
 		panicked, err := instance.invokeClassified(StageStop, func() error {
-			return instance.lifecycle.stop(instance.value, deadline)
+			return instance.lifecycle.stop(instance.value, hookCtx)
 		})
 		switch {
 		case panicked:
@@ -1038,17 +1049,37 @@ func (instance *Instance) drainBounded(deadline context.Context, budget time.Dur
 // exists for the drainers -- while the min keeps drain_timeout contained in
 // shutdown_timeout no matter how long phase A took.
 //
+// stopReserve holds the tail of the walk back for phase C. Phases A and B run
+// under an earlier deadline, deadline minus stopReserve, while phase C keeps
+// the walk's own. A Stop deep in phase C is typically a flush -- a tracing
+// exporter, a producer, an outbox -- and the plugins in front of it are the
+// ones most likely to spend the whole budget while honouring their contexts:
+// an HTTP server waits for its slowest request until the deadline it was
+// handed. Without the reserve that wait leaves every flush not-attempted; with
+// it the ingress Stop is cut off early and the flushes keep stopReserve to
+// run in. The walk waits for an ingress Stop a quarter of the reserve past the
+// deadline it handed that Stop, so one that returns as soon as it has acted on
+// its expired context is reported completed rather than abandoned; phase C
+// keeps at least three quarters of the reserve either way. A stopReserve of 0,
+// or a deadline that carries no deadline at all,
+// gives every phase the walk's deadline, which is the walk exactly as it was
+// before the reserve existed.
+//
 // # Idempotency and abandonment
 //
 // Within a phase the walk starts no hook before the previous one has
 // returned, been abandoned, or been skipped, and once the budget that bounds
 // a hook's phase is spent no further hook in that phase is started: the walk
 // itself never starts two hooks concurrently. An abandoned hook, however, is
-// still running when the walk moves on. For a Stop that costs nothing else in
-// this walk -- abandonment implies the walk's deadline is spent, so every
-// later Stop and Drain is not attempted -- but an abandoned Drain is
-// concurrent with the Stops phase C runs under the still-live walk deadline,
-// which is exactly why Stop must be correct whether or not Drain succeeded.
+// still running when the walk moves on. A Stop abandoned in phase C costs
+// nothing else in this walk -- abandonment implies the walk's deadline is
+// spent, so every later Stop is not attempted. A hook abandoned in phase A or
+// B has only spent the earlier deadline, so phase C still runs under the
+// reserve concurrently with it: an abandoned Drain is concurrent with those
+// Stops, which is exactly why Stop must be correct whether or not Drain
+// succeeded, and an abandoned ingress Stop is concurrent with them for the
+// same reason. On every path where nothing is abandoned the walk stays
+// strictly serial.
 // The instances phase A or C no longer reaches are reported as not-attempted;
 // the instances phase B no longer reaches are reported as not-attempted the
 // same way. Releasing whatever an abandoned or not-attempted instance still
@@ -1065,7 +1096,7 @@ func (instance *Instance) drainBounded(deadline context.Context, budget time.Dur
 // succeed has no better outcome to offer during a shutdown already under way,
 // exactly as a failed PreStop does not fail the run it precedes.
 func (constructed *Constructed) Unwind(deadline context.Context, budget time.Duration, afterStop func(plugin.Identity) error) (ShutdownReport, error) {
-	report, _, err := constructed.unwindPhases(deadline, budget, 0, afterStop)
+	report, _, err := constructed.unwindPhases(deadline, budget, 0, 0, afterStop)
 	return report, err
 }
 
@@ -1078,14 +1109,17 @@ func (constructed *Constructed) Unwind(deadline context.Context, budget time.Dur
 // still bounds it. drainBudget of 0 skips phase B entirely and produces an
 // empty DrainReport, which is what keeps an application with no Drainer
 // anywhere byte-for-byte identical to one built before the stage existed.
-func (constructed *Constructed) UnwindWithDrain(deadline context.Context, budget time.Duration, drainBudget time.Duration, afterStop func(plugin.Identity) error) (ShutdownReport, DrainReport, error) {
-	return constructed.unwindPhases(deadline, budget, drainBudget, afterStop)
+// stopReserve is the share of the walk's deadline phases A and B leave to
+// phase C; see Constructed.Unwind's Budgets section.
+func (constructed *Constructed) UnwindWithDrain(deadline context.Context, budget, drainBudget, stopReserve time.Duration, afterStop func(plugin.Identity) error) (ShutdownReport, DrainReport, error) {
+	return constructed.unwindPhases(deadline, budget, drainBudget, stopReserve, afterStop)
 }
 
 func (constructed *Constructed) unwindPhases(
 	deadline context.Context,
 	budget time.Duration,
 	drainBudget time.Duration,
+	stopReserve time.Duration,
 	afterStop func(plugin.Identity) error,
 ) (ShutdownReport, DrainReport, error) {
 	var report ShutdownReport
@@ -1096,6 +1130,24 @@ func (constructed *Constructed) unwindPhases(
 	ingress := constructed.ingressClosure()
 	var errs []error
 
+	// Phases A and B share the earlier deadline that leaves stopReserve to
+	// phase C. Both are derived from the walk's, so cancelling the walk still
+	// cancels them.
+	// An ingress Stop is waited for a settle window past that deadline, so
+	// one that returns as soon as it has acted on its cancelled context is
+	// not reported abandoned; a quarter of the reserve keeps three quarters of
+	// it for phase C even when the Stop never returns.
+	early, earlySettled, earlyBudget := deadline, deadline, budget
+	if walkEnd, bounded := deadline.Deadline(); bounded && stopReserve > 0 {
+		earlyEnd := walkEnd.Add(-stopReserve)
+		var cancelEarly, cancelSettled context.CancelFunc
+		early, cancelEarly = context.WithDeadline(deadline, earlyEnd)
+		defer cancelEarly()
+		earlySettled, cancelSettled = context.WithDeadline(deadline, earlyEnd.Add(stopReserve/4))
+		defer cancelSettled()
+		earlyBudget = budget - stopReserve
+	}
+
 	// Phase A: stop the ingress closure, in reverse start order, exactly as
 	// an unwind with no drain phase would.
 	for index := len(constructed.instances) - 1; index >= 0; index-- {
@@ -1103,7 +1155,7 @@ func (constructed *Constructed) unwindPhases(
 		if !ingress[instance.identity] {
 			continue
 		}
-		record, taskErr, stopErr := constructed.stopOne(instance, deadline, budget, afterStop, &report)
+		record, taskErr, stopErr := constructed.stopOne(instance, early, earlySettled, earlyBudget, afterStop, &report)
 		if stopErr != nil {
 			errs = append(errs, stopErr)
 		}
@@ -1134,7 +1186,7 @@ func (constructed *Constructed) unwindPhases(
 	// the returned error stays about Stop, which is the stage whose outcome
 	// still decides whether cleanup finished.
 	if drainBudget > 0 {
-		drainDeadline, drainCancel := context.WithTimeout(deadline, drainBudget)
+		drainDeadline, drainCancel := context.WithTimeout(early, drainBudget)
 		defer drainCancel()
 		for index := len(constructed.instances) - 1; index >= 0; index-- {
 			instance := constructed.instances[index]
@@ -1166,7 +1218,7 @@ func (constructed *Constructed) unwindPhases(
 		if ingress[instance.identity] {
 			continue
 		}
-		_, taskErr, stopErr := constructed.stopOne(instance, deadline, budget, afterStop, &report)
+		_, taskErr, stopErr := constructed.stopOne(instance, deadline, deadline, budget, afterStop, &report)
 		if stopErr != nil {
 			errs = append(errs, stopErr)
 		}
@@ -1185,6 +1237,7 @@ func (constructed *Constructed) unwindPhases(
 func (constructed *Constructed) stopOne(
 	instance *Instance,
 	deadline context.Context,
+	settled context.Context,
 	budget time.Duration,
 	afterStop func(plugin.Identity) error,
 	report *ShutdownReport,
@@ -1195,7 +1248,7 @@ func (constructed *Constructed) stopOne(
 		return record, nil, fmt.Errorf("xbc: plugin %s Stop was not attempted: the %s shutdown budget was already spent", instance.identity, budget)
 	}
 	report.Attempted = append(report.Attempted, instance.identity)
-	outcome, elapsed, err := instance.stopBounded(deadline, budget)
+	outcome, elapsed, err := instance.stopBounded(deadline, settled, budget)
 	record := StopRecord{Identity: instance.identity, Outcome: outcome, Err: err, Duration: elapsed}
 	var taskErr error
 	if outcome != StopAbandoned {

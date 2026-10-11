@@ -42,6 +42,10 @@ xbc:
   # The drain phase runs inside shutdown_timeout, between the ingress stop and
   # the remaining plugin Stops. Left unset, it defaults to 60% of
   # shutdown_timeout.
+  # stop_reserve holds the end of shutdown_timeout back for the Stops after the
+  # drain phase -- tracing flushes, producers, connection pools -- so a slow
+  # HTTP drain cannot spend it. Left unset, it defaults to the smaller of 20% of
+  # shutdown_timeout and half of what drain_timeout leaves; 0s turns it off.
   # While startup is unfinished, report every 30s which phase it is in and which
   # plugin still holds it. Reporting only: it never aborts or times out a
   # startup. Raise it, or set 0s to switch it off, when migrations legitimately

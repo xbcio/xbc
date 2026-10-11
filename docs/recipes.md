@@ -740,13 +740,14 @@ The lease store itself needs no high availability. It carries resource placement
 
 ## The supervisor's stop grace period
 
-Shutdown has two outer phases plus one inner one. `xbc.pre_stop_timeout` defaults to `2s` and runs `PreStop` on every started plugin before any `Stop` begins; that is where a placement plugin gives its slot back. `xbc.shutdown_timeout` defaults to `25s` and then covers cancellation, ingress shutdown, draining, HTTP drain, and reverse-order `Stop`. `xbc.drain_timeout` is not a third outer budget: it runs inside `shutdown_timeout`, between the ingress stop and the remaining `Stop` calls, so it does not add to the sum a supervisor has to allow for. Left unset it defaults to 60% of the effective `shutdown_timeout` (`15s` at the `25s` default):
+Shutdown has two outer phases plus one inner one. `xbc.pre_stop_timeout` defaults to `2s` and runs `PreStop` on every started plugin before any `Stop` begins; that is where a placement plugin gives its slot back. `xbc.shutdown_timeout` defaults to `25s` and then covers cancellation, ingress shutdown, draining, HTTP drain, and reverse-order `Stop`. `xbc.drain_timeout` is not a third outer budget: it runs inside `shutdown_timeout`, between the ingress stop and the remaining `Stop` calls, so it does not add to the sum a supervisor has to allow for. Left unset it defaults to 60% of the effective `shutdown_timeout` (`15s` at the `25s` default). `xbc.stop_reserve` is held inside `shutdown_timeout` the same way: the ingress stop and the drain phase run under `shutdown_timeout` less the reserve, so the `Stop` calls after them — flushes and connection pools — always keep that tail, however long the slowest HTTP request makes the server wait. Left unset it defaults to the smaller of 20% of `shutdown_timeout` and half of what `drain_timeout` leaves (`5s` at the defaults):
 
 ```yaml
 xbc:
   pre_stop_timeout: 2s
   shutdown_timeout: 25s
   drain_timeout: 15s
+  stop_reserve: 5s
 ```
 
 The total budget is still just the two outer phases' sum, `2s + 25s = 27s`, and the supervisor must allow at least that much before it kills the process. A supervisor that kills earlier interrupts the release, and the slot then waits for its TTL instead of being freed immediately.
@@ -776,7 +777,7 @@ services:
     stop_grace_period: 45s
 ```
 
-Setting `pre_stop_timeout: 0s` skips the phase and makes the total `shutdown_timeout` alone. Setting `drain_timeout: 0s` skips the drain phase the same way, without changing the total at all, because that phase was never counted beside `shutdown_timeout` in the first place.
+Setting `pre_stop_timeout: 0s` skips the phase and makes the total `shutdown_timeout` alone. Setting `drain_timeout: 0s` skips the drain phase the same way, without changing the total at all, because that phase was never counted beside `shutdown_timeout` in the first place. Setting `stop_reserve: 0s` gives every phase the whole budget again, also without changing the total.
 
 The restart policy is not optional. Takeover works by a standby requesting shutdown on purpose once it has won a slot, and the supervisor is what brings that process back as the real holder. Without `Restart=always` or `restart: always`, the first takeover turns a standby into a stopped container.
 

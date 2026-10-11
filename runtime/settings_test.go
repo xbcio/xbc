@@ -507,3 +507,78 @@ func TestBootstrapFailuresAreReportedBeforeAnyPlanning(t *testing.T) {
 		})
 	}
 }
+
+// TestSettingsStopReserveDefaultsToDerivedTail pins the unset default: the
+// smaller of 20% of shutdown_timeout and half of what the drain phase leaves,
+// so the derived reserve always fits beside whatever drain_timeout is in
+// effect.
+func TestSettingsStopReserveDefaultsToDerivedTail(t *testing.T) {
+	t.Parallel()
+	for name, testCase := range map[string]struct {
+		xbc  map[string]any
+		want time.Duration
+	}{
+		"defaults":                  {xbc: nil, want: 5 * time.Second},
+		"scales with shutdown":      {xbc: map[string]any{"shutdown_timeout": "15s"}, want: 3 * time.Second},
+		"yields to a long drain":    {xbc: map[string]any{"shutdown_timeout": "10s", "drain_timeout": "9s"}, want: 500 * time.Millisecond},
+		"drain off keeps the share": {xbc: map[string]any{"drain_timeout": "0s"}, want: 5 * time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var values map[string]any
+			if testCase.xbc != nil {
+				values = map[string]any{"xbc": testCase.xbc}
+			}
+			loaded, err := loadSettings(settingsEnvironment(t, values))
+			require.NoError(t, err)
+			assert.Equal(t, testCase.want, loaded.StopReserve)
+			assert.Less(t, loaded.DrainTimeout+loaded.StopReserve, loaded.ShutdownTimeout,
+				"the derived reserve must leave the ingress stop a share of the budget")
+		})
+	}
+}
+
+// TestSettingsStopReserveAcceptsZeroButNotNegative pins the off switch and
+// rejects the value no author can have meant.
+func TestSettingsStopReserveAcceptsZeroButNotNegative(t *testing.T) {
+	t.Parallel()
+	loaded, err := loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"stop_reserve": "0s"},
+	}))
+	require.NoError(t, err)
+	assert.Zero(t, loaded.StopReserve, "0s is how the reserve is turned off")
+
+	_, err = loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"stop_reserve": "-1s"},
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stop_reserve must not be negative")
+	assert.Contains(t, err.Error(), "0s gives every shutdown phase the whole budget")
+}
+
+// TestSettingsRejectsStopReserveThatCrowdsOutTheDrain pins the containment
+// rule for an explicit reserve: it and the drain phase are both carved out of
+// shutdown_timeout, so together they must leave some of it.
+func TestSettingsRejectsStopReserveThatCrowdsOutTheDrain(t *testing.T) {
+	t.Parallel()
+	for name, xbc := range map[string]map[string]any{
+		"equal":           {"shutdown_timeout": "10s", "drain_timeout": "6s", "stop_reserve": "4s"},
+		"greater":         {"shutdown_timeout": "10s", "drain_timeout": "6s", "stop_reserve": "5s"},
+		"derived drain":   {"shutdown_timeout": "10s", "stop_reserve": "4s"},
+		"whole on itself": {"shutdown_timeout": "10s", "drain_timeout": "0s", "stop_reserve": "10s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := loadSettings(settingsEnvironment(t, map[string]any{"xbc": xbc}))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "stop_reserve")
+			assert.Contains(t, err.Error(), "must be less than xbc.shutdown_timeout")
+		})
+	}
+
+	loaded, err := loadSettings(settingsEnvironment(t, map[string]any{
+		"xbc": map[string]any{"shutdown_timeout": "10s", "drain_timeout": "6s", "stop_reserve": "3s"},
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, 3*time.Second, loaded.StopReserve)
+}

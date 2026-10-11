@@ -129,6 +129,28 @@ type settings struct {
 	// same containment check the derived default is built to always satisfy.
 	DrainTimeout time.Duration `yaml:"drain_timeout"`
 
+	// StopReserve is the tail of ShutdownTimeout held back for the Stops that
+	// run after the drain phase. The ingress stop and the drain phase both run
+	// under ShutdownTimeout less this reserve; the remaining Stops keep the
+	// whole budget. Those remaining Stops are the ones furthest down the
+	// dependency graph -- a tracing exporter's flush, a producer, an outbox --
+	// and the ingress in front of them is the plugin most likely to spend the
+	// entire budget while honouring its context: an HTTP server waits for its
+	// slowest request until the deadline it is handed. Without a reserve that
+	// wait leaves every flush behind it not attempted.
+	//
+	// Like DrainTimeout it carries no `default` tag and is contained in
+	// ShutdownTimeout rather than added to it, so it does not change what a
+	// supervisor has to allow for. Left unset it is derived as the smaller of
+	// 20% of ShutdownTimeout and half of what the drain phase leaves
+	// (ShutdownTimeout - DrainTimeout): 25s with the derived 15s drain ->
+	// 5s. The second term keeps a derived reserve beside an explicit, long
+	// drain_timeout from crowding the drain out. Explicitly set to 0s it
+	// gives every phase the whole budget, which is the off switch; negative
+	// is rejected, and a positive value must leave the drain phase room:
+	// DrainTimeout + StopReserve must be less than ShutdownTimeout.
+	StopReserve time.Duration `yaml:"stop_reserve"`
+
 	// AutoMigrate makes every boot run the migration stage, as if --migrate
 	// had been passed. Off by default: migration is a side-effecting write,
 	// and binding it to every boot means every rolling restart silently
@@ -425,6 +447,18 @@ func parseRuntimeSection(section runtimeSettings) (maxProcsSpec, memoryLimitSpec
 // after Bind would read true unconditionally (see Environment.Exists).
 const drainTimeoutPath = settingsSection + ".drain_timeout"
 
+// stopReservePath is checked against Environment.Exists before Bind for the
+// same reason drainTimeoutPath is.
+const stopReservePath = settingsSection + ".stop_reserve"
+
+// deriveStopReserve computes the unset default for xbc.stop_reserve: the
+// smaller of 20% of shutdown and half of what the drain phase leaves. Given a
+// drain strictly less than shutdown, which loadSettings has already ensured,
+// the result always leaves the drain phase a positive share.
+func deriveStopReserve(shutdown, drain time.Duration) time.Duration {
+	return min(shutdown/5, (shutdown-drain)/2)
+}
+
 // deriveDrainTimeout computes the unset default for xbc.drain_timeout: 60% of
 // the effective shutdown_timeout (shutdown*3/5). A derived value is by
 // construction always strictly less than shutdown, so it can never trip the
@@ -447,6 +481,7 @@ func deriveDrainTimeout(shutdown time.Duration) time.Duration {
 func loadSettings(env *config.Environment) (settings, error) {
 	// Read before Bind: see drainTimeoutPath.
 	drainTimeoutSet := env.Exists(drainTimeoutPath)
+	stopReserveSet := env.Exists(stopReservePath)
 	var s settings
 	if err := env.Bind(settingsSection, &s); err != nil {
 		return s, fmt.Errorf("xbc: failed to bind %s configuration: %w", settingsSection, err)
@@ -500,6 +535,23 @@ func loadSettings(env *config.Environment) (settings, error) {
 			return s, fmt.Errorf(
 				"xbc: %s.drain_timeout (%s) must be less than %s.shutdown_timeout (%s); the drain phase runs inside the shutdown budget, so lower %s.drain_timeout or raise %s.shutdown_timeout",
 				settingsSection, s.DrainTimeout, settingsSection, s.ShutdownTimeout, settingsSection, settingsSection)
+		}
+	}
+	if !stopReserveSet {
+		s.StopReserve = deriveStopReserve(s.ShutdownTimeout, s.DrainTimeout)
+	} else {
+		if s.StopReserve < 0 {
+			return s, fmt.Errorf(
+				"xbc: %s.stop_reserve must not be negative, got %s; 0s gives every shutdown phase the whole budget, which is how it is turned off",
+				settingsSection, s.StopReserve)
+		}
+		// The reserve and the drain phase are both carved out of the one
+		// shutdown budget, so together they must leave the ingress stop some
+		// of it. 0s always fits.
+		if s.StopReserve > 0 && s.DrainTimeout+s.StopReserve >= s.ShutdownTimeout {
+			return s, fmt.Errorf(
+				"xbc: %s.stop_reserve (%s) plus %s.drain_timeout (%s) must be less than %s.shutdown_timeout (%s); both are held inside the shutdown budget, so lower one of them or raise %s.shutdown_timeout",
+				settingsSection, s.StopReserve, settingsSection, s.DrainTimeout, settingsSection, s.ShutdownTimeout, settingsSection)
 		}
 	}
 	// The process-level knobs are validated here rather than where they are

@@ -229,7 +229,7 @@ func TestUnwindWithDrainOrdersIngressThenDrainThenRemainingStops(t *testing.T) {
 	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, 5*time.Second, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, 5*time.Second, 0, nil)
 	require.NoError(t, err)
 
 	recorded := events.recorded()
@@ -292,7 +292,7 @@ func TestDrainerInsideTheIngressClosureIsOnlyStoppedNotDrained(t *testing.T) {
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, time.Second, nil)
+	_, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, time.Second, 0, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"ingress-drainer.Stop"}, events.recorded(),
@@ -319,7 +319,7 @@ func TestDrainPhaseDeadlineTimesOutAndTheRestOfTheUnwindStillRuns(t *testing.T) 
 	const drainBudget = 100 * time.Millisecond
 
 	started := time.Now()
-	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, drainBudget, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, drainBudget, 0, nil)
 	elapsed := time.Since(started)
 
 	require.NoError(t, err, "a Drain timeout is recorded in the DrainReport but must not fail the unwind, exactly as an abandoned PreStop does not fail the run")
@@ -367,7 +367,7 @@ func TestDrainBudgetStartsWhenThePhaseBegins(t *testing.T) {
 
 	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, drainBudget, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, drainBudget, 0, nil)
 	require.NoError(t, err)
 
 	require.Len(t, drainReport.Records, 1)
@@ -403,7 +403,7 @@ func TestDrainTimeoutZeroNeverCallsDrainAndDoesNotStopSubsequentStops(t *testing
 
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	report, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, 0, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, 0, 0, nil)
 	require.NoError(t, err)
 
 	assert.False(t, called, "drain_timeout 0s must not call the hook")
@@ -433,7 +433,7 @@ func TestDrainErrorAndPanicAreReportedAndDoNotStopSubsequentStops(t *testing.T) 
 
 	deadline, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, 5*time.Second, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(deadline, 5*time.Second, 5*time.Second, 0, nil)
 	require.NoError(t, err, "a Drain failure or panic is recorded in the DrainReport but must not fail the unwind, exactly as PreStop's own failures do not fail the run")
 
 	outcomes := map[plugin.Key]DrainOutcome{}
@@ -464,7 +464,7 @@ func TestDrainRunsBeforeEveryStopWhenThereIsNoTrafficOpener(t *testing.T) {
 
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, time.Second, nil)
+	_, drainReport, err := constructed.UnwindWithDrain(deadline, time.Second, time.Second, 0, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"solo-drainer.Drain", "solo-drainer.Stop"}, events.recorded(),
@@ -479,7 +479,7 @@ func TestDrainRunsBeforeEveryStopWhenThereIsNoTrafficOpener(t *testing.T) {
 func TestDrainOnANilConstructedIsANoOp(t *testing.T) {
 	t.Parallel()
 	var constructed *Constructed
-	report, drainReport, err := constructed.UnwindWithDrain(context.Background(), time.Second, time.Second, nil)
+	report, drainReport, err := constructed.UnwindWithDrain(context.Background(), time.Second, time.Second, 0, nil)
 	require.NoError(t, err)
 	assert.Empty(t, report.Records)
 	assert.True(t, drainReport.Empty())

@@ -295,3 +295,53 @@ func stopUnderDrainCapture(t *testing.T, app *App, drainTimeout, shutdownTimeout
 	code, waitErr := app.wait()
 	return capture, code, waitErr
 }
+
+// TestDerivedStopReserveLetsTheFlushRunAfterAnIngressThatWaitsOutItsDeadline
+// pins the stop reserve end to end under the derived defaults: an ingress
+// whose Stop waits for in-flight work until the deadline it is handed -- what
+// an HTTP server with a slow request does -- no longer leaves the plugin it
+// depends on not-attempted, and the shutdown exits cleanly.
+func TestDerivedStopReserveLetsTheFlushRunAfterAnIngressThatWaitsOutItsDeadline(t *testing.T) {
+	flushed := make(chan struct{})
+	flush := plugin.Define("flush", func(plugin.BuildContext) (*readinessValue, error) {
+		return &readinessValue{name: "flush"}, nil
+	}, plugin.Options[*readinessValue]{
+		Exports: plugin.Contracts(plugin.ExportAs(func(value *readinessValue) readinessContract { return value })),
+		Lifecycle: plugin.Lifecycle[*readinessValue]{
+			Stop: func(*readinessValue, context.Context) error {
+				close(flushed)
+				return nil
+			},
+		},
+	})
+	flushRef := plugin.RefTo[readinessContract]("flush")
+	ingress := plugin.Define("ingress-waits", func(ctx plugin.BuildContext) (*runtimeTestValue, error) {
+		_ = flushRef.Get(ctx)
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{
+		Inputs: plugin.Inputs(flushRef),
+		Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+			OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
+			Stop: func(_ *runtimeTestValue, ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			},
+		},
+	})
+
+	app := newRuntimeTestApp(flush, ingress)
+	result := executeRuntimeTest(app, runtimeTestConfig(t, time.Second)...)
+	awaitRuntimeTestReady(t, app)
+	require.True(t, app.requestStop(stopReasonSignal))
+	completed := awaitRuntimeTestResult(t, result)
+
+	require.NoError(t, completed.err)
+	assert.Equal(t, 0, completed.code)
+	select {
+	case <-flushed:
+	default:
+		t.Fatal("the flush Stop never ran: the ingress spent the whole shutdown budget")
+	}
+	assert.Empty(t, app.shutdownReport.Identities(assembly.StopNotAttempted))
+	assert.Empty(t, app.shutdownReport.Identities(assembly.StopAbandoned))
+}

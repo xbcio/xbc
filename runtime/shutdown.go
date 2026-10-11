@@ -79,10 +79,13 @@ func (a *App) unwind(reason string) error {
 		// enforces by rejecting a drain_timeout that is not strictly
 		// smaller.
 		drainBudget := a.settings.DrainTimeout
+		// stop_reserve holds the end of the walk back for the Stops that
+		// run after the drain phase; see settings.StopReserve.
+		stopReserve := a.settings.StopReserve
 
 		var errs []error
 		if a.owned != nil {
-			report, drainReport, err := a.owned.UnwindWithDrain(deadline, budget, drainBudget, func(identity plugin.Identity) error {
+			report, drainReport, err := a.owned.UnwindWithDrain(deadline, budget, drainBudget, stopReserve, func(identity plugin.Identity) error {
 				if a.tasks == nil {
 					return nil
 				}
