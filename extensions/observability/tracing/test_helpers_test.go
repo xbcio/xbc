@@ -8,6 +8,8 @@ import (
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
+	"github.com/xbcio/xbc/plugin"
 )
 
 type recordingExporter struct {
@@ -65,7 +67,7 @@ func newTestPlugin(t *testing.T, configure func(*Config), exporter sdktrace.Span
 	if configure != nil {
 		configure(&cfg)
 	}
-	p, err := newPlugin(cfg, func(context.Context, normalizedConfig) (sdktrace.SpanExporter, error) {
+	p, err := newPlugin(plugin.ServiceIdentity{}, cfg, func(context.Context, normalizedConfig) (sdktrace.SpanExporter, error) {
 		return exporter, nil
 	})
 	if err != nil {

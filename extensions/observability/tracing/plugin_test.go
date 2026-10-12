@@ -139,7 +139,7 @@ func TestHandleInjectUsesPrivateW3CPropagator(t *testing.T) {
 
 func TestConcurrentStopShutsExporterDownOnce(t *testing.T) {
 	exporter := new(recordingExporter)
-	p, err := newPlugin(DefaultConfig(), func(context.Context, normalizedConfig) (sdktrace.SpanExporter, error) {
+	p, err := newPlugin(plugin.ServiceIdentity{}, DefaultConfig(), func(context.Context, normalizedConfig) (sdktrace.SpanExporter, error) {
 		return exporter, nil
 	})
 	if err != nil {
@@ -171,7 +171,7 @@ func TestConcurrentStopShutsExporterDownOnce(t *testing.T) {
 
 func TestStopBoundsCleanupWithConfiguredExportTimeout(t *testing.T) {
 	exporter := new(deadlineShutdownExporter)
-	p, err := newPlugin(configuredWith(func(c *Config) { c.Batch.ExportTimeout = 20 * time.Millisecond }),
+	p, err := newPlugin(plugin.ServiceIdentity{}, configuredWith(func(c *Config) { c.Batch.ExportTimeout = 20 * time.Millisecond }),
 		func(context.Context, normalizedConfig) (sdktrace.SpanExporter, error) { return exporter, nil })
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +219,7 @@ func TestPluginStopsWithoutDeclaringADrainPhase(t *testing.T) {
 func TestNewRollsBackExporterWhenFactoryFails(t *testing.T) {
 	sentinel := errors.New("factory failed")
 	exporter := new(recordingExporter)
-	_, err := newPlugin(DefaultConfig(), func(context.Context, normalizedConfig) (sdktrace.SpanExporter, error) {
+	_, err := newPlugin(plugin.ServiceIdentity{}, DefaultConfig(), func(context.Context, normalizedConfig) (sdktrace.SpanExporter, error) {
 		return exporter, sentinel
 	})
 	if !errors.Is(err, sentinel) {

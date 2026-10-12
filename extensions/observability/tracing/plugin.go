@@ -39,8 +39,8 @@ var definition = plugin.DefineConfigured(
 		Defaults: DefaultConfig,
 		Prepare:  prepareConfig,
 	},
-	func(_ plugin.BuildContext, cfg Config) (*Plugin, error) {
-		return newPlugin(cfg, newOTLPExporter)
+	func(ctx plugin.BuildContext, cfg Config) (*Plugin, error) {
+		return newPlugin(ctx.Service(), cfg, newOTLPExporter)
 	},
 	plugin.Options[*Plugin]{
 		Activation: plugin.WhenConfigured("plugins." + Key.String()),
@@ -66,11 +66,17 @@ func Bundle() plugin.Bundle { return bundle }
 // exporter-startup error is returned rather than deferred to a later stage.
 // Building the OTLP client is not a blocking network operation, so eager
 // construction here never risks stalling application startup.
+//
+// It builds without a framework process identity, so the resource falls back
+// to the OTLP convention's "unknown_service" unless cfg names one. Code
+// assembled by an xbc application through Bundle goes through the Definition
+// factory instead and inherits the process identity; New exists for callers
+// embedding the plugin directly.
 func New(cfg Config) (*Plugin, error) {
-	return newPlugin(cfg, newOTLPExporter)
+	return newPlugin(plugin.ServiceIdentity{}, cfg, newOTLPExporter)
 }
 
-func newPlugin(cfg Config, factory exporterFactory) (plug *Plugin, err error) {
+func newPlugin(service plugin.ServiceIdentity, cfg Config, factory exporterFactory) (plug *Plugin, err error) {
 	config, err := normalizeConfig(cfg)
 	if err != nil {
 		return nil, err
@@ -120,7 +126,7 @@ func newPlugin(cfg Config, factory exporterFactory) (plug *Plugin, err error) {
 	rollback = processor.Shutdown
 	provider := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(config.sampleRatio))),
-		sdktrace.WithResource(buildResource(config)),
+		sdktrace.WithResource(buildResource(config, service)),
 		sdktrace.WithSpanProcessor(processor),
 	)
 	handle := newHandle(provider, buildPropagator(config.propagation), provider.ForceFlush, provider.Shutdown, config.batch.ExportTimeout)
@@ -205,19 +211,41 @@ func (p *Plugin) Stop(ctx context.Context) error {
 	return p.contractHandle().Shutdown(ctx)
 }
 
-func buildResource(cfg normalizedConfig) *resource.Resource {
+// buildResource assembles the OTLP resource every span is stamped with. The
+// service.name and service.version resolution order is: the deployment's
+// explicit plugins.tracing value first, the framework's process identity
+// (plugin.Context.Service) second -- so an application that names its service
+// once, under xbc.service, gets matching logs, traces and metrics -- and the
+// OTLP convention's "unknown_service" last, which only a direct New() call
+// with no explicit name can reach. service.instance.id is stamped whenever
+// the process identity carries one, which is every xbc-assembled process.
+func buildResource(cfg normalizedConfig, service plugin.ServiceIdentity) *resource.Resource {
 	keys := make([]string, 0, len(cfg.resourceAttributes))
 	for key := range cfg.resourceAttributes {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	attributes := make([]attribute.KeyValue, 0, len(keys)+3)
+	attributes := make([]attribute.KeyValue, 0, len(keys)+4)
 	for _, key := range keys {
 		attributes = append(attributes, attribute.String(key, cfg.resourceAttributes[key]))
 	}
-	attributes = append(attributes, semconv.ServiceName(cfg.serviceName))
-	if cfg.serviceVersion != "" {
-		attributes = append(attributes, semconv.ServiceVersion(cfg.serviceVersion))
+	name := cfg.serviceName
+	if name == "" {
+		name = service.Name
+	}
+	if name == "" {
+		name = "unknown_service"
+	}
+	attributes = append(attributes, semconv.ServiceName(name))
+	version := cfg.serviceVersion
+	if version == "" {
+		version = service.Version
+	}
+	if version != "" {
+		attributes = append(attributes, semconv.ServiceVersion(version))
+	}
+	if service.Instance != "" {
+		attributes = append(attributes, semconv.ServiceInstanceID(service.Instance))
 	}
 	if cfg.environment != "" {
 		attributes = append(attributes, semconv.DeploymentEnvironmentNameKey.String(cfg.environment))

@@ -17,7 +17,6 @@ const (
 	ProtocolGRPC = "grpc"
 	ProtocolHTTP = "http"
 
-	defaultServiceName   = "xbc"
 	defaultGRPCEndpoint  = "localhost:4317"
 	defaultHTTPEndpoint  = "localhost:4318"
 	defaultTraceIDHeader = "X-Trace-ID"
@@ -26,7 +25,12 @@ const (
 
 // Config is bound from plugins.tracing.
 type Config struct {
-	ServiceName        string            `yaml:"service_name" default:"xbc"`
+	// ServiceName is the explicit service.name for the OTLP resource. Left
+	// empty -- the default -- the resource falls back to the framework's
+	// process identity (plugin.Context.Service), so every span names the
+	// deployment exactly as its log lines and metrics do. Set it only to
+	// override that identity for telemetry alone.
+	ServiceName        string            `yaml:"service_name"`
 	ServiceVersion     string            `yaml:"service_version"`
 	Environment        string            `yaml:"environment"`
 	ResourceAttributes map[string]string `yaml:"resource_attributes"`
@@ -78,7 +82,6 @@ type ResponseHeaders struct {
 // DefaultConfig returns the same safe defaults applied by XBC's config binder.
 func DefaultConfig() Config {
 	return Config{
-		ServiceName: defaultServiceName,
 		SampleRatio: 1,
 		Exporter: ExporterConfig{
 			Protocol: ProtocolGRPC,
@@ -139,10 +142,12 @@ type normalizedExporterConfig struct {
 }
 
 func normalizeConfig(cfg Config) (normalizedConfig, error) {
+	// An empty service_name is deliberately kept empty rather than defaulted
+	// here: the fallback is the framework's process identity, which only the
+	// construction-time BuildContext can supply, so it is applied where the
+	// resource is built (buildResource) and this stage stays a pure
+	// validation of what the deployment wrote.
 	serviceName := strings.TrimSpace(cfg.ServiceName)
-	if serviceName == "" {
-		serviceName = defaultServiceName
-	}
 	if len(serviceName) > 256 {
 		return normalizedConfig{}, fmt.Errorf("tracing: service_name exceeds 256 bytes")
 	}

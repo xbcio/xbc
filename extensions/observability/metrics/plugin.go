@@ -29,8 +29,8 @@ var definition = plugin.DefineConfigured(
 		Defaults: DefaultConfig,
 		Prepare:  prepareConfig,
 	},
-	func(_ plugin.BuildContext, cfg Config) (*Plugin, error) {
-		return newPlugin(cfg)
+	func(ctx plugin.BuildContext, cfg Config) (*Plugin, error) {
+		return newPlugin(ctx.Service(), cfg)
 	},
 	plugin.Options[*Plugin]{
 		Activation: plugin.WhenConfigured("plugins." + Key.String()),
@@ -54,8 +54,13 @@ func Bundle() plugin.Bundle { return bundle }
 // validated and the private registry is created immediately, and a violation
 // is returned rather than deferred to a later stage. It performs no
 // process-wide registration.
+//
+// It registers the build_info series under an empty service identity, the
+// same labels an application assembled through Bundle gets minus the identity
+// the framework supplies; New exists for callers embedding the plugin
+// directly.
 func New(cfg Config) (*Plugin, error) {
-	return newPlugin(cfg)
+	return newPlugin(plugin.ServiceIdentity{}, cfg)
 }
 
 func prepareConfig(cfg Config) (Config, error) {
@@ -65,12 +70,16 @@ func prepareConfig(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-func newPlugin(cfg Config) (*Plugin, error) {
+func newPlugin(service plugin.ServiceIdentity, cfg Config) (*Plugin, error) {
 	normalized, err := normalizeConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &Plugin{config: normalized, registry: newRegistry()}, nil
+	registry := newRegistry()
+	if err := registerBuildInfo(registry, normalized.namespace, service); err != nil {
+		return nil, err
+	}
+	return &Plugin{config: normalized, registry: registry}, nil
 }
 
 // Registry returns the Plugin's private collector registry.
