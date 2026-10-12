@@ -2,16 +2,18 @@ module github.com/xbcio/xbc/transport/web/extensions/observability/tracing
 
 go 1.25.0
 
-// Core and transport/web are deliberately resolved by the repository workspace
-// until they have real published versions. Do not add a local replace or an
-// unpublished placeholder requirement here.
+// Core, transport/web, and the neutral tracing plugin
+// github.com/xbcio/xbc/extensions/observability/tracing are deliberately
+// resolved by the repository workspace until they have real published
+// versions. Do not add a local replace or an unpublished placeholder
+// requirement here.
 require (
 	go.opentelemetry.io/otel v1.45.0
-	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0
-	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.44.0 // indirect
+	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.44.0
 	go.opentelemetry.io/otel/trace v1.45.0
-	google.golang.org/grpc v1.81.1
+	google.golang.org/grpc v1.81.1 // indirect
 )
 
 require (

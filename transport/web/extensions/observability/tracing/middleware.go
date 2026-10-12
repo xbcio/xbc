@@ -16,20 +16,20 @@ import (
 )
 
 // Handler implements web.Middleware.
-func (p *Plugin) Handler() web.Handler { return p.handleRequest }
+func (m *Middleware) Handler() web.Handler { return m.handleRequest }
 
 // Order implements web.Middleware. It runs in the observation phase, ahead
 // of metrics and access logging, so those middlewares observe a request that
 // already carries an active span.
-func (*Plugin) Order() web.Order {
+func (*Middleware) Order() web.Order {
 	return web.Order{
 		Phase:  web.PhaseObserve,
 		Before: []web.OrderRef{web.Prefer(metricsKey), web.Prefer(accesslog.Key)},
 	}
 }
 
-func (p *Plugin) handleRequest(_ context.Context, c *web.Ctx) error {
-	if c.Request() == nil || p.handle == nil {
+func (m *Middleware) handleRequest(_ context.Context, c *web.Ctx) error {
+	if c.Request() == nil || m.handle == nil {
 		c.Next()
 		return nil
 	}
@@ -39,8 +39,8 @@ func (p *Plugin) handleRequest(_ context.Context, c *web.Ctx) error {
 	if info, ok := web.CurrentRoute(c); ok && info.Path != "" {
 		route = info.Path
 	}
-	parent := p.handle.Extract(c.Request().Context(), propagation.HeaderCarrier(c.Request().Header))
-	tracer := p.handle.Tracer(instrumentationName)
+	parent := m.handle.Extract(c.Request().Context(), propagation.HeaderCarrier(c.Request().Header))
+	tracer := m.handle.Tracer(instrumentationName)
 	if tracer == nil {
 		c.Next()
 		return nil
@@ -55,7 +55,7 @@ func (p *Plugin) handleRequest(_ context.Context, c *web.Ctx) error {
 		),
 	)
 	c.SetContext(requestContext)
-	if headers := p.config.responseHeaders; headers.Enabled {
+	if headers := m.responseHeaders; headers.Enabled {
 		spanContext := span.SpanContext()
 		if spanContext.IsValid() {
 			c.SetHeader(headers.TraceIDHeader, spanContext.TraceID().String())

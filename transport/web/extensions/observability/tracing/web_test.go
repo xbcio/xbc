@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
@@ -24,8 +23,7 @@ func TestMiddlewareExtractsW3CContextAndUsesFrozenRouteTemplate(t *testing.T) {
 		incomingTraceID = "4bf92f3577b34da6a3ce929d0e0e4736"
 		incomingSpanID  = "00f067aa0ba902b7"
 	)
-	exporter := new(recordingExporter)
-	p := newTestPlugin(t, func(c *Config) { c.Batch.BatchTimeout = time.Hour }, exporter)
+	p, handle, exporter := newTestMiddleware(t)
 
 	var baggageValue string
 	engine := enginetest.New()
@@ -56,11 +54,11 @@ func TestMiddlewareExtractsW3CContextAndUsesFrozenRouteTemplate(t *testing.T) {
 	if baggageValue != "acme" {
 		t.Fatalf("extracted baggage = %q", baggageValue)
 	}
-	if err := p.Handle().ForceFlush(context.Background()); err != nil {
+	if err := handle.ForceFlush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
-	spans, _, _ := exporter.snapshot()
+	spans := exporter.snapshot()
 	if len(spans) != 1 {
 		t.Fatalf("exported spans = %d, want 1", len(spans))
 	}
@@ -97,8 +95,7 @@ func TestMiddlewareExtractsW3CContextAndUsesFrozenRouteTemplate(t *testing.T) {
 }
 
 func TestMiddlewareRecordsAndRethrowsPanic(t *testing.T) {
-	exporter := new(recordingExporter)
-	p := newTestPlugin(t, func(c *Config) { c.Batch.BatchTimeout = time.Hour }, exporter)
+	p, handle, exporter := newTestMiddleware(t)
 
 	engine := enginetest.New()
 	engine.Use(func(_ context.Context, c *web.Ctx) error {
@@ -117,10 +114,10 @@ func TestMiddlewareRecordsAndRethrowsPanic(t *testing.T) {
 		}()
 		engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panic", nil))
 	}()
-	if err := p.Handle().ForceFlush(context.Background()); err != nil {
+	if err := handle.ForceFlush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	spans, _, _ := exporter.snapshot()
+	spans := exporter.snapshot()
 	if len(spans) != 1 {
 		t.Fatalf("exported spans = %d, want 1", len(spans))
 	}
@@ -134,8 +131,7 @@ func TestMiddlewareRecordsAndRethrowsPanic(t *testing.T) {
 }
 
 func TestMiddlewareUsesBoundedUnmatchedName(t *testing.T) {
-	exporter := new(recordingExporter)
-	p := newTestPlugin(t, func(c *Config) { c.Batch.BatchTimeout = time.Hour }, exporter)
+	p, handle, exporter := newTestMiddleware(t)
 
 	engine := enginetest.New()
 	engine.Handle("CUSTOM", "/raw/{id}", []web.Handler{p.Handler(), func(_ context.Context, c *web.Ctx) error {
@@ -143,10 +139,10 @@ func TestMiddlewareUsesBoundedUnmatchedName(t *testing.T) {
 		return nil
 	}})
 	engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("CUSTOM", "/raw/secret", nil))
-	if err := p.Handle().ForceFlush(context.Background()); err != nil {
+	if err := handle.ForceFlush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	spans, _, _ := exporter.snapshot()
+	spans := exporter.snapshot()
 	if len(spans) != 1 || spans[0].Name != "OTHER unmatched" || strings.Contains(spans[0].Name, "secret") {
 		t.Fatalf("unmatched span = %#v", spans)
 	}

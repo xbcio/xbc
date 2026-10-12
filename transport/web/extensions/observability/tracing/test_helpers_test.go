@@ -3,78 +3,87 @@ package tracing
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"testing"
 
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
+
+	tracingcore "github.com/xbcio/xbc/extensions/observability/tracing"
 )
 
+const (
+	defaultTraceIDHeader = "X-Trace-Id"
+	defaultSpanIDHeader  = "X-Span-Id"
+)
+
+// recordingExporter keeps every exported span so a test can read what the
+// middleware recorded after a ForceFlush.
 type recordingExporter struct {
-	mu            sync.Mutex
-	spans         tracetest.SpanStubs
-	exportCalls   int
-	shutdownCalls int
-	exportErr     error
-	shutdownErr   error
+	mu    sync.Mutex
+	spans tracetest.SpanStubs
 }
 
 func (e *recordingExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.exportCalls++
 	e.spans = append(e.spans, tracetest.SpanStubsFromReadOnlySpans(spans)...)
-	return e.exportErr
-}
-
-func (e *recordingExporter) Shutdown(context.Context) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.shutdownCalls++
-	return e.shutdownErr
-}
-
-func (e *recordingExporter) snapshot() (tracetest.SpanStubs, int, int) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	spans := append(tracetest.SpanStubs(nil), e.spans...)
-	return spans, e.exportCalls, e.shutdownCalls
-}
-
-type deadlineShutdownExporter struct {
-	shutdownCalls atomic.Int32
-}
-
-func (*deadlineShutdownExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {
 	return nil
 }
 
-func (e *deadlineShutdownExporter) Shutdown(ctx context.Context) error {
-	e.shutdownCalls.Add(1)
-	<-ctx.Done()
-	return ctx.Err()
+func (*recordingExporter) Shutdown(context.Context) error { return nil }
+
+func (e *recordingExporter) snapshot() tracetest.SpanStubs {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append(tracetest.SpanStubs(nil), e.spans...)
 }
 
-// newTestPlugin builds a Plugin from DefaultConfig (optionally mutated by
-// configure) using exporter in place of the real OTLP factory, and registers
-// a clean Stop as test cleanup. Tests that exercise Stop's own error paths or
-// concurrency construct directly through newPlugin instead.
-func newTestPlugin(t *testing.T, configure func(*Config), exporter sdktrace.SpanExporter) *Plugin {
+// testHandle stands in for the neutral plugin's private Handle: a real SDK
+// provider over a recording exporter and the default W3C propagators, which is
+// everything the middleware consumes.
+type testHandle struct {
+	provider   *sdktrace.TracerProvider
+	propagator propagation.TextMapPropagator
+}
+
+var _ tracingcore.Handle = (*testHandle)(nil)
+
+func (h *testHandle) Provider() trace.TracerProvider { return h.provider }
+
+func (h *testHandle) Tracer(name string, options ...trace.TracerOption) trace.Tracer {
+	return h.provider.Tracer(name, options...)
+}
+
+func (h *testHandle) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	return h.propagator.Extract(ctx, carrier)
+}
+
+func (h *testHandle) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
+	h.propagator.Inject(ctx, carrier)
+}
+
+func (h *testHandle) ForceFlush(ctx context.Context) error { return h.provider.ForceFlush(ctx) }
+
+func (h *testHandle) Shutdown(ctx context.Context) error { return h.provider.Shutdown(ctx) }
+
+// newTestMiddleware builds the middleware over a recording pipeline with the
+// default correlation headers enabled, and shuts the pipeline down on cleanup.
+func newTestMiddleware(t *testing.T) (*Middleware, *testHandle, *recordingExporter) {
 	t.Helper()
-	cfg := DefaultConfig()
-	if configure != nil {
-		configure(&cfg)
-	}
-	p, err := newPlugin(cfg, func(context.Context, normalizedConfig) (sdktrace.SpanExporter, error) {
-		return exporter, nil
-	})
-	if err != nil {
-		t.Fatalf("newPlugin() error = %v", err)
+	exporter := new(recordingExporter)
+	handle := &testHandle{
+		provider: sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter)),
+		propagator: propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{}, propagation.Baggage{},
+		),
 	}
 	t.Cleanup(func() {
-		if err := p.Stop(context.Background()); err != nil {
-			t.Errorf("Stop: %v", err)
+		if err := handle.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
 		}
 	})
-	return p
+	headers := tracingcore.ResponseHeaders{Enabled: true, TraceIDHeader: defaultTraceIDHeader, SpanIDHeader: defaultSpanIDHeader}
+	return newMiddleware(handle, headers), handle, exporter
 }
