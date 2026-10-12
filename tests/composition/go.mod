@@ -8,14 +8,17 @@ go 1.25.0
 // synthetic pseudo-versions would only hide a broken publication boundary.
 require (
 	github.com/stretchr/testify v1.12.1
+	go.opentelemetry.io/proto/otlp v1.10.0
 	google.golang.org/grpc v1.81.1
 	google.golang.org/protobuf v1.36.11
 )
 
 require (
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 )
