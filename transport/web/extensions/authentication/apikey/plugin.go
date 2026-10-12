@@ -2,143 +2,71 @@ package apikey
 
 import (
 	"errors"
-	"reflect"
 
-	"github.com/xbcio/xbc/extensions/authentication"
+	apikeycore "github.com/xbcio/xbc/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
 
-// Key is the stable configuration and Definition identity of the API-key
-// plugin.
-const Key plugin.Key = "apikey"
+// Key is the stable Definition identity of the Web credential extractor. It is
+// distinct from the neutral authenticator's own key, apikey, which owns the
+// plugins.apikey section: the extractor has no configuration of its own and
+// reads its headers and scheme from that authenticator.
+const Key plugin.Key = "apikey-http"
 
-type runtimeState struct {
-	config normalizedConfig
-	repo   Repository
-	static *StaticRepository
+// Extractor pulls an API key out of an HTTP request for the neutral API-key
+// authenticator. It decides only whether the request syntactically carries
+// apikey evidence; every semantic check stays with the authenticator.
+type Extractor struct {
+	header       string
+	appIDHeader  string
+	allowBearer  bool
+	bearerScheme string
 }
 
-// Plugin authenticates HTTP requests through a pluggable digest repository
-// and contributes a credential extractor and an authenticator to the Web
-// transport's authentication middleware. It is fully constructed before New
-// or its Definition's factory returns.
-type Plugin struct {
-	state *runtimeState
-}
+var _ web.CredentialExtractor = (*Extractor)(nil)
 
-type constructorOptions struct {
-	repository    Repository
-	repositorySet bool
-}
+var authenticatorInput = plugin.RefTo[*apikeycore.Plugin](apikeycore.Key)
 
-// Option customizes direct Plugin construction.
-type Option func(*constructorOptions)
-
-// WithRepository uses repository instead of Config.Static. It is useful for
-// directly constructed plugins whose credentials live in an external store.
-func WithRepository(repository Repository) Option {
-	return func(options *constructorOptions) {
-		options.repository = repository
-		options.repositorySet = true
-	}
-}
-
-var definition = plugin.DefineConfigured(
+var definition = plugin.Define(
 	Key,
-	plugin.ConfigSpec[Config]{
-		Defaults: DefaultConfig,
-		Prepare:  prepareConfig,
+	func(ctx plugin.BuildContext) (*Extractor, error) {
+		return New(authenticatorInput.Get(ctx).Value)
 	},
-	func(_ plugin.BuildContext, cfg Config) (*Plugin, error) {
-		return New(cfg)
-	},
-	plugin.Options[*Plugin]{
-		Activation: plugin.WhenConfigured("plugins." + Key.String()),
+	plugin.Options[*Extractor]{
+		// The extractor follows the authenticator it pairs with: configuring
+		// plugins.apikey turns both on, and leaving it out leaves both dormant.
+		Activation: plugin.WhenConfigured("plugins." + apikeycore.Key.String()),
+		Inputs:     plugin.Inputs(authenticatorInput),
 		Exports: plugin.Contracts(
-			plugin.ExportAs[authentication.Authenticator](func(value *Plugin) authentication.Authenticator { return value }),
-			plugin.ExportAs[web.CredentialExtractor](func(value *Plugin) web.CredentialExtractor { return value }),
+			plugin.ExportAs[web.CredentialExtractor](func(value *Extractor) web.CredentialExtractor { return value }),
 		),
 	},
 )
 
-var bundle = plugin.BundleOf(definition)
+// bundle selects the neutral authenticator alongside the extractor. An
+// extractor without the authenticator it feeds is not a composition anyone
+// wants, and RefTo would reject it at planning time anyway.
+var bundle = plugin.CombineBundles(apikeycore.Bundle(), plugin.BundleOf(definition))
 
-func prepareConfig(cfg Config) (Config, error) {
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
+// New builds an extractor that reads the headers and scheme configured on
+// authenticator.
+func New(authenticator *apikeycore.Plugin) (*Extractor, error) {
+	if authenticator == nil {
+		return nil, errors.New("apikey-http: requires the apikey authenticator")
 	}
-	return cfg, nil
+	return &Extractor{
+		header:       authenticator.Header(),
+		appIDHeader:  authenticator.AppIDHeader(),
+		allowBearer:  authenticator.AllowBearer(),
+		bearerScheme: authenticator.BearerScheme(),
+	}, nil
 }
 
-// New constructs a directly usable Plugin. Without WithRepository, cfg.Static
-// is validated and compiled into the built-in repository before New returns.
-// The two repository sources are mutually exclusive.
-func New(cfg Config, options ...Option) (*Plugin, error) {
-	normalized, err := normalizeConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	settings := constructorOptions{}
-	for _, option := range options {
-		if option != nil {
-			option(&settings)
-		}
-	}
-
-	var repository Repository
-	var static *StaticRepository
-	if settings.repositorySet {
-		if isNilRepository(settings.repository) {
-			return nil, errors.New("apikey: WithRepository requires a non-nil repository")
-		}
-		if len(cfg.Static) != 0 {
-			return nil, errors.New("apikey: configure either static credentials or an injected repository, not both")
-		}
-		repository = settings.repository
-	} else {
-		static, err = NewStaticRepository(cfg.Static)
-		if err != nil {
-			return nil, err
-		}
-		repository = static
-	}
-
-	return &Plugin{state: &runtimeState{
-		config: normalized,
-		repo:   repository,
-		static: static,
-	}}, nil
-}
-
-func isNilRepository(repository Repository) bool {
-	if repository == nil {
-		return true
-	}
-	value := reflect.ValueOf(repository)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
-		return false
-	}
-}
-
-// Definition returns apikey's canonical immutable declaration handle.
+// Definition returns the Web extractor's canonical immutable declaration
+// handle.
 func Definition() plugin.Definition { return definition }
 
-// Bundle returns apikey's side-effect-free explicit composition bundle.
+// Bundle returns the side-effect-free explicit composition of the Web
+// extractor and the neutral API-key authenticator it feeds.
 func Bundle() plugin.Bundle { return bundle }
-
-// ReplaceStaticCredentials atomically rotates the built-in repository. It is
-// unavailable when the plugin uses an injected Repository.
-func (p *Plugin) ReplaceStaticCredentials(credentials []StaticCredential) error {
-	if p == nil || p.state == nil {
-		return errors.New("apikey: static rotation requires a constructed plugin")
-	}
-	if p.state.static == nil {
-		return errors.New("apikey: static rotation is unavailable with an injected repository")
-	}
-	return p.state.static.Replace(credentials)
-}

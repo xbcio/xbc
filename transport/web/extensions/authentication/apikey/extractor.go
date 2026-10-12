@@ -1,35 +1,15 @@
 package apikey
 
 import (
-	"context"
 	"strings"
 
 	"github.com/xbcio/xbc/extensions/authentication"
+	apikeycore "github.com/xbcio/xbc/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/transport/web"
 )
 
-// Scheme is this plugin's authentication scheme name. It is what a security
-// policy names in its authenticate list.
-const Scheme authentication.Scheme = "apikey"
-
-var (
-	_ authentication.Authenticator = (*Plugin)(nil)
-	_ web.CredentialExtractor      = (*Plugin)(nil)
-)
-
-// Scheme identifies this plugin to both the credential extractor index and the
-// authentication manager.
-func (*Plugin) Scheme() authentication.Scheme { return Scheme }
-
-// credentialValue carries both halves of a presented API key through one
-// opaque authentication.Credential. A bare string cannot hold both the secret
-// and the caller-supplied app ID, and routing the app ID through a side
-// channel would let it go missing between extraction and verification, so
-// both travel together in this unexported struct.
-type credentialValue struct {
-	secret string
-	appID  string
-}
+// Scheme pairs the extractor with the neutral authenticator it feeds.
+func (*Extractor) Scheme() authentication.Scheme { return apikeycore.Scheme }
 
 // headerState classifies why singleHeader could not return one clean value:
 // missing entirely, one usable value, duplicated across multiple header
@@ -71,7 +51,7 @@ func singleHeader(c *web.Ctx, name string) (value string, present bool, state he
 // extractable API-key evidence: which header holds it, whether that header is
 // unusable (duplicated or blank), and whether the key header and Authorization
 // header disagree about which one is authoritative. Minimum key length,
-// app-ID requirement, and repository lookup are Authenticate's job.
+// app-ID requirement, and repository lookup are the authenticator's job.
 //
 // Extraction runs in two phases. Phase A decides whether this request names
 // apikey's scheme at all; a request that does not must return Absent, never a
@@ -81,13 +61,12 @@ func singleHeader(c *web.Ctx, name string) (value string, present bool, state he
 // key header and no Authorization value names nothing of apikey's). Phase B,
 // reached only once Phase A says yes, applies the extractability checks that
 // produce this plugin's Malformed reasons.
-func (p *Plugin) ExtractCredential(c *web.Ctx) (authentication.CredentialResult, error) {
-	cfg := p.state.config
-	challenge := authentication.Challenge(cfg.bearerScheme)
+func (e *Extractor) ExtractCredential(c *web.Ctx) (authentication.CredentialResult, error) {
+	challenge := authentication.Challenge(e.bearerScheme)
 
-	headerKey, keyPresent, keyState := singleHeader(c, cfg.header)
+	headerKey, keyPresent, keyState := singleHeader(c, e.header)
 	authorization, authorizationPresent, authState := singleHeader(c, "Authorization")
-	appIDValue, _, appIDState := singleHeader(c, cfg.appIDHeader)
+	appIDValue, _, appIDState := singleHeader(c, e.appIDHeader)
 
 	// Phase A: does this request name apikey's scheme? The key header does so
 	// in any form, valid or not: a duplicated X-API-Key still unambiguously
@@ -99,10 +78,10 @@ func (p *Plugin) ExtractCredential(c *web.Ctx) (authentication.CredentialResult,
 	// whichever scheme it names, not this one.
 	var bearerFields []string
 	bearerNamesScheme := false
-	if cfg.allowBearer && authorizationPresent {
+	if e.allowBearer && authorizationPresent {
 		if authState == headerOK {
 			bearerFields = strings.Fields(authorization)
-			bearerNamesScheme = len(bearerFields) > 0 && strings.EqualFold(bearerFields[0], cfg.bearerScheme)
+			bearerNamesScheme = len(bearerFields) > 0 && strings.EqualFold(bearerFields[0], e.bearerScheme)
 		} else {
 			bearerNamesScheme = true
 		}
@@ -123,7 +102,7 @@ func (p *Plugin) ExtractCredential(c *web.Ctx) (authentication.CredentialResult,
 	// makes Authorization one of apikey's credential sources; otherwise this
 	// plugin does not read that header in this configuration and its shape is
 	// none of apikey's business.
-	if cfg.allowBearer && (authState == headerDuplicate || authState == headerBlank) {
+	if e.allowBearer && (authState == headerDuplicate || authState == headerBlank) {
 		return authentication.MalformedWithChallenge("malformed credential", challenge), nil
 	}
 	if appIDState == headerDuplicate || appIDState == headerBlank {
@@ -132,64 +111,15 @@ func (p *Plugin) ExtractCredential(c *web.Ctx) (authentication.CredentialResult,
 	// The key header and Authorization header must not both be present: which
 	// one wins would otherwise be undefined behavior. Authorization is only a
 	// competing source when AllowBearer makes it one.
-	if cfg.allowBearer && keyPresent && authorizationPresent {
+	if e.allowBearer && keyPresent && authorizationPresent {
 		return authentication.MalformedWithChallenge("conflicting api key headers", challenge), nil
 	}
 
 	if keyPresent {
-		return authentication.Presented(credentialValue{secret: headerKey, appID: appIDValue}), nil
+		return authentication.Presented(apikeycore.PresentedKey{Secret: headerKey, AppID: appIDValue}), nil
 	}
 	if len(bearerFields) != 2 || bearerFields[1] == "" {
 		return authentication.MalformedWithChallenge("malformed credential", challenge), nil
 	}
-	return authentication.Presented(credentialValue{secret: bearerFields[1], appID: appIDValue}), nil
-}
-
-// Authenticate performs every semantic check ExtractCredential deliberately
-// does not: minimum key length, the app-ID requirement, and repository
-// lookup. A repository error, an unknown key, and a wrong key are
-// intentionally indistinguishable to the caller so storage failures cannot
-// become a credential-enumeration oracle.
-func (p *Plugin) Authenticate(
-	ctx context.Context,
-	credential authentication.Credential,
-) (authentication.Result, error) {
-	state := p.state
-	challenge := authentication.Challenge(state.config.bearerScheme)
-
-	value, ok := credential.Value().(credentialValue)
-	if !ok {
-		return authentication.RejectedWithChallenge("invalid credential type", challenge), nil
-	}
-	if len([]byte(value.secret)) < state.config.minKeyBytes {
-		return authentication.RejectedWithChallenge("invalid credential", challenge), nil
-	}
-	if state.config.requireAppID && value.appID == "" {
-		return authentication.RejectedWithChallenge("invalid credential", challenge), nil
-	}
-
-	digest := HashKey(value.secret)
-	stored, found, err := state.repo.Lookup(ctx, value.appID, digest)
-	// Repository diagnostics, an unknown key, and a wrong key are
-	// intentionally collapsed into one rejection so storage failures cannot
-	// become a credential-enumeration oracle.
-	if err != nil || !found || strings.TrimSpace(stored.Subject) == "" {
-		return authentication.RejectedWithChallenge("invalid credential", challenge), nil
-	}
-
-	attributes := cloneAttributes(stored.Attributes)
-	if attributes == nil {
-		attributes = make(map[string]any, 2)
-	}
-	if stored.ID != "" {
-		attributes["credential_id"] = stored.ID
-	}
-	if stored.AppID != "" {
-		attributes["app_id"] = stored.AppID
-	}
-	return authentication.Accepted(authentication.Principal{
-		Subject:    stored.Subject,
-		AuthMethod: string(Scheme),
-		Attributes: attributes,
-	}), nil
+	return authentication.Presented(apikeycore.PresentedKey{Secret: bearerFields[1], AppID: appIDValue}), nil
 }

@@ -1,128 +1,59 @@
 package apikey
 
 import (
-	"context"
-	"sync"
+	"reflect"
 	"testing"
 
+	apikeycore "github.com/xbcio/xbc/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/plugin"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
+	"github.com/xbcio/xbc/transport/web"
 )
 
-type fixedRepository struct{}
-
-func (fixedRepository) Lookup(context.Context, string, KeyDigest) (Credential, bool, error) {
-	return Credential{Subject: "fixed"}, true, nil
-}
-
-func staticConfig(secret string) Config {
-	cfg := DefaultConfig()
-	cfg.Static = []StaticCredential{{
-		ID:      "service",
-		Subject: "svc:one",
-		SHA256:  HashKey(secret).String(),
-	}}
-	return cfg
-}
-
-func TestDefinitionAndAuthenticatorContract(t *testing.T) {
+func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
 	var zero plugin.Definition
-	if Definition() == zero || Definition() != Definition() {
-		t.Fatal("Definition() must return one non-zero canonical handle")
+	if Definition() == zero {
+		t.Fatal("Definition() returned a zero handle")
 	}
-
-	p, err := New(staticConfig("0123456789abcdef0123456789abcdef"))
-	if err != nil {
-		t.Fatal(err)
+	if Definition() != Definition() {
+		t.Fatal("Definition() returned different handles")
 	}
-	if p.Scheme() != Scheme {
-		t.Fatalf("Scheme() = %q, want %q", p.Scheme(), Scheme)
+	first, second := Bundle(), Bundle()
+	if reflect.DeepEqual(first, plugin.Bundle{}) {
+		t.Fatal("Bundle() returned an empty bundle")
 	}
-}
-
-func TestNewSynchronouslyBuildsDigestOnlyStaticState(t *testing.T) {
-	secret := "0123456789abcdef0123456789abcdef"
-	cfg := staticConfig(secret)
-	cfg.Header = " X-API-Key "
-
-	p, err := New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.state == nil || p.state.static == nil || p.state.repo != p.state.static {
-		t.Fatal("static runtime state was not built before New returned")
-	}
-	if p.state.config.header != defaultHeader {
-		t.Fatalf("normalized header = %q", p.state.config.header)
-	}
-	stored := p.state.static.state.Load().credentials
-	if len(stored) != 1 || stored[0].digest != HashKey(secret) {
-		t.Fatalf("compiled digest = %#v", stored)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatal("Bundle() returned different composition content")
 	}
 }
 
-func TestNewPreservesInjectedRepositoryOption(t *testing.T) {
-	cfg := DefaultConfig()
-	repository := fixedRepository{}
-	p, err := New(cfg, WithRepository(repository))
-	if err != nil {
-		t.Fatal(err)
+// TestBundleSelectsTheNeutralAuthenticator pins the production spelling: a
+// composition root that selects apikey.Bundle() from this package gets the
+// authenticator too, so it never has to know the plugin was split.
+func TestBundleSelectsTheNeutralAuthenticator(t *testing.T) {
+	var got []pluginmodel.Definition
+	for _, entry := range pluginmodel.BundleEntries(pluginmodel.Bundle(Bundle())) {
+		got = append(got, entry.Definition)
 	}
-	if p.state == nil || p.state.static != nil || p.state.repo != repository {
-		t.Fatalf("injected repository state = %#v", p.state)
+	want := []pluginmodel.Definition{
+		pluginmodel.Definition(apikeycore.Definition()),
+		pluginmodel.Definition(Definition()),
 	}
-
-	cfg.Static = staticConfig("0123456789abcdef0123456789abcdef").Static
-	if _, err := New(cfg, WithRepository(repository)); err == nil {
-		t.Fatal("New accepted both static credentials and an injected repository")
-	}
-	if _, err := New(DefaultConfig(), WithRepository(nil)); err == nil {
-		t.Fatal("New accepted a nil injected repository")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Bundle() definitions = %v, want the neutral authenticator then the Web extractor", got)
 	}
 }
 
-func TestNewRejectsInvalidConfigurationBeforeReturningPlugin(t *testing.T) {
-	cfg := staticConfig("0123456789abcdef0123456789abcdef")
-	cfg.MinKeyBytes = 8
-	if p, err := New(cfg); err == nil || p != nil {
-		t.Fatalf("New() = %#v, %v; want nil plugin and error", p, err)
+// TestDefinitionExportsExactlyTheCredentialExtractor keeps the authenticator
+// contract on the neutral half. Exporting it here as well would register the
+// apikey scheme twice, which the Web authentication middleware refuses.
+func TestDefinitionExportsExactlyTheCredentialExtractor(t *testing.T) {
+	descriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(Definition()))
+	if !ok {
+		t.Fatal("Definition() returned a zero handle")
 	}
-
-	cfg = DefaultConfig()
-	if p, err := New(cfg); err == nil || p != nil {
-		t.Fatalf("New() without repository = %#v, %v; want nil plugin and error", p, err)
-	}
-}
-
-func TestStaticRepositoryRotationIsAtomicForReaders(t *testing.T) {
-	oldKey := "old-0123456789abcdef0123456789abcdef"
-	newKey := "new-0123456789abcdef0123456789abcdef"
-	repository, err := NewStaticRepository([]StaticCredential{{Subject: "old", SHA256: HashKey(oldKey).String()}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldDigest := HashKey(oldKey)
-	newDigest := HashKey(newKey)
-
-	var wg sync.WaitGroup
-	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range 100 {
-				_, _, _ = repository.Lookup(context.Background(), "", oldDigest)
-				_, _, _ = repository.Lookup(context.Background(), "", newDigest)
-			}
-		}()
-	}
-	if err := repository.Replace([]StaticCredential{{Subject: "new", SHA256: HashKey(newKey).String()}}); err != nil {
-		t.Fatal(err)
-	}
-	wg.Wait()
-	if _, ok, _ := repository.Lookup(context.Background(), "", oldDigest); ok {
-		t.Fatal("old key survived rotation")
-	}
-	credential, ok, err := repository.Lookup(context.Background(), "", newDigest)
-	if err != nil || !ok || credential.Subject != "new" {
-		t.Fatalf("new lookup = %#v, %v, %v", credential, ok, err)
+	want := reflect.TypeOf((*web.CredentialExtractor)(nil)).Elem()
+	if len(descriptor.Contracts) != 1 || descriptor.Contracts[0].Type != want {
+		t.Fatalf("Definition contracts = %+v, want exactly web.CredentialExtractor", descriptor.Contracts)
 	}
 }
