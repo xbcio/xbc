@@ -103,6 +103,10 @@ func (h *testRuntimeHost) ExecutionContext() context.Context { return h.taskCtx 
 func (*testRuntimeHost) Logger() corelog.Logger  { return corelog.Nop() }
 func (*testRuntimeHost) ProcessInstance() string { return "test-process" }
 
+func (*testRuntimeHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*testRuntimeHost) IngressStopBudget() time.Duration { return 0 }
+
 func (h *testRuntimeHost) TrafficGate() <-chan struct{} { return h.trafficGate }
 
 func (h *testRuntimeHost) Admission(plugin.Identity) plugin.Admission { return nil }

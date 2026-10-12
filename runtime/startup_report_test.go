@@ -264,6 +264,35 @@ func TestReportStartedStatesHowLongTheBootTook(t *testing.T) {
 		"a boot duration is reported as a duration, not as a nanosecond count")
 }
 
+// TestReportStartedLeavesTheIdentityToTheJSONSink pins the F2 startup-line
+// decision: the released-gate line attaches no service or instance fields of
+// its own. A JSON sink stamps the identity onto every record automatically, so
+// repeating it here would write the same key twice on this line, and most
+// collectors read duplicate keys as last-one-wins -- either value silently
+// overwriting the other. The console side keeps its instance on the placement
+// line, so a human still sees which process is booting.
+func TestReportStartedLeavesTheIdentityToTheJSONSink(t *testing.T) {
+	definition := plugin.Define("identified", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	})
+
+	app := newRuntimeTestApp(definition)
+	_, capture := planUnderCapture(t, app, "  service:\n    name: orders\n    version: v9\n")
+	app.startup = startupTiming{total: time.Second}
+
+	app.reportStarted(nil, false)
+
+	require.Len(t, capture.entries, 1)
+	fields := capture.entries[0].fields()
+	for _, key := range []string{
+		"service", "version", "instance",
+		"service.name", "service.version", "service.instance.id",
+	} {
+		assert.NotContains(t, fields, key,
+			"the JSON sink stamps the identity; the startup line must not repeat any of its keys")
+	}
+}
+
 // TestReportValidatedStatesHowLongValidationTook pins the always-on half of the
 // validate command's report, the counterpart of the released-gate line: a CI job
 // or a pre-deployment check gets one line saying how many instances were

@@ -117,9 +117,13 @@ type wireHost struct {
 
 var _ plugin.RuntimeHost = (*wireHost)(nil)
 
-func (h *wireHost) ExecutionContext() context.Context                               { return h.execution }
-func (h *wireHost) Logger() corelog.Logger                                          { return h.logger }
-func (*wireHost) ProcessInstance() string                                           { return "accesslog-wire-test-process" }
+func (h *wireHost) ExecutionContext() context.Context { return h.execution }
+func (h *wireHost) Logger() corelog.Logger            { return h.logger }
+func (*wireHost) ProcessInstance() string             { return "accesslog-wire-test-process" }
+
+func (*wireHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*wireHost) IngressStopBudget() time.Duration                                  { return 0 }
 func (h *wireHost) TrafficGate() <-chan struct{}                                    { return h.gate }
 func (*wireHost) Admission(plugin.Identity) plugin.Admission                        { return nil }
 func (*wireHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }

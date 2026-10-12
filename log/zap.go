@@ -269,7 +269,7 @@ func Init(cfg Config) error {
 
 	if cfg.Console.Enabled {
 		cores = append(cores, newMaskCore(zapcore.NewCore(
-			buildEncoder(cfg.Console.Format, wantColor(cfg.Console.Color, os.Stdout)),
+			buildEncoder(cfg.Console.Format, wantColor(cfg.Console.Color, os.Stdout), cfg.Service),
 			zapcore.Lock(os.Stdout),
 			levelState.level,
 		), m))
@@ -283,7 +283,7 @@ func Init(cfg Config) error {
 		}
 		cls = append(cls, closeFn)
 		cores = append(cores, newMaskCore(zapcore.NewCore(
-			buildEncoder(cfg.File.Format, false), w, levelState.level), m))
+			buildEncoder(cfg.File.Format, false, cfg.Service), w, levelState.level), m))
 
 		if cfg.File.ErrorPath != "" {
 			ew, ecloseFn, err := buildFileWriter(cfg.File, cfg.File.ErrorPath)
@@ -293,7 +293,7 @@ func Init(cfg Config) error {
 			}
 			cls = append(cls, ecloseFn)
 			cores = append(cores, newMaskCore(zapcore.NewCore(
-				buildEncoder(cfg.File.errorFormat, false), ew, zapcore.ErrorLevel), m))
+				buildEncoder(cfg.File.errorFormat, false, cfg.Service), ew, zapcore.ErrorLevel), m))
 		}
 	}
 
@@ -355,9 +355,20 @@ func Init(cfg Config) error {
 	return nil
 }
 
-func buildEncoder(format string, color bool) zapcore.Encoder {
+// buildEncoder assembles one sink's encoder. The identity is stamped onto
+// JSON encoders only: a JSON sink is read by a machine selecting records from
+// many processes, where the three stable fields are what makes that possible,
+// while a console sink is read by a human looking at one process, where the
+// same three fields on every line are noise. The split is by format rather
+// than by sink, so a JSON file sink and a JSON console sink both carry it and
+// a console-format error file does not.
+func buildEncoder(format string, color bool, identity ServiceIdentity) zapcore.Encoder {
 	if format == FormatJSON {
-		return zapcore.NewJSONEncoder(jsonEncoderConfig())
+		encoder := zapcore.NewJSONEncoder(jsonEncoderConfig())
+		if identity.populated() {
+			return newIdentityEncoder(encoder, identity)
+		}
+		return encoder
 	}
 	return newConsoleEncoder(color)
 }

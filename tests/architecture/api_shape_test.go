@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -145,14 +146,16 @@ func TestArchRuntimeHostPublicAPIShape(t *testing.T) {
 	require.Equal(t, reflect.Interface, hostType.Kind())
 
 	want := map[string]reflect.Type{
-		"ExecutionContext": reflect.TypeOf((func() context.Context)(nil)),
-		"Logger":           reflect.TypeOf((func() log.Logger)(nil)),
-		"ProcessInstance":  reflect.TypeOf((func() string)(nil)),
-		"TrafficGate":      reflect.TypeOf((func() <-chan struct{})(nil)),
-		"SubmitTask":       reflect.TypeOf((func(plugin.Identity, func(context.Context), bool) bool)(nil)),
-		"RequestShutdown":  reflect.TypeOf((func(plugin.Identity, string) bool)(nil)),
-		"Admission":        reflect.TypeOf((func(plugin.Identity) plugin.Admission)(nil)),
-		"AdmissionFor":     reflect.TypeOf((func(plugin.Identity, plugin.WorkloadKey) plugin.Admission)(nil)),
+		"ExecutionContext":  reflect.TypeOf((func() context.Context)(nil)),
+		"Logger":            reflect.TypeOf((func() log.Logger)(nil)),
+		"ProcessInstance":   reflect.TypeOf((func() string)(nil)),
+		"Service":           reflect.TypeOf((func() plugin.ServiceIdentity)(nil)),
+		"IngressStopBudget": reflect.TypeOf((func() time.Duration)(nil)),
+		"TrafficGate":       reflect.TypeOf((func() <-chan struct{})(nil)),
+		"SubmitTask":        reflect.TypeOf((func(plugin.Identity, func(context.Context), bool) bool)(nil)),
+		"RequestShutdown":   reflect.TypeOf((func(plugin.Identity, string) bool)(nil)),
+		"Admission":         reflect.TypeOf((func(plugin.Identity) plugin.Admission)(nil)),
+		"AdmissionFor":      reflect.TypeOf((func(plugin.Identity, plugin.WorkloadKey) plugin.Admission)(nil)),
 	}
 	for name, signature := range want {
 		method, ok := hostType.MethodByName(name)
@@ -198,6 +201,7 @@ func TestArchPluginModelPublicAPIShape(t *testing.T) {
 		"BuildContext",
 		"BuildContext.Identity",
 		"BuildContext.Log",
+		"BuildContext.Service",
 		"Bundle",
 		"BundleEntries",
 		"BundleEntry",
@@ -236,6 +240,7 @@ func TestArchPluginModelPublicAPIShape(t *testing.T) {
 		"ReadBuildSlot",
 		"ResolvedEntry",
 		"SameDefinition",
+		"ServiceIdentity",
 		"SingleInstance",
 		"SortIdentities",
 		"ValidateIdentifier",

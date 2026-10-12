@@ -374,7 +374,11 @@ func newTestHost() *testHost {
 func (h *testHost) ExecutionContext() context.Context { return h.executionCtx }
 func (h *testHost) Logger() log.Logger                { return h.logger }
 func (*testHost) ProcessInstance() string             { return "test-process" }
-func (h *testHost) TrafficGate() <-chan struct{}      { return h.gate }
+
+func (*testHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*testHost) IngressStopBudget() time.Duration { return 0 }
+func (h *testHost) TrafficGate() <-chan struct{}   { return h.gate }
 
 func (h *testHost) Admission(plugin.Identity) plugin.Admission { return nil }
 

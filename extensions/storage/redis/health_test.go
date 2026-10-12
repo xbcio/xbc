@@ -164,9 +164,13 @@ func TestAssembledHealthPluginReportsEveryConfiguredInstance(t *testing.T) {
 
 type healthTestHost struct{}
 
-func (healthTestHost) ExecutionContext() context.Context          { return context.Background() }
-func (healthTestHost) Logger() log.Logger                         { return nil }
-func (healthTestHost) ProcessInstance() string                    { return "test-process" }
+func (healthTestHost) ExecutionContext() context.Context { return context.Background() }
+func (healthTestHost) Logger() log.Logger                { return nil }
+func (healthTestHost) ProcessInstance() string           { return "test-process" }
+
+func (healthTestHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (healthTestHost) IngressStopBudget() time.Duration           { return 0 }
 func (healthTestHost) TrafficGate() <-chan struct{}               { return nil }
 func (healthTestHost) Admission(plugin.Identity) plugin.Admission { return nil }
 

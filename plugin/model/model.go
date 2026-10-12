@@ -71,6 +71,17 @@ type Identity struct {
 	Instance string
 }
 
+// ServiceIdentity mirrors plugin.ServiceIdentity below the typed facade: the
+// process-wide identity every construction-time consumer in this process
+// answers with. It is carried on the BuildContext rather than resolved per
+// consumer, so a factory that stamps it -- a tracing resource, a build-info
+// metric -- reads one answer the whole process agrees on.
+type ServiceIdentity struct {
+	Name     string
+	Version  string
+	Instance string
+}
+
 func (i Identity) Normalized() Identity {
 	i.Instance = NormalizeInstance(i.Instance)
 	return i
@@ -476,6 +487,7 @@ type buildState struct {
 	active   bool
 	consumer Identity
 	logger   log.Logger
+	service  ServiceIdentity
 	slots    map[uint64][]ResolvedEntry
 }
 
@@ -485,7 +497,7 @@ type BuildContext struct {
 	state *buildState
 }
 
-func NewBuildContext(consumer Identity, logger log.Logger, slots map[uint64][]ResolvedEntry) BuildContext {
+func NewBuildContext(consumer Identity, logger log.Logger, service ServiceIdentity, slots map[uint64][]ResolvedEntry) BuildContext {
 	copied := make(map[uint64][]ResolvedEntry, len(slots))
 	for id, entries := range slots {
 		copied[id] = append([]ResolvedEntry(nil), entries...)
@@ -494,6 +506,7 @@ func NewBuildContext(consumer Identity, logger log.Logger, slots map[uint64][]Re
 		active:   true,
 		consumer: consumer.Normalized(),
 		logger:   logger,
+		service:  service,
 		slots:    copied,
 	}}
 }
@@ -502,6 +515,17 @@ func (c BuildContext) Identity() Identity {
 	state := c.requireActive("read identity")
 	defer state.mu.RUnlock()
 	return state.consumer
+}
+
+// Service returns the process-wide service identity this build was bound
+// with. It reads the same value for every consumer and is the construction-
+// time counterpart of plugin.Context.Service: a factory that must stamp the
+// identity onto something it builds (a telemetry resource, a build-info
+// metric) reads it here, because no lifecycle Context exists yet.
+func (c BuildContext) Service() ServiceIdentity {
+	state := c.requireActive("read service identity")
+	defer state.mu.RUnlock()
+	return state.service
 }
 
 func (c BuildContext) Log() log.Logger {

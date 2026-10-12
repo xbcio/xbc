@@ -21,6 +21,8 @@ type fakeHost struct {
 	logger    log.Logger
 	gate      chan struct{}
 	process   string
+	service   ServiceIdentity
+	budget    time.Duration
 	submits   []fakeSubmit
 	shutdowns []fakeShutdown
 	admit     bool
@@ -49,6 +51,10 @@ func (h *fakeHost) ExecutionContext() context.Context { return h.execution }
 func (h *fakeHost) Logger() log.Logger { return h.logger }
 
 func (h *fakeHost) ProcessInstance() string { return h.process }
+
+func (h *fakeHost) Service() ServiceIdentity { return h.service }
+
+func (h *fakeHost) IngressStopBudget() time.Duration { return h.budget }
 
 func (h *fakeHost) TrafficGate() <-chan struct{} { return h.gate }
 
@@ -146,6 +152,42 @@ func TestTheProcessIsIdentifiedSeparatelyFromThePluginInstance(t *testing.T) {
 		"one process answers with one identity no matter how its plugins are instanced")
 	assert.NotEqual(t, named.Instance(), named.ProcessInstance(),
 		"the plugin instance name is a different question and must not stand in for the process")
+}
+
+// TestContextServiceCarriesTheProcessIdentity pins the identity seam at the
+// Context level: Service() reports what the host reports, and its Instance
+// half always equals ProcessInstance() -- the two spellings reach for one
+// value, so a consumer reading either cannot disagree with the other about
+// which process this is.
+func TestContextServiceCarriesTheProcessIdentity(t *testing.T) {
+	t.Parallel()
+	host := newFakeHost()
+	host.process = "host-7-1758091200-9f3c1a2b"
+	host.service = ServiceIdentity{
+		Name:     "orders",
+		Version:  "v1.2.3",
+		Instance: "host-7-1758091200-9f3c1a2b",
+	}
+	ctx := NewRuntimeContext(host, Identity{Plugin: "orders-db", Instance: "readonly"})
+
+	assert.Equal(t, ServiceIdentity{Name: "orders", Version: "v1.2.3", Instance: host.process}, ctx.Service())
+	assert.Equal(t, ctx.ProcessInstance(), ctx.Service().Instance,
+		"the two spellings always name one process")
+}
+
+// TestIngressStopBudgetPassesThroughAndZeroMeansUnknown pins the P2 seam at
+// the Context level: the budget is what the host reports, and a host with no
+// budgets reports zero, which the documented contract reads as "cannot
+// judge" rather than "no time".
+func TestIngressStopBudgetPassesThroughAndZeroMeansUnknown(t *testing.T) {
+	t.Parallel()
+	host := newFakeHost()
+	host.budget = 20 * time.Second
+	ctx := NewRuntimeContext(host, Identity{Plugin: "web"})
+	assert.Equal(t, 20*time.Second, ctx.IngressStopBudget())
+
+	assert.Zero(t, NewRuntimeContext(newFakeHost(), Identity{Plugin: "web"}).IngressStopBudget(),
+		"a host with no budget to report must answer zero, the documented unknown value")
 }
 
 // TestAContextWithNoRuntimeNamesNoProcess keeps the empty string meaning exactly
@@ -253,6 +295,9 @@ func TestContextWithoutHostDegradesInsteadOfPanicking(t *testing.T) {
 			assert.False(t, ctx.Go(func(context.Context) { t.Fatal("must not run") }))
 			assert.False(t, ctx.GoCritical(func(context.Context) { t.Fatal("must not run") }))
 			assert.False(t, ctx.RequestShutdown("ignored"))
+			assert.Empty(t, ctx.ProcessInstance())
+			assert.Equal(t, ServiceIdentity{}, ctx.Service())
+			assert.Zero(t, ctx.IngressStopBudget())
 
 			// Admission degrades the other way round: with nothing to bound,
 			// the limiter admits immediately rather than blocking forever on a

@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
@@ -22,6 +23,11 @@ type fakeHost struct {
 	cancelTasks context.CancelFunc
 	tasks       int
 	wg          sync.WaitGroup
+
+	// ingressBudget is what the host reports for Context.IngressStopBudget.
+	// The zero value is "unknown", exactly like a real host that has no
+	// budgets to derive one from.
+	ingressBudget time.Duration
 }
 
 var _ plugin.RuntimeHost = (*fakeHost)(nil)
@@ -37,9 +43,13 @@ func newFakeHost() *fakeHost {
 	}
 }
 
-func (h *fakeHost) ExecutionContext() context.Context                               { return h.execution }
-func (h *fakeHost) Logger() log.Logger                                              { return h.logger }
-func (*fakeHost) ProcessInstance() string                                           { return "test-process" }
+func (h *fakeHost) ExecutionContext() context.Context { return h.execution }
+func (h *fakeHost) Logger() log.Logger                { return h.logger }
+func (*fakeHost) ProcessInstance() string             { return "test-process" }
+
+func (*fakeHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (h *fakeHost) IngressStopBudget() time.Duration                                { return h.ingressBudget }
 func (h *fakeHost) TrafficGate() <-chan struct{}                                    { return h.gate }
 func (*fakeHost) Admission(plugin.Identity) plugin.Admission                        { return nil }
 func (*fakeHost) AdmissionFor(plugin.Identity, plugin.WorkloadKey) plugin.Admission { return nil }

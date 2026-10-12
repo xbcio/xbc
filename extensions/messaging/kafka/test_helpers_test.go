@@ -39,7 +39,11 @@ func newFakeHost() *fakeHost {
 func (h *fakeHost) ExecutionContext() context.Context { return h.taskCtx }
 func (*fakeHost) Logger() corelog.Logger              { return corelog.Nop() }
 func (*fakeHost) ProcessInstance() string             { return "test-process" }
-func (h *fakeHost) TrafficGate() <-chan struct{}      { return h.gate }
+
+func (*fakeHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*fakeHost) IngressStopBudget() time.Duration { return 0 }
+func (h *fakeHost) TrafficGate() <-chan struct{}   { return h.gate }
 
 func (h *fakeHost) Admission(plugin.Identity) plugin.Admission { return nil }
 

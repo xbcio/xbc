@@ -171,6 +171,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	constructStarted := time.Now()
 	owned, err := assembly.Construct(plan, assembly.ConstructOptions{
 		ShutdownTimeout: a.settings.ShutdownTimeout,
+		Service:         a.settings.ServiceIdentity(),
 		ContextFactory: func(identity plugin.Identity, logger log.Logger) *plugin.Context {
 			return plugin.NewRuntimeContext(hostAdapter{app: a, logger: logger}, identity)
 		},

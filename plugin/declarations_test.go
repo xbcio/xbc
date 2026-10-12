@@ -63,7 +63,7 @@ func TestInputsRejectsNilTokensByPosition(t *testing.T) {
 func buildContextFor(t *testing.T, consumer Identity, slots map[uint64][]pluginmodel.ResolvedEntry) BuildContext {
 	t.Helper()
 	return BuildContext(pluginmodel.NewBuildContext(
-		pluginmodel.Identity{Plugin: consumer.Plugin, Instance: consumer.Instance}, nil, slots))
+		pluginmodel.Identity{Plugin: consumer.Plugin, Instance: consumer.Instance}, nil, pluginmodel.ServiceIdentity{}, slots))
 }
 
 func TestTypedInputsReadPreBoundEntriesWithoutLiveLookup(t *testing.T) {

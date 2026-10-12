@@ -79,6 +79,12 @@ type ConstructOptions struct {
 	ContextFactory  ContextFactory
 	ShutdownTimeout time.Duration
 
+	// Service is the process-wide service identity every BuildContext reports.
+	// The runtime fills it from its bound settings; a caller that leaves it
+	// zero constructs under an identity of empty strings, which is what a
+	// harness with no runtime behind it reports.
+	Service plugin.ServiceIdentity
+
 	// OnStageBegin, when set, is called immediately before this package
 	// invokes one startup stage on one instance: the factory and Init inside
 	// Construct, and Migrate, Preflight, Start and OpenTraffic through the
@@ -229,6 +235,7 @@ func Construct(plan *Plan, options ConstructOptions) (*Constructed, error) {
 		buildContext := pluginmodel.NewBuildContext(
 			pluginmodel.Identity{Plugin: pluginmodel.Key(identity.Plugin), Instance: identity.Instance},
 			planned.logger,
+			pluginmodel.ServiceIdentity{Name: options.Service.Name, Version: options.Service.Version, Instance: options.Service.Instance},
 			slots,
 		)
 		if options.OnStageBegin != nil {

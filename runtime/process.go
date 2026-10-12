@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 
@@ -32,6 +33,18 @@ var stderr io.Writer = os.Stderr
 // flushing, and process termination.
 func runProcess(app *App) {
 	exitApp(app, os.Args[1:])
+}
+
+// executableName is the file name this process was invoked as: os.Args[0]
+// reduced to its last path element, empty when the process has no arguments.
+// It is owned here, beside the other process facilities, so the service
+// identity's name fallback reads the process's own name without a second file
+// in the package touching os.Args.
+func executableName() string {
+	if len(os.Args) == 0 {
+		return ""
+	}
+	return filepath.Base(os.Args[0])
 }
 
 // exitWithError handles a failure that occurred before an App could be built.

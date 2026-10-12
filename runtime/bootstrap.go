@@ -43,20 +43,27 @@ func (a *App) bootstrap(cmd command) error {
 	if err != nil {
 		return err
 	}
+	// Settings are bound before the logger is assembled rather than after it,
+	// because the logger's JSON sinks stamp the process service identity onto
+	// every record: the identity has to be settled before the first record is
+	// written, and settling it here is the same once-per-boot resolution the
+	// instance id gets.
+	settings, err := loadSettings(env)
+	if err != nil {
+		return err
+	}
 	// doctor validates the log section like every other section but must not
 	// install a logger: initialising one mutates process-global state, opens
 	// files and starts a flusher, none of which a read-only command may do.
 	if cmd.subcommand == doctorSubcommand {
 		a.logger = log.Nop()
 	} else {
+		identity := settings.ServiceIdentity()
+		logging.Service = log.ServiceIdentity{Name: identity.Name, Version: identity.Version, Instance: identity.Instance}
 		if err := log.Init(logging); err != nil {
 			return fmt.Errorf("xbc: failed to initialize logging: %w", err)
 		}
 		a.logger = log.L()
-	}
-	settings, err := loadSettings(env)
-	if err != nil {
-		return err
 	}
 	// The process-level knobs are resolved for every command, so an
 	// unsatisfiable xbc.runtime section fails the same way whether the process

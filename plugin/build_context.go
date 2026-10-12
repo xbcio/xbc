@@ -19,3 +19,12 @@ func (context BuildContext) Identity() Identity {
 func (context BuildContext) Log() log.Logger {
 	return pluginmodel.BuildContext(context).Log()
 }
+
+// Service returns the process-wide service identity: the same value
+// Context.Service reports during the lifecycle, available here because a
+// factory that stamps the identity onto what it builds -- a telemetry
+// resource, a build-info metric -- must read it before any lifecycle Context
+// exists.
+func (context BuildContext) Service() ServiceIdentity {
+	return fromInternalServiceIdentity(pluginmodel.BuildContext(context).Service())
+}

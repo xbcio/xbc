@@ -65,7 +65,11 @@ func newTestHost() *testHost {
 func (h *testHost) ExecutionContext() context.Context { return h.execution }
 func (*testHost) Logger() corelog.Logger              { return corelog.Nop() }
 func (h *testHost) ProcessInstance() string           { return h.process }
-func (h *testHost) TrafficGate() <-chan struct{}      { return h.gate }
+
+func (h *testHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (h *testHost) IngressStopBudget() time.Duration { return 0 }
+func (h *testHost) TrafficGate() <-chan struct{}     { return h.gate }
 func (*testHost) RequestShutdown(plugin.Identity, string) bool {
 	return false
 }

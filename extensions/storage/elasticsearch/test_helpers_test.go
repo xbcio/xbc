@@ -33,6 +33,10 @@ func (host *fakeHost) ExecutionContext() context.Context {
 func (*fakeHost) Logger() log.Logger      { return log.Nop() }
 func (*fakeHost) ProcessInstance() string { return "test-process" }
 
+func (*fakeHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*fakeHost) IngressStopBudget() time.Duration { return 0 }
+
 func (*fakeHost) TrafficGate() <-chan struct{} {
 	gate := make(chan struct{})
 	close(gate)

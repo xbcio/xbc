@@ -367,7 +367,7 @@ func TestBuildContextExposesIdentityAndCopiesSlots(t *testing.T) {
 	slots := map[uint64][]ResolvedEntry{
 		token.ID: {{Identity: Identity{Plugin: "producer"}, Value: 1}},
 	}
-	context := NewBuildContext(Identity{Plugin: "consumer"}, nil, slots)
+	context := NewBuildContext(Identity{Plugin: "consumer"}, nil, ServiceIdentity{}, slots)
 
 	assert.Equal(t, Identity{Plugin: "consumer", Instance: DefaultInstance}, context.Identity())
 	assert.NotNil(t, context.Log(), "a nil logger falls back to the process logger")
@@ -385,7 +385,7 @@ func TestBuildContextRejectsUndeclaredTokens(t *testing.T) {
 	t.Parallel()
 	declared := NewInputToken(QueryMany, reflect.TypeOf(0), "", "", "")
 	undeclared := NewInputToken(QueryMany, reflect.TypeOf(0), "", "", "")
-	context := NewBuildContext(Identity{Plugin: "consumer"}, nil, map[uint64][]ResolvedEntry{declared.ID: nil})
+	context := NewBuildContext(Identity{Plugin: "consumer"}, nil, ServiceIdentity{}, map[uint64][]ResolvedEntry{declared.ID: nil})
 
 	assert.PanicsWithValue(t,
 		"xbc: plugin consumer used undeclared input token "+strconv.FormatUint(undeclared.ID, 10)+" (int)",
@@ -406,7 +406,7 @@ func TestZeroBuildContextPanicsWithTheAttemptedOperation(t *testing.T) {
 func TestInvalidatedBuildContextRejectsEveryReadThroughEveryCopy(t *testing.T) {
 	t.Parallel()
 	token := NewInputToken(QueryMany, reflect.TypeOf(0), "", "", "")
-	context := NewBuildContext(Identity{Plugin: "late", Instance: "readonly"}, nil, map[uint64][]ResolvedEntry{token.ID: nil})
+	context := NewBuildContext(Identity{Plugin: "late", Instance: "readonly"}, nil, ServiceIdentity{}, map[uint64][]ResolvedEntry{token.ID: nil})
 	escaped := context
 
 	InvalidateBuildContext(context)

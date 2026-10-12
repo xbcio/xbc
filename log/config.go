@@ -42,6 +42,13 @@ type Config struct {
 
 	// MaskFields is appended to the built-in mask blacklist. Additive only -- built-in entries cannot be removed.
 	MaskFields []string `yaml:"mask_fields" json:"mask_fields"`
+
+	// Service is the process identity the runtime attaches before Init, so
+	// every JSON-encoded sink stamps it onto each record. It is deliberately
+	// not a configuration key: yaml:"-" keeps it out of the schema, console
+	// sinks ignore it, and a caller that leaves it zero -- a library
+	// embedding, log's own tests -- gets exactly the output it always had.
+	Service ServiceIdentity `yaml:"-" json:"-"`
 }
 
 type ConsoleConfig struct {

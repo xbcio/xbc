@@ -68,6 +68,10 @@ func (a *App) reportStarted(instances []*assembly.Instance, migrate bool) {
 	for index, instance := range instances {
 		labels[index] = instance.Identity().String()
 	}
+	// No identity fields are attached here: a JSON sink stamps them onto every
+	// record already, and repeating them on this one line would reintroduce
+	// duplicate keys for machine readers. The console side keeps its instance
+	// on the placement line, so a human still sees which process is booting.
 	a.log().Info("xbc: application traffic gate released",
 		"instances", len(instances),
 		"order", strings.Join(labels, ","),

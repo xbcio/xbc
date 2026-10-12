@@ -13,6 +13,14 @@ type RuntimeHost interface {
 	ExecutionContext() context.Context
 	Logger() log.Logger
 	ProcessInstance() string
+	// Service reports the process-wide service identity, the same value the
+	// runtime stamps onto its own output. A host with no identity to report --
+	// a test harness -- returns the zero value.
+	Service() ServiceIdentity
+	// IngressStopBudget reports the window the ingress stop runs under. A host
+	// that has no budgets to derive it from -- a test harness -- returns 0,
+	// which Context reports as "unknown".
+	IngressStopBudget() time.Duration
 	TrafficGate() <-chan struct{}
 	SubmitTask(id Identity, fn func(context.Context), critical bool) bool
 	RequestShutdown(id Identity, reason string) bool
@@ -81,6 +89,10 @@ func (c *Context) Identity() Identity { return c.id }
 // structure to parse: the derived default's spelling is the runtime's business
 // and may change. It is empty only when there is no runtime behind the Context,
 // which a plugin under a real application never sees.
+//
+// It always equals Service().Instance; Service is the spelling to reach for
+// when code wants more than the instance id, and this one remains for the
+// consumers that only ever wanted the instance.
 func (c *Context) ProcessInstance() string {
 	if c == nil || c.host == nil {
 		return ""
@@ -88,11 +100,48 @@ func (c *Context) ProcessInstance() string {
 	return c.host.ProcessInstance()
 }
 
+// Service returns the process-wide service identity: the service name and
+// version this deployment runs, and the instance id this process carries.
+// Every Plugin in one process reports the same value, and Service().Instance
+// always equals ProcessInstance().
+//
+// It is the one source a consumer stamps without inventing a fallback of its
+// own -- structured log fields, a telemetry resource, a build-info metric --
+// so two parts of one process cannot disagree about which service it is. The
+// zero value is what a Context with no runtime behind it reports, which a
+// plugin under a real application never sees.
+func (c *Context) Service() ServiceIdentity {
+	if c == nil || c.host == nil {
+		return ServiceIdentity{}
+	}
+	return c.host.Service()
+}
+
 func (c *Context) Log() log.Logger {
 	if c == nil || c.host == nil || c.host.Logger() == nil {
 		return log.L()
 	}
 	return c.host.Logger()
+}
+
+// IngressStopBudget reports how long the ingress stop has when a shutdown
+// walk begins: xbc.shutdown_timeout less xbc.stop_reserve, the same two
+// settings the runtime derives its phase-A deadline from -- the two can never
+// disagree, because both read the one bound value.
+//
+// A transport uses it to refuse a configuration that cannot fit: its
+// pre-drain window is held open before the graceful stop runs, so a
+// pre_drain_delay at or past this budget leaves the graceful stop no time
+// and degrades it to a forced stop.
+//
+// Zero means "unknown": a Context with no runtime behind it -- a test
+// harness -- has no budgets to derive from, and callers must read 0 as
+// "cannot judge" and skip such a check rather than treat it as "no time".
+func (c *Context) IngressStopBudget() time.Duration {
+	if c == nil || c.host == nil {
+		return 0
+	}
+	return c.host.IngressStopBudget()
 }
 
 // TrafficGate remains closed throughout fallible traffic preparation and is

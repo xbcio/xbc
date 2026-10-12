@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
@@ -30,9 +31,13 @@ func newTestHost() *testHost {
 	return &testHost{execution: execution, cancel: cancel}
 }
 
-func (h *testHost) ExecutionContext() context.Context        { return h.execution }
-func (*testHost) Logger() log.Logger                         { return log.Nop() }
-func (*testHost) ProcessInstance() string                    { return "test-process" }
+func (h *testHost) ExecutionContext() context.Context { return h.execution }
+func (*testHost) Logger() log.Logger                  { return log.Nop() }
+func (*testHost) ProcessInstance() string             { return "test-process" }
+
+func (*testHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*testHost) IngressStopBudget() time.Duration           { return 0 }
 func (*testHost) TrafficGate() <-chan struct{}               { return nil }
 func (*testHost) Admission(plugin.Identity) plugin.Admission { return nil }
 

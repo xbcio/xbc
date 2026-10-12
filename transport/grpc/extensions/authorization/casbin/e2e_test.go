@@ -117,9 +117,13 @@ func newBootHost() *bootHost {
 	return &bootHost{execution: execution, cancel: cancel, gate: make(chan struct{})}
 }
 
-func (h *bootHost) ExecutionContext() context.Context        { return h.execution }
-func (*bootHost) Logger() log.Logger                         { return log.Nop() }
-func (*bootHost) ProcessInstance() string                    { return "casbin-grpc-test-process" }
+func (h *bootHost) ExecutionContext() context.Context { return h.execution }
+func (*bootHost) Logger() log.Logger                  { return log.Nop() }
+func (*bootHost) ProcessInstance() string             { return "casbin-grpc-test-process" }
+
+func (*bootHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*bootHost) IngressStopBudget() time.Duration           { return 0 }
 func (h *bootHost) TrafficGate() <-chan struct{}             { return h.gate }
 func (*bootHost) Admission(plugin.Identity) plugin.Admission { return nil }
 

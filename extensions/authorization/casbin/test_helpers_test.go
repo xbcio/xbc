@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
@@ -28,6 +29,10 @@ func (h *testHost) ExecutionContext() context.Context { return h.taskCtx }
 
 func (*testHost) Logger() corelog.Logger  { return corelog.Nop() }
 func (*testHost) ProcessInstance() string { return "test-process" }
+
+func (*testHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*testHost) IngressStopBudget() time.Duration { return 0 }
 
 func (h *testHost) TrafficGate() <-chan struct{} {
 	gate := make(chan struct{})

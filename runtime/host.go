@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
@@ -36,6 +37,22 @@ func (host hostAdapter) Logger() log.Logger {
 // a lease claimant published by any plugin name one process identically. It
 // needs no lock: settings are bound once, before any Plugin is constructed.
 func (host hostAdapter) ProcessInstance() string { return host.app.settings.Instance() }
+
+// Service answers with the process-wide identity the runtime stamped onto its
+// own output -- the startup report, the JSON log fields -- so a plugin that
+// publishes a telemetry resource or a build-info metric names this process
+// exactly as the runtime does. Like ProcessInstance it reads bound settings
+// without a lock: they are settled once, before any Plugin is constructed.
+func (host hostAdapter) Service() plugin.ServiceIdentity { return host.app.settings.ServiceIdentity() }
+
+// IngressStopBudget answers with the window the shutdown walk's phase A runs
+// under. It reads the same bound settings shutdown.go derives that phase's
+// deadline from, so a transport validating its pre_drain_delay against this
+// number is validating it against the budget the deadline will actually be
+// built from.
+func (host hostAdapter) IngressStopBudget() time.Duration {
+	return host.app.settings.IngressStopBudget()
+}
 
 func (host hostAdapter) TrafficGate() <-chan struct{} { return host.app.trafficGate }
 

@@ -38,7 +38,11 @@ func newRefusingHost() *refusingHost {
 func (h *refusingHost) ExecutionContext() context.Context { return h.executionCtx }
 func (h *refusingHost) Logger() log.Logger                { return log.Nop() }
 func (*refusingHost) ProcessInstance() string             { return "test-process" }
-func (h *refusingHost) TrafficGate() <-chan struct{}      { return h.gate }
+
+func (*refusingHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*refusingHost) IngressStopBudget() time.Duration { return 0 }
+func (h *refusingHost) TrafficGate() <-chan struct{}   { return h.gate }
 
 func (h *refusingHost) Admission(plugin.Identity) plugin.Admission { return nil }
 

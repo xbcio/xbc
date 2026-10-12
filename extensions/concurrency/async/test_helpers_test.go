@@ -34,8 +34,12 @@ func (host *fakeHost) Logger() log.Logger {
 	}
 	return host.log
 }
-func (*fakeHost) ProcessInstance() string      { return "test-process" }
-func (*fakeHost) TrafficGate() <-chan struct{} { gate := make(chan struct{}); close(gate); return gate }
+func (*fakeHost) ProcessInstance() string { return "test-process" }
+
+func (*fakeHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (*fakeHost) IngressStopBudget() time.Duration { return 0 }
+func (*fakeHost) TrafficGate() <-chan struct{}     { gate := make(chan struct{}); close(gate); return gate }
 
 func (host *fakeHost) Admission(plugin.Identity) plugin.Admission { return host.admission }
 

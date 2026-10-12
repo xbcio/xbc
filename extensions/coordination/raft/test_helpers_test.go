@@ -22,9 +22,13 @@ type testRuntimeHost struct {
 	execution context.Context
 }
 
-func (h testRuntimeHost) ExecutionContext() context.Context        { return h.execution }
-func (testRuntimeHost) Logger() corelog.Logger                     { return corelog.Nop() }
-func (testRuntimeHost) ProcessInstance() string                    { return "test-process" }
+func (h testRuntimeHost) ExecutionContext() context.Context { return h.execution }
+func (testRuntimeHost) Logger() corelog.Logger              { return corelog.Nop() }
+func (testRuntimeHost) ProcessInstance() string             { return "test-process" }
+
+func (testRuntimeHost) Service() plugin.ServiceIdentity { return plugin.ServiceIdentity{} }
+
+func (testRuntimeHost) IngressStopBudget() time.Duration           { return 0 }
 func (testRuntimeHost) TrafficGate() <-chan struct{}               { return nil }
 func (testRuntimeHost) Admission(plugin.Identity) plugin.Admission { return nil }
 

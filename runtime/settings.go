@@ -5,11 +5,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/xbcio/xbc/config"
+	"github.com/xbcio/xbc/plugin"
 )
 
 // settingsSection is the top-level config key the framework's own knobs live
@@ -195,6 +198,13 @@ type settings struct {
 	// who names a process means that name to survive a restart.
 	InstanceID string `yaml:"instance_id"`
 
+	// Service names the service this process is one replica of. It feeds the
+	// process-wide identity every consumer stamps -- log fields, tracing
+	// resource, build-info metric, startup report -- so one process never
+	// presents two spellings of itself. Both members are optional and each
+	// falls back to what the build itself says; see ServiceIdentity.
+	Service serviceSettings `yaml:"service"`
+
 	// instanceID is InstanceID with the derived default applied, resolved once
 	// while binding. It is unexported and carries no yaml tag, so the
 	// configuration schema never sees it: it is not a configuration key, it is
@@ -205,11 +215,134 @@ type settings struct {
 	// lease acquisition that recorded it and the renewal that has to present
 	// it, and the process would then fail to renew the very lease it holds.
 	instanceID string
+
+	// serviceName and serviceVersion are Service.Name/Service.Version with the
+	// derived defaults applied, resolved once while binding for the same
+	// reason instanceID is: they are stamped onto every log line and every
+	// exported span, and a value recomputed per read could disagree with
+	// itself between two consumers of the same process.
+	serviceName    string
+	serviceVersion string
+}
+
+// serviceSettings is the "xbc.service" subsection. Both members are optional:
+// an unset name falls back to the built module's last path segment and then to
+// the executable's file name, and an unset version falls back to the build's
+// module version and then to its VCS revision -- so the common deployment that
+// builds from source gets a truthful identity without writing any of this.
+type serviceSettings struct {
+	// Name is the service name, shared by every replica of the deployment.
+	//
+	// Set it when the built artifact's name is an accident of packaging --
+	// renamed executables, containers built from a shared base -- because this
+	// string is what an operator sees in every log line and every trace. It
+	// must not contain whitespace; the value is presented verbatim.
+	Name string `yaml:"name"`
+
+	// Version is the service build, shared by every replica of the
+	// deployment. Set it when releases are cut outside the Go toolchain --
+	// a CI pipeline stamping its own version -- because the derived value
+	// only knows what the module and its VCS metadata say.
+	Version string `yaml:"version"`
 }
 
 // Instance returns this process's stable identity: the configured instance_id
 // when one was given, and the derived default otherwise.
 func (s settings) Instance() string { return s.instanceID }
+
+// ServiceIdentity returns the process-wide identity every consumer reports:
+// the service name and version this deployment runs, and the instance this
+// process carries. The values are settled once while binding, so every call
+// answers identically.
+func (s settings) ServiceIdentity() plugin.ServiceIdentity {
+	return plugin.ServiceIdentity{Name: s.serviceName, Version: s.serviceVersion, Instance: s.instanceID}
+}
+
+// IngressStopBudget returns the window the ingress stop (phase A of the
+// shutdown walk) runs under: ShutdownTimeout less the reserve StopReserve
+// holds back for the Stops after the drain phase. It is the number the
+// runtime derives phase A's deadline from in shutdown.go -- both read these
+// one bound settings value, so they cannot disagree -- and what a transport
+// compares its pre_drain_delay against at assembly, because a pre-drain
+// window at or past this budget leaves the graceful stop no time at all.
+//
+// Zero means "unknown": settings that were never bound carry no budgets, and
+// a caller must read 0 as "cannot judge" rather than as "no time". Bound
+// settings can never produce 0 here -- loadSettings rejects a shutdown_timeout
+// without a positive value and a reserve that is not strictly smaller than
+// it -- which is exactly why 0 is free to carry the unknown meaning.
+func (s settings) IngressStopBudget() time.Duration {
+	if s.ShutdownTimeout <= 0 {
+		return 0
+	}
+	return s.ShutdownTimeout - s.StopReserve
+}
+
+// readBuildInfo is the injectable seam over the Go toolchain's build
+// metadata. It is a variable so tests can hand the fallback chain a
+// documented shape -- a (devel) version, no VCS settings, a dirty tree --
+// instead of whatever this repository's own build happens to carry; nothing
+// outside this package may reassign it. A build stripped of its metadata
+// answers nil, which every caller reads as "nothing recorded".
+var readBuildInfo = func() *debug.BuildInfo {
+	info, _ := debug.ReadBuildInfo()
+	return info
+}
+
+// deriveServiceName composes the default service name: the last path segment
+// of the main module path -- "github.com/xbcio/xbc/examples/quickstart" reads
+// as "quickstart" -- and the executable's file name when the build carries no
+// module path. "unknown" when neither answers, so the identity is never the
+// empty string.
+func deriveServiceName() string {
+	if info := readBuildInfo(); info != nil && info.Main.Path != "" {
+		if base := path.Base(info.Main.Path); base != "" && base != "." && base != "/" {
+			return base
+		}
+	}
+	if name := executableName(); name != "" && name != "." {
+		return name
+	}
+	return "unknown"
+}
+
+// deriveServiceVersion composes the default service version from what the
+// build records, in falling order: the main module's version, unless it is
+// the toolchain's "(devel)" placeholder; the VCS revision, shortened to its
+// conventional 12 characters and marked "-dirty" when the tree had local
+// modifications at build time; and "unknown" when the build carries neither.
+func deriveServiceVersion() string {
+	info := readBuildInfo()
+	if info == nil {
+		return "unknown"
+	}
+	if version := info.Main.Version; version != "" && version != "(devel)" {
+		return version
+	}
+	if revision := buildSetting(info, "vcs.revision"); revision != "" {
+		short := revision
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		if buildSetting(info, "vcs.modified") == "true" {
+			short += "-dirty"
+		}
+		return short
+	}
+	return "unknown"
+}
+
+// buildSetting reads one key of the build's settings list: the key/value pairs
+// the toolchain records (VCS revision, modified flag, build flags). An absent
+// key answers the empty string, which every caller reads as "not recorded".
+func buildSetting(info *debug.BuildInfo, key string) string {
+	for _, setting := range info.Settings {
+		if setting.Key == key {
+			return setting.Value
+		}
+	}
+	return ""
+}
 
 // deriveInstanceID composes the default identity: the hostname, the boot time
 // and a random suffix, in a log-friendly form such as
@@ -576,6 +709,30 @@ func loadSettings(env *config.Environment) (settings, error) {
 		return s, fmt.Errorf(
 			"xbc: %s.instance_id must not contain whitespace, got %q; it is presented verbatim as this process's identity",
 			settingsSection, s.instanceID)
+	}
+	// The service identity's two halves are settled beside it, once, for a
+	// related reason: they are stamped onto every JSON log line and every
+	// exported span, and a value recomputed per consumer could disagree with
+	// itself within one process. An unset name and version each fall back to
+	// what the build records, so a deployment that never writes this section
+	// still gets a truthful identity instead of an empty one.
+	s.serviceName = strings.TrimSpace(s.Service.Name)
+	if s.serviceName == "" {
+		s.serviceName = deriveServiceName()
+	}
+	if strings.ContainsAny(s.serviceName, " \t\r\n") {
+		return s, fmt.Errorf(
+			"xbc: %s.service.name must not contain whitespace, got %q; it is presented verbatim as this service's name",
+			settingsSection, s.serviceName)
+	}
+	s.serviceVersion = strings.TrimSpace(s.Service.Version)
+	if s.serviceVersion == "" {
+		s.serviceVersion = deriveServiceVersion()
+	}
+	if strings.ContainsAny(s.serviceVersion, " \t\r\n") {
+		return s, fmt.Errorf(
+			"xbc: %s.service.version must not contain whitespace, got %q; it is presented verbatim as this service's version",
+			settingsSection, s.serviceVersion)
 	}
 	return s, nil
 }
