@@ -304,3 +304,49 @@ plugins:
   #     expiry_duration: 1s                # ants' own default idle-worker scan interval
   #     pre_alloc: false                   # ants' own default
   #     disable_purge: false               # ants' own default
+  #
+  # Outbound HTTP clients are one named instance per downstream. This example
+  # does not select httpclient.Bundle() in main.go, so the section is shown
+  # commented at a plausible shape; a service that calls a downstream adds the
+  # Bundle at its composition root, names one instance per peer below, and
+  # binds it with plugin.RefToInstance[*httpclient.Client](httpclient.Key,
+  # "gateway"). See the httpclient package doc for the full surface, including
+  # httpclient.Idempotent(ctx) for a POST the peer deduplicates.
+  #
+  # http-client:
+  #   gateway:
+  #     base_url: "https://gateway.internal"   # scheme and host only; userinfo is rejected
+  #     timeout: 10s                           # per-attempt budget
+  #     total_timeout: 10s                     # the whole call, retries included; defaults to timeout
+  #     retry:
+  #       max_attempts: 1                      # 1 = never retry; idempotent requests only
+  #       initial_backoff: 500ms               # jittered, doubling up to max_backoff
+  #       max_backoff: 30s
+  #       max_retry_after: 30s                 # caps a peer's Retry-After
+  #     tls:
+  #       ca_file: ""                          # mTLS and private CAs; "insecure_skip_verify" does not exist here
+  #       min_version: "1.2"
+  #     max_idle_conns_per_host: 2
+  #     idle_conn_timeout: 90s
+  #
+  # A gRPC-only process has no HTTP outlet, so its metrics registry and the
+  # profiling handlers need a listener of their own. Selecting
+  # grpcmanagement.Bundle() (transport/grpc/extensions/management) beside the
+  # gRPC transport enables the section below; this Web example does not select
+  # it, so the block is shown commented. /metrics appears only once a
+  # plugins.metrics section is configured, and the pprof subtree only under
+  # pprof: true -- an endpoint left out answers 404 rather than serving an
+  # empty view. The listener follows the same rules as web.management: a
+  # hostless address binds loopback, any other address requires allow_remote,
+  # and allow_remote requires a certificate under grpc-management.tls. Enabling
+  # it beside web.management in one process is legal -- both render the same
+  # registry -- but one operator port per process is the recommended shape.
+  #
+  # grpc-management:
+  #   addr: "127.0.0.1:9091"
+  #   allow_remote: false
+  #   pprof: false
+  #   tls:
+  #     cert_file: "/etc/orders/management.crt"   # required by allow_remote
+  #     key_file: "/etc/orders/management.key"
+  #     min_version: "1.2"                        # "1.2" or "1.3"

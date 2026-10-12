@@ -536,6 +536,138 @@ xbc.Run(xbc.WithBundles(
 
 Each transport's adapter Bundle includes its neutral half -- `webjwt.Bundle()` includes the JWT authenticator, `grpcjwt.Bundle()` pairs that same authenticator with its metadata extractor -- so one `plugins.jwt.secret` authenticates both, one token presented over HTTP and over gRPC resolves to the same Principal, and neither transport needs the other selected to work. A failure anywhere in one stack's startup keeps the process-wide traffic gate shut, so the other stack's listener accepts connections and answers nothing until the failure is resolved; `tests/composition` pins these properties on the real runtime.
 
+### An operator port for a gRPC-only process
+
+A process that serves gRPC alone has no HTTP outlet at all, so the neutral metrics registry and the profiling handlers are unreachable. Selecting the management plane gives them one, on a listener of their own:
+
+```go
+xbc.Run(xbc.WithBundles(
+	grpctransport.Bundle(),
+	grpcmanagement.Bundle(),
+	// ...
+))
+```
+
+```yaml
+plugins:
+  metrics: {}
+  grpc-management:
+    addr: "127.0.0.1:9091"
+    pprof: false
+```
+
+The section's presence is the activation, and an address is required with it. `/metrics` is registered only when the neutral metrics plugin is selected, rendering that plugin's registry -- the same registry the built-in gRPC instrumentation records into -- and `pprof: true` registers Go's standard profiling routes under `/debug/pprof/`. With either source left out, the corresponding route is not registered at all and answers `404`, so an absent endpoint is never mistaken for an empty one. Health is deliberately not among the routes: readiness is the serving port's answer to whoever routes traffic, exactly as it is on the Web side (see [An operator listener of its own](#an-operator-listener-of-its-own)).
+
+The listener follows the same three rules as the Web transport's management plane: it is stopped last, so a scrape issued while the serving listener is draining -- or while the drain phase that follows it is still running -- still lands; it is protected by its bound address rather than by an authentication policy; and a hostless `":9091"` binds loopback while a non-loopback host requires `allow_remote: true` and a certificate under `grpc-management.tls`. The certificate is this listener's own section rather than a share of `grpc.tls`, because the two are configured independently; there is consequently no rotation path here, and a deployment that rotates the serving certificate restarts this port with the process.
+
+A dual-transport process may enable `web.management` and `plugins.grpc-management` at the same time -- both render the same registry, and nothing refuses the combination -- but running one operator port per process is the recommended shape. Two listeners double the surface to firewall and to scrape, and a single metrics job pointed at the process should not have to choose which of them to read.
+
+## Calling other services
+
+Outbound HTTP calls go through `extensions/httpclient`: one configured client per named downstream, each with its own timeout, retry policy, TLS material, and connection pool. A route binds the client it declared by name at package scope -- exactly the way it binds any other instance -- and drives the standard `*http.Client`:
+
+```go
+// Plugin input, declared once at package scope.
+var callee = plugin.RefToInstance[*httpclient.Client](httpclient.Key, "callee")
+
+type orders struct {
+	client *http.Client
+	target string
+}
+
+var ordersDefinition = plugin.Define(
+	"orders",
+	func(ctx plugin.BuildContext) (*orders, error) {
+		return &orders{client: callee.Get(ctx).Value.Client(), target: "https://callee.internal"}, nil
+	},
+	plugin.Options[*orders]{
+		Inputs: plugin.Inputs(callee),
+		Exports: plugin.Contracts(
+			plugin.ExportAs[web.RouteContributor](func(value *orders) web.RouteContributor { return value }),
+		),
+	},
+)
+
+func (p *orders) RegisterRoutes(router *web.Router) {
+	router.GET("/orders", p.listOrders).Name("orders.list").Auth(web.Public())
+}
+
+func (p *orders) listOrders(_ context.Context, c *web.Ctx) error {
+	request, err := http.NewRequestWithContext(c.Request().Context(), http.MethodGet, p.target+"/v1/orders", nil)
+	if err != nil {
+		return err
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	// Read and render the response.
+	return nil
+}
+```
+
+```yaml
+plugins:
+  http-client:
+    callee:
+      base_url: "https://callee.internal"
+      timeout: 2s               # per attempt, response body included
+      total_timeout: 10s        # the whole call, every attempt and wait
+      retry:
+        max_attempts: 3         # 1 (the default) means never retry
+        initial_backoff: 50ms   # jittered, doubling up to max_backoff
+        max_backoff: 200ms
+```
+
+`base_url` is configuration for the operator, not a request rewrite: the plugin validates it and reports it, and the caller configures its own request library with the same value (`resty.SetBaseURL`, for example), so what goes on the wire is what the caller builds with `net/http`. Retrying is off by default and enabled per downstream, because which failures may be replayed is a property of that downstream's contract rather than a global nicety. The retry set is connection failures, 502, 503, 504, and 429 -- 429 additionally honours the peer's `Retry-After`, capped by `max_retry_after`. A 500 is never retried: the peer processed the request and failed, and replaying it can double whatever the request was worth.
+
+An attempt is only made again when the method is idempotent (GET, HEAD, OPTIONS, PUT, DELETE), or the context carries `httpclient.Idempotent(ctx)` for a POST the peer deduplicates, and when the outbound request body can be produced again in full. For a forwarder, the safe shape is to build the downstream request from the received payload, buffered in full: a bodyless method forwards nothing, and a payload the client may have to send again is a payload it can produce again under any cap:
+
+```go
+body, err := io.ReadAll(c.Request().Body)
+if err != nil {
+	return err
+}
+if c.Request().Method == http.MethodGet || c.Request().Method == http.MethodHead {
+	body = nil
+}
+request, err := http.NewRequestWithContext(c.Request().Context(), c.Request().Method, p.target, bytes.NewReader(body))
+```
+
+The inbound stream is not a substitute: the server records no replay facility for it, so forwarding `c.Request().Body` directly makes the downstream request one-shot -- sent exactly once, whatever the policy says. (The request-body cap preserves a replay facility when application middleware installs one, and reads it under the same limit, so the cap is never a retry loophole.)
+
+Migrating an existing resty client is a two-step move. The old factory built its own client:
+
+```go
+func newCalleeClient() *resty.Client {
+	return resty.New().
+		SetHeader("Content-Type", "application/json").
+		SetHeader("X-Token", config.GetString("callee.token")).
+		SetBaseURL(config.GetString("callee.url")).
+		SetTimeout(10 * time.Minute)
+}
+```
+
+Under the plugin the client is constructed and owned by the framework -- configuration, connection pool, retries, TLS, and shutdown included -- and the factory becomes a typed input:
+
+```go
+var callee = plugin.RefToInstance[*httpclient.Client](httpclient.Key, "callee")
+
+func (s *notifier) Notify(ctx context.Context, payload []byte) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/api/notify", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Token", s.token)
+	response, err := s.client.Do(request)
+	// ...
+}
+```
+
+The migration piece worth budgeting for is TLS verification: a factory that dialed a private peer by disabling verification has no equivalent switch here -- `tls.ca_file` pins the peer's CA and `tls.server_name` covers the certificate-name mismatch, and that is the whole surface. Retrying, tracing, and metrics that a hand-rolled client approximated with per-call wrappers become configuration plus one Bundle selection: a composition that selected `plugins.tracing` gets one client span per attempt with W3C propagation headers injected per attempt, and one that selected `plugins.metrics` gets `http_client_requests_total`, `http_client_request_duration_seconds`, and `http_client_retries_total`, labelled by instance name and never by URL or path.
+
 ## Hosting a subset of workloads
 
 A process does not have to carry every plugin the application declares. A workload is a named group of Definitions a process carries as a unit or not at all. It is declared once at the composition root and selected by placement:
@@ -811,6 +943,8 @@ xbc:
   drain_timeout: 15s
   stop_reserve: 5s
 ```
+
+`web.shutdown.pre_drain_delay` (and its gRPC counterpart) is held inside that same ingress share: the window runs before the graceful stop and both come out of `shutdown_timeout` less `stop_reserve`, so pre-drain adds no third term to the supervisor's sum. A window at or past the share would leave the graceful stop no time and is refused at startup — `validate` reports it before a deployment ever gets that far — so the `pre_stop_timeout + shutdown_timeout` relationship below is all a supervisor has to allow for.
 
 The total budget is still just the two outer phases' sum, `2s + 25s = 27s`, and the supervisor must allow at least that much before it kills the process. A supervisor that kills earlier interrupts the release, and the slot then waits for its TTL instead of being freed immediately.
 
@@ -1166,7 +1300,7 @@ What each check actually asks matters when reading a 503. `elasticsearch` and `a
 
 Two integrations deliberately contribute nothing. `outbox` depends only on a `gorm` database that `gorm-health` already probes, and its publish failures land in the event table with a retry schedule. `cron` has no remote dependency unless distributed mode is enabled, and there a lost lock surfaces within seconds through its own logged acquisition and renewal failures.
 
-The interval leaves the listener up after runtime cancellation so `/readyz` can return 503 before HTTP drain. It consumes the one shared runtime shutdown budget, still accepts ordinary traffic, and is not acknowledgement that a load balancer has withdrawn the instance. Choose it from probe and load-balancer convergence time while reserving enough budget for draining.
+The interval leaves the listener up after runtime cancellation so `/readyz` can return 503 before HTTP drain. It consumes the one shared runtime shutdown budget, still accepts ordinary traffic, and is not acknowledgement that a load balancer has withdrawn the instance. Choose it from probe and load-balancer convergence time while reserving enough budget for draining: the framework refuses a `pre_drain_delay` at or past what `shutdown_timeout` leaves the ingress after `xbc.stop_reserve` — at startup and in `validate` — so an over-long window is a boot error rather than a silent degradation to a forced stop.
 
 A startup that never reaches the listener is reported the other way round. `xbc.slow_startup_after` defaults to `30s`, and while startup is unfinished the runtime repeats a warning naming the phase plus the plugin and lifecycle stage still holding it:
 

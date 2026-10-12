@@ -168,6 +168,8 @@ XBC_INSTANCE_ID=orders-3 \
 
 An explicitly set value is used exactly as written and is not made unique per boot: naming a process means that name to survive a restart. Whitespace in it fails startup, because it is presented as one token wherever it is printed.
 
+`xbc.service.name` and `xbc.service.version` say which service this process is one replica of. Both are optional, and each falls back to what the build records — the name to the main module path's last segment and then the executable's file name; the version to the module version unless it is the toolchain's `(devel)` placeholder, then the VCS revision shortened to 12 characters and marked `-dirty` when the tree had local modifications, then `unknown`. Set them when the build's own answer is not the name you deploy under. Every JSON log line carries the identity under the OpenTelemetry resource keys — `service.name`, `service.version`, and `service.instance.id` — and the tracing resource and the metrics `build_info` series stamp the same values, so one collector can tell one deployment's machine-readable records from another's without any call site repeating the fields; the OTel names also keep the identity clear of the short keys a call site writes for its own purposes, such as an access log's `service` or a placement line's `instance`, which would otherwise appear twice on one line. Console-format output deliberately carries none of them, because it is read by a human looking at one process. Whitespace in either value fails startup, the same rule `xbc.instance_id` has.
+
 ### Files and profiles
 
 Without `--config`, XBC uses the first file found in the current working directory:
@@ -201,6 +203,8 @@ Environment variables use the complete configuration path with the `XBC_` prefix
 | `xbc.drain_timeout` | `XBC_DRAIN_TIMEOUT` |
 | `xbc.stop_reserve` | `XBC_STOP_RESERVE` |
 | `xbc.instance_id` | `XBC_INSTANCE_ID` |
+| `xbc.service.name` | `XBC_SERVICE_NAME` |
+| `xbc.service.version` | `XBC_SERVICE_VERSION` |
 | `xbc.runtime.max_procs` | `XBC_RUNTIME_MAX_PROCS` |
 | `web.addr` | `XBC_WEB_ADDR` |
 | `web.management.addr` | `XBC_WEB_MANAGEMENT_ADDR` |
@@ -317,6 +321,7 @@ The operator arithmetic this guide deliberately leaves out — how many processe
 - A service with no transport at all follows the same shape: see [Background-only service](recipes.md#background-only-service) and the runnable `examples/worker`.
 - The gRPC counterpart of this guide is the runnable `examples/grpcquickstart` with the walkthrough in [gRPC service](recipes.md#grpc-service): the same composition-root shape, a buf-generated service instead of HTTP routes, and startup from environment variables alone.
 - One binary hosting several roles is the runnable `examples/workloads`, with the operator side in [Hosting a subset of workloads](recipes.md#hosting-a-subset-of-workloads).
+- A service that calls another one over HTTP — retries, timeouts, and per-downstream TLS — is in [Calling other services](recipes.md#calling-other-services), including the migration path from a hand-rolled resty client.
 - [Deployment recipes](recipes.md) show explicit compositions for authentication, persistence, messaging, scheduling, and multi-replica services, including terminating TLS in the process or behind a proxy, moving metrics and pprof to a listener of their own, and how the runnable [`examples/production`](../examples/production) image is built and run from environment variables alone.
 - [Package `web`](https://pkg.go.dev/github.com/xbcio/xbc/transport/web) documents routing, middleware, request binding, errors, limits, and trusted proxies.
 - [Package `config`](https://pkg.go.dev/github.com/xbcio/xbc/config) documents the programmatic loader and schema contract.
