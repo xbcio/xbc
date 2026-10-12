@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"io"
 	"net/http"
 )
 
@@ -10,6 +11,13 @@ import (
 // middleware, so nothing can read an uncapped body: an audit, idempotency, or
 // signature-verification middleware that buffers the request is bounded by it
 // whatever phase it sits in.
+//
+// The cap covers every read of the body, not just the first: Request.GetBody
+// -- the replay facility application middleware installs, and which an
+// outbound client reads when it decides whether a request may be retried --
+// is preserved and limited by the same maximum, because a replayed read that
+// escaped the cap would hand out exactly the unbounded body this stage exists
+// to deny.
 //
 // It deliberately never answers the request. Rejecting an oversized body is
 // rejectOversizedRequestBody's job, and that stage is spliced after the whole
@@ -23,7 +31,17 @@ func capRequestBody(maximum int64) Handler {
 		if request == nil || request.Body == nil {
 			return nil
 		}
+		previous := request.GetBody
 		request.Body = http.MaxBytesReader(c.Writer(), request.Body, maximum)
+		if previous != nil {
+			request.GetBody = func() (io.ReadCloser, error) {
+				replay, err := previous()
+				if err != nil {
+					return nil, err
+				}
+				return http.MaxBytesReader(nil, replay, maximum), nil
+			}
+		}
 		return nil
 	}
 }
