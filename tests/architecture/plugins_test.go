@@ -627,7 +627,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	t.Helper()
 	repositoryRoot := archRepositoryRoot(t)
 	webRoot := filepath.Join(repositoryRoot, "transport", "web")
-	roots := make([]string, 0, 50)
+	roots := make([]string, 0, 52)
 	for _, extensionPath := range archWebPackageExtensionPaths {
 		roots = append(roots, filepath.Join(webRoot, "extensions", filepath.FromSlash(extensionPath)))
 	}
@@ -645,7 +645,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 			protocolNeutral = append(protocolNeutral, moduleRoot)
 		}
 	}
-	require.Len(t, protocolNeutral, 23, "expected 23 protocol-neutral extension plugins plus the non-plugin contract modules beneath extensions")
+	require.Len(t, protocolNeutral, 24, "expected 24 protocol-neutral extension plugins plus the non-plugin contract modules beneath extensions")
 	roots = append(roots, protocolNeutral...)
 
 	webAdapter := filepath.Join(webRoot, "extensions", "authorization", "rbac")
@@ -665,11 +665,17 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	for _, extensionPath := range archGRPCPackageExtensionPaths {
 		roots = append(roots, filepath.Join(grpcExtensions, filepath.FromSlash(extensionPath)))
 	}
+	// The management plane is a package of the transport module too, but it
+	// sits at the namespace's direct level rather than inside a capability
+	// group; archGRPCOwnedPackageLeaves in layout_test.go declares that shape.
+	for _, name := range archGRPCOwnedPackageLeaves {
+		roots = append(roots, filepath.Join(grpcExtensions, name))
+	}
 	grpcPlugins := archExtensionModuleRoots(t, grpcExtensions)
 	require.Len(t, grpcPlugins, 4, "expected 4 independently versioned gRPC extension plugins")
 	roots = append(roots, grpcPlugins...)
 
-	require.Len(t, roots, 50, "expected 13 Web package extensions, 23 protocol-neutral extension plugins, 7 independently versioned Web extension plugins, 3 gRPC package extensions, and 4 independently versioned gRPC extension plugins; the two contract modules beneath extensions are not plugin implementations")
+	require.Len(t, roots, 52, "expected 13 Web package extensions, 24 protocol-neutral extension plugins, 7 independently versioned Web extension plugins, 3 gRPC package extensions, 1 gRPC-owned package extension, and 4 independently versioned gRPC extension plugins; the two contract modules beneath extensions are not plugin implementations")
 	sort.Strings(roots)
 	return roots
 }

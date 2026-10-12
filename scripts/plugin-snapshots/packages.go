@@ -13,6 +13,7 @@ import (
 	"github.com/xbcio/xbc/extensions/concurrency/async"
 	"github.com/xbcio/xbc/extensions/coordination/placement"
 	"github.com/xbcio/xbc/extensions/coordination/raft"
+	"github.com/xbcio/xbc/extensions/httpclient"
 	"github.com/xbcio/xbc/extensions/jobs/asynq"
 	"github.com/xbcio/xbc/extensions/jobs/cron"
 	"github.com/xbcio/xbc/extensions/messaging/kafka"
@@ -31,6 +32,7 @@ import (
 	grpcapikey "github.com/xbcio/xbc/transport/grpc/extensions/authentication/apikey"
 	grpcjwt "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt"
 	grpccasbin "github.com/xbcio/xbc/transport/grpc/extensions/authorization/casbin"
+	grpcmanagement "github.com/xbcio/xbc/transport/grpc/extensions/management"
 	grpcaccesslog "github.com/xbcio/xbc/transport/grpc/extensions/observability/accesslog"
 	grpcmetrics "github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics"
 	grpctracing "github.com/xbcio/xbc/transport/grpc/extensions/observability/tracing"
@@ -92,6 +94,7 @@ var bundleProviders = []func() plugin.Bundle{
 	elasticsearch.Bundle,
 	gorm.Bundle,
 	gracefulshutdown.Bundle,
+	httpclient.Bundle,
 	apikeycore.Bundle,
 	jwtcore.Bundle,
 	sessioncore.Bundle,
@@ -109,6 +112,7 @@ var bundleProviders = []func() plugin.Bundle{
 	grpcapikey.Bundle,
 	grpcjwt.Bundle,
 	grpccasbin.Bundle,
+	grpcmanagement.Bundle,
 	grpcaccesslog.Bundle,
 	grpcmetrics.Bundle,
 	grpctracing.Bundle,

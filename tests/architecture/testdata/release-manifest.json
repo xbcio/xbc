@@ -180,6 +180,18 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/extensions/httpclient",
+      "directory": "extensions/httpclient",
+      "tag_prefix": "extensions/httpclient/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/observability/metrics",
+        "github.com/xbcio/xbc/extensions/observability/tracing"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/extensions/jobs/asynq",
       "directory": "extensions/jobs/asynq",
       "tag_prefix": "extensions/jobs/asynq/",
@@ -257,6 +269,7 @@
         "github.com/xbcio/xbc",
         "github.com/xbcio/xbc/extensions/authentication",
         "github.com/xbcio/xbc/extensions/authentication/apikey",
+        "github.com/xbcio/xbc/extensions/observability/metrics",
         "github.com/xbcio/xbc/extensions/reliability/health"
       ]
     },
@@ -490,6 +503,7 @@
         "github.com/xbcio/xbc/extensions/storage/gorm",
         "github.com/xbcio/xbc/extensions/tasks",
         "github.com/xbcio/xbc/transport/grpc",
+        "github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics",
         "github.com/xbcio/xbc/transport/web",
         "github.com/xbcio/xbc/transport/web/engines/gin",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
@@ -517,6 +531,7 @@
         "github.com/xbcio/xbc/extensions/concurrency/async",
         "github.com/xbcio/xbc/extensions/coordination/placement",
         "github.com/xbcio/xbc/extensions/coordination/raft",
+        "github.com/xbcio/xbc/extensions/httpclient",
         "github.com/xbcio/xbc/extensions/jobs/asynq",
         "github.com/xbcio/xbc/extensions/jobs/cron",
         "github.com/xbcio/xbc/extensions/messaging/kafka",
@@ -556,12 +571,14 @@
         "github.com/xbcio/xbc",
         "github.com/xbcio/xbc/extensions/authentication/apikey",
         "github.com/xbcio/xbc/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/extensions/httpclient",
         "github.com/xbcio/xbc/transport/grpc",
         "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt",
         "github.com/xbcio/xbc/transport/web",
         "github.com/xbcio/xbc/transport/web/engines/gin",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
-        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
+        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/transport/web/extensions/observability/tracing"
       ]
     }
   ]

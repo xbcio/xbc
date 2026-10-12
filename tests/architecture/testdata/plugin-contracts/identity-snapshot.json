@@ -166,6 +166,12 @@
       ]
     },
     {
+      "key": "grpc-management",
+      "config_path": "plugins.grpc-management",
+      "cardinality": "single",
+      "contracts": []
+    },
+    {
       "key": "grpc-metrics",
       "config_path": "plugins.grpc-metrics",
       "cardinality": "single",
@@ -203,6 +209,12 @@
       "contracts": [
         "github.com/xbcio/xbc/transport/web.RouteContributor"
       ]
+    },
+    {
+      "key": "http-client",
+      "config_path": "plugins.http-client",
+      "cardinality": "multiple",
+      "contracts": []
     },
     {
       "key": "http-metrics",

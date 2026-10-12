@@ -283,6 +283,20 @@
       }
     },
     {
+      "key": "grpc-management",
+      "config_type": "github.com/xbcio/xbc/transport/grpc/extensions/management.Config",
+      "defaults": {
+        "Addr": "",
+        "AllowRemote": false,
+        "Pprof": false,
+        "TLS": {
+          "CertFile": "",
+          "KeyFile": "",
+          "MinVersion": "1.2"
+        }
+      }
+    },
+    {
       "key": "gzip",
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/response/gzip.Config",
       "defaults": {
@@ -317,6 +331,30 @@
         "LivenessPath": "/healthz",
         "ReadinessPath": "/readyz",
         "DetailPolicy": "never"
+      }
+    },
+    {
+      "key": "http-client",
+      "config_type": "github.com/xbcio/xbc/extensions/httpclient.Config",
+      "defaults": {
+        "BaseURL": "",
+        "Timeout": 10000000000,
+        "TotalTimeout": 0,
+        "Retry": {
+          "MaxAttempts": 1,
+          "InitialBackoff": 500000000,
+          "MaxBackoff": 30000000000,
+          "MaxRetryAfter": 30000000000
+        },
+        "TLS": {
+          "CAFile": "",
+          "CertFile": "",
+          "KeyFile": "",
+          "ServerName": "",
+          "MinVersion": "1.2"
+        },
+        "MaxIdleConnsPerHost": 2,
+        "IdleConnTimeout": 90000000000
       }
     },
     {
@@ -647,7 +685,7 @@
       "key": "tracing",
       "config_type": "github.com/xbcio/xbc/extensions/observability/tracing.Config",
       "defaults": {
-        "ServiceName": "xbc",
+        "ServiceName": "",
         "ServiceVersion": "",
         "Environment": "",
         "ResourceAttributes": null,
