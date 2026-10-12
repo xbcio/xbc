@@ -145,6 +145,28 @@ func (c Config) Validate() error {
 	return c.TLS.validate()
 }
 
+// checkPreDrainBudget refuses a pre-drain window that cannot fit inside the
+// ingress stop's share of the shutdown budget. The window is held open before
+// the graceful stop runs, and that stop draws on the same share -- the
+// runtime's shutdown walk gives its ingress phase xbc.shutdown_timeout less
+// xbc.stop_reserve -- so a pre_drain_delay at or past the budget degrades the
+// graceful stop to a forced one. Both values and all three keys that decide
+// them go into the error so the operator can fix whichever is wrong.
+//
+// A zero budget means the host reports none -- a plugin.Context with no
+// runtime behind it -- and the check is skipped rather than treated as "no
+// time": there is nothing to compare against, and a harness that carries no
+// budgets must not be refused.
+func checkPreDrainBudget(delay, budget time.Duration) error {
+	if budget <= 0 || delay < budget {
+		return nil
+	}
+	return fmt.Errorf(
+		"xbc: grpc.shutdown.pre_drain_delay (%s) must be less than the ingress stop budget (%s)\n"+
+			"  → the budget is xbc.shutdown_timeout less xbc.stop_reserve; the pre-drain window is held open before the graceful stop runs, so this configuration would leave the stop no time",
+		delay, budget)
+}
+
 // normalizeConfig fills zero values a programmatic caller left unset and then
 // validates the result, so New and the configured Definition agree on what a
 // partially populated Config means.

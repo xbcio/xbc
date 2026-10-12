@@ -345,3 +345,57 @@ func TestDerivedStopReserveLetsTheFlushRunAfterAnIngressThatWaitsOutItsDeadline(
 	assert.Empty(t, app.shutdownReport.Identities(assembly.StopNotAttempted))
 	assert.Empty(t, app.shutdownReport.Identities(assembly.StopAbandoned))
 }
+
+// TestIngressStopBudgetEqualsTheDeadlinePhaseAGets pins the single source the
+// P2 seam promises: what Context.IngressStopBudget reports and the deadline
+// the shutdown walk's phase A actually hands an ingress Stop must come from
+// the same bound settings -- shutdown_timeout less stop_reserve -- so a
+// transport validating its pre-drain window against the reported budget is
+// validating it against the deadline its Stop will run under. An
+// implementation that computed either one separately (say, reporting
+// shutdown_timeout whole) fails the comparison by exactly the reserve.
+func TestIngressStopBudgetEqualsTheDeadlinePhaseAGets(t *testing.T) {
+	const (
+		shutdownTimeout = 4 * time.Second
+		stopReserve     = time.Second
+	)
+	observed := make(chan time.Duration, 1)
+	ingress := plugin.Define("ingress-budget", func(plugin.BuildContext) (*runtimeTestValue, error) {
+		return &runtimeTestValue{}, nil
+	}, plugin.Options[*runtimeTestValue]{Lifecycle: plugin.Lifecycle[*runtimeTestValue]{
+		OpenTraffic: func(*runtimeTestValue, *plugin.Context) error { return nil },
+		Stop: func(_ *runtimeTestValue, ctx context.Context) error {
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				observed <- -1
+				return nil
+			}
+			observed <- time.Until(deadline)
+			return nil
+		},
+	}})
+
+	app := newRuntimeTestApp(ingress)
+	path := filepath.Join(t.TempDir(), "application.yml")
+	contents := "log:\n  console:\n    enabled: false\n  file:\n    enabled: false\n" +
+		"xbc:\n  shutdown_timeout: " + shutdownTimeout.String() +
+		"\n  drain_timeout: 1s\n  pre_stop_timeout: 0s\n  stop_reserve: " + stopReserve.String() + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(contents), 0o600))
+
+	result := executeRuntimeTest(app, "--config", path)
+	awaitRuntimeTestReady(t, app)
+	require.True(t, app.requestStop(stopReasonSignal))
+	completed := awaitRuntimeTestResult(t, result)
+	require.NoError(t, completed.err)
+
+	select {
+	case left := <-observed:
+		budget := app.settings.IngressStopBudget()
+		assert.Equal(t, shutdownTimeout-stopReserve, budget,
+			"the reported budget is shutdown_timeout less stop_reserve")
+		assert.InDelta(t, budget, left, float64(500*time.Millisecond),
+			"phase A's real deadline must be the reported budget, not shutdown_timeout whole")
+	default:
+		t.Fatal("the ingress Stop never ran")
+	}
+}

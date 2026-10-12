@@ -116,6 +116,14 @@ func (s *Server) assemble(ctx *plugin.Context) (assembly, error) {
 	c := s.contributions
 	logger := ctx.Log()
 
+	// The pre-drain window and the graceful stop compete for one budget, and
+	// this is the last point both values exist: the config is normalized and
+	// the runtime context can report the ingress share. Preflight reaches here
+	// too, which is what lets `validate` report the misconfiguration.
+	if err := checkPreDrainBudget(cfg.Shutdown.PreDrainDelay, ctx.IngressStopBudget()); err != nil {
+		return assembly{}, err
+	}
+
 	// The TLS material is built here, not in Start, so Preflight reads and
 	// parses the certificate exactly as a boot would: an unreadable pair is a
 	// startup error either way.

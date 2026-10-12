@@ -153,6 +153,14 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 	}
 	s.cfg = cfg
 
+	// The pre-drain window and the graceful stop compete for one budget, and
+	// this is the last point both values exist: the config is normalized and
+	// the runtime context can report the ingress share. Preflight reaches here
+	// too, which is what lets `validate` report the misconfiguration.
+	if err := checkPreDrainBudget(cfg.Shutdown.PreDrainDelay, ctx.IngressStopBudget()); err != nil {
+		return assembledPipeline{}, err
+	}
+
 	logger := ctx.Log()
 
 	tlsConfig, err := cfg.TLS.serverTLSConfig(logger)
