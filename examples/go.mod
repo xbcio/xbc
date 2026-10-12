@@ -12,6 +12,8 @@ require (
 	github.com/casbin/casbin/v2 v2.135.0
 	github.com/casbin/gorm-adapter/v3 v3.39.0
 	github.com/swaggo/swag v1.16.6
+	google.golang.org/grpc v1.81.1
+	google.golang.org/protobuf v1.36.11
 	gorm.io/gorm v1.31.1
 )
 
@@ -59,6 +61,6 @@ require (
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

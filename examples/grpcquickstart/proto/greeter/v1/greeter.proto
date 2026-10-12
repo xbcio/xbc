@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+// The example service the gRPC quickstart serves: one unary method and one
+// server-streaming method, the two call shapes a first service needs.
+package greeter.v1;
+
+option go_package = "github.com/xbcio/xbc/examples/grpcquickstart/internal/gen/greeter/v1;greeterv1";
+
+service GreeterService {
+  // SayHello answers one greeting.
+  rpc SayHello(SayHelloRequest) returns (SayHelloResponse);
+  // StreamGreetings answers count greetings, one message each.
+  rpc StreamGreetings(StreamGreetingsRequest) returns (stream StreamGreetingsResponse);
+}
+
+message SayHelloRequest {
+  string name = 1;
+}
+
+message SayHelloResponse {
+  string message = 1;
+}
+
+message StreamGreetingsRequest {
+  string name = 1;
+  int32 count = 2;
+}
+
+message StreamGreetingsResponse {
+  string message = 1;
+  int32 sequence = 2;
+}
