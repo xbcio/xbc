@@ -75,7 +75,12 @@ func TestModuleManifestPinsGRPCWithoutLocalSubstitutions(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := string(data)
-	if !regexp.MustCompile(`(?m)^require\s+google\.golang\.org/grpc\s+v1\.81\.1\s*$`).MatchString(manifest) {
+	// The pin is asserted by module path and version, not by directive
+	// spelling: cmd/go writes a single direct requirement on its own line and
+	// several in a block, so the manifest's shape changes as this module gains
+	// direct dependencies while what is being pinned -- the exact version, as a
+	// direct requirement, with no substitution -- does not.
+	if !manifestRequires(manifest, "google.golang.org/grpc", "v1.81.1") {
 		t.Error("go.mod must pin google.golang.org/grpc v1.81.1 exactly")
 	}
 	if regexp.MustCompile(`(?m)^\s*replace\b`).MatchString(manifest) {
@@ -83,5 +88,47 @@ func TestModuleManifestPinsGRPCWithoutLocalSubstitutions(t *testing.T) {
 	}
 	if strings.Contains(manifest, "github.com/xbcio/xbc/transport/web") {
 		t.Fatal("the gRPC transport must not depend on the Web transport")
+	}
+}
+
+// manifestRequires reports whether a module manifest carries one direct
+// requirement line for the path at that exact version. The line may be a bare
+// require directive or an entry inside a require block. A trailing comment --
+// "// indirect" above all -- means the entry does not count: a pin that has
+// moved to the indirect block is no longer this module's own declaration.
+func manifestRequires(manifest, path, version string) bool {
+	for line := range strings.Lines(manifest) {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "require" {
+			fields = fields[1:]
+		}
+		if len(fields) == 2 && fields[0] == path && fields[1] == version {
+			return true
+		}
+	}
+	return false
+}
+
+// TestManifestRequiresReadsBothDirectiveShapes holds the helper above to the
+// spellings cmd/go actually writes, from both directions: a guard that stopped
+// matching the block form would fail the pin test for the wrong reason, and one
+// that accepted an indirect entry would stop guarding what the pin means.
+func TestManifestRequiresReadsBothDirectiveShapes(t *testing.T) {
+	const path, version = "google.golang.org/grpc", "v1.81.1"
+	for _, tc := range []struct {
+		name     string
+		manifest string
+		want     bool
+	}{
+		{name: "bare directive", manifest: "require " + path + " " + version + "\n", want: true},
+		{name: "inside a block", manifest: "require (\n\t" + path + " " + version + "\n)\n", want: true},
+		{name: "another version", manifest: "require (\n\t" + path + " v1.80.0\n)\n", want: false},
+		{name: "indirect", manifest: "require (\n\t" + path + " " + version + " // indirect\n)\n", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := manifestRequires(tc.manifest, path, version); got != tc.want {
+				t.Fatalf("manifestRequires(%q) = %t, want %t", tc.manifest, got, tc.want)
+			}
+		})
 	}
 }

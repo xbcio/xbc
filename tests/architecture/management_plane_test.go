@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -99,4 +100,66 @@ func TestArchManagementPlaneIsConfinedToOperatorEndpoints(t *testing.T) {
 		"health is a readiness signal for whoever routes traffic to this process, not an operator endpoint")
 	assert.NotContains(t, found, "transport/web/extensions/reliability/health",
 		"the health endpoint must stay on the serving listener: a deployment where the traffic router consults readiness, and the probe that answers it lives on a second port, is a deployment whose probes cannot reach the process that depends on them")
+
+	// The gRPC management package builds its own listener with the standard
+	// library instead of registering through Router.Management, so the call
+	// shape above cannot see it. What that plane serves is still an
+	// architectural decision, so the same test reads its route registrations
+	// directly and holds them to the same rule from both directions.
+	routes := archGRPCManagementRoutes(t, root)
+	for path := range routes {
+		assert.Truef(t, archGRPCManagementServes(path),
+			"the gRPC management listener registers %q; the plane serves a small, deliberately chosen set of operator endpoints -- add the route here deliberately, or serve it on the gRPC listener", path)
+		assert.Falsef(t, strings.Contains(path, "health"),
+			"the gRPC management listener registers %q; health is a readiness signal for whoever routes traffic to this process and stays on the serving listener (the standard gRPC health service)", path)
+	}
+	assert.True(t, routes["/metrics"],
+		"the gRPC management listener must register /metrics: it is the HTTP outlet of a gRPC-only composition")
+	assert.True(t, routes["/debug/pprof/"],
+		"the gRPC management listener must register the profiling subtree under its opt-in")
+}
+
+// archGRPCManagementRoutes collects the path literals the gRPC management
+// package registers on its own mux. The scan looks for the registration call
+// rather than a file: a Handle or HandleFunc whose first argument is a string
+// literal is a route declaration and nothing else this package does.
+func archGRPCManagementRoutes(t *testing.T, root string) map[string]bool {
+	t.Helper()
+	packageRoot := filepath.Join(root, "transport", "grpc", "extensions", "management")
+	files := archParseProductionGoFiles(t, packageRoot)
+	require.NotEmpty(t, files, "%s must contain production Go files", packageRoot)
+
+	routes := make(map[string]bool)
+	for _, file := range files {
+		ast.Inspect(file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || (selector.Sel.Name != "Handle" && selector.Sel.Name != "HandleFunc") {
+				return true
+			}
+			literal, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return true
+			}
+			path, err := strconv.Unquote(literal.Value)
+			require.NoError(t, err, "unquoting the route literal %s", literal.Value)
+			routes[path] = true
+			return true
+		})
+	}
+
+	// Positive control: the assertions above prove nothing if the scan matched
+	// no registration at all, which is what a renamed method would produce.
+	require.NotEmpty(t, routes, "no route registration was found in the gRPC management package; the scan is looking for the wrong call shape")
+	return routes
+}
+
+// archGRPCManagementServes is the operator-endpoint rule for the gRPC
+// management plane: the neutral registry's exposition, and the profiling
+// subtree with every standard endpoint beneath it.
+func archGRPCManagementServes(path string) bool {
+	return path == "/metrics" || strings.HasPrefix(path, "/debug/pprof/")
 }
