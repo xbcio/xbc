@@ -88,6 +88,15 @@ import (
 //     Definition, which the service selects separately at the composition
 //     root.
 //
+//   - observability/tracing is the same shape for the same reason: the Handle
+//     vocabulary -- Provider, Tracer, Extract, Inject, ForceFlush, Shutdown
+//     over the provider and propagator the plugin owns -- which any plugin
+//     may depend on so work it sends inherits the composition's trace
+//     context. A consumer like extensions/httpclient names that contract and
+//     injects through the value a composition binds; it never composes
+//     tracing.Bundle() or Definition, which the service selects separately at
+//     the composition root.
+//
 // Adding a member here is an architecture decision, and a one-line one.
 var archExtensionSharedVocabularyModules = []string{
 	"extensions/authentication",
@@ -97,6 +106,7 @@ var archExtensionSharedVocabularyModules = []string{
 	"extensions/tasks",
 	"extensions/reliability/health",
 	"extensions/observability/metrics",
+	"extensions/observability/tracing",
 }
 
 // archExtensionEdge is one production import from inside one extension module

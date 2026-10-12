@@ -81,6 +81,19 @@ var archGRPCPackageExtensionPaths = []string{
 	"reliability/health",
 }
 
+// archGRPCOwnedPackageLeaves is the intentional set of gRPC plugin packages
+// that sit directly beneath transport/grpc/extensions while remaining packages
+// of the transport/grpc module. A capability group exists to own a family of
+// leaves that share a vocabulary; the management plane is one plugin with one
+// identity -- there is no second gRPC management plugin to group it with -- so
+// the namespace's direct level names it, the way the gRPC prelude and starter
+// sit directly beneath the module root. Membership is asserted against the
+// direct children, so it names only that shape. Adding one is an architecture
+// decision.
+var archGRPCOwnedPackageLeaves = []string{
+	"management",
+}
+
 var archProtocolNeutralExtensionGroups = []string{
 	"authorization",
 	"concurrency",
@@ -111,6 +124,21 @@ var archProtocolNeutralExtensionGroups = []string{
 var archProtocolNeutralContractModules = []string{
 	"authentication",
 	"tasks",
+}
+
+// archProtocolNeutralModuleLeaves is the intentional set of capability plugin
+// modules that sit directly beneath the extensions namespace rather than
+// inside one of its capability groups. A capability group exists to own a
+// family of modules that share a vocabulary -- authorization's Casbin engine
+// with its adapter and watcher providers, storage's backends -- and its
+// directory level is earned by that grouping. A lone capability has no family
+// to group: extensions/httpclient is one module with one identity, so wrapping
+// it in a group directory named after itself would add a level that owns
+// nothing. Membership is asserted against the direct children below, so it
+// names only that shape, and each member must be an independently versioned
+// module with production files. Adding one is an architecture decision.
+var archProtocolNeutralModuleLeaves = []string{
+	"httpclient",
 }
 
 var archWebExtensionGroups = []string{
@@ -218,9 +246,9 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		require.ErrorIs(t, err, os.ErrNotExist, "checking old path %s failed", retired)
 	}
 
-	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "extensions"), archProtocolNeutralExtensionGroups, nil, archProtocolNeutralContractModules)
-	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "web", "extensions"), archWebExtensionGroups, archWebPackageExtensionPaths, nil)
-	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "grpc", "extensions"), archGRPCExtensionGroups, archGRPCPackageExtensionPaths, nil)
+	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "extensions"), archProtocolNeutralExtensionGroups, nil, archProtocolNeutralContractModules, archProtocolNeutralModuleLeaves, nil)
+	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "web", "extensions"), archWebExtensionGroups, archWebPackageExtensionPaths, nil, nil, nil)
+	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "grpc", "extensions"), archGRPCExtensionGroups, archGRPCPackageExtensionPaths, nil, nil, archGRPCOwnedPackageLeaves)
 
 	webRoot := filepath.Join(root, "transport", "web")
 	preludeRoot := filepath.Join(webRoot, "prelude")
@@ -309,11 +337,13 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 // archAssertGroupedExtensionNamespace requires the namespace and its declared
 // capability groups to remain organization-only directories. Every direct
 // child of a group is either an independently versioned module or one of the
-// explicitly declared package leaves owned by the parent module. A declared
-// contract module is the one exception that may sit directly in the namespace
-// instead of inside a group, because it publishes a shared vocabulary rather
-// than a plugin.
-func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expectedGroups, packageLeaves, contractModules []string) {
+// explicitly declared package leaves owned by the parent module. Three shapes
+// may sit directly in the namespace instead of inside a group: a declared
+// contract module, which publishes a shared vocabulary rather than a plugin; a
+// declared module leaf, which is a capability plugin with no family to group
+// it; and a declared owned package, which is a plugin of the namespace's own
+// module with no family either.
+func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expectedGroups, packageLeaves, contractModules, moduleLeaves, ownedPackages []string) {
 	t.Helper()
 	entries, err := os.ReadDir(namespace)
 	require.NoError(t, err, "reading extension namespace %s failed", namespace)
@@ -322,9 +352,19 @@ func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expecte
 	for _, name := range contractModules {
 		contractModuleSet[name] = true
 	}
+	moduleLeafSet := make(map[string]bool, len(moduleLeaves))
+	for _, name := range moduleLeaves {
+		moduleLeafSet[name] = true
+	}
+	ownedPackageSet := make(map[string]bool, len(ownedPackages))
+	for _, name := range ownedPackages {
+		ownedPackageSet[name] = true
+	}
 
 	var actualGroups []string
 	var actualContractModules []string
+	var actualModuleLeaves []string
+	var actualOwnedPackages []string
 	for _, entry := range entries {
 		if archIgnoresDirectoryEntry(entry.Name()) {
 			continue
@@ -340,7 +380,26 @@ func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expecte
 			actualContractModules = append(actualContractModules, entry.Name())
 			continue
 		}
+		if moduleLeafSet[entry.Name()] {
+			actualModuleLeaves = append(actualModuleLeaves, entry.Name())
+			continue
+		}
+		if ownedPackageSet[entry.Name()] {
+			actualOwnedPackages = append(actualOwnedPackages, entry.Name())
+			continue
+		}
 		actualGroups = append(actualGroups, entry.Name())
+	}
+
+	sort.Strings(actualOwnedPackages)
+	wantOwnedPackages := append([]string(nil), ownedPackages...)
+	sort.Strings(wantOwnedPackages)
+	require.Equal(t, wantOwnedPackages, actualOwnedPackages, "owned plugin packages directly beneath %s changed; update the explicit ownership map", namespace)
+	for _, name := range actualOwnedPackages {
+		packageRoot := filepath.Join(namespace, name)
+		require.NotEmpty(t, archProductionGoFilesInDir(t, packageRoot), "owned plugin package %s must contain production Go files", packageRoot)
+		_, err := os.Stat(filepath.Join(packageRoot, "go.mod"))
+		require.ErrorIs(t, err, os.ErrNotExist, "owned plugin package %s must belong to the namespace's own module, not be independently versioned", packageRoot)
 	}
 
 	sort.Strings(actualContractModules)
@@ -353,6 +412,18 @@ func archAssertGroupedExtensionNamespace(t *testing.T, namespace string, expecte
 		info, err := os.Stat(filepath.Join(moduleRoot, "go.mod"))
 		require.NoError(t, err, "contract module %s must be independently versioned", moduleRoot)
 		require.False(t, info.IsDir(), "contract module manifest %s must be a file", filepath.Join(moduleRoot, "go.mod"))
+	}
+
+	sort.Strings(actualModuleLeaves)
+	wantModuleLeaves := append([]string(nil), moduleLeaves...)
+	sort.Strings(wantModuleLeaves)
+	require.Equal(t, wantModuleLeaves, actualModuleLeaves, "capability plugin modules directly beneath %s changed; update the explicit ownership map", namespace)
+	for _, name := range actualModuleLeaves {
+		moduleRoot := filepath.Join(namespace, name)
+		require.NotEmpty(t, archProductionGoFilesInDir(t, moduleRoot), "capability plugin module %s must contain production Go files", moduleRoot)
+		info, err := os.Stat(filepath.Join(moduleRoot, "go.mod"))
+		require.NoError(t, err, "capability plugin module %s must be independently versioned", moduleRoot)
+		require.False(t, info.IsDir(), "capability plugin module manifest %s must be a file", filepath.Join(moduleRoot, "go.mod"))
 	}
 
 	sort.Strings(actualGroups)

@@ -24,11 +24,16 @@ use (
 	./extensions/authorization/casbin-gorm
 	./extensions/authorization/casbin-redis
 	./extensions/authorization/rbac
-	./extensions/tasks
 	./extensions/concurrency/async
 	./extensions/coordination/lease
 	./extensions/coordination/placement
 	./extensions/coordination/raft
+	./extensions/httpclient
+	./extensions/jobs/asynq
+	./extensions/jobs/cron
+	./extensions/messaging/kafka
+	./extensions/messaging/outbox
+	./extensions/messaging/webhook
 	./extensions/observability/metrics
 	./extensions/observability/tracing
 	./extensions/reliability/gracefulshutdown
@@ -37,11 +42,7 @@ use (
 	./extensions/storage/gorm
 	./extensions/storage/objectstorage
 	./extensions/storage/redis
-	./extensions/jobs/asynq
-	./extensions/jobs/cron
-	./extensions/messaging/kafka
-	./extensions/messaging/outbox
-	./extensions/messaging/webhook
+	./extensions/tasks
 	./scripts/plugin-snapshots
 	./tests/composition
 	./transport/grpc
@@ -55,8 +56,8 @@ use (
 	./transport/web/extensions/authentication/session
 	./transport/web/extensions/authorization/casbin
 	./transport/web/extensions/authorization/rbac
-	./transport/web/extensions/openapi/swag
 	./transport/web/extensions/observability/metrics
 	./transport/web/extensions/observability/tracing
+	./transport/web/extensions/openapi/swag
 	./transport/web/extensions/reliability/idempotency
 )
