@@ -6,25 +6,20 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/xbcio/xbc/transport/web"
 )
 
-// Manager is the handler-facing session API. Create and Rotate return the
-// value whose opaque ID should be installed with SetCookie. Rotate preserves
-// the original absolute lifetime and revokes the previous ID; RedisStore.Rotate
-// documents the window in which both IDs remain valid while a rotation is in
-// flight.
+// Manager is the protocol-neutral session API. Create and Rotate return the
+// value whose opaque ID a transport adapter hands to the client (the Web
+// adapter installs it as a cookie). Rotate preserves the original absolute
+// lifetime and revokes the previous ID; RedisStore.Rotate documents the window
+// in which both IDs remain valid while a rotation is in flight.
 type Manager interface {
 	Create(ctx context.Context, subject string, attributes map[string]any) (Session, error)
 	Rotate(ctx context.Context, id string) (Session, error)
 	Revoke(ctx context.Context, id string) error
-	SetCookie(c *web.Ctx, value Session) error
-	ClearCookie(c *web.Ctx)
 }
 
 type manager struct {
@@ -119,53 +114,24 @@ func (m *manager) Revoke(ctx context.Context, id string) error {
 	return m.store.Delete(ctx, id)
 }
 
-func (m *manager) SetCookie(c *web.Ctx, value Session) error {
+// lifetime reports how long value's ID may still be handed to a client: a
+// stopped manager, a malformed ID, and an already expired session are all
+// refused.
+func (m *manager) lifetime(value Session) (time.Duration, error) {
 	if m.closed.Load() {
-		return ErrStopped
-	}
-	if c == nil || c.Writer() == nil {
-		return errors.New("session: cookie context cannot be nil")
+		return 0, ErrStopped
 	}
 	if !validID(value.ID, m.cfg.idBytes) || !value.ExpiresAt.After(m.clock()) {
-		return ErrInvalidCookie
+		return 0, ErrInvalidCookie
 	}
 	remaining := time.Until(value.ExpiresAt)
 	if m.now != nil {
 		remaining = value.ExpiresAt.Sub(m.clock())
 	}
-	maxAge := int((remaining + time.Second - 1) / time.Second)
-	if maxAge < 1 {
-		return ErrInvalidCookie
+	if remaining <= 0 {
+		return 0, ErrInvalidCookie
 	}
-	http.SetCookie(c.Writer(), &http.Cookie{
-		Name:     m.cfg.name,
-		Value:    value.ID,
-		Path:     m.cfg.path,
-		Domain:   m.cfg.domain,
-		Expires:  value.ExpiresAt,
-		MaxAge:   maxAge,
-		HttpOnly: m.cfg.httpOnly,
-		Secure:   m.cfg.secure,
-		SameSite: m.cfg.sameSite,
-	})
-	return nil
-}
-
-func (m *manager) ClearCookie(c *web.Ctx) {
-	if c == nil || c.Writer() == nil {
-		return
-	}
-	http.SetCookie(c.Writer(), &http.Cookie{
-		Name:     m.cfg.name,
-		Value:    "",
-		Path:     m.cfg.path,
-		Domain:   m.cfg.domain,
-		Expires:  time.Unix(1, 0).UTC(),
-		MaxAge:   -1,
-		HttpOnly: m.cfg.httpOnly,
-		Secure:   m.cfg.secure,
-		SameSite: m.cfg.sameSite,
-	})
+	return remaining, nil
 }
 
 func (m *manager) newID() (string, error) {

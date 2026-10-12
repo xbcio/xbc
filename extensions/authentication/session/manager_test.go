@@ -5,13 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 type failingReader struct{}
@@ -116,42 +111,19 @@ func TestManagerRotateAtomicallyRevokesOldIDAndPreservesLifetime(t *testing.T) {
 	}
 }
 
-func TestManagerCookieAttributesAndClearCookie(t *testing.T) {
+func TestManagerLifetimeBoundsTheIDsRemainingValidity(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
-	cfg := DefaultConfig()
-	cfg.Name = "__Host-session"
-	cfg.SameSite = "strict"
-	cfg.TTL = 2 * time.Hour
-	normalized, err := normalizeConfig(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := &manager{store: &recordingStore{}, cfg: normalized, now: func() time.Time { return now }}
-	value := sessionValue(testID(4, 32), "sensitive-subject", now, 90*time.Second)
+	m := testManager(t, &recordingStore{}, now)
 
-	recorder := httptest.NewRecorder()
-	ctx := enginetest.NewCtx(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-	if err := m.SetCookie(ctx, value); err != nil {
-		t.Fatal(err)
+	remaining, err := m.lifetime(sessionValue(testID(4, 32), "alice", now, 90*time.Second))
+	if err != nil || remaining != 90*time.Second {
+		t.Fatalf("lifetime() = %v, %v; want 90s", remaining, err)
 	}
-	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("cookies = %#v", cookies)
+	if _, err := m.lifetime(sessionValue("attacker-selected", "alice", now, time.Hour)); !errors.Is(err, ErrInvalidCookie) {
+		t.Fatalf("lifetime(malformed ID) error = %v", err)
 	}
-	cookie := cookies[0]
-	if cookie.Name != "__Host-session" || cookie.Value != value.ID || cookie.Path != "/" || cookie.Domain != "" || !cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode || cookie.MaxAge != 90 {
-		t.Fatalf("cookie = %#v", cookie)
-	}
-	if strings.Contains(recorder.Header().Get("Set-Cookie"), value.Subject) {
-		t.Fatal("cookie leaked cleartext identity")
-	}
-
-	cleared := httptest.NewRecorder()
-	clearContext := enginetest.NewCtx(cleared, httptest.NewRequest(http.MethodGet, "/", nil))
-	m.ClearCookie(clearContext)
-	clearCookies := cleared.Result().Cookies()
-	if len(clearCookies) != 1 || clearCookies[0].Value != "" || clearCookies[0].MaxAge != -1 || !clearCookies[0].HttpOnly || !clearCookies[0].Secure {
-		t.Fatalf("clear cookie = %#v", clearCookies)
+	if _, err := m.lifetime(sessionValue(testID(5, 32), "alice", now.Add(-2*time.Hour), time.Hour)); !errors.Is(err, ErrInvalidCookie) {
+		t.Fatalf("lifetime(expired) error = %v", err)
 	}
 }
 
@@ -174,7 +146,7 @@ func TestManagerRejectsInvalidInputsAndUseAfterStop(t *testing.T) {
 	if _, err := m.Create(context.Background(), "alice", nil); !errors.Is(err, ErrStopped) {
 		t.Fatalf("Create after stop = %v", err)
 	}
-	if err := m.SetCookie(nil, sessionValue(testID(1, 32), "alice", now, time.Hour)); !errors.Is(err, ErrStopped) {
-		t.Fatalf("SetCookie after stop = %v", err)
+	if _, err := m.lifetime(sessionValue(testID(1, 32), "alice", now, time.Hour)); !errors.Is(err, ErrStopped) {
+		t.Fatalf("lifetime after stop = %v", err)
 	}
 }

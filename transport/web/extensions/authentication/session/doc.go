@@ -1,16 +1,17 @@
-// Package session provides opaque, server-side HTTP cookie sessions for XBC.
+// Package session carries XBC's opaque server-side sessions in HTTP cookies.
 //
-// Cookies contain only a cryptographically random identifier. Built-in stores
-// hash that identifier before using it as a storage key, and all identity and
-// attribute data remains server-side. Bundle and ordinary imports are
-// side-effect free; xbc.Run applications may opt into the leaf autoload
-// adapter.
+// Session storage, lifecycle, and verification belong to the neutral session
+// plugin at github.com/xbcio/xbc/extensions/authentication/session; this
+// package only reads the session ID from the configured cookie and installs or
+// clears that cookie. Cookies contain only the cryptographically random
+// identifier, and all identity and attribute data remains server-side. Bundle
+// includes the neutral plugin, and Bundle and ordinary imports are side-effect
+// free; xbc.Run applications may opt into the leaf autoload adapter.
 //
-// session is a credential extractor and authenticator, not a middleware: it
-// plugs into the Web transport's built-in authentication middleware, which is
-// the only place a credential extractor runs. The session's stored attributes
-// travel as authentication.Principal.Attributes, alongside its opaque ID under the
-// "session_id" key:
+// The extractor plugs into the Web transport's built-in authentication
+// middleware, which is the only place a credential extractor runs. The
+// session's stored attributes travel as authentication.Principal.Attributes,
+// alongside its opaque ID under the "session_id" key:
 //
 //	func profile(ctx context.Context, c *web.Ctx) error {
 //		principal, ok := web.CurrentPrincipal(c)
@@ -30,7 +31,8 @@
 //
 // # Usage
 //
-// Application plugins can require the provided Manager, create a session after
+// Application plugins can require this package's Manager -- the neutral
+// session lifecycle plus SetCookie and ClearCookie -- create a session after
 // verifying login credentials, and install its opaque cookie. Mark the login
 // route public so session authentication does not require a cookie first:
 //

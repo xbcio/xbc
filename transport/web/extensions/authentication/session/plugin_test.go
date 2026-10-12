@@ -3,15 +3,18 @@ package session
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
-	"sync"
+	"strings"
 	"testing"
+	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	goredis "github.com/redis/go-redis/v9"
-
+	sessioncore "github.com/xbcio/xbc/extensions/authentication/session"
 	"github.com/xbcio/xbc/plugin"
-	"github.com/xbcio/xbc/plugin/assembly"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
+	"github.com/xbcio/xbc/transport/web"
+	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
 func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
@@ -31,211 +34,118 @@ func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
 	}
 }
 
-func TestNewAppliesMemoryDefaultsAndAuthenticationContract(t *testing.T) {
-	p, err := New(DefaultConfig())
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+// TestBundleSelectsTheNeutralSessionPlugin pins the production spelling: a
+// composition root that selects session.Bundle() from this package gets the
+// neutral session plugin too, so it never has to know the plugin was split.
+func TestBundleSelectsTheNeutralSessionPlugin(t *testing.T) {
+	var got []pluginmodel.Definition
+	for _, entry := range pluginmodel.BundleEntries(pluginmodel.Bundle(Bundle())) {
+		got = append(got, entry.Definition)
 	}
-	t.Cleanup(func() { _ = p.Stop(context.Background()) })
-
-	if p.Scheme() != Scheme {
-		t.Fatalf("Scheme() = %q, want %q", p.Scheme(), Scheme)
+	want := []pluginmodel.Definition{
+		pluginmodel.Definition(sessioncore.Definition()),
+		pluginmodel.Definition(Definition()),
 	}
-	if _, ok := p.manager.store.(*MemoryStore); !ok {
-		t.Fatalf("memory backend did not construct a MemoryStore, got %T", p.manager.store)
-	}
-}
-
-func TestNewRedisBackendRequiresExplicitStoreForDirectConstruction(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Backend = BackendRedis
-	if _, err := New(cfg); err == nil {
-		t.Fatal("New() with redis backend and no injected store = nil error")
-	}
-
-	injected := &recordingStore{}
-	p, err := New(cfg, WithStore(injected))
-	if err != nil {
-		t.Fatalf("New() with injected store error = %v", err)
-	}
-	if p.manager.store != injected {
-		t.Fatal("injected store was not used")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Bundle() definitions = %v, want the neutral session plugin then the Web adapter", got)
 	}
 }
 
-func TestNewRejectsInvalidConfig(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Backend = "unsupported"
-	if _, err := New(cfg); err == nil {
-		t.Fatal("New() with invalid backend = nil error")
-	}
-}
-
-// TestPlannedDefinitionResolvesNamedRedisClientFromGraph exercises plan(cfg)
-// through the real dependency graph: a stub "redis" producer stands in for
-// the sibling extensions/storage/redis plugin, proving the redis backend wires the
-// exact named client instance the configuration selects and never closes that
-// borrowed client on Stop. The stub declares the same goredis.UniversalClient
-// contract the real plugin exports, because session resolves the client
-// through that topology-neutral contract rather than through a concrete type.
-func TestPlannedDefinitionResolvesNamedRedisClientFromGraph(t *testing.T) {
-	server := miniredis.RunT(t)
-	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
-	t.Cleanup(func() { _ = client.Close() })
-
-	redisDefinition := plugin.Define(
-		redisPluginKey,
-		func(plugin.BuildContext) (*goredis.Client, error) { return client, nil },
-		plugin.Options[*goredis.Client]{
-			Instances: plugin.MultipleInstances,
-			Exports: plugin.Contracts(
-				plugin.ExportAs[goredis.UniversalClient](func(value *goredis.Client) goredis.UniversalClient { return value }),
-			),
-		},
-	)
-
-	environment := sessionEnvironment(t, map[string]any{
-		"redis": map[string]any{"sessions": map[string]any{}},
-	}, map[string]any{
-		"backend":        "redis",
-		"redis_instance": "sessions",
-		"redis_prefix":   "test:session:",
-	})
-	built, err := assembly.BuildPlan(assembly.PlanOptions{
-		Bundles: []plugin.Bundle{plugin.BundleOf(redisDefinition), Bundle()},
-		Env:     environment,
-	})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
-	}
-	constructed, err := assembly.Construct(built, assembly.ConstructOptions{})
-	if err != nil {
-		t.Fatalf("Construct() error = %v", err)
-	}
-	instance, found := constructed.Instance(plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance})
-	if !found {
-		t.Fatal("session instance not constructed")
-	}
-	p, ok := instance.Primary().(*Plugin)
+// TestDefinitionExportsTheExtractorAndTheCookieManager keeps the authenticator
+// contract on the neutral half. Exporting it here as well would register the
+// session scheme twice, which the Web authentication middleware refuses.
+func TestDefinitionExportsTheExtractorAndTheCookieManager(t *testing.T) {
+	descriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(Definition()))
 	if !ok {
-		t.Fatalf("primary = %T, want *Plugin", instance.Primary())
+		t.Fatal("Definition() returned a zero handle")
 	}
-	store, ok := p.manager.store.(*RedisStore)
-	if !ok {
-		t.Fatalf("store = %T, want *RedisStore", p.manager.store)
+	want := []reflect.Type{
+		reflect.TypeOf((*web.CredentialExtractor)(nil)).Elem(),
+		reflect.TypeOf((*Manager)(nil)).Elem(),
 	}
-	if store.client != client {
-		t.Fatal("plan did not wire the named redis client")
+	var got []reflect.Type
+	for _, contract := range descriptor.Contracts {
+		got = append(got, contract.Type)
 	}
-	if store.prefix != "test:session:" {
-		t.Fatalf("prefix = %q", store.prefix)
-	}
-
-	if err := p.Stop(context.Background()); err != nil {
-		t.Fatalf("Stop() error = %v", err)
-	}
-	if err := client.Ping(context.Background()).Err(); err != nil {
-		t.Fatalf("Stop() closed the borrowed Redis client: %v", err)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Definition contracts = %v, want %v", got, want)
 	}
 }
 
-// TestPlannedDefinitionRejectsMissingRedisClient proves the redis backend
-// fails construction, rather than silently falling back, when the graph has
-// no producer for the configured instance.
-func TestPlannedDefinitionRejectsMissingRedisClient(t *testing.T) {
-	environment := sessionEnvironment(t, nil, map[string]any{"backend": "redis"})
-	built, err := assembly.BuildPlan(assembly.PlanOptions{
-		Bundles: []plugin.Bundle{Bundle()},
-		Env:     environment,
+func TestNewRequiresTheSessionPlugin(t *testing.T) {
+	if p, err := New(nil); err == nil || p != nil {
+		t.Fatalf("New(nil) = %#v, %v; want nil adapter and error", p, err)
+	}
+}
+
+func TestSetCookieAppliesTheConfiguredAttributesAndClearCookieExpiresIt(t *testing.T) {
+	p, _ := configuredSessionPlugin(t, func(cfg *sessioncore.Config) {
+		cfg.Name = "__Host-session"
+		cfg.SameSite = "strict"
 	})
-	if err == nil {
-		_, err = assembly.Construct(built, assembly.ConstructOptions{})
+	value, err := p.Create(context.Background(), "sensitive-subject", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err == nil {
-		t.Fatal("expected an error when the graph has no redis producer")
+
+	recorder := httptest.NewRecorder()
+	ctx := enginetest.NewCtx(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if err := p.SetCookie(ctx, value); err != nil {
+		t.Fatal(err)
+	}
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %#v", cookies)
+	}
+	cookie := cookies[0]
+	if cookie.Name != "__Host-session" || cookie.Value != value.ID || cookie.Path != "/" || cookie.Domain != "" ||
+		!cookie.HttpOnly || !cookie.Secure || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("cookie = %#v", cookie)
+	}
+	// The default ttl is 24h; MaxAge rounds the remaining lifetime up.
+	if cookie.MaxAge < int((24*time.Hour-time.Minute)/time.Second) || cookie.MaxAge > int((24*time.Hour)/time.Second) {
+		t.Fatalf("cookie MaxAge = %d, want about 24h", cookie.MaxAge)
+	}
+	if strings.Contains(recorder.Header().Get("Set-Cookie"), value.Subject) {
+		t.Fatal("cookie leaked cleartext identity")
+	}
+
+	cleared := httptest.NewRecorder()
+	p.ClearCookie(enginetest.NewCtx(cleared, httptest.NewRequest(http.MethodGet, "/", nil)))
+	clearCookies := cleared.Result().Cookies()
+	if len(clearCookies) != 1 || clearCookies[0].Name != "__Host-session" || clearCookies[0].Value != "" ||
+		clearCookies[0].MaxAge != -1 || !clearCookies[0].HttpOnly || !clearCookies[0].Secure {
+		t.Fatalf("clear cookie = %#v", clearCookies)
 	}
 }
 
-// TestPlannedDefinitionUsesMemoryBackendWithoutAnyInputs proves the memory
-// backend never requires a producer plugin at all.
-func TestPlannedDefinitionUsesMemoryBackendWithoutAnyInputs(t *testing.T) {
-	environment := sessionEnvironment(t, nil, map[string]any{})
-	built, err := assembly.BuildPlan(assembly.PlanOptions{
-		Bundles: []plugin.Bundle{Bundle()},
-		Env:     environment,
-	})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
-	}
-	constructed, err := assembly.Construct(built, assembly.ConstructOptions{})
-	if err != nil {
-		t.Fatalf("Construct() error = %v", err)
-	}
-	instance, found := constructed.Instance(plugin.Identity{Plugin: Key, Instance: plugin.DefaultInstance})
-	if !found {
-		t.Fatal("session instance not constructed")
-	}
-	p := instance.Primary().(*Plugin)
-	if _, ok := p.manager.store.(*MemoryStore); !ok {
-		t.Fatalf("store = %T, want *MemoryStore", p.manager.store)
-	}
-	_ = p.Stop(context.Background())
-}
-
-func TestStopIsIdempotentAndDisablesTheManager(t *testing.T) {
-	p, err := New(DefaultConfig())
+func TestSetCookieRefusesInvalidSessionsNilContextsAndUseAfterStop(t *testing.T) {
+	p, core := configuredSessionPlugin(t, nil)
+	value, err := p.Create(context.Background(), "alice", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := p.Manager()
+	ctx := enginetest.NewCtx(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 
-	var wg sync.WaitGroup
-	errs := make(chan error, 32)
-	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errs <- p.Stop(context.Background())
-		}()
+	malformed := value
+	malformed.ID = "attacker-selected"
+	if err := p.SetCookie(ctx, malformed); !errors.Is(err, sessioncore.ErrInvalidCookie) {
+		t.Fatalf("SetCookie(malformed) = %v", err)
 	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("Stop() error = %v", err)
-		}
+	expired := value
+	expired.ExpiresAt = time.Now().Add(-time.Minute)
+	if err := p.SetCookie(ctx, expired); !errors.Is(err, sessioncore.ErrInvalidCookie) {
+		t.Fatalf("SetCookie(expired) = %v", err)
 	}
+	if err := p.SetCookie(nil, value); err == nil {
+		t.Fatal("SetCookie(nil ctx) = nil error")
+	}
+	p.ClearCookie(nil)
 
-	if _, err := manager.Create(context.Background(), "alice", nil); !errors.Is(err, ErrStopped) {
-		t.Fatalf("Create after Stop error = %v", err)
-	}
-	if err := p.Stop(context.Background()); err != nil {
-		t.Fatalf("second Stop() error = %v", err)
-	}
-}
-
-func TestInjectedStoreBypassesRedisDependencyAndRemainsCallerOwned(t *testing.T) {
-	var deletes int
-	store := &recordingStore{delete: func(context.Context, string) error {
-		deletes++
-		return nil
-	}}
-	cfg := DefaultConfig()
-	cfg.Backend = BackendRedis
-	cfg.RedisInstance = "unavailable"
-	p, err := New(cfg, WithStore(store))
-	if err != nil {
+	if err := core.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-
-	manager := p.Manager()
-	if err := manager.Revoke(context.Background(), testID(80, 32)); err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Stop(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if deletes != 1 {
-		t.Fatalf("injected store calls = %d", deletes)
+	if err := p.SetCookie(ctx, value); !errors.Is(err, sessioncore.ErrStopped) {
+		t.Fatalf("SetCookie after stop = %v", err)
 	}
 }
