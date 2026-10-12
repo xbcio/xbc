@@ -49,7 +49,7 @@ func (a *App) execute(parent context.Context, args []string, cancelReason string
 	a.cancelExec = cancel
 	a.stateMu.Unlock()
 	defer cancel(errors.New("xbc: execution finished"))
-	stopWatching := context.AfterFunc(parent, func() { a.requestStop(cancelReason) })
+	stopWatching := context.AfterFunc(parent, func() { a.requestStopFromParent(parent, cancelReason) })
 	defer stopWatching()
 
 	command, err := parseArgs(args, config.DefaultEnvPrefix, a.commands)
@@ -298,12 +298,32 @@ func (a *App) ensureStarting(stage string) error {
 	return nil
 }
 
-// requestStop and releaseTraffic use the same mutex. Consequently a shutdown
-// request cannot land between a successful check and an unconditional gate
-// release: exactly one transition wins. It also cancels the execution context
-// before publishing stopCh, so readiness consumers observe shutdown before
-// reverse cleanup can begin draining a transport.
+// requestStop records a stop the runtime itself decided on -- a signal, a
+// critical managed task, a completed run, a plugin's own request -- with no
+// caller context behind it, so the stop's cause stands alone.
 func (a *App) requestStop(reason string) bool {
+	return a.requestStopWithCause(reason, nil)
+}
+
+// requestStopFromParent records a stop caused by the parent context being
+// canceled. The parent is done by the time the AfterFunc callback runs, so
+// its cause is the reason the caller gave up, and that cause is wrapped into
+// the stop's own cause to survive the race the callback runs in: the parent's
+// cancellation walk cancels the execution context too, and the single write
+// to that context's cause goes to whichever writer reaches it first. The
+// callback runs on its own goroutine, so it can beat the walk -- and when it
+// does, a command must still find the caller's error through errors.Is (see
+// TestTheAfterFuncStopCarriesTheParentsCauseWhenItWinsTheRace).
+func (a *App) requestStopFromParent(parent context.Context, reason string) bool {
+	return a.requestStopWithCause(reason, context.Cause(parent))
+}
+
+// requestStopWithCause and releaseTraffic use the same mutex. Consequently a
+// shutdown request cannot land between a successful check and an unconditional
+// gate release: exactly one transition wins. It also cancels the execution
+// context before publishing stopCh, so readiness consumers observe shutdown
+// before reverse cleanup can begin draining a transport.
+func (a *App) requestStopWithCause(reason string, parentCause error) bool {
 	a.stateMu.Lock()
 	if a.stopRequestedFlag {
 		a.stateMu.Unlock()
@@ -323,7 +343,14 @@ func (a *App) requestStop(reason string) bool {
 		tasks.closeAdmission()
 	}
 	if cancel != nil {
-		cancel(fmt.Errorf("xbc: stop requested: %s", reason))
+		stopCause := fmt.Errorf("xbc: stop requested: %s", reason)
+		if parentCause != nil {
+			// The parent's cause joins the error chain rather than replacing
+			// the stop's text: operators keep reading why the runtime stopped,
+			// and commands keep matching the caller's own cancellation.
+			stopCause = fmt.Errorf("xbc: stop requested: %s: %w", reason, parentCause)
+		}
+		cancel(stopCause)
 	}
 	close(a.stopCh)
 	a.stateMu.Unlock()

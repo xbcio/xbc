@@ -880,6 +880,63 @@ func TestACancelledRunReachesTheCommandThroughItsContext(t *testing.T) {
 	assert.Contains(t, completed.err.Error(), `xbc: command "wait-forever" failed`)
 }
 
+// TestTheAfterFuncStopCarriesTheParentsCauseWhenItWinsTheRace pins the other
+// outcome of the race TestACancelledRunReachesTheCommandThroughItsContext
+// samples: the parent's AfterFunc callback can win the single write to the
+// execution context's cause before the parent's own cancellation walk reaches
+// that context. Production sees whichever writer gets there first -- the
+// callback runs on its own goroutine -- so the test forces this order
+// deterministically instead of racing for it: the execution context is
+// installed directly, the parent never cancels it, and the callback's own
+// path is invoked against a parent that is already canceled. Whatever cause
+// this path records must carry the parent's cause through its error chain, or
+// a command asking why its context ended would hear a bare "stop requested"
+// and stop recognizing the caller's error.
+func TestTheAfterFuncStopCarriesTheParentsCauseWhenItWinsTheRace(t *testing.T) {
+	t.Run("caller cancellation", func(t *testing.T) {
+		app := newApp(nil)
+		execution, cancelExecution := context.WithCancelCause(context.Background())
+		defer cancelExecution(nil)
+		app.executionCtx = execution
+		app.cancelExec = cancelExecution
+
+		parent, cancelParent := context.WithCancel(context.Background())
+		cancelParent()
+
+		require.True(t, app.requestStopFromParent(parent, stopReasonContext))
+
+		cause := context.Cause(execution)
+		require.Error(t, cause)
+		assert.ErrorIs(t, cause, context.Cause(parent),
+			"the stop the callback recorded must carry the parent's cause")
+		assert.ErrorIs(t, cause, context.Canceled,
+			"a command must still recognize the caller's cancellation in the cause it receives")
+		assert.Contains(t, cause.Error(), "xbc: stop requested: context",
+			"the stop's own text stays")
+	})
+
+	t.Run("caller-defined cause", func(t *testing.T) {
+		app := newApp(nil)
+		execution, cancelExecution := context.WithCancelCause(context.Background())
+		defer cancelExecution(nil)
+		app.executionCtx = execution
+		app.cancelExec = cancelExecution
+
+		callerCause := errors.New("caller withdrew")
+		parent, cancelParent := context.WithCancelCause(context.Background())
+		cancelParent(callerCause)
+
+		require.True(t, app.requestStopFromParent(parent, stopReasonContext))
+
+		cause := context.Cause(execution)
+		require.Error(t, cause)
+		assert.ErrorIs(t, cause, callerCause,
+			"a caller-defined cause must survive into the execution context's cause")
+		assert.Contains(t, cause.Error(), "xbc: stop requested: context")
+		assert.Contains(t, cause.Error(), "caller withdrew")
+	})
+}
+
 // TestARegisteredCommandNeverDisplacesABuiltinSubcommand pins that registration
 // adds to the command surface rather than replacing part of it: "doctor" still
 // builds the plan and stops, and the registered command's body never runs.

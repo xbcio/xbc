@@ -28,9 +28,10 @@ const stopDuringBootstrapRounds = 10
 // between the parent-context stop path and bootstrap's publication of the task
 // runtime.
 //
-// A parent-context cancellation reaches requestStop on the AfterFunc goroutine
-// while the main goroutine is still inside bootstrap, so requestStop's read of
-// a.tasks and bootstrap's write of it are only ordered if both take stateMu.
+// A parent-context cancellation reaches the stop-request path on the AfterFunc
+// goroutine while the main goroutine is still inside bootstrap, so
+// requestStopWithCause's read of a.tasks and bootstrap's write of it are only
+// ordered if both take stateMu.
 // The behavioural consequence of a missing lock is invisible -- unwind closes
 // admission as an invariant either way, which
 // TestUnwindClosesAdmissionWhenTheStopPrecedesTheTaskRuntime pins -- so the
