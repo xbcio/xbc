@@ -315,6 +315,7 @@ The operator arithmetic this guide deliberately leaves out — how many processe
 ## Next steps
 
 - A service with no transport at all follows the same shape: see [Background-only service](recipes.md#background-only-service) and the runnable `examples/worker`.
+- The gRPC counterpart of this guide is the runnable `examples/grpcquickstart` with the walkthrough in [gRPC service](recipes.md#grpc-service): the same composition-root shape, a buf-generated service instead of HTTP routes, and startup from environment variables alone.
 - One binary hosting several roles is the runnable `examples/workloads`, with the operator side in [Hosting a subset of workloads](recipes.md#hosting-a-subset-of-workloads).
 - [Deployment recipes](recipes.md) show explicit compositions for authentication, persistence, messaging, scheduling, and multi-replica services, including terminating TLS in the process or behind a proxy, moving metrics and pprof to a listener of their own, and how the runnable [`examples/production`](../examples/production) image is built and run from environment variables alone.
 - [Package `web`](https://pkg.go.dev/github.com/xbcio/xbc/transport/web) documents routing, middleware, request binding, errors, limits, and trusted proxies.
