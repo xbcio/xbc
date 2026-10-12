@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/xbcio/xbc/extensions/coordination/lease"
+	"github.com/xbcio/xbc/extensions/observability/metrics"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
@@ -63,10 +64,31 @@ func Definition() plugin.Definition { return definition }
 // composition root built -- so Bundle and New are always used together.
 func Bundle() plugin.Bundle { return bundle }
 
+// registererInput lets a composition that selected the metrics plugin publish
+// this placement's series through it.
+//
+// It is optional on purpose. The snapshot and the readiness probe are the
+// complete story without a metrics stack, and a deployment that selected no
+// metrics plugin gets no collector, no registration, and no dependency on one
+// at runtime; the zero-or-one query simply stays unbound.
+var registererInput = plugin.OptionalOne[metrics.Registerer]()
+
 var definition = plugin.Define(
 	Key,
-	func(plugin.BuildContext) (*Placement, error) { return installed() },
+	func(ctx plugin.BuildContext) (*Placement, error) {
+		value, err := installed()
+		if err != nil {
+			return nil, err
+		}
+		if entry, ok := registererInput.Get(ctx); ok {
+			if err := entry.Value.Register(newStatsCollector(value.Stats)); err != nil {
+				return nil, err
+			}
+		}
+		return value, nil
+	},
 	plugin.Options[*Placement]{
+		Inputs: plugin.Inputs(registererInput),
 		Lifecycle: plugin.Lifecycle[*Placement]{
 			Start:   (*Placement).start,
 			PreStop: (*Placement).preStop,

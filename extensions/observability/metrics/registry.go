@@ -6,12 +6,14 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // Registry is an application-private collector registry. Register is
 // all-or-nothing for each call and returns duplicate/descriptor errors instead
-// of panicking. Collectors registered here are exported by this plugin's HTTP
-// endpoint and never enter Prometheus's process-wide default registry.
+// of panicking. Collectors registered here are served by the Web adapter's
+// HTTP endpoint when it is enabled and never enter Prometheus's process-wide
+// default registry.
 type Registry struct {
 	mu    sync.Mutex
 	inner *prometheus.Registry
@@ -57,4 +59,33 @@ func (r *Registry) Unregister(collector prometheus.Collector) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.inner.Unregister(collector)
+}
+
+// Gather collects the metrics of every registered collector, implementing
+// prometheus.Gatherer over this private registry for the transport adapters
+// that serve them.
+func (r *Registry) Gather() ([]*dto.MetricFamily, error) {
+	if r == nil || r.inner == nil {
+		return nil, fmt.Errorf("metrics: registry is not initialized")
+	}
+	return r.inner.Gather()
+}
+
+// Registerer is the neutral registration contract this module exports over its
+// private registry: a plugin that publishes its own collectors reaches the
+// registry through a construction-time input on Key instead of a transport
+// dependency, and the application's metrics endpoint gathers whatever it
+// registered.
+//
+// Register keeps the concrete Registry's all-or-nothing call semantics rather
+// than prometheus.Registerer's single-collector shape: a caller registering
+// several collectors that describe one component gets either all of them or
+// none, and duplicate or invalid descriptors come back as errors instead of
+// panics.
+type Registerer interface {
+	// Register adds the collectors atomically.
+	Register(collectors ...prometheus.Collector) error
+	// Unregister removes a previously registered collector, reporting whether
+	// it was present.
+	Unregister(collector prometheus.Collector) bool
 }

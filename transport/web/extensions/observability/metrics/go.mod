@@ -2,9 +2,9 @@ module github.com/xbcio/xbc/transport/web/extensions/observability/metrics
 
 go 1.25.0
 
-// Core and transport/web are deliberately resolved by the repository workspace
-// until they have real published versions. Do not add a local replace or a
-// placeholder version here.
+// Core, transport/web, and the neutral metrics plugin are deliberately
+// resolved by the repository workspace until they have real published
+// versions. Do not add a local replace or a placeholder version here.
 require (
 	github.com/prometheus/client_golang v1.23.2
 )

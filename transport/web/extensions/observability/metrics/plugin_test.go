@@ -2,16 +2,15 @@ package metrics
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 
-	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
+	metricscore "github.com/xbcio/xbc/extensions/observability/metrics"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
@@ -36,35 +35,49 @@ func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
 	}
 }
 
-func TestNewBuildsPrivateRegistry(t *testing.T) {
-	p := New()
-	if p.Registry() == nil {
-		t.Fatal("New() did not build a private registry")
+func TestNewRegistersBuiltInInstrumentsIntoNeutralRegistry(t *testing.T) {
+	core := newCoreForTest(t)
+	value, err := New(core)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
 
-func TestPrivateRegistryNeverPollutesDefaultRegistry(t *testing.T) {
-	before, err := prometheus.DefaultGatherer.Gather()
+	// The vector instruments only materialize once a label combination exists;
+	// one request through the middleware is enough to expose all three.
+	engine := enginetest.New()
+	engine.Use(value.Handler())
+	engine.GET("/ping", func(_ context.Context, c *web.Ctx) error {
+		c.Status(http.StatusOK)
+		return nil
+	})
+	engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ping", nil))
+
+	families, err := core.Registry().Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
-	New()
-	after, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(after) != len(before) {
-		t.Fatalf("default registry changed from %d to %d families", len(before), len(after))
-	}
-	for _, family := range after {
-		if strings.HasPrefix(family.GetName(), "xbc_http_") {
-			t.Fatalf("private collector %q leaked into DefaultGatherer", family.GetName())
+	for _, name := range []string{
+		"xbc_http_requests_total",
+		"xbc_http_request_duration_seconds",
+		"xbc_http_requests_in_flight",
+	} {
+		if !hasFamily(families, name) {
+			t.Fatalf("neutral registry did not gather %s", name)
 		}
 	}
 }
 
+func TestNewRejectsMissingInstallation(t *testing.T) {
+	if _, err := New(nil); err == nil {
+		t.Fatal("New(nil) succeeded")
+	}
+	if _, err := New(&metricscore.Plugin{}); err == nil {
+		t.Fatal("New() accepted a metrics plugin without a registry")
+	}
+}
+
 func TestRecordsRouteTemplateAndBoundedLabels(t *testing.T) {
-	p := New()
+	p, core := newPluginForTest(t)
 	engine := enginetest.New()
 	engine.Use(func(_ context.Context, c *web.Ctx) error {
 		c.Set(currentRouteKeyForTest, web.RouteInfo{Method: http.MethodGet, Path: "/users/:id", Name: "users.get"})
@@ -83,7 +96,7 @@ func TestRecordsRouteTemplateAndBoundedLabels(t *testing.T) {
 		t.Fatalf("status = %d", response.Code)
 	}
 
-	families, err := p.Registry().inner.Gather()
+	families, err := core.Registry().Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,23 +120,8 @@ func TestRecordsRouteTemplateAndBoundedLabels(t *testing.T) {
 	}
 }
 
-func TestRegistryRejectsDuplicatesWithoutPanic(t *testing.T) {
-	registry := newRegistry()
-	counter := prometheus.NewCounter(prometheus.CounterOpts{Name: "business_events_total", Help: "events"})
-	if err := registry.Register(counter); err != nil {
-		t.Fatal(err)
-	}
-	var duplicate prometheus.AlreadyRegisteredError
-	if err := registry.Register(counter); err == nil || !errors.As(err, &duplicate) {
-		t.Fatalf("duplicate error = %v", err)
-	}
-	if err := registry.Register(nil); err == nil {
-		t.Fatal("nil collector accepted")
-	}
-}
-
 func TestConcurrentRequestsAndGather(t *testing.T) {
-	p := New()
+	p, core := newPluginForTest(t)
 	engine := enginetest.New()
 	engine.Use(func(_ context.Context, c *web.Ctx) error {
 		c.Set(currentRouteKeyForTest, web.RouteInfo{Method: http.MethodGet, Path: "/items/:id"})
@@ -149,24 +147,63 @@ func TestConcurrentRequestsAndGather(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := p.Registry().inner.Gather(); err != nil {
+			if _, err := core.Registry().Gather(); err != nil {
 				t.Errorf("Gather: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
 
-	families, err := p.Registry().inner.Gather()
+	families, err := core.Registry().Gather()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, family := range families {
 		if family.GetName() == "xbc_http_requests_total" {
-			if got := family.Metric[0].GetCounter().GetValue(); got != count {
+			if got := len(family.GetMetric()); got != 1 {
+				t.Fatalf("request counter has %d series, want 1", got)
+			}
+			metric := family.GetMetric()[0]
+			labels := make(map[string]string, len(metric.GetLabel()))
+			for _, label := range metric.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if labels["route"] != "/items/:id" {
+				t.Fatalf("route label = %q, want the frozen template", labels["route"])
+			}
+			if got := metric.GetCounter().GetValue(); got != count {
 				t.Fatalf("requests = %v, want %d", got, count)
 			}
 			return
 		}
 	}
 	t.Fatal("request counter not found")
+}
+
+func newCoreForTest(t *testing.T) *metricscore.Plugin {
+	t.Helper()
+	core, err := metricscore.New(metricscore.DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return core
+}
+
+func newPluginForTest(t *testing.T) (*Plugin, *metricscore.Plugin) {
+	t.Helper()
+	core := newCoreForTest(t)
+	value, err := New(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value, core
+}
+
+func hasFamily(families []*dto.MetricFamily, name string) bool {
+	for _, family := range families {
+		if family.GetName() == name {
+			return true
+		}
+	}
+	return false
 }

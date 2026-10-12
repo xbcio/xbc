@@ -8,6 +8,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	metricscore "github.com/xbcio/xbc/extensions/observability/metrics"
 	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
@@ -22,13 +23,23 @@ type assertError string
 
 func (e assertError) Error() string { return string(e) }
 
-func TestEndpointExposition(t *testing.T) {
-	cfg := DefaultConfig()
+func newEnabledPluginForTest(t *testing.T) (*Plugin, *metricscore.Plugin) {
+	t.Helper()
+	cfg := metricscore.DefaultConfig()
 	cfg.HTTP.Enabled = true
-	p, err := newPlugin(cfg)
+	core, err := metricscore.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	value, err := New(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value, core
+}
+
+func TestEndpointExposition(t *testing.T) {
+	p, core := newEnabledPluginForTest(t)
 
 	engine := enginetest.New()
 	engine.GET("/metrics", p.handleMetrics)
@@ -37,7 +48,7 @@ func TestEndpointExposition(t *testing.T) {
 		Help: "Metric used to verify exposition.",
 	})
 	probe.Inc()
-	if err := p.Registry().Register(probe); err != nil {
+	if err := core.Register(probe); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,13 +67,8 @@ func TestEndpointExposition(t *testing.T) {
 }
 
 func TestGatherFailureReturnsServerError(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.HTTP.Enabled = true
-	p, err := newPlugin(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Registry().Register(brokenCollector{}); err != nil {
+	p, core := newEnabledPluginForTest(t)
+	if err := core.Register(brokenCollector{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -77,7 +83,8 @@ func TestGatherFailureReturnsServerError(t *testing.T) {
 }
 
 func TestDisabledEndpointReturnsNotFound(t *testing.T) {
-	p, err := newPlugin(DefaultConfig())
+	core := newCoreForTest(t)
+	p, err := New(core)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,31 +99,5 @@ func TestDisabledEndpointReturnsNotFound(t *testing.T) {
 	}
 	if got := response.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/problem+json") {
 		t.Fatalf("content type = %q", got)
-	}
-}
-
-func TestNormalizeConfigPropagatesCustomEndpointPath(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.HTTP.Enabled = true
-	cfg.HTTP.Path = "/ops/metrics"
-	normalized, err := normalizeConfig(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if normalized.endpoint.path != "/ops/metrics" {
-		t.Fatalf("endpoint path = %q, want the configured plugins.metrics.http.path", normalized.endpoint.path)
-	}
-}
-
-func TestConfigValidation(t *testing.T) {
-	cases := []Config{
-		{Namespace: "bad-name", HTTP: HTTPConfig{Path: defaultPath}},
-		{Namespace: defaultNamespace, DurationBuckets: []float64{1, 1}, HTTP: HTTPConfig{Path: defaultPath}},
-		{Namespace: defaultNamespace, HTTP: HTTPConfig{Path: "/metrics/:tenant"}},
-	}
-	for _, cfg := range cases {
-		if err := cfg.Validate(); err == nil {
-			t.Fatalf("Validate(%#v) succeeded", cfg)
-		}
 	}
 }

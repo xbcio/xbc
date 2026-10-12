@@ -14,8 +14,9 @@ import (
 //	xbc_workload_held{workload="sast"} 1
 //	xbc_workload_lease_age_seconds{workload="sast"} <Age>
 //
-// Stats.Instance belongs beside those as a second label, but it is a property
-// of the process rather than of a slot, so it is reported once there instead of
+// Stats.Instance identifies the process the rows belong to. It is a property
+// of the process rather than of a slot -- Prometheus joins these series to a
+// process through its target labels -- so it is reported once there instead of
 // being repeated on every row.
 type Held struct {
 	// Workload is the slot's workload. It is the only per-slot label the
@@ -73,10 +74,13 @@ type Declared struct {
 // Stats is one lock-free-enough snapshot of what this process's placement is
 // doing.
 //
-// It exists because core owns no metrics registry: the Prometheus registry is a
-// Web extension, and this module deliberately does not depend on a transport.
-// The snapshot is therefore the export point, and the three metric names above
-// are what a metrics bridge built on it should publish.
+// It is the single export point this package owns. The series named in the
+// field comments are published by this module's collector whenever the
+// composition selected the metrics plugin, and the same snapshot is what any
+// other consumer -- a future exporter, a diagnostic endpoint -- reads. Nothing
+// here depends on a transport: the registry belongs to the neutral metrics
+// plugin, and this module writes into it only when the application asked for
+// it.
 type Stats struct {
 	// Source names the placement source, and is "lease" for this package.
 	Source string

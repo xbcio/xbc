@@ -1,31 +1,38 @@
 package metrics
 
 import (
-	"sync/atomic"
+	"errors"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	metricscore "github.com/xbcio/xbc/extensions/observability/metrics"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
 
-// Key is the stable configuration and Plugin identity.
-const Key plugin.Key = "metrics"
+// Key is the stable Definition and middleware identity of the built-in HTTP
+// instrumentation. It is distinct from the neutral metrics plugin's own key,
+// metrics, which owns the plugins.metrics section: the instrumentation and its
+// exposition endpoint have no configuration of their own and read their
+// namespace, subsystem, duration buckets, and endpoint settings from that
+// plugin.
+//
+// The name is deliberately read "http" first. A "-http" suffix would spell the
+// same environment-variable tokens as the neutral section's own http sub-path:
+// XBC_PLUGINS_METRICS_HTTP_ENABLED would then be ambiguous between the two
+// kinds of section instead of configuring the endpoint.
+const Key plugin.Key = "http-metrics"
 
-type runtimeState struct {
-	config   normalizedConfig
-	registry *Registry
+// Plugin instruments HTTP traffic and serves the neutral metrics plugin's
+// private registry on the optional exposition endpoint. The same primary value
+// contributes both request instrumentation and the scrape route.
+type Plugin struct {
+	core     *metricscore.Plugin
 	requests *prometheus.CounterVec
 	duration *prometheus.HistogramVec
 	inflight *prometheus.GaugeVec
-	handler  *promhttp.HandlerOpts
-}
-
-// Plugin owns HTTP instruments and one private Prometheus registry. The same
-// primary value contributes both request instrumentation and the scrape route.
-type Plugin struct {
-	state atomic.Pointer[runtimeState]
+	handler  promhttp.HandlerOpts
 }
 
 var (
@@ -33,18 +40,19 @@ var (
 	_ web.RouteContributor = (*Plugin)(nil)
 )
 
-var definition = plugin.DefineConfigured(
+var metricsInput = plugin.RefTo[*metricscore.Plugin](metricscore.Key)
+
+var definition = plugin.Define(
 	Key,
-	plugin.ConfigSpec[Config]{
-		Defaults: DefaultConfig,
-		Prepare:  prepareConfig,
-	},
-	func(_ plugin.BuildContext, cfg Config) (*Plugin, error) {
-		return newPlugin(cfg)
+	func(ctx plugin.BuildContext) (*Plugin, error) {
+		return New(metricsInput.Get(ctx).Value)
 	},
 	plugin.Options[*Plugin]{
-		Activation: plugin.WhenConfigured("plugins." + Key.String()),
-		Inputs:     plugin.Inputs(),
+		// The HTTP instrumentation follows the metrics plugin it feeds:
+		// configuring plugins.metrics turns both on, and leaving it out leaves
+		// both dormant.
+		Activation: plugin.WhenConfigured("plugins." + metricscore.Key.String()),
+		Inputs:     plugin.Inputs(metricsInput),
 		Exports: plugin.Contracts(
 			plugin.ExportAs[web.Middleware](func(value *Plugin) web.Middleware { return value }),
 			plugin.ExportAs[web.RouteContributor](func(value *Plugin) web.RouteContributor { return value }),
@@ -52,81 +60,57 @@ var definition = plugin.DefineConfigured(
 	},
 )
 
-var bundle = plugin.BundleOf(definition)
+// bundle selects the neutral metrics plugin alongside the built-in HTTP
+// instrumentation. The instruments register into that plugin's registry, and
+// RefTo would reject the instrumentation without it at planning time anyway.
+var bundle = plugin.CombineBundles(metricscore.Bundle(), plugin.BundleOf(definition))
 
-// New constructs a directly usable Plugin with an isolated registry and safe
-// defaults. It performs no process-wide registration.
-func New() *Plugin {
-	value, _ := newPlugin(DefaultConfig())
-	return value
-}
-
-func prepareConfig(cfg Config) (Config, error) {
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
+// New builds the built-in HTTP instrumentation over the neutral metrics plugin
+// and registers its three bounded-cardinality instruments with that plugin's
+// registry, so one endpoint serves them beside application collectors.
+func New(core *metricscore.Plugin) (*Plugin, error) {
+	if core == nil {
+		return nil, errors.New("http-metrics: requires the metrics plugin")
 	}
-	return cfg, nil
-}
-
-func newPlugin(cfg Config) (*Plugin, error) {
-	normalized, err := normalizeConfig(cfg)
-	if err != nil {
-		return nil, err
+	registry := core.Registry()
+	if registry == nil {
+		return nil, errors.New("http-metrics: the metrics plugin has no registry")
 	}
-	state, err := newRuntimeState(normalized)
-	if err != nil {
-		return nil, err
-	}
-	value := &Plugin{}
-	value.state.Store(state)
-	return value, nil
-}
-
-// Definition returns metrics' canonical immutable declaration handle.
-func Definition() plugin.Definition { return definition }
-
-// Bundle returns metrics' side-effect-free explicit composition bundle.
-func Bundle() plugin.Bundle { return bundle }
-
-// Registry returns the Plugin's private collector registry.
-func (p *Plugin) Registry() *Registry {
-	if p == nil {
-		return nil
-	}
-	state := p.state.Load()
-	if state == nil {
-		return nil
-	}
-	return state.registry
-}
-
-func newRuntimeState(cfg normalizedConfig) (*runtimeState, error) {
-	registry := newRegistry()
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: cfg.namespace,
-		Subsystem: cfg.subsystem,
+		Namespace: core.Namespace(),
+		Subsystem: core.Subsystem(),
 		Name:      "http_requests_total",
 		Help:      "Total HTTP requests handled by route template and status class.",
 	}, []string{"method", "route", "status_class"})
 	duration := prometheus.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: cfg.namespace,
-		Subsystem: cfg.subsystem,
+		Namespace: core.Namespace(),
+		Subsystem: core.Subsystem(),
 		Name:      "http_request_duration_seconds",
 		Help:      "HTTP request duration in seconds by route template and status class.",
-		Buckets:   append([]float64(nil), cfg.buckets...),
+		Buckets:   core.DurationBuckets(),
 	}, []string{"method", "route", "status_class"})
 	inflight := prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: cfg.namespace,
-		Subsystem: cfg.subsystem,
+		Namespace: core.Namespace(),
+		Subsystem: core.Subsystem(),
 		Name:      "http_requests_in_flight",
 		Help:      "Current HTTP requests in flight by route template.",
 	}, []string{"method", "route"})
 	if err := registry.Register(requests, duration, inflight); err != nil {
 		return nil, err
 	}
-	opts := promhttp.HandlerOpts{ErrorHandling: promhttp.HTTPErrorOnError}
-	return &runtimeState{
-		config: cfg, registry: registry, requests: requests,
-		duration: duration, inflight: inflight, handler: &opts,
+	return &Plugin{
+		core:     core,
+		requests: requests,
+		duration: duration,
+		inflight: inflight,
+		handler:  promhttp.HandlerOpts{ErrorHandling: promhttp.HTTPErrorOnError},
 	}, nil
 }
+
+// Definition returns the built-in HTTP instrumentation's canonical immutable
+// declaration handle.
+func Definition() plugin.Definition { return definition }
+
+// Bundle returns the side-effect-free explicit composition of the built-in
+// HTTP instrumentation and the neutral metrics plugin it registers into.
+func Bundle() plugin.Bundle { return bundle }

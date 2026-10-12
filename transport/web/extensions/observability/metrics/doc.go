@@ -1,46 +1,46 @@
-// Package metrics provides application-private Prometheus instrumentation.
+// Package metrics provides the built-in HTTP server instrumentation and the
+// optional Prometheus exposition endpoint for XBC.
+//
+// The registry and its configuration -- the plugins.metrics section, the
+// private collector registry, and the Registerer contract -- belong to the
+// protocol-neutral plugin at
+// github.com/xbcio/xbc/extensions/observability/metrics. This package only
+// instruments the Web server: it records bounded-cardinality request counters,
+// a duration histogram, and an in-flight gauge per frozen route template,
+// registers those three instruments with the neutral plugin's registry so one
+// endpoint serves them beside application collectors, and contributes the
+// scrape route on the management plane when plugins.metrics.http enables it.
 //
 // # Usage
 //
-// A business plugin declares an input on this Definition's primary value and
-// registers its collectors with the private registry that value exposes. Those
-// collectors are then served by the same endpoint as the built-in
-// bounded-cardinality HTTP metrics:
+// Configure plugins.metrics and select this package's Bundle, which includes
+// the neutral metrics plugin. The instrumentation has no configuration of its
+// own, activates on the same section, and runs in the observation phase ahead
+// of access logging:
 //
-//	var metricsInput = plugin.RefTo[*metrics.Plugin](metrics.Key)
-//
-//	type Orders struct {
-//		completed prometheus.Counter
+//	func newApp() (*xbc.App, error) {
+//		return xbc.New(xbc.WithBundles(
+//			webprelude.Bundle(),
+//			ginengine.Bundle(),
+//			metrics.Bundle(),
+//		))
 //	}
 //
-//	var ordersDefinition = plugin.Define(
-//		"orders",
-//		func(ctx plugin.BuildContext) (*Orders, error) {
-//			completed := prometheus.NewCounter(prometheus.CounterOpts{
-//				Name: "orders_completed_total",
-//				Help: "Total number of completed orders.",
-//			})
-//			if err := metricsInput.Get(ctx).Value.Registry().Register(completed); err != nil {
-//				return nil, err
-//			}
-//			return &Orders{completed: completed}, nil
-//		},
-//		plugin.Options[*Orders]{Inputs: plugin.Inputs(metricsInput)},
-//	)
+// The exposition endpoint is disabled by default; a plugins.metrics.http
+// section enables it:
 //
-//	func (p *Orders) MarkCompleted() {
-//		p.completed.Inc()
-//	}
+//	plugins:
+//	  metrics:
+//	    http:
+//	      enabled: true
+//	      path: "/metrics"
 //
-// Every Plugin owns an isolated registry. It never registers collectors with
-// prometheus.DefaultRegisterer and never exposes the process-wide default
-// gatherer. Collector registration is atomic per Register call and duplicate
-// descriptor errors are returned instead of panicking.
+// Business collectors register with the neutral plugin's Registerer contract
+// and appear in the same exposition; import the neutral package to declare
+// that input.
 //
-// The HTTP endpoint is disabled by default. When enabled, access control is
-// determined by the application's authentication policy. The registry remains
-// owned by the metrics plugin for its full lifecycle, including Web connection
-// draining. Importing this implementation package has no catalog side effects;
-// import github.com/xbcio/xbc/transport/web/extensions/observability/metrics/autoload
-// explicitly for default-catalog registration.
+// Importing this package has no registration side effects. Applications that
+// use XBC's process-wide catalog opt in with a blank import of
+// github.com/xbcio/xbc/transport/web/extensions/observability/metrics/autoload;
+// applications with a private catalog can use Definition directly.
 package metrics

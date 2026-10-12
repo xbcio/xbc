@@ -24,8 +24,7 @@ func (*Plugin) Order() web.Order {
 }
 
 func (p *Plugin) handleRequest(_ context.Context, c *web.Ctx) error {
-	state := p.state.Load()
-	if state == nil {
+	if p == nil || p.core == nil {
 		c.Next()
 		return nil
 	}
@@ -36,18 +35,18 @@ func (p *Plugin) handleRequest(_ context.Context, c *web.Ctx) error {
 		route = info.Path
 	}
 
-	state.inflight.WithLabelValues(method, route).Inc()
+	p.inflight.WithLabelValues(method, route).Inc()
 	started := time.Now()
 	panicked := true
 	defer func() {
-		state.inflight.WithLabelValues(method, route).Dec()
+		p.inflight.WithLabelValues(method, route).Dec()
 		status := c.Writer().Status()
 		if panicked && !c.Writer().Written() {
 			status = http.StatusInternalServerError
 		}
 		statusClass := boundedStatusClass(status)
-		state.requests.WithLabelValues(method, route, statusClass).Inc()
-		state.duration.WithLabelValues(method, route, statusClass).Observe(time.Since(started).Seconds())
+		p.requests.WithLabelValues(method, route, statusClass).Inc()
+		p.duration.WithLabelValues(method, route, statusClass).Observe(time.Since(started).Seconds())
 	}()
 	c.Next()
 	panicked = false
