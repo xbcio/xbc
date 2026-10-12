@@ -177,9 +177,9 @@ func TestArchCoreGoModDoesNotRequireOptionalStacks(t *testing.T) {
 
 // TestArchCorePackagesDoNotImportTransportStacks is the package-layout design
 // §9 rule 1 guard for every optional transport stack: transports depend on
-// core, never the reverse. Guarding the parent namespace means a future
-// transport/grpc module is covered as soon as it appears, without
-// extending an implementation-name allowlist here.
+// core, never the reverse. Guarding the parent namespace covers transport/grpc
+// and any later sibling transport without extending an implementation-name
+// allowlist here.
 //
 // Checked across every package this module builds (`./...`), not just the root
 // package, so a future core subpackage cannot reach sideways into a transport
@@ -366,13 +366,16 @@ func TestArchCoreDependencyClosureExcludesOptionalStacks(t *testing.T) {
 const (
 	// archTransportNamespace is the parent namespace every transport --
 	// including the Web transport and its engine adapters -- lives under.
-	// Guarding the parent rather than one implementation name means a future
-	// transport/grpc module is covered as soon as it appears.
+	// Guarding the parent rather than one implementation name covers
+	// transport/grpc and any later sibling transport as soon as it appears.
 	archTransportNamespace = archRootPackage + "/transport"
 	// archWebModulePath is the Web transport module itself. A module is
 	// treated as composing the Web stack only by importing this (or a package
 	// beneath it), which is the Go declaration of that dependency.
 	archWebModulePath = archRootPackage + "/transport/web"
+	// archGRPCModulePath is the gRPC transport module. It is a sibling of the
+	// Web transport, never a layer on top of it.
+	archGRPCModulePath = archRootPackage + "/transport/grpc"
 	// archGinModulePath is the HTTP engine the Web stack is built on. It is
 	// named separately from archTransportNamespace because it is third-party:
 	// a module can pull Gin in through an intermediate dependency without ever
@@ -441,12 +444,18 @@ func archModuleClosure(t *testing.T, dir string) []archPackageJSON {
 // edge. Reading the import keeps the exemption derived from the module itself
 // instead of from a list this file would have to keep in step with go.work.
 func archModuleComposesWebStack(pkgs []archPackageJSON) bool {
+	return archModuleImports(pkgs, archWebModulePath)
+}
+
+// archModuleImports reports whether any of this module's own packages directly
+// imports a package at or below modulePath.
+func archModuleImports(pkgs []archPackageJSON, modulePath string) bool {
 	for _, pkg := range pkgs {
 		if pkg.DepOnly {
 			continue
 		}
 		for _, dep := range pkg.Imports {
-			if archPathAtOrBelow(dep, archWebModulePath) {
+			if archPathAtOrBelow(dep, modulePath) {
 				return true
 			}
 		}
@@ -515,11 +524,18 @@ func TestArchModulesThatDoNotComposeWebDoNotCompileItIn(t *testing.T) {
 			continue
 		}
 		notComposing++
+		// A module that imports the gRPC transport declares that dependency
+		// the same way, and may compile that one stack in. Every other
+		// transport, and the Web engine, stays forbidden to it.
+		grpcAware := archModuleImports(closure, archGRPCModulePath)
 		for _, dep := range archModuleForeignDependencies(closure) {
 			if archIsStdlib(dep) {
 				continue
 			}
 			foreignNonStd++
+			if grpcAware && archPathAtOrBelow(dep, archGRPCModulePath) {
+				continue
+			}
 			for _, forbidden := range []string{archTransportNamespace, archGinModulePath} {
 				if archPathAtOrBelow(dep, forbidden) {
 					t.Errorf("module %s does not import the Web transport, yet its production closure contains %q; the Web stack and its engine may only be compiled in by a module that declares that dependency",
@@ -572,7 +588,13 @@ func TestArchModulesOutsideTheWebZonesNeverComposeTheWebStack(t *testing.T) {
 		return ""
 	}
 
-	covered := 0
+	// The gRPC stack is not a Web zone: a module there must not compose the
+	// Web stack either, and TestArchTransportStacksNeverDependOnEachOther
+	// says so independently. It is only the zone where compiling the gRPC
+	// transport in is deliberate, so that one namespace is all it is excused.
+	const grpcZone = "transport/grpc"
+
+	covered, grpcCovered := 0, 0
 	zoneHits := make(map[string]int, len(webZones))
 	for _, dir := range archWorkspaceModuleDirs(t) {
 		relative := archRepositoryRelative(t, dir)
@@ -581,12 +603,16 @@ func TestArchModulesOutsideTheWebZonesNeverComposeTheWebStack(t *testing.T) {
 			continue
 		}
 		covered++
+		inGRPCZone := archPathAtOrBelow(relative, grpcZone)
+		if inGRPCZone {
+			grpcCovered++
+		}
 		closure := archModuleClosure(t, dir)
 		assert.Falsef(t, archModuleComposesWebStack(closure),
 			"module %s sits outside the Web zones %v but imports the Web transport; only a module that means to compose the Web stack may do so, and everything else must be selectable by a non-Web service",
 			relative, webZones)
 		for _, dep := range archModuleForeignDependencies(closure) {
-			if archIsStdlib(dep) {
+			if archIsStdlib(dep) || inGRPCZone && archPathAtOrBelow(dep, archGRPCModulePath) {
 				continue
 			}
 			for _, forbidden := range []string{archTransportNamespace, archGinModulePath} {
@@ -598,11 +624,58 @@ func TestArchModulesOutsideTheWebZonesNeverComposeTheWebStack(t *testing.T) {
 		}
 	}
 
+	require.NotZero(t, grpcCovered,
+		"no workspace module sits in the %s zone, so its narrower exemption was never exercised", grpcZone)
 	require.NotZero(t, covered,
 		"every workspace module fell inside a Web zone, so this guard read nothing; either the zones grew to cover the whole workspace or go.work stopped listing the capability modules")
 	for _, zone := range webZones {
 		assert.NotZero(t, zoneHits[zone],
 			"no workspace module sits in zone %q, so its exemption was never exercised and a zone list with a renamed or misplaced entry would pass unnoticed", zone)
+	}
+}
+
+// TestArchTransportStacksNeverDependOnEachOther keeps every transport stack
+// selectable without any other. The zone guard above already keeps transports
+// out of protocol-neutral modules, but it exempts transport/web wholesale and
+// reads transport/grpc only for foreign transport packages; this guard states
+// the sibling rule directly: no module beneath one stack may compile in another
+// stack, and the gRPC stack never compiles in the HTTP engine the Web stack is
+// built on. A capability both stacks share must live in a neutral module under
+// extensions/, not be borrowed from the sibling transport.
+func TestArchTransportStacksNeverDependOnEachOther(t *testing.T) {
+	stacks := map[string][]string{
+		archWebModulePath:  {archGRPCModulePath},
+		archGRPCModulePath: {archWebModulePath, archGinModulePath},
+	}
+
+	stackOf := func(relative string) string {
+		for stack := range stacks {
+			if archPathAtOrBelow(archRootPackage+"/"+relative, stack) {
+				return stack
+			}
+		}
+		return ""
+	}
+
+	hits := make(map[string]int, len(stacks))
+	for _, dir := range archWorkspaceModuleDirs(t) {
+		stack := stackOf(archRepositoryRelative(t, dir))
+		if stack == "" {
+			continue
+		}
+		hits[stack]++
+		for _, dep := range archModuleForeignDependencies(archModuleClosure(t, dir)) {
+			for _, forbidden := range stacks[stack] {
+				if archPathAtOrBelow(dep, forbidden) {
+					t.Errorf("module %s belongs to the %s stack, yet its production closure contains %q; transport stacks must stay independently selectable",
+						archRepositoryRelative(t, dir), stack, dep)
+				}
+			}
+		}
+	}
+	for stack := range stacks {
+		assert.NotZero(t, hits[stack],
+			"no workspace module belongs to the %s stack, so its isolation rule was never exercised", stack)
 	}
 }
 

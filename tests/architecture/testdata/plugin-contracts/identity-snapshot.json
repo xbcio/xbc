@@ -13,7 +13,22 @@
       "config_path": "plugins.apikey",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/authentication.Authenticator",
+        "github.com/xbcio/xbc/extensions/authentication.Authenticator"
+      ]
+    },
+    {
+      "key": "apikey-grpc",
+      "config_path": "plugins.apikey-grpc",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/grpc.CredentialExtractor"
+      ]
+    },
+    {
+      "key": "apikey-http",
+      "config_path": "plugins.apikey-http",
+      "cardinality": "single",
+      "contracts": [
         "github.com/xbcio/xbc/transport/web.CredentialExtractor"
       ]
     },
@@ -65,6 +80,15 @@
       "cardinality": "multiple",
       "contracts": [
         "github.com/xbcio/xbc/extensions/authorization/casbin.AdapterProvider"
+      ]
+    },
+    {
+      "key": "casbin-grpc",
+      "config_path": "plugins.casbin-grpc",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/grpc.StreamInterceptor",
+        "github.com/xbcio/xbc/transport/grpc.UnaryInterceptor"
       ]
     },
     {
@@ -127,6 +151,30 @@
       "contracts": []
     },
     {
+      "key": "grpc",
+      "config_path": "grpc",
+      "cardinality": "single",
+      "contracts": []
+    },
+    {
+      "key": "grpc-accesslog",
+      "config_path": "plugins.grpc-accesslog",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/grpc.StreamInterceptor",
+        "github.com/xbcio/xbc/transport/grpc.UnaryInterceptor"
+      ]
+    },
+    {
+      "key": "grpc-metrics",
+      "config_path": "plugins.grpc-metrics",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/grpc.StreamInterceptor",
+        "github.com/xbcio/xbc/transport/grpc.UnaryInterceptor"
+      ]
+    },
+    {
       "key": "gzip",
       "config_path": "plugins.gzip",
       "cardinality": "single",
@@ -141,10 +189,27 @@
       "contracts": []
     },
     {
+      "key": "health-grpc",
+      "config_path": "plugins.health-grpc",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/grpc.ServiceRegistrar"
+      ]
+    },
+    {
       "key": "health-http",
       "config_path": "plugins.health-http",
       "cardinality": "single",
       "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
+      "key": "http-metrics",
+      "config_path": "plugins.http-metrics",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware",
         "github.com/xbcio/xbc/transport/web.RouteContributor"
       ]
     },
@@ -161,7 +226,22 @@
       "config_path": "plugins.jwt",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/authentication.Authenticator",
+        "github.com/xbcio/xbc/extensions/authentication.Authenticator"
+      ]
+    },
+    {
+      "key": "jwt-grpc",
+      "config_path": "plugins.jwt-grpc",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/grpc.CredentialExtractor"
+      ]
+    },
+    {
+      "key": "jwt-http",
+      "config_path": "plugins.jwt-http",
+      "cardinality": "single",
+      "contracts": [
         "github.com/xbcio/xbc/transport/web.CredentialExtractor"
       ]
     },
@@ -179,8 +259,7 @@
       "config_path": "plugins.metrics",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web.Middleware",
-        "github.com/xbcio/xbc/transport/web.RouteContributor"
+        "github.com/xbcio/xbc/extensions/observability/metrics.Registerer"
       ]
     },
     {
@@ -293,6 +372,14 @@
       "cardinality": "single",
       "contracts": [
         "github.com/xbcio/xbc/extensions/authentication.Authenticator",
+        "github.com/xbcio/xbc/extensions/authentication/session.Manager"
+      ]
+    },
+    {
+      "key": "session-http",
+      "config_path": "plugins.session-http",
+      "cardinality": "single",
+      "contracts": [
         "github.com/xbcio/xbc/transport/web.CredentialExtractor",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/session.Manager"
       ]
@@ -327,8 +414,24 @@
       "config_path": "plugins.tracing",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web.Middleware",
-        "github.com/xbcio/xbc/transport/web/extensions/observability/tracing.Handle"
+        "github.com/xbcio/xbc/extensions/observability/tracing.Handle"
+      ]
+    },
+    {
+      "key": "tracing-grpc",
+      "config_path": "plugins.tracing-grpc",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/grpc.StreamInterceptor",
+        "github.com/xbcio/xbc/transport/grpc.UnaryInterceptor"
+      ]
+    },
+    {
+      "key": "tracing-http",
+      "config_path": "plugins.tracing-http",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
       ]
     },
     {
@@ -348,6 +451,9 @@
   ],
   "reserved_keys": [
     "authentication-middleware",
+    "grpc-authentication",
+    "grpc-panic-boundary",
+    "grpc-status-boundary",
     "web-error-boundary",
     "web-panic-boundary"
   ]

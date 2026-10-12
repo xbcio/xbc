@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc/config"
+	apikeycore "github.com/xbcio/xbc/extensions/authentication/apikey"
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/assembly"
@@ -171,16 +173,16 @@ func probeOK(_ context.Context, c *web.Ctx) error {
 // exactly as runtime's own assembly adapter does, using the fakeHost pattern
 // proven in transport/web/fakehost_test.go. It returns the bound address and
 // a stop function the caller must call to drain and release every resource.
-func composeServer(t *testing.T, sink *recordingSink, securityPolicies []web.PolicyRule) (addr string, jwtPlugin *jwt.Plugin, stop func()) {
+func composeServer(t *testing.T, sink *recordingSink, securityPolicies []web.PolicyRule) (addr string, jwtPlugin *jwtcore.Plugin, stop func()) {
 	t.Helper()
 
 	jwtSecret := "composition-e2e-test-secret-32-bytes-min"
 	apiKeyPlain := "composition-e2e-test-api-key-32-bytes-min"
-	digest := apikey.HashKey(apiKeyPlain)
+	digest := apikeycore.HashKey(apiKeyPlain)
 
-	jwtConfig := jwt.DefaultConfig()
+	jwtConfig := jwtcore.DefaultConfig()
 	jwtConfig.Secret = jwtSecret
-	jwtPlugin, err := jwt.New(jwtConfig)
+	jwtPlugin, err := jwtcore.New(jwtConfig)
 	require.NoError(t, err)
 
 	environment, err := config.NewEnvironment(map[string]any{
@@ -365,7 +367,7 @@ func TestCompositionE2EPublicRestrictedAndSchemeArbitration(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
 
-	aliceToken, err := jwtPlugin.Sign("alice", jwt.Claims{"tenant_id": "acme"})
+	aliceToken, err := jwtPlugin.Sign("alice", jwtcore.Claims{"tenant_id": "acme"})
 	require.NoError(t, err)
 
 	t.Run("jwt alone is accepted", func(t *testing.T) {

@@ -66,6 +66,21 @@ var archWebPackageExtensionPaths = []string{
 	"security/securityheaders",
 }
 
+var archGRPCExtensionGroups = []string{
+	"authentication",
+	"authorization",
+	"observability",
+	"reliability",
+}
+
+// archGRPCPackageExtensionPaths are the gRPC extensions that are packages of
+// the transport/grpc module rather than modules of their own.
+var archGRPCPackageExtensionPaths = []string{
+	"authentication/apikey",
+	"observability/accesslog",
+	"reliability/health",
+}
+
 var archProtocolNeutralExtensionGroups = []string{
 	"authorization",
 	"concurrency",
@@ -74,6 +89,7 @@ var archProtocolNeutralExtensionGroups = []string{
 	"storage",
 	"jobs",
 	"messaging",
+	"observability",
 }
 
 // archProtocolNeutralContractModules is the intentional set of contract-only
@@ -127,6 +143,8 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		"plugin/model",
 		"extensions",
 		"transport",
+		"transport/grpc",
+		"transport/grpc/prelude",
 		"transport/web",
 		"transport/web/prelude",
 		"transport/web/extensions",
@@ -202,6 +220,7 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 
 	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "extensions"), archProtocolNeutralExtensionGroups, nil, archProtocolNeutralContractModules)
 	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "web", "extensions"), archWebExtensionGroups, archWebPackageExtensionPaths, nil)
+	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "grpc", "extensions"), archGRPCExtensionGroups, archGRPCPackageExtensionPaths, nil)
 
 	webRoot := filepath.Join(root, "transport", "web")
 	preludeRoot := filepath.Join(webRoot, "prelude")
@@ -218,6 +237,31 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	require.NotEmpty(t, archProductionGoFilesInDir(t, starterRoot), "Web starter must be a production package")
 	_, err = os.Stat(filepath.Join(starterRoot, "go.mod"))
 	require.ErrorIs(t, err, os.ErrNotExist, "Web starter must belong to the transport/web module")
+
+	// The gRPC baseline mirrors the Web one: prelude and starter are packages
+	// of the transport module, so the baseline never reaches past the
+	// transport's own dependency closure -- the telemetry interceptors that
+	// would are modules of their own, selected beside it.
+	grpcRoot := filepath.Join(root, "transport", "grpc")
+	for _, name := range []string{"prelude", "starter"} {
+		packageRoot := filepath.Join(grpcRoot, name)
+		require.NotEmpty(t, archProductionGoFilesInDir(t, packageRoot), "gRPC %s must be a production package", name)
+		_, err = os.Stat(filepath.Join(packageRoot, "go.mod"))
+		require.ErrorIs(t, err, os.ErrNotExist, "gRPC %s must belong to the transport/grpc module", name)
+	}
+	grpcEntries, err := os.ReadDir(grpcRoot)
+	require.NoError(t, err, "reading gRPC module root failed")
+	allowedGRPCDirectories := map[string]bool{
+		"extensions": true,
+		"prelude":    true,
+		"starter":    true,
+	}
+	for _, entry := range grpcEntries {
+		if !entry.IsDir() || archIgnoresDirectoryEntry(entry.Name()) {
+			continue
+		}
+		assert.Truef(t, allowedGRPCDirectories[entry.Name()], "unexpected direct package directory transport/grpc/%s; gRPC plugins belong beneath transport/grpc/extensions", entry.Name())
+	}
 
 	entries, err := os.ReadDir(webRoot)
 	require.NoError(t, err, "reading Web module root failed")

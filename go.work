@@ -17,6 +17,9 @@ use (
 	.
 	./examples
 	./extensions/authentication
+	./extensions/authentication/apikey
+	./extensions/authentication/jwt
+	./extensions/authentication/session
 	./extensions/authorization/casbin
 	./extensions/authorization/casbin-gorm
 	./extensions/authorization/casbin-redis
@@ -26,6 +29,8 @@ use (
 	./extensions/coordination/lease
 	./extensions/coordination/placement
 	./extensions/coordination/raft
+	./extensions/observability/metrics
+	./extensions/observability/tracing
 	./extensions/reliability/gracefulshutdown
 	./extensions/reliability/health
 	./extensions/storage/elasticsearch
@@ -39,6 +44,11 @@ use (
 	./extensions/messaging/webhook
 	./scripts/plugin-snapshots
 	./tests/composition
+	./transport/grpc
+	./transport/grpc/extensions/authentication/jwt
+	./transport/grpc/extensions/authorization/casbin
+	./transport/grpc/extensions/observability/metrics
+	./transport/grpc/extensions/observability/tracing
 	./transport/web
 	./transport/web/engines/gin
 	./transport/web/extensions/authentication/jwt

@@ -33,6 +33,39 @@
       "imports": []
     },
     {
+      "path": "github.com/xbcio/xbc/extensions/authentication/apikey",
+      "directory": "extensions/authentication/apikey",
+      "tag_prefix": "extensions/authentication/apikey/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/authentication/jwt",
+      "directory": "extensions/authentication/jwt",
+      "tag_prefix": "extensions/authentication/jwt/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/authentication/session",
+      "directory": "extensions/authentication/session",
+      "tag_prefix": "extensions/authentication/session/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/extensions/authorization/rbac",
       "directory": "extensions/authorization/rbac",
       "tag_prefix": "extensions/authorization/rbac/",
@@ -78,6 +111,26 @@
       "path": "github.com/xbcio/xbc/extensions/messaging/webhook",
       "directory": "extensions/messaging/webhook",
       "tag_prefix": "extensions/messaging/webhook/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/observability/metrics",
+      "directory": "extensions/observability/metrics",
+      "tag_prefix": "extensions/observability/metrics/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/observability/tracing",
+      "directory": "extensions/observability/tracing",
+      "tag_prefix": "extensions/observability/tracing/",
       "wave": 1,
       "release": true,
       "imports": [
@@ -195,6 +248,19 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/transport/grpc",
+      "directory": "transport/grpc",
+      "tag_prefix": "transport/grpc/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authentication/apikey",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/transport/web",
       "directory": "transport/web",
       "tag_prefix": "transport/web/",
@@ -203,6 +269,7 @@
       "imports": [
         "github.com/xbcio/xbc",
         "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authentication/apikey",
         "github.com/xbcio/xbc/extensions/reliability/health"
       ]
     },
@@ -237,8 +304,59 @@
       "imports": [
         "github.com/xbcio/xbc",
         "github.com/xbcio/xbc/extensions/coordination/lease",
+        "github.com/xbcio/xbc/extensions/observability/metrics",
         "github.com/xbcio/xbc/extensions/reliability/health",
         "github.com/xbcio/xbc/extensions/storage/redis"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt",
+      "directory": "transport/grpc/extensions/authentication/jwt",
+      "tag_prefix": "transport/grpc/extensions/authentication/jwt/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/grpc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/grpc/extensions/authorization/casbin",
+      "directory": "transport/grpc/extensions/authorization/casbin",
+      "tag_prefix": "transport/grpc/extensions/authorization/casbin/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/transport/grpc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics",
+      "directory": "transport/grpc/extensions/observability/metrics",
+      "tag_prefix": "transport/grpc/extensions/observability/metrics/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/observability/metrics",
+        "github.com/xbcio/xbc/transport/grpc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/grpc/extensions/observability/tracing",
+      "directory": "transport/grpc/extensions/observability/tracing",
+      "tag_prefix": "transport/grpc/extensions/observability/tracing/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/observability/tracing",
+        "github.com/xbcio/xbc/transport/grpc"
       ]
     },
     {
@@ -261,6 +379,7 @@
       "imports": [
         "github.com/xbcio/xbc",
         "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authentication/jwt",
         "github.com/xbcio/xbc/transport/web"
       ]
     },
@@ -273,6 +392,7 @@
       "imports": [
         "github.com/xbcio/xbc",
         "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authentication/session",
         "github.com/xbcio/xbc/transport/web"
       ]
     },
@@ -309,6 +429,7 @@
       "release": true,
       "imports": [
         "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/observability/metrics",
         "github.com/xbcio/xbc/transport/web"
       ]
     },
@@ -320,6 +441,7 @@
       "release": true,
       "imports": [
         "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/observability/tracing",
         "github.com/xbcio/xbc/transport/web"
       ]
     },
@@ -354,6 +476,8 @@
       "release": true,
       "imports": [
         "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication/apikey",
+        "github.com/xbcio/xbc/extensions/authentication/jwt",
         "github.com/xbcio/xbc/extensions/authorization/casbin",
         "github.com/xbcio/xbc/extensions/authorization/casbin-gorm",
         "github.com/xbcio/xbc/extensions/authorization/casbin-redis",
@@ -365,6 +489,7 @@
         "github.com/xbcio/xbc/extensions/reliability/health",
         "github.com/xbcio/xbc/extensions/storage/gorm",
         "github.com/xbcio/xbc/extensions/tasks",
+        "github.com/xbcio/xbc/transport/grpc",
         "github.com/xbcio/xbc/transport/web",
         "github.com/xbcio/xbc/transport/web/engines/gin",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
@@ -382,6 +507,9 @@
       "release": false,
       "imports": [
         "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication/apikey",
+        "github.com/xbcio/xbc/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/extensions/authentication/session",
         "github.com/xbcio/xbc/extensions/authorization/casbin",
         "github.com/xbcio/xbc/extensions/authorization/casbin-gorm",
         "github.com/xbcio/xbc/extensions/authorization/casbin-redis",
@@ -394,12 +522,19 @@
         "github.com/xbcio/xbc/extensions/messaging/kafka",
         "github.com/xbcio/xbc/extensions/messaging/outbox",
         "github.com/xbcio/xbc/extensions/messaging/webhook",
+        "github.com/xbcio/xbc/extensions/observability/metrics",
+        "github.com/xbcio/xbc/extensions/observability/tracing",
         "github.com/xbcio/xbc/extensions/reliability/gracefulshutdown",
         "github.com/xbcio/xbc/extensions/reliability/health",
         "github.com/xbcio/xbc/extensions/storage/elasticsearch",
         "github.com/xbcio/xbc/extensions/storage/gorm",
         "github.com/xbcio/xbc/extensions/storage/objectstorage",
         "github.com/xbcio/xbc/extensions/storage/redis",
+        "github.com/xbcio/xbc/transport/grpc",
+        "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/grpc/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics",
+        "github.com/xbcio/xbc/transport/grpc/extensions/observability/tracing",
         "github.com/xbcio/xbc/transport/web",
         "github.com/xbcio/xbc/transport/web/engines/gin",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
@@ -419,6 +554,10 @@
       "release": true,
       "imports": [
         "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication/apikey",
+        "github.com/xbcio/xbc/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/grpc",
+        "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt",
         "github.com/xbcio/xbc/transport/web",
         "github.com/xbcio/xbc/transport/web/engines/gin",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",

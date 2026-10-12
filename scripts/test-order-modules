@@ -47,6 +47,11 @@ extensions/jobs/cron
 extensions/messaging/kafka
 extensions/messaging/outbox
 extensions/messaging/webhook
+extensions/observability/tracing
+transport/grpc
+transport/grpc/extensions/authorization/casbin
+transport/grpc/extensions/observability/metrics
+transport/grpc/extensions/observability/tracing
 transport/web
 transport/web/engines/gin
 transport/web/extensions/authorization/casbin

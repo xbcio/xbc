@@ -44,20 +44,24 @@ import (
 //     edge; an adapter module never composes the engine's Bundle or Definition,
 //     and the engine's own Definition is selected separately at the
 //     composition root.
+//
 //   - authorization/rbac publishes the Backend contract that the Casbin engine
 //     implements and exports, and the Manager vocabulary applications depend
 //     on. The engine names rbac.Backend to satisfy it; it never composes
 //     rbac.Bundle(), and rbac's Definition is selected separately at the
 //     composition root, so the same types-not-runtime ground applies.
+//
 //   - coordination/lease is a contract module (see archContractModules): two
 //     interfaces over the standard library, owning no Definition, Config, or
 //     Bundle. TestArchContractModulesOwnNoDefinitionConfigOrBundle is what makes
 //     that a checked claim rather than a description.
+//
 //   - extensions/tasks is the same shape: a contract module publishing the
 //     task vocabulary -- Task handles, Provider bindings, the Local and Remote
 //     executor interfaces -- that async and asynq implement and every plugin
 //     may define tasks with. The executors depend on its types; they never
 //     compose a Definition, Config, or Bundle from it, because it owns none.
+//
 //   - reliability/health is a plugin module, and is listed anyway. It publishes
 //     the probe vocabulary -- Contributor, NamedChecker, CheckFunc, Readiness --
 //     that every capability implements in order to be observable at all, and its
@@ -67,16 +71,32 @@ import (
 //     is the one place where a plugin module is a dependency target, so it is
 //     spelled out here rather than derived.
 //
-// extensions/authentication is deliberately absent. It is a contract module, so
-// it would qualify, but today only the Web namespace consumes it; listing an
-// unexercised target is what TestArchExtensionSharedVocabularyIsExercised
-// refuses. Adding a member here is an architecture decision, and a one-line one.
+//   - extensions/authentication is a contract module too: the Authenticator,
+//     Credential, and Result vocabulary that every protocol-neutral
+//     authenticator implements -- authentication/jwt today -- and that each
+//     transport's credential extractor pairs with. The authenticators nest
+//     inside its directory as their own modules, and the edge goes from them
+//     to the contract only; the contract owns no Definition, Config, or Bundle
+//     for them to compose.
+//
+//   - observability/metrics is a plugin module listed for the contract it
+//     publishes: the Registerer vocabulary -- Register and Unregister over the
+//     private registry it owns -- which any plugin may depend on so its own
+//     collectors are served by one endpoint. A consumer like
+//     coordination/placement names that contract and registers through the
+//     value a composition binds; it never composes metrics.Bundle() or
+//     Definition, which the service selects separately at the composition
+//     root.
+//
+// Adding a member here is an architecture decision, and a one-line one.
 var archExtensionSharedVocabularyModules = []string{
+	"extensions/authentication",
 	"extensions/authorization/casbin",
 	"extensions/authorization/rbac",
 	"extensions/coordination/lease",
 	"extensions/tasks",
 	"extensions/reliability/health",
+	"extensions/observability/metrics",
 }
 
 // archExtensionEdge is one production import from inside one extension module

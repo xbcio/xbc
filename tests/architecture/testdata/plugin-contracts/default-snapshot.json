@@ -12,7 +12,7 @@
     },
     {
       "key": "apikey",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/apikey.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/authentication/apikey.Config",
       "defaults": {
         "Header": "X-API-Key",
         "AppIDHeader": "X-App-ID",
@@ -117,6 +117,13 @@
         "Table": "casbin_rule",
         "TablePrefix": "",
         "Migrate": false
+      }
+    },
+    {
+      "key": "casbin-grpc",
+      "config_type": "github.com/xbcio/xbc/transport/grpc/extensions/authorization/casbin.Config",
+      "defaults": {
+        "MissingPermission": "deny"
       }
     },
     {
@@ -235,6 +242,47 @@
       }
     },
     {
+      "key": "grpc",
+      "config_type": "github.com/xbcio/xbc/transport/grpc.Config",
+      "defaults": {
+        "Addr": ":9090",
+        "MaxRecvMsgBytes": 4194304,
+        "MaxSendMsgBytes": 4194304,
+        "MaxConcurrentStreams": 100,
+        "Shutdown": {
+          "PreDrainDelay": 0
+        },
+        "Recovery": {
+          "Stack": true
+        },
+        "Security": {
+          "Default": "deny",
+          "Schemes": null,
+          "Rules": null
+        },
+        "Reflection": {
+          "Enabled": false
+        },
+        "TLS": {
+          "CertFile": "",
+          "KeyFile": "",
+          "MinVersion": "1.2",
+          "ClientCAFile": "",
+          "ClientAuth": "none",
+          "CipherSuites": null,
+          "ReloadInterval": 0
+        }
+      }
+    },
+    {
+      "key": "grpc-accesslog",
+      "config_type": "github.com/xbcio/xbc/transport/grpc/extensions/observability/accesslog.Config",
+      "defaults": {
+        "SkipMethods": null,
+        "SlowCall": 0
+      }
+    },
+    {
       "key": "gzip",
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/response/gzip.Config",
       "defaults": {
@@ -291,7 +339,7 @@
     },
     {
       "key": "jwt",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/authentication/jwt.Config",
       "defaults": {
         "Secret": "",
         "Algorithm": "HS256",
@@ -343,7 +391,7 @@
     },
     {
       "key": "metrics",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/metrics.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/observability/metrics.Config",
       "defaults": {
         "Namespace": "xbc",
         "Subsystem": "",
@@ -543,7 +591,7 @@
     },
     {
       "key": "session",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/session.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/authentication/session.Config",
       "defaults": {
         "Backend": "memory",
         "RedisInstance": "default",
@@ -597,7 +645,7 @@
     },
     {
       "key": "tracing",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/observability/tracing.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/observability/tracing.Config",
       "defaults": {
         "ServiceName": "xbc",
         "ServiceVersion": "",

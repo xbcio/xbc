@@ -4,6 +4,9 @@ import (
 	"github.com/xbcio/xbc/extensions/authorization/rbac"
 	"github.com/xbcio/xbc/plugin"
 
+	apikeycore "github.com/xbcio/xbc/extensions/authentication/apikey"
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
+	sessioncore "github.com/xbcio/xbc/extensions/authentication/session"
 	casbincore "github.com/xbcio/xbc/extensions/authorization/casbin"
 	casbingorm "github.com/xbcio/xbc/extensions/authorization/casbin-gorm"
 	casbinredis "github.com/xbcio/xbc/extensions/authorization/casbin-redis"
@@ -15,6 +18,8 @@ import (
 	"github.com/xbcio/xbc/extensions/messaging/kafka"
 	"github.com/xbcio/xbc/extensions/messaging/outbox"
 	"github.com/xbcio/xbc/extensions/messaging/webhook"
+	metricscore "github.com/xbcio/xbc/extensions/observability/metrics"
+	tracingcore "github.com/xbcio/xbc/extensions/observability/tracing"
 	"github.com/xbcio/xbc/extensions/reliability/gracefulshutdown"
 	corehealth "github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/extensions/storage/elasticsearch"
@@ -22,6 +27,14 @@ import (
 	"github.com/xbcio/xbc/extensions/storage/objectstorage"
 	"github.com/xbcio/xbc/extensions/storage/redis"
 
+	grpctransport "github.com/xbcio/xbc/transport/grpc"
+	grpcapikey "github.com/xbcio/xbc/transport/grpc/extensions/authentication/apikey"
+	grpcjwt "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt"
+	grpccasbin "github.com/xbcio/xbc/transport/grpc/extensions/authorization/casbin"
+	grpcaccesslog "github.com/xbcio/xbc/transport/grpc/extensions/observability/accesslog"
+	grpcmetrics "github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics"
+	grpctracing "github.com/xbcio/xbc/transport/grpc/extensions/observability/tracing"
+	grpchealth "github.com/xbcio/xbc/transport/grpc/extensions/reliability/health"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/jwt"
@@ -52,11 +65,12 @@ import (
 //
 // run from the repository root after excluding three categories:
 //
-//   - aggregate Bundles (such as transport/web/prelude, whose entries belong to
-//     the implementation packages below);
-//   - the demo plugins under examples/ (quickstart's greeter, worker's sweeper
-//     and healthlog, and the workloads example's heartbeat, ingest and
-//     transcode), which exist to be read rather than reused;
+//   - aggregate Bundles (transport/web/prelude and transport/grpc/prelude,
+//     whose entries belong to the implementation packages below);
+//   - the demo plugins under examples/ (quickstart's and grpcquickstart's
+//     greeters, worker's sweeper and healthlog, and the workloads example's
+//     heartbeat, ingest and transcode), which exist to be read rather than
+//     reused;
 //   - scripts/plugin-migration-inventory test fixtures;
 //   - engine adapters under transport/web/engines/, which are deliberately not
 //     Web plugins: each implements the neutral web.Engine port rather than a Web
@@ -78,6 +92,11 @@ var bundleProviders = []func() plugin.Bundle{
 	elasticsearch.Bundle,
 	gorm.Bundle,
 	gracefulshutdown.Bundle,
+	apikeycore.Bundle,
+	jwtcore.Bundle,
+	sessioncore.Bundle,
+	metricscore.Bundle,
+	tracingcore.Bundle,
 	kafka.Bundle,
 	objectstorage.Bundle,
 	outbox.Bundle,
@@ -85,6 +104,15 @@ var bundleProviders = []func() plugin.Bundle{
 	raft.Bundle,
 	redis.Bundle,
 	webhook.Bundle,
+
+	grpctransport.Bundle,
+	grpcapikey.Bundle,
+	grpcjwt.Bundle,
+	grpccasbin.Bundle,
+	grpcaccesslog.Bundle,
+	grpcmetrics.Bundle,
+	grpctracing.Bundle,
+	grpchealth.Bundle,
 
 	web.Bundle,
 	accesslog.Bundle,
@@ -116,5 +144,6 @@ var bundleProviders = []func() plugin.Bundle{
 // the snapshot would silently omit part of the plugin key namespace and nothing
 // would stop a Bundle from claiming a reserved key.
 var reservedKeyProviders = []func() []plugin.Key{
+	grpctransport.ReservedInterceptorKeys,
 	web.ReservedMiddlewareKeys,
 }
