@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -13,109 +11,11 @@ import (
 	jwtlib "github.com/golang-jwt/jwt/v5"
 
 	"github.com/xbcio/xbc/extensions/authentication"
-	"github.com/xbcio/xbc/transport/web"
-	"github.com/xbcio/xbc/transport/web/enginetest"
 )
 
-// newTestPlugin returns a plugin configured with a valid test secret and
-// otherwise-default configuration.
 func newTestPlugin(t *testing.T) *Plugin {
 	t.Helper()
 	return configuredPlugin(t, nil)
-}
-
-// newTestContextWithHeader builds a *web.Ctx wrapping a bare request carrying
-// header=value on it -- the minimum ExtractCredential needs to read an HTTP
-// header. An empty value means the header is not set at all.
-func newTestContextWithHeader(t *testing.T, header, value string) *web.Ctx {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	if value != "" {
-		req.Header.Set(header, value)
-	}
-	return enginetest.NewCtx(httptest.NewRecorder(), req)
-}
-
-func TestPluginExtractCredentialClassifiesAuthorizationHeader(t *testing.T) {
-	t.Parallel()
-
-	const wantChallenge = authentication.Challenge("Bearer")
-
-	tests := []struct {
-		name          string
-		header        string
-		want          authentication.CredentialStatus
-		wantChallenge bool
-	}{
-		{name: "no header is absent", header: "", want: authentication.CredentialStatusAbsent, wantChallenge: true},
-		{name: "other scheme is absent", header: "ApiKey abc", want: authentication.CredentialStatusAbsent, wantChallenge: true},
-		{name: "bearer with no token is malformed", header: "Bearer", want: authentication.CredentialStatusMalformed, wantChallenge: true},
-		{name: "bearer with empty token is malformed", header: "Bearer  ", want: authentication.CredentialStatusMalformed, wantChallenge: true},
-		{name: "bearer with token is presented", header: "Bearer abc.def.ghi", want: authentication.CredentialStatusPresented, wantChallenge: false},
-		{name: "structurally wrong jwt is still presented", header: "Bearer not-a-jwt", want: authentication.CredentialStatusPresented, wantChallenge: false},
-	}
-
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			plugin := newTestPlugin(t)
-			c := newTestContextWithHeader(t, "Authorization", test.header)
-			got, err := plugin.ExtractCredential(c)
-			if err != nil {
-				t.Fatalf("ExtractCredential() error = %v", err)
-			}
-			if got.Status() != test.want {
-				t.Fatalf("status = %v, want %v", got.Status(), test.want)
-			}
-			challenge, ok := got.Challenge()
-			if test.wantChallenge {
-				if !ok || challenge != wantChallenge {
-					t.Fatalf("Challenge() = %q, ok=%v, want %q", challenge, ok, wantChallenge)
-				}
-			} else if ok {
-				t.Fatalf("Challenge() = %q, want none", challenge)
-			}
-		})
-	}
-}
-
-func TestPluginExtractCredentialUsesConfiguredHeaderAndScheme(t *testing.T) {
-	p := configuredPlugin(t, func(cfg *Config) {
-		cfg.Header = "X-Access-Token"
-		cfg.Scheme = "JWT"
-	})
-
-	c := newTestContextWithHeader(t, "X-Access-Token", "JWT abc.def.ghi")
-	got, err := p.ExtractCredential(c)
-	if err != nil {
-		t.Fatalf("ExtractCredential() error = %v", err)
-	}
-	if got.Status() != authentication.CredentialStatusPresented {
-		t.Fatalf("status = %v, want Presented", got.Status())
-	}
-	credential, ok := got.Credential()
-	if !ok {
-		t.Fatal("Credential() ok = false")
-	}
-	if token, _ := credential.Value().(string); token != "abc.def.ghi" {
-		t.Fatalf("token = %q, want abc.def.ghi", token)
-	}
-
-	// The default Authorization header is not this plugin's configured header,
-	// so a well-formed bearer token there must not be picked up.
-	other := newTestContextWithHeader(t, "Authorization", "JWT abc.def.ghi")
-	got, err = p.ExtractCredential(other)
-	if err != nil {
-		t.Fatalf("ExtractCredential() error = %v", err)
-	}
-	if got.Status() != authentication.CredentialStatusAbsent {
-		t.Fatalf("status = %v, want Absent", got.Status())
-	}
-	// The challenge must follow the configured scheme, not a hardcoded Bearer.
-	if challenge, ok := got.Challenge(); !ok || challenge != authentication.Challenge("JWT") {
-		t.Fatalf("Challenge() = %q, ok=%v, want %q", challenge, ok, "JWT")
-	}
 }
 
 func TestPluginAuthenticateAcceptsValidTokenAndPublishesPrincipal(t *testing.T) {

@@ -1,74 +1,65 @@
 package jwt
 
 import (
-	"time"
+	"errors"
 
-	"github.com/xbcio/xbc/extensions/authentication"
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )
 
-// Key is the stable Definition and configuration identity of the JWT plugin.
-const Key plugin.Key = "jwt"
+// Key is the stable Definition identity of the Web credential extractor. It is
+// distinct from the neutral authenticator's own key, jwt, which owns the
+// plugins.jwt section: the extractor has no configuration of its own and reads
+// its header and scheme from that authenticator.
+const Key plugin.Key = "jwt-http"
 
-// Plugin validates and issues HMAC JWTs and contributes a credential extractor
-// and an authenticator to the Web transport's authentication middleware. A
-// constructed Plugin's compiled configuration is immutable; nothing about
-// verification depends on state that changes after construction.
-type Plugin struct {
-	compiled *compiledConfig
-
-	// now is a field only to make expiration behavior deterministic in tests.
-	now func() time.Time
+// Extractor pulls a bearer token out of an HTTP request for the neutral JWT
+// authenticator. It decides only whether the configured header syntactically
+// belongs to the jwt scheme; every semantic check stays with the authenticator.
+type Extractor struct {
+	header string
+	scheme string
 }
 
-var definition = plugin.DefineConfigured(
+var _ web.CredentialExtractor = (*Extractor)(nil)
+
+var authenticatorInput = plugin.RefTo[*jwtcore.Plugin](jwtcore.Key)
+
+var definition = plugin.Define(
 	Key,
-	plugin.ConfigSpec[Config]{
-		Defaults: DefaultConfig,
-		Prepare:  prepareConfig,
+	func(ctx plugin.BuildContext) (*Extractor, error) {
+		return New(authenticatorInput.Get(ctx).Value)
 	},
-	func(_ plugin.BuildContext, cfg Config) (*Plugin, error) {
-		return newPlugin(cfg)
-	},
-	plugin.Options[*Plugin]{
-		Activation: plugin.WhenConfigured("plugins." + Key.String()),
+	plugin.Options[*Extractor]{
+		// The extractor follows the authenticator it pairs with: configuring
+		// plugins.jwt turns both on, and leaving it out leaves both dormant.
+		Activation: plugin.WhenConfigured("plugins." + jwtcore.Key.String()),
+		Inputs:     plugin.Inputs(authenticatorInput),
 		Exports: plugin.Contracts(
-			plugin.ExportAs[authentication.Authenticator](func(value *Plugin) authentication.Authenticator { return value }),
-			plugin.ExportAs[web.CredentialExtractor](func(value *Plugin) web.CredentialExtractor { return value }),
+			plugin.ExportAs[web.CredentialExtractor](func(value *Extractor) web.CredentialExtractor { return value }),
 		),
 	},
 )
 
-var bundle = plugin.BundleOf(definition)
+// bundle selects the neutral authenticator alongside the extractor. An
+// extractor without the authenticator it feeds is not a composition anyone
+// wants, and RefTo would reject it at planning time anyway.
+var bundle = plugin.CombineBundles(jwtcore.Bundle(), plugin.BundleOf(definition))
 
-// New constructs a directly usable Plugin from cfg. Secret has no default and
-// must contain at least 32 bytes.
-func New(cfg Config) (*Plugin, error) {
-	return newPlugin(cfg)
-}
-
-func newPlugin(cfg Config) (*Plugin, error) {
-	return newPluginWithClock(cfg, time.Now)
-}
-
-func newPluginWithClock(cfg Config, now func() time.Time) (*Plugin, error) {
-	compiled, err := compileConfig(cfg, now)
-	if err != nil {
-		return nil, err
+// New builds an extractor that reads the header and scheme configured on
+// authenticator.
+func New(authenticator *jwtcore.Plugin) (*Extractor, error) {
+	if authenticator == nil {
+		return nil, errors.New("jwt-http: requires the jwt authenticator")
 	}
-	return &Plugin{compiled: compiled, now: now}, nil
+	return &Extractor{header: authenticator.Header(), scheme: authenticator.TokenScheme()}, nil
 }
 
-// Definition returns JWT's canonical immutable declaration handle.
+// Definition returns the Web extractor's canonical immutable declaration
+// handle.
 func Definition() plugin.Definition { return definition }
 
-// Bundle returns JWT's side-effect-free explicit composition bundle.
+// Bundle returns the side-effect-free explicit composition of the Web
+// extractor and the neutral JWT authenticator it feeds.
 func Bundle() plugin.Bundle { return bundle }
-
-func (p *Plugin) clock() time.Time {
-	if p.now == nil {
-		return time.Now()
-	}
-	return p.now()
-}

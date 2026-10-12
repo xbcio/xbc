@@ -3,9 +3,11 @@ package jwt
 import (
 	"reflect"
 	"testing"
-	"time"
 
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
 	"github.com/xbcio/xbc/plugin"
+	pluginmodel "github.com/xbcio/xbc/plugin/model"
+	"github.com/xbcio/xbc/transport/web"
 )
 
 func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
@@ -25,22 +27,33 @@ func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
 	}
 }
 
-func TestNewRejectsInvalidConfigAndAppliesDefaults(t *testing.T) {
-	if _, err := New(DefaultConfig()); err == nil {
-		t.Fatal("New(DefaultConfig()) error = nil, want a secret validation failure")
+// TestBundleSelectsTheNeutralAuthenticator pins the production spelling: a
+// composition root that selects jwt.Bundle() from this package gets the
+// authenticator too, so it never has to know the plugin was split.
+func TestBundleSelectsTheNeutralAuthenticator(t *testing.T) {
+	var got []pluginmodel.Definition
+	for _, entry := range pluginmodel.BundleEntries(pluginmodel.Bundle(Bundle())) {
+		got = append(got, entry.Definition)
 	}
+	want := []pluginmodel.Definition{
+		pluginmodel.Definition(jwtcore.Definition()),
+		pluginmodel.Definition(Definition()),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Bundle() definitions = %v, want the neutral authenticator then the Web extractor", got)
+	}
+}
 
-	cfg := DefaultConfig()
-	cfg.Secret = testSecret
-	p, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+// TestDefinitionExportsExactlyTheCredentialExtractor keeps the authenticator
+// contract on the neutral half. Exporting it here as well would register the
+// jwt scheme twice, which the Web authentication middleware refuses.
+func TestDefinitionExportsExactlyTheCredentialExtractor(t *testing.T) {
+	descriptor, ok := pluginmodel.DescribeDefinition(pluginmodel.Definition(Definition()))
+	if !ok {
+		t.Fatal("Definition() returned a zero handle")
 	}
-	if p.compiled.algorithm != "HS256" || p.compiled.expire != 2*time.Hour ||
-		p.compiled.header != "Authorization" || p.compiled.scheme != "Bearer" {
-		t.Fatalf("New defaults = %#v", p.compiled.normalizedConfig)
-	}
-	if p.Scheme() != Scheme {
-		t.Fatalf("Scheme() = %q, want %q", p.Scheme(), Scheme)
+	want := reflect.TypeOf((*web.CredentialExtractor)(nil)).Elem()
+	if len(descriptor.Contracts) != 1 || descriptor.Contracts[0].Type != want {
+		t.Fatalf("Definition contracts = %+v, want exactly web.CredentialExtractor", descriptor.Contracts)
 	}
 }
