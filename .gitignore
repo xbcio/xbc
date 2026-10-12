@@ -10,6 +10,10 @@
 *.test
 *.out
 vendor/
+# A `go build` run inside a script's directory leaves its binary there.
+/scripts/*/*
+!/scripts/*/*.*
+!/scripts/*/*/
 
 # go.work must remain tracked: plugins/*/* and examples are independent modules,
 # and local replace directives are intentionally forbidden. Before core's first
