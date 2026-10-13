@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"os"
+	"os/signal"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -132,6 +133,33 @@ func signalSelf(sig syscall.Signal) error {
 		return err
 	}
 	return process.Signal(sig)
+}
+
+// stopSignalDrain is the test binary's shield against a stop signal being
+// handled after the test that sent it has already unregistered: it keeps
+// SIGINT and SIGTERM registered - and so "wanted" inside the runtime - for
+// the binary's whole life and drops whatever reaches it.
+//
+// The signal tests below deliver real signals to the test binary, and Go
+// cannot close the window between a signal being generated and its handler
+// reading the registration state: the handler reads sig.wanted (runtime
+// sigqueue.go's sigsend), os/signal.Stop clears that bit, and the runtime
+// documents the race as unavoidable ("there is no connection between
+// handling a signal and receiving one"). A stop signal handled inside that
+// window finds no registration, sigsend reports false, and the runtime
+// applies the default action: it kills the test binary. CI saw exactly that
+// once - a bare "signal: terminated" with no test-level failure, in a test
+// that had sent the binary no signal at all. With this channel registered
+// the bit is never clear, so a late signal is queued and discarded here; the
+// tests' own watchers still receive every signal they assert on, because
+// os/signal delivers each signal to every registered channel. This is
+// deliberately test-only: a production process keeps the default action for
+// a signal arriving after its watcher stopped, because os.Exit is about to
+// run anyway.
+var stopSignalDrain = make(chan os.Signal, 32)
+
+func init() {
+	signal.Notify(stopSignalDrain, syscall.SIGINT, syscall.SIGTERM)
 }
 
 // signalWaitUntil polls condition until it holds or the timeout elapses. The
@@ -419,4 +447,36 @@ func TestShutdownUnregistersTheSignalHandlerWhenStopReturns(t *testing.T) {
 		"the still-registered watcher never saw the signal; the environment, not the code, is intercepting it")
 	assert.False(t, observedStopped.Load(),
 		"stop() must undo signal.Notify rather than leave the OS-level registration alive")
+}
+
+// TestAStrayStopSignalIsDrainedInsteadOfTerminatingTheBinary pins the shield
+// declared above: this test registers no watcher of its own, so the SIGTERM
+// it sends finds only the drain registered. That is the ordering a late
+// delivery from an earlier test produces on its own, and without the shield
+// it is fatal - the runtime's default action kills the test binary inside
+// signalSelf, which is the "signal: terminated" CI saw. The assertion on the
+// drain channel is what tells "the shield swallowed it" apart from "the
+// signal has not been handled yet": the default action is synchronous with
+// the send, so surviving the call is half the proof, and the drained value
+// is the other half.
+func TestAStrayStopSignalIsDrainedInsteadOfTerminatingTheBinary(t *testing.T) {
+	// The drain receives a copy of every signal the other tests send; clear
+	// the leftovers so the one below is certainly this test's own.
+drain:
+	for {
+		select {
+		case <-stopSignalDrain:
+		default:
+			break drain
+		}
+	}
+
+	require.NoError(t, signalSelf(syscall.SIGTERM))
+	select {
+	case received := <-stopSignalDrain:
+		assert.Equal(t, syscall.SIGTERM, received,
+			"the stray stop signal must reach the drain, not the default action")
+	case <-time.After(runtimeTestTimeout):
+		t.Fatal("the stray stop signal never reached the drain channel")
+	}
 }

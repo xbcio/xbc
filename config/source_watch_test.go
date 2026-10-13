@@ -355,28 +355,53 @@ func TestWatchFilesReportsARestoreThatLandsWhileNothingWatches(t *testing.T) {
 	}
 }
 
-// One burst of writes is one reload request: the debounce is what keeps an
+// One burst of events is one reload request: the debounce is what keeps an
 // editor's save (or a formatter's several writes) from compiling into a
 // reload storm.
+//
+// The burst enters at the watcher's own event entry rather than through eight
+// real writes, so that the burst is inside one debounce window by
+// construction. Real writes depend on how fast the runner schedules fsnotify
+// delivery, and a loaded CI runner lagged one event past the window often
+// enough that the burst legitimately split into two callbacks and this test
+// failed (source_watch_test.go:380, run 38340396799). The event entry is
+// where the provider's callback calls in for every filesystem event, one
+// after another, so eight sequential calls are the burst the debounce exists
+// to merge; what the test pins is the merging itself: the first event opens
+// the window and the events behind it are absorbed instead of each arming a
+// callback of its own.
 func TestWatchFilesCollapsesABurstIntoOneCallback(t *testing.T) {
 	dir := t.TempDir()
 	base := filepath.Join(dir, "application.yml")
 	writeYAML(t, base, "a: 0\n")
 
-	calls, _ := startWatchingWith(t, []string{base}, 150*time.Millisecond, 10*time.Millisecond)
+	oldDebounce, oldRearm := watchDebounce, watchRearm
+	watchDebounce, watchRearm = 30*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { watchDebounce, watchRearm = oldDebounce, oldRearm })
+
+	changes := make(chan []string, 16)
+	watch := newFileWatch([]string{base}, func(changed []string) {
+		select {
+		case changes <- changed:
+		default:
+		}
+	})
+	require.NoError(t, watch.start())
+	t.Cleanup(func() { require.NoError(t, watch.stop()) })
 
 	for i := 1; i <= 8; i++ {
-		writeYAML(t, base, "a: "+string(rune('0'+i))+"\n")
+		watch.changedUnderWatch()
 	}
 
 	select {
-	case <-calls:
+	case changed := <-changes:
+		assert.Equal(t, []string{base}, changed, "the callback reports the watched paths")
 	case <-time.After(2 * time.Second):
 		t.Fatal("a write burst must produce a callback")
 	}
 	time.Sleep(3 * watchDebounce)
 	select {
-	case <-calls:
+	case <-changes:
 		t.Fatal("the burst must collapse into one callback")
 	default:
 	}

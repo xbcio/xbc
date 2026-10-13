@@ -250,13 +250,28 @@ func TestConcurrentSignalAndCriticalFailureUnwindExactlyOnce(t *testing.T) {
 	racing := readinessStages(recorder, "racing")
 	racing.Start = func(_ *readinessValue, ctx *plugin.Context) error {
 		recorder.record("start:racing")
+		// Task admission is settled before the two triggers race. The race
+		// this test pins is the stop request against the critical panic; a
+		// stop request that wins the admission gate instead legitimately
+		// refuses GoCritical, and then no panic is left to race with - the
+		// requestStop goroutine scheduled first under load once, and this
+		// hook then hung forever waiting on a task that was never admitted.
+		criticalRunning := make(chan struct{})
+		panicNow := make(chan struct{})
 		var starter sync.WaitGroup
 		starter.Add(2)
-		go func() { defer starter.Done(); app.requestStop(stopReasonSignal) }()
-		require.True(t, ctx.GoCritical(func(context.Context) {
+		if !ctx.GoCritical(func(context.Context) {
 			defer starter.Done()
+			close(criticalRunning)
+			<-panicNow
 			panic(errors.New("critical exploded"))
-		}))
+		}) {
+			return errors.New("the critical task was refused before the stop request even started")
+		}
+		<-criticalRunning
+
+		go func() { defer starter.Done(); app.requestStop(stopReasonSignal) }()
+		close(panicNow)
 		starter.Wait()
 		return nil
 	}

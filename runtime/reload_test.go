@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
@@ -192,7 +191,7 @@ func TestUnwindStopsTheConfigurationWatchBeforePluginStop(t *testing.T) {
 // half of the seam: doctor and validate read the configuration but must not
 // arm a watch or leave anything running behind them.
 func TestReadOnlyCommandsStartNoConfigurationWatch(t *testing.T) {
-	defer goleak.VerifyNone(t)
+	defer verifyNoGoroutineLeaks(t)
 	preserveLogLevel(t)
 	path := writeRuntimeTestConfig(t, reloadTestContents("error", ""))
 
