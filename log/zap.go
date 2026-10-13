@@ -306,11 +306,19 @@ func Init(cfg Config) error {
 	// its config decided.
 	applyLevel(lv)
 
-	if len(cores) == 0 { // everything off is equivalent to Nop, common in test environments
-		SetLogger(Nop()) // swap the global first, then close -- see the swap/close ordering note below
-		closeAll(swapClosers(nil))
-		return nil
-	}
+	// The attach seam joins every assembled backend, even one with every
+	// built-in sink disabled: an application that ships its records to an
+	// attached core alone configures console and file off, and the seam is
+	// installed on this path rather than skipped so a core attached later --
+	// the usual case, an application plugin attaching during Start -- still
+	// has a backend to receive its records. With nothing attached the seam's
+	// Enabled is false, so the backend is equivalent to Nop: Enabled reports
+	// false, log calls short-circuit, and nothing is allocated.
+	cores = append(cores, newAttachCore())
+	// Re-wrap every existing attachment with this round's masker before a
+	// record can flow through the new backend. On the success path only: a
+	// failed Init above must change nothing, masker included.
+	attachmentState.installMasker(m)
 
 	// Masking has already been wrapped per sink; this only fans out.
 	//

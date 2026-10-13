@@ -101,4 +101,49 @@
 // since masking is implemented in this package and a third-party Logger does
 // not inherit it; SetLogger writes a warning to stderr on every call for this
 // reason.
+//
+// # Attached sinks
+//
+// Attach(core) adds an extra zapcore.Core to the backend Init assembled and
+// returns a detach function; an application that needs a sink the config does
+// not cover -- shipping logs to Kafka, say -- attaches it from a plugin's
+// Start and detaches it from Stop. An attached core is treated like a built-in
+// sink: it carries the same masking layer as console and file records pass
+// through (so it can never see an unmasked sensitive field), it receives only
+// records the global level admits -- including a level moved later by SetLevel
+// -- and its own Enabled, and it sits under the sampler, so a record sampling
+// drops reaches no attached core either. Delivery is synchronous on the
+// caller's goroutine.
+//
+// Loggers derived before the attachment keep reaching it. This works because
+// the seam is a core inside the assembled backend that resolves the current
+// attachment set at write time, re-applying the fields a derived logger's With
+// calls had fixed; a logger a plugin captured at construction therefore
+// delivers to a core attached later without re-deriving anything.
+//
+// An attached core whose own Write path logs through this package (a Kafka
+// client reporting a publish failure, say) does not recurse or amplify: a
+// reentrant record on the same goroutine still reaches console and file, but
+// is not delivered to the attached set it came from.
+//
+// Detach is idempotent. After it returns, no new record reaches that core; a
+// delivery already in progress may still complete, and detach does not wait
+// for writers. Attachments follow the backend across Init re-entry: a later
+// Init keeps them and re-wraps each with the new configuration's masker, and
+// Close flushes them with the built-in sinks without detaching them. With
+// every built-in sink disabled the backend is equivalent to Nop until
+// something is attached -- and a core attached afterwards still receives
+// records, which is what an application that logs only to its own sink
+// relies on. Attachments, like the backend itself, are process-global, and a
+// backend installed via SetLogger carries no seam.
+//
+// A record logged through the facade costs nothing extra while the seam is
+// empty, but deriving a logger with With does allocate: at most four objects
+// more than the same derivation on the pre-seam backend. Two of them belong
+// to zap -- a Tee of two or more cores wraps them in zap's multiCore, whose
+// With allocates a fresh children slice and boxes it, while a Tee of one
+// returns that core directly -- and two are the seam's: a copy of the
+// derivation fields, which is what keeps With's capture-at-derivation
+// semantics intact for a caller that reuses and mutates a slice it passed,
+// and the boxed record carrying that copy.
 package log

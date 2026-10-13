@@ -388,6 +388,58 @@ The drain budget comes out of the same arithmetic as [The supervisor's stop grac
 
 `executor: ants` reuses a fixed pool of goroutines sized to `max_concurrency` instead of starting one per task; both executors honor identical admission and Drain/Stop semantics, so switching this key changes only how an admitted task runs. It is not a default-safe upgrade: measured on the async package's own `BenchmarkSpawn`/`BenchmarkSpawnQueued` (Apple M3), `ExecutorGoroutine` was consistently as fast as or faster than `ExecutorAnts` for a tiny task, both unsaturated (~1.2us/op vs ~1.3us/op) and queued (~1.08us/op for both, no measurable difference). Worker reuse did not pay for its own overhead on a task this cheap; reach for `ants` only when profiling an application's actual workload shows goroutine creation and stack-allocation GC pressure are the measured bottleneck, and benchmark that workload rather than trusting this one.
 
+## Shipping the application's logs to an extra sink
+
+`log` writes to the console and to a file, and everything else attaches a `zapcore.Core` at runtime with `log.Attach`. The attached core is treated like one more built-in sink: records pass through the same masking layer (an attached core can never see a sensitive field), the global `log.level` gates it -- a later `SetLevel` included -- and delivery runs synchronously on the logging goroutine. Loggers a plugin captured during construction, `BuildContext.Log()` or any `With(...)` result, keep reaching a core attached later, so attaching from `Start` does not strand them.
+
+The example below is an application plugin that ships the process's logs to a named Kafka instance. The core itself is application code -- xbc ships no Kafka sink -- and the plugin's lifecycle is where its two ordering rules live:
+
+```go
+// logCenter points at the named Kafka instance this plugin ships logs to.
+// Depending on the Kafka client through this typed input is what makes the
+// plugin stop before Kafka's own Stop releases the connection.
+var logCenter = plugin.RefToInstance[kafka.Producer](kafka.Key, "log_center")
+
+var definition = plugin.Define(
+	"kafka-log-shipping",
+	func(ctx plugin.BuildContext) (*logShipping, error) {
+		producer := logCenter.Get(ctx).Value
+		return &logShipping{producer: producer, sink: newKafkaSink(producer)}, nil
+	},
+	plugin.Options[*logShipping]{
+		Inputs: plugin.Inputs(logCenter),
+		Lifecycle: plugin.Lifecycle[*logShipping]{
+			Start: (*logShipping).start,
+			Drain: (*logShipping).drain,
+			Stop:  (*logShipping).stop,
+		},
+	},
+)
+
+func (p *logShipping) start(*plugin.Context) error {
+	p.detach = log.Attach(p.sink) // the sink is a zapcore.Core of the app's own
+	return nil
+}
+
+// Drain keeps the attachment. The drain phase is when the rest of the process
+// finishes accepted work and logs its last records, so the sink stays
+// reachable and only flushes what its buffer already holds.
+func (p *logShipping) drain(ctx context.Context) error {
+	return p.sink.flush(ctx)
+}
+
+// Stop detaches first, then flushes and releases the sink's publish goroutine.
+// Detach is what stops new records from entering the buffer; delivery is
+// synchronous, so an in-flight Write may still complete, which is why the
+// publisher closes after those have landed rather than racing them.
+func (p *logShipping) stop(ctx context.Context) error {
+	p.detach()
+	return p.sink.close(ctx)
+}
+```
+
+Three orderings are deliberate here. `Drain` does not detach: cutting the sink off during the drain phase would lose exactly the shutdown records an operator reads, so a log sink's "stop admitting" point is detach at `Stop`, not `Drain`. `Stop` detaches before the publisher closes, and never the other way around, for the in-flight reason above. And the plugin depends on the Kafka client through its typed input, so reverse-order shutdown stops this plugin -- detach, flush, release -- while the Kafka client that publishes those records is still connected; the sink never owns, and never closes, the connection it borrows. `log.Sync` and `log.Close` flush attached cores alongside the built-in sinks; nothing detaches them on your behalf, because only the application knows when its sink is done.
+
 ## Distributed Cron
 
 Jobs are registered through the Go API; configuration controls only the scheduler and lease behavior. A single replica needs no Redis by default. Multiple replicas must enable distributed mode and select a shared Redis instance:
