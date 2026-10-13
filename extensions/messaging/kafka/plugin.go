@@ -17,19 +17,30 @@ import (
 // Key is the stable Definition and configuration identity.
 const Key plugin.Key = "kafka"
 
+// resolverInput lets an instance with resolve_connection enabled ask an
+// application-exported kafka.ConnectionResolver for its effective connection
+// at construction time. It is optional on purpose: a composition that never
+// enables resolve_connection carries no resolver input, and an instance that
+// does enable it without one fails construction with the instance named.
+var resolverInput = plugin.OptionalOne[ConnectionResolver]()
+
 var definition = plugin.DefineConfigured(
 	Key,
 	plugin.ConfigSpec[Config]{
 		Defaults: defaultConfig,
 		Prepare:  prepareConfig,
 	},
-	func(_ plugin.BuildContext, cfg Config) (*Client, error) {
-		return newManagedClient(cfg, kafkaFactory{})
+	func(ctx plugin.BuildContext, cfg Config) (*Client, error) {
+		var resolver ConnectionResolver
+		if entry, ok := resolverInput.Get(ctx); ok {
+			resolver = entry.Value
+		}
+		return newManagedClient(cfg, kafkaFactory{}, resolver, ctx.Identity().Instance)
 	},
 	plugin.Options[*Client]{
 		Instances:  plugin.MultipleInstances,
 		Activation: plugin.WhenConfigured("plugins.kafka"),
-		Inputs:     plugin.Inputs(),
+		Inputs:     plugin.Inputs(resolverInput),
 		Exports: plugin.Contracts(
 			plugin.ExportAs(func(client *Client) Producer { return client }),
 			plugin.ExportAs(func(client *Client) health.Contributor { return client }),
@@ -51,15 +62,21 @@ func Definition() plugin.Definition { return definition }
 func Bundle() plugin.Bundle { return bundle }
 
 func prepareConfig(cfg Config) (Config, error) {
-	normalized, err := normalizeConfig(cfg)
+	normalized, err := normalizeForPrepare(cfg)
 	if err != nil {
 		return Config{}, err
 	}
 	return normalized.Config, nil
 }
 
-func newManagedClient(cfg Config, factory backendFactory) (*Client, error) {
-	normalized, err := normalizeConfig(cfg)
+// newManagedClient builds the one client a configured instance owns. resolver
+// and instance arrive from the Definition's factory: the instance name labels
+// resolve failures, and resolver is consulted only when the instance enabled
+// resolve_connection (see effectiveConfig in resolve.go for the rules). A
+// factory-run construction is what validate executes, so validate reaches the
+// resolver; doctor, which stops at Prepare, never does.
+func newManagedClient(cfg Config, factory backendFactory, resolver ConnectionResolver, instance string) (*Client, error) {
+	normalized, err := effectiveConfig(cfg, resolver, instance)
 	if err != nil {
 		return nil, err
 	}

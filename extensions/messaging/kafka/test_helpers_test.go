@@ -109,7 +109,7 @@ func runtimeContext(host plugin.RuntimeHost, instance string) *plugin.Context {
 
 func managedClient(t testingT, cfg Config, factory backendFactory) *Client {
 	t.Helper()
-	client, err := newManagedClient(cfg, factory)
+	client, err := newManagedClient(cfg, factory, nil, "")
 	if err != nil {
 		t.Fatalf("newManagedClient() error = %v", err)
 	}
@@ -298,8 +298,9 @@ type fakeFactory struct {
 	readers   map[string]messageReader
 	readerErr map[string]error
 
-	writerConfig normalizedConfig
-	readerOrder  []string
+	writerConfig  normalizedConfig
+	readerConfigs map[string]normalizedConfig
+	readerOrder   []string
 }
 
 func (f *fakeFactory) NewWriter(cfg normalizedConfig) (messageWriter, error) {
@@ -309,10 +310,14 @@ func (f *fakeFactory) NewWriter(cfg normalizedConfig) (messageWriter, error) {
 	return f.writer, f.writerErr
 }
 
-func (f *fakeFactory) NewReader(_ normalizedConfig, name string, _ ConsumerConfig) (messageReader, error) {
+func (f *fakeFactory) NewReader(cfg normalizedConfig, name string, _ ConsumerConfig) (messageReader, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.readerOrder = append(f.readerOrder, name)
+	if f.readerConfigs == nil {
+		f.readerConfigs = make(map[string]normalizedConfig)
+	}
+	f.readerConfigs[name] = cfg
 	return f.readers[name], f.readerErr[name]
 }
 

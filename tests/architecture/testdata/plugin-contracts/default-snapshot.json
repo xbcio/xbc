@@ -401,6 +401,8 @@
         "Brokers": null,
         "ClientID": "xbc",
         "DialTimeout": 10000000000,
+        "ResolveConnection": false,
+        "ResolveTimeout": 0,
         "TLS": {
           "Enabled": false,
           "ServerName": "",

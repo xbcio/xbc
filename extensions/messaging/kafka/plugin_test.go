@@ -32,6 +32,9 @@ func TestDefinitionIsCanonicalAndBundleIsStable(t *testing.T) {
 func TestPrepareConfigPreservesDefaultsAndValidates(t *testing.T) {
 	defaults := defaultConfig()
 	defaults.Brokers = []string{"127.0.0.1:9092"}
+	// Preparation derives the resolve bound from the dial bound: an unset
+	// resolve_timeout follows the effective dial_timeout.
+	defaults.ResolveTimeout = defaults.DialTimeout
 	prepared, err := prepareConfig(defaults)
 	if err != nil {
 		t.Fatalf("prepareConfig(defaults) error = %v", err)
@@ -47,7 +50,7 @@ func TestPrepareConfigPreservesDefaultsAndValidates(t *testing.T) {
 func TestNewManagedClientMapsConfigAndRollsBackWriterFailure(t *testing.T) {
 	writer := &fakeWriter{}
 	factory := &fakeFactory{writer: writer}
-	client, err := newManagedClient(validConfig(), factory)
+	client, err := newManagedClient(validConfig(), factory, nil, "")
 	if err != nil {
 		t.Fatalf("newManagedClient() error = %v", err)
 	}
@@ -63,7 +66,7 @@ func TestNewManagedClientMapsConfigAndRollsBackWriterFailure(t *testing.T) {
 
 	sentinel := errors.New("dial failed")
 	failedWriter := &fakeWriter{}
-	_, err = newManagedClient(validConfig(), &fakeFactory{writer: failedWriter, writerErr: sentinel})
+	_, err = newManagedClient(validConfig(), &fakeFactory{writer: failedWriter, writerErr: sentinel}, nil, "")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("newManagedClient() error = %v, want sentinel", err)
 	}

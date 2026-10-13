@@ -60,6 +60,24 @@
 // secret-backed configuration and make handlers idempotent because broker
 // redelivery is possible.
 //
+// # Connection resolution
+//
+// A deployment whose brokers and credentials come from a control plane sets
+// plugins.kafka.<instance>.resolve_connection: true. The instance's configured
+// brokers value is then an opaque application-defined reference -- an HTTP
+// access-interface URL, say -- and construction passes it, together with the
+// configured SASL block, to a kafka.ConnectionResolver the application exports
+// and selects as this package's optional input. The resolver returns the
+// effective brokers and SASL once; the returned values replace the configured
+// ones and run through the same validation as configuration, while TLS always
+// comes from configuration. The single call is bounded by resolve_timeout,
+// which defaults to the effective dial_timeout, and a resolver error or a
+// rejected result fails construction without rendering credentials. An
+// instance that does not enable the flag never consults a resolver, and an
+// enabled instance without a selected resolver fails construction. Because
+// validate constructs plugins, it really reaches the resolver; doctor only
+// prepares configuration and never does.
+//
 // # Readiness
 //
 // The primary Client exports health.Contributor and contributes broker

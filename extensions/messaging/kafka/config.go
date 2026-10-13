@@ -40,11 +40,27 @@ type Config struct {
 	Brokers  []string `yaml:"brokers" validate:"required,min=1,dive,required"`
 	ClientID string   `yaml:"client_id" default:"xbc"`
 
-	DialTimeout time.Duration             `yaml:"dial_timeout" default:"10s" validate:"gt=0"`
-	TLS         TLSConfig                 `yaml:"tls"`
-	SASL        SASLConfig                `yaml:"sasl"`
-	Producer    ProducerConfig            `yaml:"producer"`
-	Consumers   map[string]ConsumerConfig `yaml:"consumers"`
+	DialTimeout time.Duration `yaml:"dial_timeout" default:"10s" validate:"gt=0"`
+
+	// ResolveConnection hands the configured Brokers value -- interpreted as an
+	// opaque application-defined reference rather than a host:port list, and
+	// with it the configured SASL block -- to the selected
+	// kafka.ConnectionResolver exactly once at construction time, and replaces
+	// brokers and SASL with what it returns. Off by default: an instance that
+	// does not enable it never consults a resolver, selected or not.
+	ResolveConnection bool `yaml:"resolve_connection" default:"false"`
+
+	// ResolveTimeout bounds that single construction-time call. It defaults to
+	// the effective DialTimeout -- establishing a resolved connection is one
+	// more connection the construction has to establish -- and exists as its
+	// own key because a control-plane lookup and a broker dial are different
+	// peers that may need separate bounds.
+	ResolveTimeout time.Duration `yaml:"resolve_timeout"`
+
+	TLS       TLSConfig                 `yaml:"tls"`
+	SASL      SASLConfig                `yaml:"sasl"`
+	Producer  ProducerConfig            `yaml:"producer"`
+	Consumers map[string]ConsumerConfig `yaml:"consumers"`
 }
 
 // TLSConfig enables TLS 1.2 or newer and optionally loads a private CA and a
@@ -161,13 +177,30 @@ func (c Config) Validate() error {
 	return err
 }
 
+// normalizeConfig validates a configuration in which Brokers is a broker list.
 func normalizeConfig(c Config) (normalizedConfig, error) {
+	return normalize(c, false)
+}
+
+// normalizeForPrepare validates configuration the way a preparation call does:
+// when the instance enabled resolve_connection, Brokers is an opaque
+// reference that the resolver will replace, so only emptiness is checked here
+// and the full broker rules are reserved for the resolved value. All other
+// fields are validated exactly as they are on the stricter path.
+func normalizeForPrepare(c Config) (normalizedConfig, error) {
+	return normalize(c, c.ResolveConnection)
+}
+
+func normalize(c Config, opaqueBrokers bool) (normalizedConfig, error) {
 	d := defaultConfig()
 	if strings.TrimSpace(c.ClientID) == "" {
 		c.ClientID = d.ClientID
 	}
 	if c.DialTimeout == 0 {
 		c.DialTimeout = d.DialTimeout
+	}
+	if c.ResolveTimeout == 0 {
+		c.ResolveTimeout = c.DialTimeout
 	}
 	applyProducerDefaults(&c.Producer)
 
@@ -180,17 +213,22 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 		if broker == "" {
 			return normalizedConfig{}, fmt.Errorf("kafka: broker %d is empty", i)
 		}
-		if _, _, err := net.SplitHostPort(broker); err != nil {
-			return normalizedConfig{}, fmt.Errorf("kafka: broker %q must be host:port: %w", broker, err)
+		if !opaqueBrokers {
+			if _, _, err := net.SplitHostPort(broker); err != nil {
+				return normalizedConfig{}, fmt.Errorf("kafka: broker %q must be host:port: %w", broker, err)
+			}
+			if _, ok := seen[broker]; ok {
+				return normalizedConfig{}, fmt.Errorf("kafka: broker %q is duplicated", broker)
+			}
+			seen[broker] = struct{}{}
 		}
-		if _, ok := seen[broker]; ok {
-			return normalizedConfig{}, fmt.Errorf("kafka: broker %q is duplicated", broker)
-		}
-		seen[broker] = struct{}{}
 		c.Brokers[i] = broker
 	}
 	if c.DialTimeout <= 0 {
 		return normalizedConfig{}, errors.New("kafka: dial_timeout must be positive")
+	}
+	if c.ResolveTimeout <= 0 {
+		return normalizedConfig{}, errors.New("kafka: resolve_timeout must be positive")
 	}
 	if err := validateTLSAndSASL(c.TLS, c.SASL); err != nil {
 		return normalizedConfig{}, err
