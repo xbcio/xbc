@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -110,7 +111,7 @@ func stopDuringBootstrap(t *testing.T) {
 
 	require.NoError(t, writer.Close())
 
-	completed := awaitRuntimeTestResult(t, result)
+	completed := awaitBootstrapRound(t, result, fifoPath)
 	require.Error(t, completed.err, "a stop that lands during bootstrap is a failed startup, not a clean exit")
 	assert.Equal(t, 1, completed.code)
 	assert.Contains(t, completed.err.Error(), "bootstrapping", "the error names the phase the stop interrupted")
@@ -153,5 +154,112 @@ func openFIFOWriterWithin(t *testing.T, path string, result <-chan runtimeTestRe
 			return nil, fmt.Errorf("xbc: test: nothing opened %s for reading within %s", path, timeout)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// The constants bound the timeout self-rescue below: ten pokes, 300ms apart,
+// is the window in which a standalone kernel probe woke every reader that the
+// macOS lost-wakeup had parked.
+const (
+	fifoRescueAttempts = 10
+	fifoRescuePause    = 300 * time.Millisecond
+)
+
+// awaitBootstrapRound waits for one round's Execute to finish. It exists
+// instead of the shared awaitRuntimeTestResult because this round's wait is
+// the one wait in the package that a macOS kernel defect can stretch past any
+// timeout, and that case needs to be diagnosed and contained before it is
+// reported.
+//
+// The kernel can lose the EOF wakeup a FIFO reader is owed when its last
+// writer closes: the reader stays parked in read(2) with no writers left -
+// lsof shows the read descriptor and zero writers - and no userspace wait for
+// EOF will ever return. Measured on this kernel as rare but real (three hangs
+// in 300k rounds of a standalone probe running exactly this handshake), and
+// independent of xbc: any design that parks a reader on a FIFO is exposed to
+// it. A parked reader is reachable, though: a fresh writer that opens the
+// FIFO, writes a single YAML comment line and closes wakes it, which is what
+// rescueParkedFIFOReader does.
+//
+// On a timeout this helper captures a full goroutine dump first, so the
+// evidence predates the rescue, then attempts the rescue, and then fails the
+// round regardless: the rescue only contains the kernel's damage - a woken
+// reader lets the rounds behind this one pass instead of every later leak
+// check reporting the same parked goroutine - it never turns a round that
+// outlived the timeout into a pass.
+func awaitBootstrapRound(t *testing.T, result <-chan runtimeTestResult, fifoPath string) runtimeTestResult {
+	t.Helper()
+	select {
+	case completed := <-result:
+		return completed
+	case <-time.After(runtimeTestTimeout):
+	}
+
+	dump := goroutineDump()
+	rescued := rescueParkedFIFOReader(result, fifoPath)
+	if rescued {
+		t.Fatalf("the round did not finish within %s, and its FIFO reader was parked in "+
+			"read(2) after the last writer closed - the macOS FIFO lost-wakeup described "+
+			"above. The rescue's fresh writer woke it, so the rounds behind this one stay "+
+			"clean, but this round is still a failure.\n\nGoroutine dump, taken before the rescue:\n%s",
+			runtimeTestTimeout, dump)
+	}
+	t.Fatalf("the round did not finish within %s, and its FIFO reader is parked in read(2) "+
+		"after the last writer closed - the macOS FIFO lost-wakeup described above. %d "+
+		"rescue attempts, %s apart, did not wake it; every later goroutine-leak check will "+
+		"report the same parked goroutine again.\n\nGoroutine dump, taken before the rescue:\n%s",
+		runtimeTestTimeout, fifoRescueAttempts, fifoRescuePause, dump)
+	return runtimeTestResult{}
+}
+
+// rescueParkedFIFOReader pokes a potentially parked FIFO reader and reports
+// whether the round finished while it tried. What it really watches is the
+// result channel: if Execute returns at any point, the reader is no longer
+// parked and there is nothing left to rescue.
+func rescueParkedFIFOReader(result <-chan runtimeTestResult, path string) bool {
+	select {
+	case <-result:
+		return true
+	default:
+	}
+	for range fifoRescueAttempts {
+		pokeParkedFIFOReader(path)
+		select {
+		case <-result:
+			return true
+		case <-time.After(fifoRescuePause):
+		}
+	}
+	return false
+}
+
+// pokeParkedFIFOReader is one wakeup attempt: open the FIFO for writing the
+// way the round's own writer does, write a YAML comment line, close. The
+// comment is inert (the configuration parser treats it as a comment), so a
+// successful rescue leaves every later artefact of the round well-formed.
+//
+// Errors are deliberately ignored. ENXIO - no reader parked - is the expected
+// answer on a healthy round, and no open error changes what the caller can
+// observe: whether Execute finished.
+func pokeParkedFIFOReader(path string) {
+	writer, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return
+	}
+	_, _ = writer.Write([]byte("\n# lost-wakeup rescue\n"))
+	_ = writer.Close()
+}
+
+// goroutineDump snapshots every goroutine, growing the buffer until the
+// snapshot fits. It runs on the failure path, where completeness matters more
+// than one allocation.
+func goroutineDump() string {
+	buffer := make([]byte, 1<<20)
+	for {
+		written := goruntime.Stack(buffer, true)
+		if written < len(buffer) {
+			return string(buffer[:written])
+		}
+		buffer = make([]byte, 2*len(buffer))
 	}
 }
