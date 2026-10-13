@@ -57,8 +57,9 @@ type TLSConfig struct {
 	KeyFile    string `yaml:"key_file"`
 }
 
-// SASLConfig supports PLAIN and SCRAM. SASL is accepted only with TLS enabled
-// to prevent credentials from crossing the network without encryption.
+// SASLConfig supports PLAIN and SCRAM. PLAIN sends the password itself, so it
+// is accepted only with TLS enabled. SCRAM never sends the password and is
+// accepted without TLS; the session that follows is then unencrypted.
 type SASLConfig struct {
 	Mechanism string `yaml:"mechanism"`
 	Username  string `yaml:"username"`
@@ -308,18 +309,19 @@ func validateTLSAndSASL(t TLSConfig, s SASLConfig) error {
 		}
 		return nil
 	}
-	if !t.Enabled {
-		return errors.New("kafka: sasl requires tls.enabled=true")
+	switch mechanism {
+	case SASLPlain:
+		if !t.Enabled {
+			return errors.New("kafka: sasl plain requires tls.enabled=true")
+		}
+	case SASLSCRAMSHA256, SASLSCRAMSHA512:
+	default:
+		return fmt.Errorf("kafka: unsupported sasl mechanism %q", mechanism)
 	}
 	if strings.TrimSpace(s.Username) == "" || s.Password == "" {
 		return errors.New("kafka: sasl username and password are required")
 	}
-	switch mechanism {
-	case SASLPlain, SASLSCRAMSHA256, SASLSCRAMSHA512:
-		return nil
-	default:
-		return fmt.Errorf("kafka: unsupported sasl mechanism %q", mechanism)
-	}
+	return nil
 }
 
 func validateProducer(c ProducerConfig) error {

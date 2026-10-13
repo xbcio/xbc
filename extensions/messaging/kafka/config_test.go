@@ -44,7 +44,9 @@ func TestConfigValidationAndSecretSafety(t *testing.T) {
 		{name: "broker host port", edit: func(c *Config) { c.Brokers = []string{"localhost"} }, want: "host:port"},
 		{name: "duplicate broker", edit: func(c *Config) { c.Brokers = []string{"a:1", "a:1"} }, want: "duplicated"},
 		{name: "tls key pair", edit: func(c *Config) { c.TLS.CertFile = "client.pem" }, want: "configured together"},
-		{name: "sasl requires tls", edit: func(c *Config) { c.SASL = SASLConfig{Mechanism: SASLPlain, Username: "u", Password: secret} }, want: "requires tls"},
+		{name: "sasl plain requires tls", edit: func(c *Config) { c.SASL = SASLConfig{Mechanism: SASLPlain, Username: "u", Password: secret} }, want: "requires tls"},
+		{name: "scram without tls requires credentials", edit: func(c *Config) { c.SASL = SASLConfig{Mechanism: SASLSCRAMSHA512, Password: secret} }, want: "username and password"},
+		{name: "unknown mechanism without tls", edit: func(c *Config) { c.SASL = SASLConfig{Mechanism: "bad", Username: "u", Password: secret} }, want: "unsupported sasl"},
 		{name: "sasl mechanism", edit: func(c *Config) {
 			c.TLS.Enabled = true
 			c.SASL = SASLConfig{Mechanism: "bad", Username: "u", Password: secret}
@@ -78,6 +80,16 @@ func TestConfigValidationAndSecretSafety(t *testing.T) {
 				t.Fatalf("Validate() leaked SASL password: %v", err)
 			}
 		})
+	}
+}
+
+func TestSCRAMIsAcceptedWithoutTLS(t *testing.T) {
+	for _, mechanism := range []string{SASLSCRAMSHA256, SASLSCRAMSHA512, "SCRAM-SHA-512"} {
+		cfg := validConfig()
+		cfg.SASL = SASLConfig{Mechanism: mechanism, Username: "u", Password: "p"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() with %s and no TLS error = %v", mechanism, err)
+		}
 	}
 }
 

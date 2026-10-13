@@ -53,9 +53,12 @@
 // background once it is started, so every Stop caller returns at its own
 // context deadline even when a handler has not yet returned.
 //
-// TLS supports private CAs and client certificates. SASL PLAIN or SCRAM is
-// accepted only with TLS. Keep credentials in secret-backed configuration and
-// make handlers idempotent because broker redelivery is possible.
+// TLS supports private CAs and client certificates. SASL PLAIN is accepted
+// only with TLS because it sends the password itself; SCRAM proves the
+// password without sending it and is also accepted on a plaintext listener,
+// where the messages that follow remain unencrypted. Keep credentials in
+// secret-backed configuration and make handlers idempotent because broker
+// redelivery is possible.
 //
 // # Readiness
 //
