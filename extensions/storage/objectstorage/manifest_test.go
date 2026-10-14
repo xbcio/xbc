@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -24,9 +25,18 @@ func TestModuleManifestPinsSDKWithoutLocalCorePlaceholder(t *testing.T) {
 			t.Fatalf("go.mod does not pin %q", dependency)
 		}
 	}
+	// github.com/xbcio/xbc resolves through its published release tag; a local
+	// substitute or a placeholder version would break publication. The check is
+	// line-based so it holds for both spellings tidy uses: a bare entry inside
+	// a require block and a single-line "require path version".
+	pseudoVersion := regexp.MustCompile(`v\d+\.\d+\.\d+-\d{14}-[0-9a-f]+`)
 	for _, line := range strings.Split(manifest, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "replace ") || strings.HasPrefix(trimmed, "github.com/xbcio/xbc ") {
+		if strings.HasPrefix(trimmed, "replace ") {
+			t.Fatalf("go.mod contains forbidden replace directive %q", trimmed)
+		}
+		if strings.Contains(trimmed, "github.com/xbcio/xbc") &&
+			(strings.Contains(trimmed, "v0.0.0") || pseudoVersion.MatchString(trimmed)) {
 			t.Fatalf("go.mod contains forbidden internal dependency directive %q", trimmed)
 		}
 	}

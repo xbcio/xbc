@@ -13,7 +13,11 @@ func TestModuleManifestUsesPinnedPrometheusWithoutLocalSubstitutions(t *testing.
 		t.Fatal(err)
 	}
 	manifest := string(data)
-	pinned := regexp.MustCompile(`(?m)^\s*github\.com/prometheus/client_golang\s+v1\.23\.2\s*$`)
+	// go mod tidy renders a lone requirement either as a single-line
+	// "require path version" or, inside a block, as the indented bare line; the
+	// pin is the same in both. A trailing comment such as "// indirect" still
+	// fails the anchored match, which keeps the requirement direct.
+	pinned := regexp.MustCompile(`(?m)^(?:require\s+)?\s*github\.com/prometheus/client_golang\s+v1\.23\.2\s*$`)
 	if !pinned.MatchString(manifest) {
 		t.Fatal("go.mod must pin github.com/prometheus/client_golang v1.23.2 exactly")
 	}
