@@ -3,10 +3,9 @@ module github.com/xbcio/xbc/transport/grpc/extensions/authorization/casbin
 go 1.25.0
 
 // Core, transport/grpc, and the neutral casbin engine
-// github.com/xbcio/xbc/extensions/authorization/casbin are deliberately
-// resolved by the repository workspace until they have real published
-// versions. Do not add a local replace or an unpublished placeholder
-// requirement here. It is a module of its own so the engine's backend
+// github.com/xbcio/xbc/extensions/authorization/casbin resolve through their
+// published release tags; repository development resolves the same source
+// through go.work. It is a module of its own so the engine's backend
 // dependencies never enter transport/grpc's closure.
 require (
 	github.com/casbin/casbin/v2 v2.135.0
@@ -14,25 +13,44 @@ require (
 )
 
 require (
+	github.com/xbcio/xbc v0.1.0
+	github.com/xbcio/xbc/extensions/authentication v0.1.0
+	github.com/xbcio/xbc/extensions/authorization/casbin v0.1.0
+	github.com/xbcio/xbc/transport/grpc v0.1.0
+	google.golang.org/protobuf v1.36.11
+)
+
+require (
 	github.com/bmatcuk/doublestar/v4 v4.6.1 // indirect
 	github.com/casbin/govaluate v1.3.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
-	github.com/go-logr/logr v1.4.4 // indirect
-	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.30.3 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/knadh/koanf/maps v0.1.2 // indirect
+	github.com/knadh/koanf/parsers/yaml v1.1.1 // indirect
+	github.com/knadh/koanf/providers/confmap v1.0.1 // indirect
+	github.com/knadh/koanf/providers/file v1.2.1 // indirect
+	github.com/knadh/koanf/v2 v2.3.6 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
-	github.com/stretchr/testify v1.12.1 // indirect
-	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+	github.com/mitchellh/copystructure v1.2.0 // indirect
+	github.com/mitchellh/reflectwalk v1.0.2 // indirect
+	github.com/oklog/ulid/v2 v2.1.2 // indirect
+	github.com/xbcio/xbc/extensions/authorization/rbac v0.1.0 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
-	go.opentelemetry.io/otel/metric v1.45.0 // indirect
+	go.opentelemetry.io/otel/trace v1.45.0 // indirect
+	go.uber.org/multierr v1.10.0 // indirect
+	go.uber.org/zap v1.28.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )
