@@ -27,9 +27,10 @@ import (
 // compilation is the package. A single call into a sibling's package pulls in
 // every Definition, configuration section, and health contributor that package
 // declares -- the importing plugin now ships a plugin nobody selected. The edge
-// is also unpublishable: no manifest here may require an unreleased sibling, so
-// such an import resolves through go.work alone and breaks the moment the module
-// is consumed from outside this repository.
+// is also unpublishable without a new release wave: a sibling requirement must
+// name a released tag in dependency-topology order, so an unreleased edge would
+// resolve through go.work alone and break the moment the module is consumed
+// from outside this repository.
 //
 // The members are the shared vocabularies that make the rest of the namespace
 // composable, and they earn the exemption on the same ground: a consumer
@@ -150,15 +151,13 @@ func (e archExtensionEdge) String() string {
 // guard would otherwise catch. Of the two reasons the rule exists, only one
 // reaches a test file. Nothing is smuggled into an application -- a test binary
 // builds no deployment, so no Definition anyone declined can arrive through it,
-// and that is the reason the rule is mainly about. The publishability reason does
-// reach it: the manifest cannot require the sibling either, so `go test` on the
-// published module would not resolve. That is a real debt, and it cannot be paid
-// by widening this guard: the fix is a require line, which no manifest here may
-// carry until core has a release tag, and the alternative -- swapping the real
-// store for a double -- would delete the coverage of the Lua owner comparison
-// that the placement design names as the thing that must not regress. Coverage
-// of a real backend is worth more than uniformity here, so the edge stays and is
-// revisited when a require line becomes possible.
+// and that is the reason the rule is mainly about. The publishability reason
+// does reach it, and the release paid it: since v0.1.0 the module's manifest
+// carries the sibling requirement for this test import, so `go test` on the
+// published module resolves. The alternative -- swapping the real store for a
+// double -- would delete the coverage of the Lua owner comparison that the
+// placement design names as the thing that must not regress, so coverage of a
+// real backend is worth more than uniformity here.
 func TestArchExtensionModulesDependOnlyOnSharedVocabulary(t *testing.T) {
 	repositoryRoot := archRepositoryRoot(t)
 	moduleRoots := archExtensionModulePaths(t)

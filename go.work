@@ -9,10 +9,10 @@ go 1.25.0
 // adapters are not Web plugins -- each implements the neutral web.Engine port
 // rather than a Web capability -- so they live beneath their own
 // transport/web/engines namespace, one publishable module per adapter.
-// Local development resolves unpublished XBC imports through this workspace;
-// publishable child manifests must not use filesystem replaces, v0.0.0
-// requirements, or synthetic pseudo-versions. Once upstream modules have real
-// tags, the workspace remains a convenience rather than a consumer dependency.
+// Local development resolves XBC imports through this workspace; publishable
+// child manifests must not use filesystem replaces, v0.0.0 requirements, or
+// synthetic pseudo-versions, and their XBC requirements name released tags.
+// The workspace is a convenience, never a consumer dependency.
 use (
 	.
 	./examples

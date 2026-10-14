@@ -438,11 +438,11 @@ func archModuleClosure(t *testing.T, dir string) []archPackageJSON {
 // directly imports the Web transport.
 //
 // The signal is the import statement rather than a name on a list, because an
-// import is how Go records the declaration. A manifest cannot carry it: no
-// XBC module may require another before there is a real release tag, so
-// `require` is empty in every manifest here and `go.work` is what resolves the
-// edge. Reading the import keeps the exemption derived from the module itself
-// instead of from a list this file would have to keep in step with go.work.
+// import is how Go records the declaration: it is what a requirement is
+// derived from when a module is released, and repository tooling that is
+// never tagged carries no requirement at all. Reading the import keeps the
+// exemption derived from the module itself instead of from a list this file
+// would have to keep in step with go.work.
 func archModuleComposesWebStack(pkgs []archPackageJSON) bool {
 	return archModuleImports(pkgs, archWebModulePath)
 }

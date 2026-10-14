@@ -4,10 +4,10 @@
 #
 #   docker build -f examples/production/Dockerfile -t xbc-production .
 #
-# The whole repository is the build context on purpose: examples/go.mod
-# resolves every XBC module through this repository's go.work, so a context
-# limited to this directory cannot compile. .dockerignore keeps the
-# repository's history and local design notes out of it.
+# The whole repository is the build context on purpose: the example is a
+# package of the examples module, and building from the root lets go.work
+# resolve every XBC module from the checked-out sources. .dockerignore keeps
+# the repository's history and local design notes out of it.
 #
 # Nothing here is specific to this example. Any XBC application image has the
 # same three parts: a cgo-capable build from the workspace, a non-root runtime

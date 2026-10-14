@@ -1112,7 +1112,7 @@ Build it from the repository root, because the build needs the whole workspace:
 docker build -f examples/production/Dockerfile -t xbc-production .
 ```
 
-`examples/go.mod` resolves every XBC module through this repository's `go.work` rather than through version-tagged releases, so a build context of `examples/production` alone cannot compile. `.dockerignore` keeps the repository's history and local working directories out of the context while leaving the manifests and every module in it.
+`examples/go.mod` resolves every XBC module through version-tagged releases, and the build still runs from the repository root so the checked-out `go.work` resolves them from the same sources the tags name; a build context of `examples/production` alone cannot compile, because the example is a package of the `examples` module. `.dockerignore` keeps the repository's history and local working directories out of the context while leaving the manifests and every module in it.
 
 The build stage runs with `CGO_ENABLED=1`, which is required rather than incidental: the example's database is SQLite, whose driver is cgo-backed, and a cgo-disabled build produces a binary that compiles and then cannot open a database. The runtime stage is distroless `base-debian12`, which carries the glibc that binary links against and the CA bundle an outbound TLS connection needs, with no shell and no package manager to install into. It runs as `nonroot` in `/var/lib/xbc`, the one directory it owns — a non-root process cannot create its data directory, and SQLite cannot create its database file in a directory it cannot write.
 
