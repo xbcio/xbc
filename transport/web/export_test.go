@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/xbcio/xbc/extensions/authentication"
+	"github.com/xbcio/xbc/log"
 )
 
 // This file is the single seam through which package web's external tests
@@ -116,8 +117,15 @@ func SetCurrentRoute(c *Ctx, route RouteInfo) { c.Set(currentRouteContextKey, ro
 
 // Error resolution. NewErrorResolver returns the unexported resolver type, so
 // an external test can only hold it through inference -- which is all the
-// tests need, since they drive it through Attach and then make requests.
-var NewErrorResolver = newErrorResolver
+// tests need, since they drive it through Attach and then make requests. It
+// takes only a logger: the renderer is a Server-level input, injected through
+// SetErrorRenderer or left nil, so most tests never name it.
+func NewErrorResolver(logger log.Logger) *errorResolver { return newErrorResolver(logger, nil) }
+
+// SetErrorRenderer injects the failure-body renderer the Definition would
+// otherwise supply from an OptionalOne[ErrorRenderer] input, so a test can build
+// a Server with NewServer and still exercise the renderer path.
+func (s *Server) SetErrorRenderer(renderer ErrorRenderer) { s.renderer = renderer }
 
 // Attach publishes this resolver on the request so OnError and the error
 // boundary downstream can find it.

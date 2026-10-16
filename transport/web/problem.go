@@ -3,9 +3,17 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
+
+	corelog "github.com/xbcio/xbc/log"
 )
 
-const problemContentType = "application/problem+json; charset=utf-8"
+const (
+	problemContentType = "application/problem+json; charset=utf-8"
+	// renderedErrorContentType is the media type of a body an ErrorRenderer
+	// produced. The renderer decides the body only, so the framework labels it.
+	renderedErrorContentType = "application/json; charset=utf-8"
+)
 
 var standardProblemMembers = map[string]struct{}{
 	"type":     {},
@@ -107,8 +115,31 @@ func (p *ProblemDetail) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ErrorRenderer is the Server-level contract for the body of a failure
+// response. It decides the body only: the status is always the problem's own
+// and the headers are written by the framework, so a renderer cannot change a
+// failure's HTTP semantics. Returning ok=false or an empty body declines, and
+// the response is the default RFC 9457 application/problem+json.
+//
+// RenderError receives the normalized problem -- Type, Title and Instance
+// filled in and Status inside 100-599 -- and must treat it as read-only. It
+// runs on the request goroutine and must not write to the response. A panic
+// is contained and logged by the framework, and that response falls back to
+// the default Problem Detail with the failure's own status -- but a renderer
+// must not rely on that containment.
+type ErrorRenderer interface {
+	RenderError(c *Ctx, problem ProblemDetail) (body []byte, ok bool)
+}
+
 // WriteProblem writes p without aborting the remaining handler chain.
 // Most middleware should call AbortProblem instead.
+//
+// It is the single point every failure response leaves through, which is why
+// the Server's ErrorRenderer is consulted here: a renderer reached only through
+// AbortError would miss the panic boundary, authentication and the 404/405
+// answers. The renderer in effect is the one carried by the request's error
+// resolver; a request without one, the management plane included, always gets
+// the default Problem Detail.
 func WriteProblem(c *Ctx, p ProblemDetail) {
 	if c == nil || c.Writer() == nil || c.Writer().Written() {
 		return
@@ -120,6 +151,13 @@ func WriteProblem(c *Ctx, p ProblemDetail) {
 		payload, _ = json.Marshal(p)
 	}
 
+	contentType := problemContentType
+	if renderer := resolverFor(c).renderer; renderer != nil {
+		if body, ok := renderFailure(renderer, c, p); ok && len(body) > 0 {
+			payload, contentType = body, renderedErrorContentType
+		}
+	}
+
 	header := c.Writer().Header()
 	for _, name := range []string{
 		"Content-Encoding", "Content-Length", "Content-Range", "Trailer",
@@ -127,11 +165,43 @@ func WriteProblem(c *Ctx, p ProblemDetail) {
 	} {
 		header.Del(name)
 	}
-	header.Set("Content-Type", problemContentType)
+	header.Set("Content-Type", contentType)
 	header.Set("Cache-Control", "no-store")
 	header.Set("X-Content-Type-Options", "nosniff")
 	c.Writer().WriteHeader(p.Status)
 	_, _ = c.Writer().Write(payload)
+}
+
+// renderFailure asks the renderer for the body of the failure response p. A
+// renderer is application-supplied code reachable from every failure path,
+// including from inside the panic boundary's own recovery, where an escaping
+// panic would abort the request with no response at all. The call is therefore
+// made under recover: a panicking renderer is contained, the panic is logged
+// in the panic boundary's discipline -- method, path and panic type, never the
+// recovered value -- and (nil, false) is returned, which makes WriteProblem
+// fall back to the default Problem Detail with the failure's original status.
+func renderFailure(renderer ErrorRenderer, c *Ctx, p ProblemDetail) (body []byte, ok bool) {
+	logger := resolverFor(c).logger
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		if logger == nil {
+			logger = corelog.Nop()
+		}
+		fields := []any{}
+		if c != nil && c.Request() != nil {
+			fields = append(fields, "method", c.Request().Method)
+			if c.Request().URL != nil {
+				fields = append(fields, "path", c.Request().URL.Path)
+			}
+		}
+		fields = append(fields, "panic_type", reflect.TypeOf(recovered).String())
+		logger.Error("http failure renderer panic recovered", fields...)
+		body, ok = nil, false
+	}()
+	return renderer.RenderError(c, p)
 }
 
 // AbortProblem stops the handler chain and writes an RFC 9457 response.

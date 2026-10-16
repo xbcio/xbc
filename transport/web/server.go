@@ -33,6 +33,10 @@ type Server struct {
 	authenticators []plugin.Entry[authentication.Authenticator]
 	extractors     []plugin.Entry[CredentialExtractor]
 
+	// renderer is the optional failure-body renderer the Definition injects. It
+	// is nil for a Server built by New, which keeps the default Problem Detail.
+	renderer ErrorRenderer
+
 	// listener is a test-only pre-bound socket set from export_test.go.
 	listener net.Listener
 
@@ -162,6 +166,7 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 	}
 
 	logger := ctx.Log()
+	renderer := s.renderer
 
 	tlsConfig, err := cfg.TLS.serverTLSConfig(logger)
 	if err != nil {
@@ -219,7 +224,7 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 		inflight.handler(logger),
 		capRequestBody(cfg.MaxRequestBodyBytes),
 		func(_ context.Context, c *Ctx) error {
-			newErrorResolver(logger).attach(c)
+			newErrorResolver(logger, renderer).attach(c)
 			return nil
 		},
 	}

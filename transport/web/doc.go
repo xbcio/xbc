@@ -249,6 +249,34 @@
 // masquerade as HTTP 200. Plugins can contribute a nested boundary with
 // OnError; panic recovery remains an independent outer concern.
 //
+// # Failure body rendering
+//
+// A plugin may export ErrorRenderer to replace the body of every failure
+// response the Server writes. At most one renderer may be selected; with none,
+// the default RFC 9457 Problem Detail above is unchanged byte for byte. The
+// renderer decides the body only: it receives the request context and the
+// normalized ProblemDetail (type, title and instance filled in, status inside
+// 100-599), and returns the body. The status and the headers stay the
+// framework's -- including no-store, nosniff and the removal of stale
+// Content-Encoding or Content-Length -- so a renderer cannot change a failure's
+// HTTP semantics; only the Content-Type becomes application/json. Returning
+// ok=false or an empty body declines, and that response is the default Problem
+// Detail. A renderer that panics is contained: the framework logs the panic,
+// and that response is the default Problem Detail too, with the failure's own
+// status -- but a renderer must not rely on that containment.
+//
+// The renderer is consulted from WriteProblem, the one point every failure
+// leaves through, so it covers mapped errors, the panic boundary, the
+// authentication 401, the oversized-body 413 and the framework's own 404 and
+// 405 alike, and it applies inside OnError scopes as well. It is never
+// consulted for a response that is already committed, and never for a success.
+// Two answers keep the Problem Detail whatever renderer is selected,
+// deliberately rather than by oversight. The management listener runs its own
+// short chain with no error resolver attached, so its 404 and 405 are always
+// Problem Details. The in-flight admission gate refuses an overloaded request
+// ahead of every other stage, before the resolver exists, so its 503 is one
+// too.
+//
 // # Request binding and validation
 //
 // Use Ctx.Bind or Ctx.BindURI, which already adapt failures through ParamError.

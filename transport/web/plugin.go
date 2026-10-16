@@ -50,6 +50,10 @@ var (
 	errorMapperInput   = plugin.Collect[ErrorMapper]()
 	authenticatorInput = plugin.Collect[authentication.Authenticator]()
 	extractorInput     = plugin.Collect[CredentialExtractor]()
+	// rendererInput is the optional Server-level failure-body renderer. Zero
+	// exporters keep the default RFC 9457 Problem Detail; the Server never
+	// requires one, so no renderer plugin is a dependency of Web.
+	rendererInput = plugin.OptionalOne[ErrorRenderer]()
 	// engineInput selects the HTTP engine adapter. web.Server never
 	// constructs a concrete engine itself: every adapter package imports web
 	// to implement Engine, so if web imported an adapter back, that engine's
@@ -67,7 +71,7 @@ var (
 			Prepare:  normalizeConfig,
 		},
 		func(ctx plugin.BuildContext, cfg Config) (*Server, error) {
-			return newServer(
+			server := newServer(
 				cfg,
 				engineInput.Get(ctx).Value,
 				middlewareInput.Get(ctx),
@@ -76,7 +80,11 @@ var (
 				listenerInput.Get(ctx),
 				authenticatorInput.Get(ctx),
 				extractorInput.Get(ctx),
-			), nil
+			)
+			if entry, ok := rendererInput.Get(ctx); ok {
+				server.renderer = entry.Value
+			}
+			return server, nil
 		},
 		plugin.Options[*Server]{
 			ConfigPath: ConfigPath,
@@ -88,6 +96,7 @@ var (
 				listenerInput,
 				authenticatorInput,
 				extractorInput,
+				rendererInput,
 			),
 		},
 	)

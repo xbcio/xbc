@@ -115,15 +115,20 @@ func AbortError(c *Ctx, err error) {
 type errorResolver struct {
 	logger  corelog.Logger
 	mappers []ErrorMapper
+	// renderer is the Server's optional failure-body renderer, consulted by
+	// WriteProblem. It is per resolver, never package-level: the shared
+	// fallbackErrorResolver must keep a nil renderer so a request that was never
+	// attached to a Server renders the default Problem Detail.
+	renderer ErrorRenderer
 }
 
 var fallbackErrorResolver = &errorResolver{logger: corelog.Nop()}
 
-func newErrorResolver(logger corelog.Logger) *errorResolver {
+func newErrorResolver(logger corelog.Logger, renderer ErrorRenderer) *errorResolver {
 	if logger == nil {
 		logger = corelog.Nop()
 	}
-	return &errorResolver{logger: logger}
+	return &errorResolver{logger: logger, renderer: renderer}
 }
 
 func (r *errorResolver) withMappers(mappers []ErrorMapper) *errorResolver {
@@ -133,7 +138,7 @@ func (r *errorResolver) withMappers(mappers []ErrorMapper) *errorResolver {
 	combined := make([]ErrorMapper, 0, len(r.mappers)+len(mappers))
 	combined = append(combined, r.mappers...)
 	combined = append(combined, mappers...)
-	return &errorResolver{logger: r.logger, mappers: combined}
+	return &errorResolver{logger: r.logger, mappers: combined, renderer: r.renderer}
 }
 
 // attach publishes the logger-bearing base resolver before any contributed
