@@ -35,11 +35,19 @@ func TestRedisStoreUsesDigestKeysAndDefensiveSerializedValues(t *testing.T) {
 	if err := store.Create(context.Background(), value, 10*time.Minute); err != nil {
 		t.Fatal(err)
 	}
+	// A session is stored under its digest and indexed in a set named by the
+	// subject's digest; neither key carries the bearer ID or the raw subject.
 	keys := server.Keys()
-	if len(keys) != 1 || keys[0] != "test:session:"+IDDigest(id) || strings.Contains(keys[0], id) {
+	sessionKey, subjectKey := "test:session:"+IDDigest(id), "test:session:subject:"+IDDigest("alice")
+	if len(keys) != 2 || !server.Exists(sessionKey) || !server.Exists(subjectKey) {
 		t.Fatalf("Redis keys = %#v", keys)
 	}
-	payload := server.HGet(keys[0], "value")
+	for _, key := range keys {
+		if strings.Contains(key, id) || strings.Contains(key, "alice") {
+			t.Fatalf("Redis key %q leaks the bearer session ID or the subject", key)
+		}
+	}
+	payload := server.HGet(sessionKey, "value")
 	if strings.Contains(payload, id) {
 		t.Fatal("stored payload leaked the bearer session ID")
 	}
@@ -129,7 +137,16 @@ func (r *commandRecorder) ProcessHook(next goredis.ProcessHook) goredis.ProcessH
 }
 
 func (r *commandRecorder) ProcessPipelineHook(next goredis.ProcessPipelineHook) goredis.ProcessPipelineHook {
-	return next
+	return func(ctx context.Context, cmds []goredis.Cmder) error {
+		r.mu.Lock()
+		if r.recording {
+			for _, cmd := range cmds {
+				r.records = append(r.records, commandRecord{name: cmd.Name(), args: append([]any(nil), cmd.Args()...)})
+			}
+		}
+		r.mu.Unlock()
+		return next(ctx, cmds)
+	}
 }
 
 func (r *commandRecorder) start() {
@@ -146,17 +163,20 @@ func (r *commandRecorder) stop() []commandRecord {
 	return append([]commandRecord(nil), r.records...)
 }
 
-// TestRedisStoreRotateRunsAsThreeSingleKeySteps pins the shape the cluster
-// compatibility rests on: a successful rotation is three commands -- validate,
-// install, delete -- and every one of them addresses exactly one key. The
-// previous implementation passed both keys to a single EVAL, which a cluster
-// refuses with CROSSSLOT; no single-node test topology can reproduce that
-// refusal, so the invariant is pinned on the scripts' source and on the
-// commands the client actually sends.
-func TestRedisStoreRotateRunsAsThreeSingleKeySteps(t *testing.T) {
+// TestRedisStoreRotateRunsAsFiveSingleKeySteps pins the shape the cluster
+// compatibility rests on: a successful rotation is five commands -- validate
+// the old ID, index the replacement, install it, delete the old ID, unindex the
+// old digest -- and every one of them addresses exactly one key. The previous
+// implementation passed both keys to a single EVAL, which a cluster refuses with
+// CROSSSLOT; no single-node test topology can reproduce that refusal, so the
+// invariant is pinned on the scripts' source and on the commands the client
+// actually sends.
+func TestRedisStoreRotateRunsAsFiveSingleKeySteps(t *testing.T) {
 	for name, source := range map[string]string{
 		"validate": redisRotateValidateSource,
 		"install":  redisRotateInstallSource,
+		"index":    redisIndexAddSource,
+		"delete":   redisDeleteSource,
 	} {
 		if !strings.Contains(source, "KEYS[1]") {
 			t.Fatalf("%s script does not address KEYS[1]", name)
@@ -195,7 +215,7 @@ func TestRedisStoreRotateRunsAsThreeSingleKeySteps(t *testing.T) {
 	}
 	records := recorder.stop()
 
-	wantNames := []string{"evalsha", "evalsha", "del"}
+	wantNames := []string{"evalsha", "evalsha", "evalsha", "del", "srem"}
 	if len(records) != len(wantNames) {
 		t.Fatalf("rotation sent %v, want %v", recordedNames(records), wantNames)
 	}
@@ -204,7 +224,8 @@ func TestRedisStoreRotateRunsAsThreeSingleKeySteps(t *testing.T) {
 			t.Fatalf("rotation sent %v, want %v", recordedNames(records), wantNames)
 		}
 	}
-	wantKeys := []string{store.key(oldID), store.key(replacementID), store.key(oldID)}
+	subjectKey := store.subjectKey("alice")
+	wantKeys := []string{store.key(oldID), subjectKey, store.key(replacementID), store.key(oldID), subjectKey}
 	for i, record := range records {
 		keys := recordedKeys(t, record)
 		if len(keys) != 1 {
@@ -225,8 +246,9 @@ func recordedNames(records []commandRecord) []string {
 }
 
 // recordedKeys extracts the key arguments of a recorded command: an EVAL-family
-// command carries the key count at index 2 followed by the keys, and DEL's
-// arguments are all keys.
+// command carries the key count at index 2 followed by the keys, DEL's
+// arguments are all keys, and the set commands name one key before their
+// members.
 func recordedKeys(t *testing.T, record commandRecord) []string {
 	t.Helper()
 	switch record.name {
@@ -257,6 +279,12 @@ func recordedKeys(t *testing.T, record commandRecord) []string {
 			keys = append(keys, text)
 		}
 		return keys
+	case "srem", "sadd", "smembers", "sismember", "hget", "hmget":
+		text, ok := record.args[1].(string)
+		if !ok {
+			t.Fatalf("%s key has type %T", record.name, record.args[1])
+		}
+		return []string{text}
 	default:
 		t.Fatalf("unexpected command %q in a rotation", record.name)
 		return nil
@@ -315,8 +343,17 @@ func TestRedisStoreRotateUnderConcurrentCallers(t *testing.T) {
 	if replacements != int(successes.Load()) {
 		t.Fatalf("live replacements=%d, callers that succeeded=%d", replacements, successes.Load())
 	}
-	if keys := server.Keys(); len(keys) != replacements {
-		t.Fatalf("Redis holds %d keys, want exactly one per replacement", len(keys))
+	// One key per replacement plus the subject's set, which indexes exactly the
+	// live replacements: the old digest left it and every install was indexed.
+	if keys := server.Keys(); len(keys) != replacements+1 {
+		t.Fatalf("Redis holds %d keys, want one per replacement plus the subject index", len(keys))
+	}
+	members, err := server.SMembers(store.subjectKey("alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != replacements {
+		t.Fatalf("subject index holds %d members, want one per live replacement (%d)", len(members), replacements)
 	}
 }
 

@@ -17,6 +17,9 @@ var (
 	ErrInvalidCookie = errors.New("session: invalid session cookie")
 	// ErrStopped reports use after the owning plugin or store was stopped.
 	ErrStopped = errors.New("session: stopped")
+	// ErrNotSupported reports an operation the configured Store does not
+	// implement: the subject-index methods of Manager need an IndexedStore.
+	ErrNotSupported = errors.New("session: operation not supported by the store")
 )
 
 // Session is the authenticated server-side session value. ID is the opaque

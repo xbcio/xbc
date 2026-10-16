@@ -16,10 +16,31 @@ import (
 // adapter installs it as a cookie). Rotate preserves the original absolute
 // lifetime and revokes the previous ID; RedisStore.Rotate documents the window
 // in which both IDs remain valid while a rotation is in flight.
+//
+// ListBySubject, RevokeBySubject, and RevokeByDigest work on a subject's
+// sessions without holding their IDs: the activity list behind a "my devices"
+// page, signing a user out everywhere, and ending one listed session. They need
+// a Store that implements IndexedStore, as the built-in memory and Redis stores
+// do, and return ErrNotSupported otherwise. SessionInfo.Digest, like IDDigest,
+// is a handle that names a session and cannot authenticate as it. Changing a
+// subject's credentials and then calling RevokeBySubject in that order is what
+// ends their sessions; a session created while the revocation runs may survive
+// it. Sessions created before a deployment adopted the index are not indexed
+// and expire on their own schedule. Each method returns ErrStopped once the
+// plugin stopped and a parameter error for an empty subject.
 type Manager interface {
 	Create(ctx context.Context, subject string, attributes map[string]any) (Session, error)
 	Rotate(ctx context.Context, id string) (Session, error)
 	Revoke(ctx context.Context, id string) error
+	// ListBySubject returns the live sessions of subject, in no particular order.
+	ListBySubject(ctx context.Context, subject string) ([]SessionInfo, error)
+	// RevokeBySubject deletes every live session of subject and returns how many
+	// it deleted; it is idempotent.
+	RevokeBySubject(ctx context.Context, subject string) (int, error)
+	// RevokeByDigest deletes the session named by digest only if it belongs to
+	// subject, and reports whether it deleted one. A malformed digest is an
+	// error, distinct from an unknown or foreign one, which report false.
+	RevokeByDigest(ctx context.Context, subject, digest string) (bool, error)
 }
 
 type manager struct {
@@ -112,6 +133,51 @@ func (m *manager) Revoke(ctx context.Context, id string) error {
 		return ErrInvalidCookie
 	}
 	return m.store.Delete(ctx, id)
+}
+
+// indexed returns the store's subject-index capability, after the checks every
+// index method shares: a stopped manager, a nil context, and an empty subject
+// are refused before the store is asked anything.
+func (m *manager) indexed(ctx context.Context, subject string) (IndexedStore, string, error) {
+	if m.closed.Load() {
+		return nil, "", ErrStopped
+	}
+	if err := contextError(ctx); err != nil {
+		return nil, "", err
+	}
+	subject, err := normalizeSubject(subject)
+	if err != nil {
+		return nil, "", err
+	}
+	store, ok := m.store.(IndexedStore)
+	if !ok {
+		return nil, "", ErrNotSupported
+	}
+	return store, subject, nil
+}
+
+func (m *manager) ListBySubject(ctx context.Context, subject string) ([]SessionInfo, error) {
+	store, subject, err := m.indexed(ctx, subject)
+	if err != nil {
+		return nil, err
+	}
+	return store.ListBySubject(ctx, subject)
+}
+
+func (m *manager) RevokeBySubject(ctx context.Context, subject string) (int, error) {
+	store, subject, err := m.indexed(ctx, subject)
+	if err != nil {
+		return 0, err
+	}
+	return store.RevokeBySubject(ctx, subject)
+}
+
+func (m *manager) RevokeByDigest(ctx context.Context, subject, digest string) (bool, error) {
+	store, subject, err := m.indexed(ctx, subject)
+	if err != nil {
+		return false, err
+	}
+	return store.RevokeByDigest(ctx, subject, digest)
 }
 
 // lifetime reports how long value's ID may still be handed to a client: a
