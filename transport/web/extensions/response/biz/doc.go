@@ -1,6 +1,8 @@
 // Package biz provides an optional HTTP business-response contract for
 // XBC Web. It adopts GFA's useful explicit success-envelope and business-error
-// ideas while preserving semantic HTTP statuses and RFC 9457 failures.
+// ideas while preserving semantic HTTP statuses. Failures are RFC 9457 Problem
+// Details by default, and the same envelope as success once failure_envelope is
+// on.
 //
 // # Usage
 //
@@ -40,7 +42,8 @@
 //	return biz.OK(c, biz.Paginated(orders, total))
 //
 // A client-safe business rule failure can be returned from the HTTP application
-// boundary and will become application/problem+json:
+// boundary and becomes an application/problem+json response, or the failure
+// envelope described below when it is enabled:
 //
 //	return biz.NewError(
 //		"ORDER.ALREADY_PAID",
@@ -65,6 +68,29 @@
 //
 // Invalid statuses or codes fail closed as a fixed 500. Error causes and unknown
 // errors are never copied to the response.
+//
+// # Failure envelope
+//
+// By default failures stay RFC 9457 Problem Details. Setting
+// plugins.biz.failure_envelope to true makes every failure the Server writes use
+// the success envelope's shape with success false, with the semantic HTTP status
+// untouched. Biz always exports itself as web.ErrorRenderer; with the switch off
+// it declines every failure, so the Server keeps its default.
+//
+//	{"success":false,"code":"ORDER.CLOSED","message":"The order is closed.",
+//	 "data":null,"requestId":"..."}
+//
+// The code is the problem's code member, and a failure without a valid business
+// code is left as a Problem Detail rather than published under an invented one,
+// so a custom mapper's code-less problem is never swallowed. The message is the
+// problem's detail, or its title when there is none. Data is {"errors": [...]}
+// for a validation failure and null otherwise; no other extension member is
+// copied. The requestId comes from the same source as the success envelope and
+// is omitted when the request has none. Web documents which responses the
+// renderer reaches and the two it never does: the management listener's 404 and
+// 405, and the in-flight gate's 503. Both stay application/problem+json even
+// with the envelope on.
+//
 // The middleware is built with web.OnError and composes with Web's outer safe
 // boundary; panic recovery remains a separate responsibility. Domain packages
 // should not import this package: keep protocol-neutral errors there and map

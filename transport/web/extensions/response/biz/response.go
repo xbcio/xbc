@@ -15,9 +15,10 @@ const (
 	jsonContentType = "application/json; charset=utf-8"
 )
 
-// Response is the opt-in business success envelope inspired by GFA. HTTP
-// failures deliberately do not use this type; they remain RFC 9457 Problem
-// Details with semantic status codes.
+// Response is the opt-in business envelope inspired by GFA. Success responses
+// always use it. Failures remain RFC 9457 Problem Details with semantic status
+// codes unless Config.FailureEnvelope is on, in which case Plugin.RenderError
+// writes them in this same shape with Success false.
 type Response[T any] struct {
 	Success   bool   `json:"success"`
 	Code      string `json:"code"`

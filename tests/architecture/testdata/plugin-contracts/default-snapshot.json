@@ -87,7 +87,9 @@
     {
       "key": "biz",
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/response/biz.Config",
-      "defaults": {}
+      "defaults": {
+        "FailureEnvelope": false
+      }
     },
     {
       "key": "casbin",
