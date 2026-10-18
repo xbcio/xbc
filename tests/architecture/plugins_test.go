@@ -638,9 +638,8 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	// stay out of these roots. archContractModules declares the category once;
 	// TestArchContractModulesOwnNoDefinitionConfigOrBundle is what makes the
 	// exclusion safe to grant. Protocol client modules (a protocol
-	// implementation with a third-party dependency and no plugin surface) are
-	// the same shape for these guards and are declared by
-	// archProtocolClientModules.
+	// implementation with no plugin surface) are the same shape for these
+	// guards and are declared by archProtocolClientModules.
 	nonPluginRoots := archNonPluginModuleRoots(repositoryRoot)
 	var protocolNeutral []string
 	for _, moduleRoot := range archExtensionModuleRoots(t, filepath.Join(repositoryRoot, "extensions")) {

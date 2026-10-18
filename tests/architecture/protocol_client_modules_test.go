@@ -12,15 +12,16 @@ import (
 )
 
 // archProtocolClientModules is the complete, intentional set of protocol
-// client modules: modules that implement one external protocol against a
-// third-party dependency -- OIDC's JOSE and JWKS handling, for example -- and
-// publish a client API, but own no plugin Definition, config section, or
-// Bundle.
+// client modules: modules that implement one external protocol and publish a
+// client API, but own no plugin Definition, config section, or Bundle. Most
+// wrap the third-party library that does the protocol work -- OIDC's JOSE and
+// JWKS handling, for example; the OAuth 2.0 authorization-code client
+// implements its protocol directly and carries no third-party dependency.
 //
-// They are neither contract modules (they are not dependency-free: the
-// protocol library is the point) nor plugin implementations (no composition
-// root selects them through a plugin.Bundle; a transport adapter calls them).
-// The plugin-implementation guards therefore skip them, and
+// They are neither contract modules (they implement a protocol instead of
+// defining shared types) nor plugin implementations (no composition root
+// selects them through a plugin.Bundle; a transport adapter calls them). The
+// plugin-implementation guards therefore skip them, and
 // TestArchProtocolClientModulesOwnNoPluginSurface is what makes that exclusion
 // safe to grant. The workspace, release-manifest, Web-zone, and per-module
 // closure guards still cover every member.
@@ -29,6 +30,7 @@ import (
 // neutral half of the "protocol module + transport adapter" split, so it must
 // live beneath extensions and stay free of every transport.
 var archProtocolClientModules = []string{
+	"extensions/authentication/oauth2",
 	"extensions/authentication/oidc",
 }
 

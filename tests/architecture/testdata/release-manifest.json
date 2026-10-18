@@ -55,6 +55,16 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/extensions/authentication/oauth2",
+      "directory": "extensions/authentication/oauth2",
+      "tag_prefix": "extensions/authentication/oauth2/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc/extensions/authentication"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/extensions/authentication/oidc",
       "directory": "extensions/authentication/oidc",
       "tag_prefix": "extensions/authentication/oidc/",
