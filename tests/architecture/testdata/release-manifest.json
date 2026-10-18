@@ -524,10 +524,44 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/tests/composition",
+      "directory": "tests/composition",
+      "tag_prefix": "tests/composition/",
+      "wave": 4,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication/apikey",
+        "github.com/xbcio/xbc/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/extensions/httpclient",
+        "github.com/xbcio/xbc/transport/grpc",
+        "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/web",
+        "github.com/xbcio/xbc/transport/web/engines/gin",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/transport/web/extensions/observability/tracing"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/authentication/federation",
+      "directory": "transport/web/extensions/authentication/federation",
+      "tag_prefix": "transport/web/extensions/authentication/federation/",
+      "wave": 4,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authentication/session",
+        "github.com/xbcio/xbc/transport/web",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/session"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/scripts/plugin-snapshots",
       "directory": "scripts/plugin-snapshots",
       "tag_prefix": "scripts/plugin-snapshots/",
-      "wave": 4,
+      "wave": 5,
       "release": false,
       "imports": [
         "github.com/xbcio/xbc",
@@ -562,6 +596,7 @@
         "github.com/xbcio/xbc/transport/grpc/extensions/observability/tracing",
         "github.com/xbcio/xbc/transport/web",
         "github.com/xbcio/xbc/transport/web/engines/gin",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/federation",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/session",
         "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
@@ -569,26 +604,6 @@
         "github.com/xbcio/xbc/transport/web/extensions/observability/tracing",
         "github.com/xbcio/xbc/transport/web/extensions/openapi/swag",
         "github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency"
-      ]
-    },
-    {
-      "path": "github.com/xbcio/xbc/tests/composition",
-      "directory": "tests/composition",
-      "tag_prefix": "tests/composition/",
-      "wave": 4,
-      "release": true,
-      "imports": [
-        "github.com/xbcio/xbc",
-        "github.com/xbcio/xbc/extensions/authentication/apikey",
-        "github.com/xbcio/xbc/extensions/authentication/jwt",
-        "github.com/xbcio/xbc/extensions/httpclient",
-        "github.com/xbcio/xbc/transport/grpc",
-        "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt",
-        "github.com/xbcio/xbc/transport/web",
-        "github.com/xbcio/xbc/transport/web/engines/gin",
-        "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
-        "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
-        "github.com/xbcio/xbc/transport/web/extensions/observability/tracing"
       ]
     }
   ]

@@ -230,6 +230,24 @@
       }
     },
     {
+      "key": "federation-http",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/federation.Config",
+      "defaults": {
+        "Backend": "redis",
+        "RedisInstance": "default",
+        "RedisPrefix": "xbc:federation:",
+        "TransactionTTL": 600000000000,
+        "CookieName": "xbc_federation",
+        "CookiePath": "/",
+        "CookieDomain": "",
+        "CookieSecure": true,
+        "CookieSameSite": "lax",
+        "FailurePath": "/login/failed",
+        "DefaultReturnTo": "/",
+        "AllowedReturnOrigins": null
+      }
+    },
+    {
       "key": "gorm",
       "config_type": "github.com/xbcio/xbc/extensions/storage/gorm.Config",
       "defaults": {

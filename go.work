@@ -53,6 +53,7 @@ use (
 	./transport/grpc/extensions/observability/tracing
 	./transport/web
 	./transport/web/engines/gin
+	./transport/web/extensions/authentication/federation
 	./transport/web/extensions/authentication/jwt
 	./transport/web/extensions/authentication/session
 	./transport/web/extensions/authorization/casbin

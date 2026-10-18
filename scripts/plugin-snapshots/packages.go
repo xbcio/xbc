@@ -39,6 +39,7 @@ import (
 	grpchealth "github.com/xbcio/xbc/transport/grpc/extensions/reliability/health"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey"
+	"github.com/xbcio/xbc/transport/web/extensions/authentication/federation"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/jwt"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/session"
 	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
@@ -125,6 +126,7 @@ var bundleProviders = []func() plugin.Bundle{
 	biz.Bundle,
 	casbinhttp.Bundle,
 	cors.Bundle,
+	federation.Bundle,
 	gzip.Bundle,
 	health.Bundle,
 	idempotency.Bundle,

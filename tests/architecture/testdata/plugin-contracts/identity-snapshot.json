@@ -132,6 +132,14 @@
       ]
     },
     {
+      "key": "federation-http",
+      "config_path": "plugins.federation-http",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/federation.Login"
+      ]
+    },
+    {
       "key": "gorm",
       "config_path": "plugins.gorm",
       "cardinality": "multiple",
