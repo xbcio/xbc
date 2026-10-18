@@ -55,6 +55,7 @@ use (
 	./transport/web/engines/gin
 	./transport/web/extensions/authentication/federation
 	./transport/web/extensions/authentication/jwt
+	./transport/web/extensions/authentication/oidc
 	./transport/web/extensions/authentication/session
 	./transport/web/extensions/authorization/casbin
 	./transport/web/extensions/authorization/rbac

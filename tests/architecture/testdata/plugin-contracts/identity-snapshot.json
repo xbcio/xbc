@@ -293,6 +293,14 @@
       ]
     },
     {
+      "key": "oidc-http",
+      "config_path": "plugins.oidc-http",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
       "key": "outbox",
       "config_path": "plugins.outbox",
       "cardinality": "single",

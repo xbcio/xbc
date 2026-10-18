@@ -41,6 +41,7 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/federation"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/jwt"
+	"github.com/xbcio/xbc/transport/web/extensions/authentication/oidc"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/session"
 	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
 	"github.com/xbcio/xbc/transport/web/extensions/authorization/tenant"
@@ -132,6 +133,7 @@ var bundleProviders = []func() plugin.Bundle{
 	idempotency.Bundle,
 	jwt.Bundle,
 	metrics.Bundle,
+	oidc.Bundle,
 	session.Bundle,
 	swag.Bundle,
 	tracing.Bundle,

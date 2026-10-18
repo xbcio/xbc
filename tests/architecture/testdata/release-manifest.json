@@ -558,10 +558,25 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/authentication/oidc",
+      "directory": "transport/web/extensions/authentication/oidc",
+      "tag_prefix": "transport/web/extensions/authentication/oidc/",
+      "wave": 5,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authentication/oidc",
+        "github.com/xbcio/xbc/extensions/authentication/session",
+        "github.com/xbcio/xbc/transport/web",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/federation"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/scripts/plugin-snapshots",
       "directory": "scripts/plugin-snapshots",
       "tag_prefix": "scripts/plugin-snapshots/",
-      "wave": 5,
+      "wave": 6,
       "release": false,
       "imports": [
         "github.com/xbcio/xbc",
@@ -598,6 +613,7 @@
         "github.com/xbcio/xbc/transport/web/engines/gin",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/federation",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/oidc",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/session",
         "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
         "github.com/xbcio/xbc/transport/web/extensions/observability/metrics",

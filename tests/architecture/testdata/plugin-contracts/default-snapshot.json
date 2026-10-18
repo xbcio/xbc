@@ -505,6 +505,13 @@
       }
     },
     {
+      "key": "oidc-http",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/oidc.Config",
+      "defaults": {
+        "Prefix": "/auth/oidc"
+      }
+    },
+    {
       "key": "outbox",
       "config_type": "github.com/xbcio/xbc/extensions/messaging/outbox.Config",
       "defaults": {
