@@ -637,15 +637,18 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	// nothing for the plugin-implementation guards below to inspect and must
 	// stay out of these roots. archContractModules declares the category once;
 	// TestArchContractModulesOwnNoDefinitionConfigOrBundle is what makes the
-	// exclusion safe to grant.
-	contractRoots := archContractModuleRoots(repositoryRoot)
+	// exclusion safe to grant. Protocol client modules (a protocol
+	// implementation with a third-party dependency and no plugin surface) are
+	// the same shape for these guards and are declared by
+	// archProtocolClientModules.
+	nonPluginRoots := archNonPluginModuleRoots(repositoryRoot)
 	var protocolNeutral []string
 	for _, moduleRoot := range archExtensionModuleRoots(t, filepath.Join(repositoryRoot, "extensions")) {
-		if !contractRoots[moduleRoot] {
+		if !nonPluginRoots[moduleRoot] {
 			protocolNeutral = append(protocolNeutral, moduleRoot)
 		}
 	}
-	require.Len(t, protocolNeutral, 24, "expected 24 protocol-neutral extension plugins plus the non-plugin contract modules beneath extensions")
+	require.Len(t, protocolNeutral, 24, "expected 24 protocol-neutral extension plugins plus the non-plugin contract and protocol client modules beneath extensions")
 	roots = append(roots, protocolNeutral...)
 
 	webAdapter := filepath.Join(webRoot, "extensions", "authorization", "rbac")
@@ -675,7 +678,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	require.Len(t, grpcPlugins, 4, "expected 4 independently versioned gRPC extension plugins")
 	roots = append(roots, grpcPlugins...)
 
-	require.Len(t, roots, 52, "expected 13 Web package extensions, 24 protocol-neutral extension plugins, 7 independently versioned Web extension plugins, 3 gRPC package extensions, 1 gRPC-owned package extension, and 4 independently versioned gRPC extension plugins; the two contract modules beneath extensions are not plugin implementations")
+	require.Len(t, roots, 52, "expected 13 Web package extensions, 24 protocol-neutral extension plugins, 7 independently versioned Web extension plugins, 3 gRPC package extensions, 1 gRPC-owned package extension, and 4 independently versioned gRPC extension plugins; the non-plugin contract and protocol client modules beneath extensions are not plugin implementations")
 	sort.Strings(roots)
 	return roots
 }

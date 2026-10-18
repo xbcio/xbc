@@ -19,6 +19,7 @@ use (
 	./extensions/authentication
 	./extensions/authentication/apikey
 	./extensions/authentication/jwt
+	./extensions/authentication/oidc
 	./extensions/authentication/session
 	./extensions/authorization/casbin
 	./extensions/authorization/casbin-gorm
