@@ -33,6 +33,7 @@ var archProtocolClientModules = []string{
 	"extensions/authentication/ldap",
 	"extensions/authentication/oauth2",
 	"extensions/authentication/oidc",
+	"extensions/authentication/saml",
 }
 
 // archNonPluginModuleRoots returns the absolute path of every module declared

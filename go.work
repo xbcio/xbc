@@ -22,6 +22,7 @@ use (
 	./extensions/authentication/ldap
 	./extensions/authentication/oauth2
 	./extensions/authentication/oidc
+	./extensions/authentication/saml
 	./extensions/authentication/session
 	./extensions/authorization/casbin
 	./extensions/authorization/casbin-gorm
