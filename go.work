@@ -60,6 +60,7 @@ use (
 	./transport/web/extensions/authentication/jwt
 	./transport/web/extensions/authentication/oauth2
 	./transport/web/extensions/authentication/oidc
+	./transport/web/extensions/authentication/saml
 	./transport/web/extensions/authentication/session
 	./transport/web/extensions/authorization/casbin
 	./transport/web/extensions/authorization/rbac

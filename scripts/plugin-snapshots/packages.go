@@ -43,6 +43,7 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/jwt"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/oauth2"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/oidc"
+	"github.com/xbcio/xbc/transport/web/extensions/authentication/saml"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/session"
 	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
 	"github.com/xbcio/xbc/transport/web/extensions/authorization/tenant"
@@ -136,6 +137,7 @@ var bundleProviders = []func() plugin.Bundle{
 	metrics.Bundle,
 	oauth2.Bundle,
 	oidc.Bundle,
+	saml.Bundle,
 	session.Bundle,
 	swag.Bundle,
 	tracing.Bundle,

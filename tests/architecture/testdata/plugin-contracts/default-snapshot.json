@@ -645,6 +645,13 @@
       }
     },
     {
+      "key": "saml-http",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/saml.Config",
+      "defaults": {
+        "Prefix": "/auth/saml"
+      }
+    },
+    {
       "key": "securityheaders",
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/security/securityheaders.Config",
       "defaults": {

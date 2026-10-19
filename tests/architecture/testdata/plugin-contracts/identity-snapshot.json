@@ -396,6 +396,14 @@
       ]
     },
     {
+      "key": "saml-http",
+      "config_path": "plugins.saml-http",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
       "key": "securityheaders",
       "config_path": "plugins.securityheaders",
       "cardinality": "single",
