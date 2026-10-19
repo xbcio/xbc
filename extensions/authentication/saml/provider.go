@@ -50,6 +50,17 @@ func (p *Provider) Name() string {
 	return p.name
 }
 
+// ACSURL returns the configured assertion consumer service URL, or the empty
+// string for a nil provider. It is the trust anchor a web adapter passes to
+// Verify as ResponseInput.ACSURL; the value must come from the configuration,
+// never from the request Host.
+func (p *Provider) ACSURL() string {
+	if p == nil {
+		return ""
+	}
+	return p.acsURL
+}
+
 // String renders the provider for diagnostics with the private key redacted.
 func (p *Provider) String() string {
 	if p == nil {
