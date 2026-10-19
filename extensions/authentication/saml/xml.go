@@ -26,7 +26,7 @@ const (
 	bindingHTTPPost     = protocolNamespace + ":bindings:HTTP-POST"
 	bindingHTTPRedirect = protocolNamespace + ":bindings:HTTP-Redirect"
 
-	bearerConfirmation = assertionNamespace + ":cm:bearer"
+	bearerConfirmation = "urn:oasis:names:tc:SAML:2.0:cm:bearer"
 )
 
 // Registered NameID formats. Only the persistent format carries a guarantee

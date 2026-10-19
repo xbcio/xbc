@@ -138,3 +138,13 @@ func TestVerifyRejectsDeeplyNestedResponse(t *testing.T) {
 	})
 	mustRejectResponse(t, provider, responseInput(response), ErrInvalidResponse)
 }
+
+// TestBearerConfirmationUsesTheRegisteredMethod pins the literal SAML 2.0
+// bearer confirmation method. Deriving it from the assertion namespace produces
+// urn:oasis:names:tc:SAML:2.0:assertion:cm:bearer, which no IdP emits; every
+// real response would then be rejected as missing a bearer confirmation.
+func TestBearerConfirmationUsesTheRegisteredMethod(t *testing.T) {
+	if bearerConfirmation != "urn:oasis:names:tc:SAML:2.0:cm:bearer" {
+		t.Fatalf("bearerConfirmation = %q, want urn:oasis:names:tc:SAML:2.0:cm:bearer", bearerConfirmation)
+	}
+}
