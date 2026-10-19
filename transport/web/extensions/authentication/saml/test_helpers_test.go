@@ -357,7 +357,7 @@ func responseDefaults(now time.Time, requestID string) responseOptions {
 		assertionID:              fmt.Sprintf("_assertion%032d", serial),
 		responseInResponseTo:     requestID,
 		destination:              testACSURL,
-		statusCode:               "urn:oasis:names:tc:SAML:2.0:protocol:status:Success",
+		statusCode:               "urn:oasis:names:tc:SAML:2.0:status:Success",
 		issuer:                   testIssuer,
 		nameID:                   testNameID,
 		nameIDFormat:             samlcore.NameIDFormatPersistent,

@@ -235,7 +235,7 @@ func TestVerifyRejectsMalformedInput(t *testing.T) {
 func TestVerifyRejectsResponseConditions(t *testing.T) {
 	cases := map[string]func(*responseOptions){
 		"status is not success": func(options *responseOptions) {
-			options.statusCode = protocolNamespace + ":status:Requester"
+			options.statusCode = "urn:oasis:names:tc:SAML:2.0:status:Requester"
 		},
 		"destination mismatch": func(options *responseOptions) {
 			options.destination = "https://sp.example.com/other"

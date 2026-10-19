@@ -17,14 +17,17 @@ const (
 	dsigNamespace      = "http://www.w3.org/2000/09/xmldsig#"
 )
 
-// Protocol values that a response and an assertion must carry.
+// Protocol values that a response and an assertion must carry. The status and
+// binding values are registered literals, not protocolNamespace derivations:
+// their registered namespaces are urn:oasis:names:tc:SAML:2.0:status and
+// urn:oasis:names:tc:SAML:2.0:bindings, so a derived value is one no IdP emits.
 const (
 	samlVersion = "2.0"
 
-	statusSuccess = protocolNamespace + ":status:Success"
+	statusSuccess = "urn:oasis:names:tc:SAML:2.0:status:Success"
 
-	bindingHTTPPost     = protocolNamespace + ":bindings:HTTP-POST"
-	bindingHTTPRedirect = protocolNamespace + ":bindings:HTTP-Redirect"
+	bindingHTTPPost     = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+	bindingHTTPRedirect = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
 
 	bearerConfirmation = "urn:oasis:names:tc:SAML:2.0:cm:bearer"
 )
@@ -32,10 +35,12 @@ const (
 // Registered NameID formats. Only the persistent format carries a guarantee
 // that the identifier is stable and never reused; unspecified is a deliberate
 // opt-in because the application must then accept whatever the IdP chose.
+// These are registered literals as well: the namespace is
+// urn:oasis:names:tc:SAML:2.0:nameid-format, not assertionNamespace.
 const (
-	NameIDFormatPersistent  = assertionNamespace + ":nameid-format:persistent"
-	NameIDFormatUnspecified = assertionNamespace + ":nameid-format:unspecified"
-	NameIDFormatTransient   = assertionNamespace + ":nameid-format:transient"
+	NameIDFormatPersistent  = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"
+	NameIDFormatUnspecified = "urn:oasis:names:tc:SAML:2.0:nameid-format:unspecified"
+	NameIDFormatTransient   = "urn:oasis:names:tc:SAML:2.0:nameid-format:transient"
 	NameIDFormatEmail       = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
 )
 

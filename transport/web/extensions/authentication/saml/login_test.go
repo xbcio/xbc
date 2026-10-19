@@ -504,7 +504,7 @@ func TestACSRejectsAResponseThatDoesNotMatchTheTransaction(t *testing.T) {
 			options.issuer = "https://another-idp.example.com/entity"
 		},
 		"status": func(options *responseOptions) {
-			options.statusCode = "urn:oasis:names:tc:SAML:2.0:protocol:status:Requester"
+			options.statusCode = "urn:oasis:names:tc:SAML:2.0:status:Requester"
 		},
 		"expired assertion": func(options *responseOptions) {
 			past := time.Now().Add(-10 * time.Minute)

@@ -66,6 +66,32 @@ func TestLoadMetadataParsesIdPDescriptor(t *testing.T) {
 	}
 }
 
+// TestLoadMetadataAcceptsSpecificationLiterals builds an IdP metadata document
+// from the SAML 2.0 specification URIs instead of this package's constants. It
+// proves that a standards-compliant document -- the only kind an IdP emits --
+// yields the expected SSO endpoint and NameID formats.
+func TestLoadMetadataAcceptsSpecificationLiterals(t *testing.T) {
+	document := `<md:EntityDescriptor xmlns:md="` + metadataNamespace + `" xmlns:ds="` + dsigNamespace + `" entityID="https://idp.example.com/entity">` +
+		`<md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">` +
+		`<md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>` +
+		base64.StdEncoding.EncodeToString(idpCertificate.Raw) +
+		`</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>` +
+		`<md:NameIDFormat>urn:oasis:names:tc:SAML:2.0:nameid-format:persistent</md:NameIDFormat>` +
+		`<md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.com/sso"/>` +
+		`</md:IDPSSODescriptor></md:EntityDescriptor>`
+	server := metadataServer(t, document)
+	metadata, err := LoadMetadata(t.Context(), server.URL+"/metadata", testPolicy())
+	if err != nil {
+		t.Fatalf("LoadMetadata: %v", err)
+	}
+	if metadata.SSOURL != "https://idp.example.com/sso" {
+		t.Fatalf("SSOURL = %q, want https://idp.example.com/sso", metadata.SSOURL)
+	}
+	if len(metadata.NameIDFormats) != 1 || metadata.NameIDFormats[0] != "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" {
+		t.Fatalf("NameIDFormats = %v, want the persistent format", metadata.NameIDFormats)
+	}
+}
+
 func TestLoadMetadataParsesEntitiesDescriptor(t *testing.T) {
 	document := `<md:EntitiesDescriptor xmlns:md="` + metadataNamespace + `">` +
 		metadataXML("https://idp.example.com/entity", "https://idp.example.com/sso", idpCertificate.Raw) +

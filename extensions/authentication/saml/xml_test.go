@@ -148,3 +148,29 @@ func TestBearerConfirmationUsesTheRegisteredMethod(t *testing.T) {
 		t.Fatalf("bearerConfirmation = %q, want urn:oasis:names:tc:SAML:2.0:cm:bearer", bearerConfirmation)
 	}
 }
+
+// TestRegisteredSAMLOUIsMatchTheSpecification pins every registered URI this
+// package emits or accepts to its SAML 2.0 specification literal. Tests that
+// build fixtures from these constants cannot catch a wrong constant because
+// both sides share the defect; this test compares against the specification
+// text instead.
+func TestRegisteredSAMLOUIsMatchTheSpecification(t *testing.T) {
+	cases := map[string]struct {
+		actual string
+		want   string
+	}{
+		"status success":        {statusSuccess, "urn:oasis:names:tc:SAML:2.0:status:Success"},
+		"HTTP-POST binding":     {bindingHTTPPost, "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"},
+		"HTTP-Redirect binding": {bindingHTTPRedirect, "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"},
+		"persistent NameID":     {NameIDFormatPersistent, "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"},
+		"unspecified NameID":    {NameIDFormatUnspecified, "urn:oasis:names:tc:SAML:2.0:nameid-format:unspecified"},
+		"transient NameID":      {NameIDFormatTransient, "urn:oasis:names:tc:SAML:2.0:nameid-format:transient"},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			if testCase.actual != testCase.want {
+				t.Fatalf("constant = %q, want %q", testCase.actual, testCase.want)
+			}
+		})
+	}
+}
