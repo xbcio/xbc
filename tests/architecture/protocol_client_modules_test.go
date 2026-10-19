@@ -30,6 +30,7 @@ import (
 // neutral half of the "protocol module + transport adapter" split, so it must
 // live beneath extensions and stay free of every transport.
 var archProtocolClientModules = []string{
+	"extensions/authentication/ldap",
 	"extensions/authentication/oauth2",
 	"extensions/authentication/oidc",
 }

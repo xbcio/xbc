@@ -55,6 +55,16 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/extensions/authentication/ldap",
+      "directory": "extensions/authentication/ldap",
+      "tag_prefix": "extensions/authentication/ldap/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc/extensions/authentication"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/extensions/authentication/oauth2",
       "directory": "extensions/authentication/oauth2",
       "tag_prefix": "extensions/authentication/oauth2/",
