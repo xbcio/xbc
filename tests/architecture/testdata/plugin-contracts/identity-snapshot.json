@@ -284,6 +284,14 @@
       ]
     },
     {
+      "key": "oauth2-http",
+      "config_path": "plugins.oauth2-http",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
       "key": "objectstorage",
       "config_path": "plugins.objectstorage",
       "cardinality": "multiple",

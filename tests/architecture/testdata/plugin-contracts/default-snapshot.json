@@ -475,6 +475,13 @@
       }
     },
     {
+      "key": "oauth2-http",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/oauth2.Config",
+      "defaults": {
+        "Prefix": "/auth/oauth2"
+      }
+    },
+    {
       "key": "objectstorage",
       "config_type": "github.com/xbcio/xbc/extensions/storage/objectstorage.Config",
       "defaults": {

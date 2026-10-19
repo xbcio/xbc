@@ -627,7 +627,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	t.Helper()
 	repositoryRoot := archRepositoryRoot(t)
 	webRoot := filepath.Join(repositoryRoot, "transport", "web")
-	roots := make([]string, 0, 54)
+	roots := make([]string, 0, 55)
 	for _, extensionPath := range archWebPackageExtensionPaths {
 		roots = append(roots, filepath.Join(webRoot, "extensions", filepath.FromSlash(extensionPath)))
 	}
@@ -657,7 +657,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 			webPlugins = append(webPlugins, moduleRoot)
 		}
 	}
-	require.Len(t, webPlugins, 9, "expected 9 Web extension plugins plus the non-plugin RBAC adapter")
+	require.Len(t, webPlugins, 10, "expected 10 Web extension plugins plus the non-plugin RBAC adapter")
 	roots = append(roots, webPlugins...)
 
 	// gRPC extensions follow the Web split: a light extractor stays a package
@@ -677,7 +677,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	require.Len(t, grpcPlugins, 4, "expected 4 independently versioned gRPC extension plugins")
 	roots = append(roots, grpcPlugins...)
 
-	require.Len(t, roots, 54, "expected 13 Web package extensions, 24 protocol-neutral extension plugins, 9 independently versioned Web extension plugins, 3 gRPC package extensions, 1 gRPC-owned package extension, and 4 independently versioned gRPC extension plugins; the non-plugin contract and protocol client modules beneath extensions are not plugin implementations")
+	require.Len(t, roots, 55, "expected 13 Web package extensions, 24 protocol-neutral extension plugins, 10 independently versioned Web extension plugins, 3 gRPC package extensions, 1 gRPC-owned package extension, and 4 independently versioned gRPC extension plugins; the non-plugin contract and protocol client modules beneath extensions are not plugin implementations")
 	sort.Strings(roots)
 	return roots
 }

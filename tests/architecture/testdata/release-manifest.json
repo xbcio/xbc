@@ -568,6 +568,21 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/authentication/oauth2",
+      "directory": "transport/web/extensions/authentication/oauth2",
+      "tag_prefix": "transport/web/extensions/authentication/oauth2/",
+      "wave": 5,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/extensions/authentication/oauth2",
+        "github.com/xbcio/xbc/extensions/authentication/session",
+        "github.com/xbcio/xbc/transport/web",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/federation"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/transport/web/extensions/authentication/oidc",
       "directory": "transport/web/extensions/authentication/oidc",
       "tag_prefix": "transport/web/extensions/authentication/oidc/",
@@ -623,6 +638,7 @@
         "github.com/xbcio/xbc/transport/web/engines/gin",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/federation",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt",
+        "github.com/xbcio/xbc/transport/web/extensions/authentication/oauth2",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/oidc",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/session",
         "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
