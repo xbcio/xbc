@@ -1,3 +1,19 @@
+// Package gin is the gin-backed web.Engine adapter.
+//
+// gin registers exactly the methods it is given, while the Engine port implies
+// HEAD from GET. The adapter supplies that half itself: every GET registration
+// (a route or a mount) records the chain it would need under HEAD, an explicit
+// HEAD registration marks its pattern as its own, and Serve materializes the
+// remaining HEAD patterns once, after registration is complete and before the
+// first request can arrive. Deferring is required rather than stylistic: gin
+// cannot replace a registered handler, so registering HEAD eagerly would panic
+// when a caller registers Any -- whose method set includes HEAD -- or an
+// explicit HEAD route after the GET route for the same pattern.
+//
+// The rest of the port's matching rules are configured on the engine:
+// HandleMethodNotAllowed keeps 405 distinct from 404, and RedirectTrailingSlash
+// is off so a trailing-slash mismatch reaches NoRoute like any other unmatched
+// path.
 package gin
 
 import (
@@ -6,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 
 	ginlib "github.com/gin-gonic/gin"
 
@@ -21,6 +38,23 @@ type Factory struct{}
 type engine struct {
 	e   *ginlib.Engine
 	srv *http.Server
+
+	// mu guards the implied-HEAD registration state below. Registration and
+	// Serve normally run on one goroutine; the mutex makes interleaving them a
+	// decided order rather than a data race, and it is also what makes
+	// materializeImpliedHEAD idempotent under repeated calls.
+	mu sync.Mutex
+	// impliedHead maps a gin pattern to the handler chain registered for GET
+	// there. Each is the HEAD half of that registration, pending until Serve
+	// registers it.
+	impliedHead map[string][]ginlib.HandlerFunc
+	// explicitHead names the patterns a caller registered HEAD for. An explicit
+	// registration replaces the implied one, so materialization skips them.
+	explicitHead map[string]struct{}
+	// materialized records that Serve already turned the pending implied HEADs
+	// into registrations. It is what makes materialization idempotent: a second
+	// registration of the same HEAD pattern panics inside gin.
+	materialized bool
 }
 
 // NewEngine builds a gin engine from neutral Options. It absorbs every
@@ -63,11 +97,15 @@ func (f Factory) NewEngine(opts web.Options) (web.Engine, error) {
 			IdleTimeout:       opts.IdleTimeout,
 			MaxHeaderBytes:    opts.MaxHeaderBytes,
 		},
+		impliedHead:  make(map[string][]ginlib.HandlerFunc),
+		explicitHead: make(map[string]struct{}),
 	}, nil
 }
 
 func (g *engine) Handle(method, path string, chain []web.Handler) {
-	g.e.Handle(method, path, g.toGinChain(chain)...)
+	converted := g.toGinChain(chain)
+	g.e.Handle(method, path, converted...)
+	g.recordHead(method, path, converted)
 }
 
 // Mount registers chain for the subtree rooted at prefix on one method. gin
@@ -83,11 +121,60 @@ func (g *engine) Mount(method, prefix string, chain []web.Handler) {
 	converted := g.toGinChain(chain)
 	g.e.Handle(method, prefix, converted...)
 	g.e.Handle(method, prefix+"/*rest", converted...)
+	g.recordHead(method, prefix, converted)
+	g.recordHead(method, prefix+"/*rest", converted)
 }
 
 func (g *engine) NoRoute(chain []web.Handler)  { g.e.NoRoute(g.toGinChain(chain)...) }
 func (g *engine) NoMethod(chain []web.Handler) { g.e.NoMethod(g.toGinChain(chain)...) }
-func (g *engine) Serve(ln net.Listener) error  { return g.srv.Serve(ln) }
+
+// Serve materializes the implied HEAD registrations and then serves on ln.
+// Materializing here is both the earliest point at which registration is
+// complete and the latest before a request can arrive; the port puts
+// registration after Serve outside the contract.
+func (g *engine) Serve(ln net.Listener) error {
+	g.materializeImpliedHEAD()
+	return g.srv.Serve(ln)
+}
+
+// recordHead keeps the implied-HEAD bookkeeping in step with one registration.
+// A GET registration implies HEAD on the same pattern; an explicit HEAD
+// registration owns its pattern and replaces the implication. Other methods
+// matter to neither. A GET registered after Serve has been reached is outside
+// the port's contract and is not recorded: materialization has already run, so
+// it could never be served as HEAD.
+func (g *engine) recordHead(method, pattern string, chain []ginlib.HandlerFunc) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	switch method {
+	case http.MethodGet:
+		if !g.materialized {
+			g.impliedHead[pattern] = chain
+		}
+	case http.MethodHead:
+		g.explicitHead[pattern] = struct{}{}
+	}
+}
+
+// materializeImpliedHEAD registers the HEAD half of every GET registration
+// that no explicit HEAD registration replaced. It runs once, from Serve:
+// registering HEAD eagerly would make a later Route.Any -- which includes
+// HEAD -- or an explicit HEAD route panic, because gin cannot replace a
+// registered handler.
+func (g *engine) materializeImpliedHEAD() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.materialized {
+		return
+	}
+	g.materialized = true
+	for pattern, chain := range g.impliedHead {
+		if _, explicit := g.explicitHead[pattern]; explicit {
+			continue
+		}
+		g.e.Handle(http.MethodHead, pattern, chain...)
+	}
+}
 
 // Shutdown drains in-flight requests until ctx is done, then force-closes
 // whatever refused to drain. The forced close is what makes the web.Engine

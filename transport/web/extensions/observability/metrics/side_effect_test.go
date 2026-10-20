@@ -22,3 +22,19 @@ func TestDefinitionAndBundleAreCanonical(t *testing.T) {
 		t.Fatal("Bundle() returned different canonical composition content")
 	}
 }
+
+// TestAdmissionDefinitionIsCanonicalAndDistinct pins the collector-half
+// accessor: it must be a real, stable Definition and it must not be the
+// middleware Definition, or a private catalog following the package
+// documentation would silently select the instrumented middleware for both
+// halves and never register the admission collector.
+func TestAdmissionDefinitionIsCanonicalAndDistinct(t *testing.T) {
+	var zeroDefinition plugin.Definition
+	admission := metricsplugin.AdmissionDefinition()
+	if admission == zeroDefinition || admission != metricsplugin.AdmissionDefinition() {
+		t.Fatal("AdmissionDefinition() must return one non-zero canonical handle")
+	}
+	if admission == metricsplugin.Definition() {
+		t.Fatal("AdmissionDefinition() must identify the collector half, not the request instrumentation")
+	}
+}

@@ -54,6 +54,12 @@ var (
 	// exporters keep the default RFC 9457 Problem Detail; the Server never
 	// requires one, so no renderer plugin is a dependency of Web.
 	rendererInput = plugin.OptionalOne[ErrorRenderer]()
+	// listenerProviderInput is the optional ListenerProvider both planes acquire
+	// their listeners through. Zero exporters keep the default
+	// net.Listen("tcp", address); one exporter supplies both planes; two fail
+	// assembly with OptionalOne's standard ambiguity error rather than letting
+	// boot order choose. Start is the only caller -- Preflight binds nothing.
+	listenerProviderInput = plugin.OptionalOne[ListenerProvider]()
 	// engineInput selects the HTTP engine adapter. web.Server never
 	// constructs a concrete engine itself: every adapter package imports web
 	// to implement Engine, so if web imported an adapter back, that engine's
@@ -84,6 +90,9 @@ var (
 			if entry, ok := rendererInput.Get(ctx); ok {
 				server.renderer = entry.Value
 			}
+			if entry, ok := listenerProviderInput.Get(ctx); ok {
+				server.listenerProvider = entry
+			}
 			return server, nil
 		},
 		plugin.Options[*Server]{
@@ -97,6 +106,13 @@ var (
 				authenticatorInput,
 				extractorInput,
 				rendererInput,
+				listenerProviderInput,
+			),
+			// The admission readings are exported as a read-only contract so
+			// observation plugins can scrape them without depending on the
+			// concrete Server type.
+			Exports: plugin.Contracts(
+				plugin.ExportAs[AdmissionStatsSource](func(server *Server) AdmissionStatsSource { return server }),
 			),
 		},
 	)

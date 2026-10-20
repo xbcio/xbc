@@ -32,6 +32,11 @@ const (
 type SecurityConfig struct {
 	Default SecurityDefault `yaml:"default"  default:"deny"`
 
+	// RequireRouteAuthorizer turns the missing-authorizer warning into a startup
+	// failure. The default keeps existing compositions booting while making the
+	// unenforced declaration visible.
+	RequireRouteAuthorizer bool `yaml:"require_route_authorizer"`
+
 	// Schemes is the application-declared arbitration order for authentication.
 	// Manager evaluates schemes first-applicable in exactly this order, so the
 	// order is a security decision: a scheme that must win over another must be

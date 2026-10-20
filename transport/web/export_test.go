@@ -7,6 +7,7 @@ import (
 
 	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/log"
+	"github.com/xbcio/xbc/plugin"
 )
 
 // This file is the single seam through which package web's external tests
@@ -126,6 +127,14 @@ func NewErrorResolver(logger log.Logger) *errorResolver { return newErrorResolve
 // otherwise supply from an OptionalOne[ErrorRenderer] input, so a test can build
 // a Server with NewServer and still exercise the renderer path.
 func (s *Server) SetErrorRenderer(renderer ErrorRenderer) { s.renderer = renderer }
+
+// SetListenerProvider injects the optional ListenerProvider the Definition
+// would otherwise supply from an OptionalOne[ListenerProvider] input, so a test
+// can build a Server with NewServer and still exercise the provider path. The
+// entry carries the identity every provider failure names.
+func (s *Server) SetListenerProvider(entry plugin.Entry[ListenerProvider]) {
+	s.listenerProvider = entry
+}
 
 // Attach publishes this resolver on the request so OnError and the error
 // boundary downstream can find it.

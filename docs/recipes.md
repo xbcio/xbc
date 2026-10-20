@@ -191,6 +191,8 @@ plugins:
 
 `casbin-gorm` defaults to `migrate: false` and never runs AutoMigrate implicitly during construction. When enabled, migration occurs only in XBC's Migrate stage. Casbin first loads policy at Start, after the table can exist. External-adapter mode enables AutoSave, so `AddPolicy`, role-relation changes, and filtered removals persist to the database. The Redis Watcher propagates changes to other replicas. The watcher owns its Redis clients; the named `gorm` plugin continues to own the GORM connection pool.
 
+`Route.Perm` records an authorization declaration; the framework does not enforce it by itself. At startup the server checks whether any middleware in the ordered chain implements `web.RouteAuthorizer`, the marker a middleware uses to declare that it enforces the permissions routes carry. When serving routes declare `.Perm` and no entry implements the marker, startup logs one warning with the route count and up to three sample routes. `casbin-http` implements the marker in both request conventions, so composing it -- with a `plugins.casbin-http` section, because contributing is not enabling -- silences the warning; an application's own middleware can implement the same marker. Setting `web.security.require_route_authorizer: true` turns the warning into a startup failure instead, which is the right setting when every permission declaration must be enforced. Removing declarations that nothing enforces is the other fix. The handler-scoped `RequireAll` and `RequireAny` helpers of the Web rbac adapter do not implement the marker, because they never read `Route.Perm`.
+
 `github.com/xbcio/xbc/extensions/authorization/rbac` is a protocol-neutral application plugin with its own Definition, Config, Manager, Backend, Permission model, and autoload adapter. Application code should depend on `rbac.Manager` for administrator checks, AND/OR authorization, role and permission queries, and replacement or deletion of direct relations. The Casbin engine supplies its Backend. Depend directly on the engine's `casbin.EnforcerProvider` only for migrations or Casbin-specific advanced operations.
 
 `github.com/xbcio/xbc/transport/web/extensions/authorization/rbac` is not a plugin. It is a thin adapter from `web.CurrentPrincipal` to `rbac.Manager` and supplies only `RequireAll` and `RequireAny`. Apply those functions explicitly to routes or groups. It owns no Definition, Config, Backend, or autoload registration and contributes no global authorization chain. If a concrete ABAC requirement emerges, it should be designed as a separate business plugin parallel to RBAC with its own transport adapters; XBC does not reserve placeholder ABAC directories or APIs.
@@ -1039,6 +1041,7 @@ web:
   tls:
     cert_file: /etc/orders/tls.crt
     key_file: /etc/orders/tls.key
+    http2: false          # true adds h2 to ALPN; requires this process to terminate TLS
     min_version: "1.2"
     reload_interval: 30s
 ```
@@ -1051,9 +1054,40 @@ The pair is read during the startup path rather than at the first connection, so
 
 **The cipher list is a restriction, and only below TLS 1.3.** `cipher_suites` takes Go's names for the secure suites, `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` among them, and refusing a name outside `tls.CipherSuites()` is deliberate: the insecure set Go still knows about cannot be selected here. TLS 1.3 suites are not configurable in Go at all, so this key has no effect on a connection that negotiates 1.3.
 
-**HTTP/2 is not offered, and that is a decision rather than an oversight.** TLS termination happens on the listener this process wraps around `web.addr`, and the ALPN protocols it advertises are `http/1.1` alone: a client that offers `h2` and `http/1.1` is answered with `http/1.1`. An HTTP/2 deployment therefore terminates TLS at a proxy that can serve it to clients and speak HTTP/1.1 to this process. What an application sees is unaffected either way — `r.Proto`, the request context, and every middleware above it are the same ones a plain HTTP deployment runs.
+**HTTP/2 is opt-in, and off by default.** Setting `web.tls.http2: true` adds `h2` to the ALPN protocols the listener advertises, so the offered list becomes `["h2", "http/1.1"]` — HTTP/2 preferred, HTTP/1.1 kept as the fallback for clients that cannot speak it — and the Go standard library serves HTTP/2 itself once ALPN has selected it. The key requires `cert_file`/`key_file`: ALPN is the only upgrade path, so HTTP/2 is offered only by the listener this process terminates; there is no h2c (cleartext HTTP/2), and a deployment behind a proxy that terminates HTTP/2 keeps this listener on HTTP/1.1 to the backend. `write_timeout` applies on both protocols, but not the same way: an HTTP/2 stream gets a per-stream write deadline and is reset with `INTERNAL_ERROR` (`RST_STREAM`) when it expires, even while the handler is still working, while an HTTP/1.1 response is bounded by one absolute deadline on the connection, observed at the next write. A streaming route lifts either with `http.NewResponseController(...).SetWriteDeadline(time.Time{})` — the HTTP/2 response writer implements it and stops the per-stream timer — and request deadlines remain the timeout middleware's cooperative job on both protocols. A `cipher_suites` list naming a TLS 1.2 CBC suite is refused while `http2` is on and `min_version` is below `1.3`: the standard library's h2 server resets any connection that negotiated one (RFC 9113 Appendix A), while HTTP/1.1 clients would keep working with it, so accepting the configuration would break h2 clients silently. Handlers and middleware run unchanged either way, but what they observe changes: with h2 negotiated, `r.Proto` is `HTTP/2.0`, `r.ProtoMajor` is 2, and `r.TLS.NegotiatedProtocol` is `h2`.
 
 **HSTS starts working without a proxy.** `securityheaders` emits HSTS exactly when the request arrived over TLS, and a process that terminates TLS is looking at a request that did — so `hsts_only_https: true`, the default, now emits the header with no further configuration. The `hsts_trust_forwarded_proto` key below exists for the other shape, where a proxy terminates and this process has to be told that it did.
+
+## Serving on a Unix socket or a pre-bound descriptor
+
+`web.addr` names a TCP address that Start binds itself. A deployment that would rather serve from a Unix domain socket, or from a descriptor a supervisor already opened, selects a `ListenerProvider` export instead: Start asks it for both configured planes and never calls `net.Listen` on its own. It is an optional single export — with no provider the TCP behavior above is unchanged, and two providers fail assembly rather than letting boot order choose.
+
+```go
+type unixListenerProvider struct {
+	dir string
+	seq atomic.Uint32
+}
+
+func (p *unixListenerProvider) Listen(string) (net.Listener, error) {
+	return net.Listen("unix", filepath.Join(p.dir, fmt.Sprintf("%d.sock", p.seq.Add(1))))
+}
+
+var listenerDefinition = plugin.Define(
+	"unix-listener",
+	func(plugin.BuildContext) (*unixListenerProvider, error) {
+		return &unixListenerProvider{dir: "/run/orders"}, nil
+	},
+	plugin.Options[*unixListenerProvider]{
+		Exports: plugin.Contracts(
+			plugin.ExportAs[web.ListenerProvider](func(value *unixListenerProvider) web.ListenerProvider { return value }),
+		),
+	},
+)
+```
+
+Compose that Bundle beside `web.Bundle()` and one engine Bundle. `web.addr` stays required and non-empty, because configuration is validated before plugin inputs exist; its `host:port` shape is not validated, and the TCP path reports a malformed address at bind time. With a provider it is advisory. A provider that binds something other than TCP keeps a plausible placeholder — `:8080` is already the default — and reads its real address from its own configuration section. What was actually bound is what `Server.Addr()` and `Server.ManagementAddr()` report, so a Unix deployment reads its socket path from there rather than assuming one.
+
+The same seam takes a socket-activation descriptor: return `net.FileListener` over the inherited file, unstarted, and the server owns it from that point — it closes it during shutdown, and the provider must not. TLS is wrapped above the provider, so a PROXY-protocol wrapper has to consume its header before the TLS records; `validate` never asks for a listener, so it passes without the descriptor being present. Configuring `web.management.addr` asks the provider a second time with the resolved management address, which gives a Unix deployment two distinct sockets.
 
 ## An operator listener of its own
 
@@ -1319,6 +1353,71 @@ Two bounds still apply and should not be worked around. `read_timeout` and `idle
 
 WebSocket needs none of this: hijacking the connection clears the server's deadlines with it.
 
+## WebSocket connections
+
+A WebSocket route upgrades an ordinary HTTP request, and from then on the connection belongs to neither the request/response cycle nor `http.Server`'s connection tracking. The `websocket` extension owns the upgrade and the registry of live connections; the application owns the conversation on each one. The protocol implementation (`github.com/coder/websocket`) lives behind this module rather than in `transport/web` so a service that never serves a socket does not carry it in its dependency closure, and so the lifecycle that drains sockets belongs to the framework rather than to a third-party library.
+
+Select the Bundle at the composition root, then depend on the exported `websocket.Upgrader` as a typed input:
+
+```go
+app, err := xbc.New(xbc.WithBundles(
+	prelude.Bundle(),
+	ginengine.Bundle(),
+	websocket.Bundle(),
+))
+```
+
+```go
+var upgraderInput = plugin.RequireOne[websocket.Upgrader]()
+
+type chat struct {
+	upgrader websocket.Upgrader
+}
+
+var definition = plugin.Define(
+	"chat",
+	func(ctx plugin.BuildContext) (*chat, error) {
+		return &chat{upgrader: upgraderInput.Get(ctx).Value}, nil
+	},
+	plugin.Options[*chat]{
+		Inputs: plugin.Inputs(upgraderInput),
+		Exports: plugin.Contracts(
+			plugin.ExportAs[web.RouteContributor](func(value *chat) web.RouteContributor { return value }),
+		),
+	},
+)
+
+func (h *chat) RegisterRoutes(router *web.Router) {
+	router.GET("/chat", h.upgrader.Handler(websocket.Options{
+		OriginPatterns: []string{"app.example.com"},
+		Subprotocols:   []string{"chat.v1"},
+		ReadLimit:      32 << 10,
+	}, h.serve)).Name("chat").Auth(web.Public())
+}
+
+func (h *chat) serve(ctx context.Context, conn *websocket.Conn) error {
+	for {
+		kind, data, err := conn.Read(ctx)
+		if err != nil {
+			return nil // the peer closed, or the process is draining
+		}
+		if err := conn.Write(ctx, kind, data); err != nil {
+			return err
+		}
+	}
+}
+```
+
+The zero `Options` value accepts same-host origins only -- a browser's `Origin` host must equal the request's `Host` -- negotiates no subprotocol, and disables compression. `OriginPatterns` adds `path.Match` patterns for other hosts, matched against the Origin's host or, when the pattern contains `://`, against `scheme://host`; the request's own host never needs a pattern. The module exports no switch that disables the origin check, but a pattern that matches every host -- `*`, `**` or `*://*` -- is equivalent to one and must never be used: it would make every socket route a cross-site request forgery target. Such a pattern is not rejected at registration, because "matches every host" cannot be decided for `path.Match` and a partial check would give false assurance. `Subprotocols` lists what the server may negotiate, `Compression` enables permessage-deflate with no context takeover, `CompressionThreshold` sets the smallest message it compresses, and `ReadLimit` bounds one received message (`0` keeps the protocol library's default). A cross-origin handshake no pattern admits is refused with `403` by the upgrader before the route handler runs, so it is a plain HTTP response rather than a broken WebSocket.
+
+The returned handler holds one admission slot for the life of the connection: it blocks until `serve` returns, which is what makes `web.max_in_flight` meaningful for sockets. The default ceiling is 1024, counted in requests, so a process serving N concurrent sockets has 1024-N slots left for ordinary traffic -- size the ceiling for the sockets plus the request traffic, and do not mark a socket route `Unmetered`, which would let it open connections while the process is saturated.
+
+`serve` starts after the `101` response is committed. Whatever it returns is logged, never rendered: there is no response left to render into. A failed upgrade is different: the protocol implementation writes its own HTTP refusal, and Web's error resolver only logs a response that is already written rather than rendering a Problem Detail into it. Returning the upgrade error would therefore log the same failure twice, so the handler logs it once with the upgrade error and returns nil.
+
+Shutdown has two halves that must be relied on independently. `Drain` refuses new upgrades with `503` (`service_unavailable`), starts a going-away close (`1001`) on every registered socket, and waits for the `serve` functions to return within the runtime's `xbc.drain_timeout`. An expired budget stops the waiting, not the work: the sockets stay open for `Stop`, and a socket that enters its handshake after the drain took its snapshot is closed without being served. `Stop` force-closes every remaining connection, one goroutine per socket, and is correct whether `Drain` ran, expired, or never ran; its context bounds the wait for the `serve` functions, not the force-close, so a socket stuck in a close handshake cannot hold the stop phase past its budget. Both are idempotent.
+
+This lifecycle exists because `http.Server.Shutdown` cannot see a hijacked connection: it neither waits for one nor closes it. Without the registry, a boot that stops the server would leave both the socket and the handler blocked on it alive past shutdown, while readiness and the shutdown report claimed the process was draining. The plugin's `Drain` and `Stop` run in the runtime's drain and stop phases, after ingress has stopped accepting new requests.
+
 ## Mounting a handler that owns its own routing
 
 `router.Mount(prefix, h)` takes any `http.Handler` that already knows how to route: an integration library's handler, a file server, another framework's engine. The handler is handed the request with the prefix stripped, `http.StripPrefix` style -- `/flow/status` under a mount at `/flow` arrives as `/status`, the prefix itself arrives with an empty path -- and everything beneath the prefix belongs to it.
@@ -1333,6 +1432,23 @@ The mount is an ordinary route registration, and the rest of the framework treat
 Two boundaries are worth stating outright. A path inside the prefix that the mounted handler does not recognize gets that handler's own 404 -- the framework's unmatched-request chains only see requests the matcher never routed, which for a mount means a method outside the covered set, answered as the usual 405 with `Allow`. And a registration that overlaps a mount on the same method is refused at the composition root: a route at or under a mounted prefix, a route carrying engine pattern syntax (`:` or `*`) whose literal prefix reaches the mount, a second mount at or under the first, and a mount swallowing an existing route all panic instead of leaving whichever registration the engine happens to prefer. `Unmetered` is refused on a mount too: the gate exempts a route by its exact method and path, so an exemption on a subtree could never match a request inside it, and a saturated process would meter the probe it meant to exempt. The startup report marks mounted rows `(mounted subtree)`, which is how an operator tells them from an `Any` registration at the same path; `(unmetered)` is the same table's mark for a row the in-flight gate exempts.
 
 Constructing and mounting the handler must be safe before the process serves anything. The `validate` command runs the same construction and route registration a start performs, through Preflight, with no listener behind it; a handler that dials a dependency while being mounted makes that diagnostic command dial it too, and makes a boot fail in a phase that never intended to reach the network. Keep mounting inert and build the handler's snapshot on first use -- the shape the framework's own deferred surfaces use.
+
+## Route metadata for other consumers
+
+A route can carry plugin-owned data beside its handler, so a consumer that runs after registration -- OpenAPI generation, a per-route rate-limit policy, administrative documentation -- reads it from the same frozen table every other declaration comes from:
+
+```go
+router.GET("/orders", listOrders).
+	Meta("openapi.summary", "List orders").
+	Meta("openapi.tags", "orders,list").
+	Perm("orders:read")
+```
+
+`Meta` writes to every row its handle covers, exactly like `.Perm` and `.Auth`: an `Any`, `Match`, or `Mount` handle therefore carries the entry to each method row. A later `Meta` with the same key overwrites the earlier value, and keys are free-form -- the convention is `<producer>/<key>` or `<producer>.<key>`, so two plugins cannot silently collide. There is no group-level metadata default. `web.RouteMeta[T]` asserts the value's exact dynamic type and reports `(zero, false)` for a missing key or a different type: a value stored as `int` is not readable as `int64`.
+
+The frozen copy is map-deep, not value-deep. Mutating a `Metadata` map returned by `CurrentRoute` or `RouteCatalog` cannot reach the dispatcher or another reader, but a value must be treated as immutable from the moment `Meta` returns -- scalars are the intended use. The startup route table prints the pairs, sorted by key, as `(meta: "openapi.summary"="List orders" "openapi.tags"="orders,list")`, which is how the declaration becomes visible in `validate` and at boot.
+
+Route metadata is printed in that report, so never put credentials, tokens, or other secrets in it -- the same rule that keeps secrets out of route paths.
 
 ## Operational endpoints and secrets
 

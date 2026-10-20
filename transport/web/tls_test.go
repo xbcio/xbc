@@ -97,7 +97,7 @@ func TestTLSListenerTerminatesTheHandshake(t *testing.T) {
 		"NextProtos pins the offered protocol; an HTTPS request must not negotiate HTTP/2")
 	require.NotNil(t, response.TLS)
 	assert.Equal(t, "http/1.1", response.TLS.NegotiatedProtocol,
-		"a client offering h2 must be answered with http/1.1, which is what makes the no-h2 limitation a decision instead of a default")
+		"a client offering h2 must be answered with http/1.1, which pins the default: HTTP/2 is off unless web.tls.http2 is set")
 	mu.Lock()
 	assert.Equal(t, []tlsObservation{{present: true, negotiatedProtocol: "http/1.1", version: tls.VersionTLS13}},
 		observed,
@@ -123,7 +123,7 @@ func TestTLSListenerTerminatesTheHandshake(t *testing.T) {
 	assert.Error(t, err, "min_version 1.2 must refuse a TLS 1.1 client")
 
 	assert.Contains(t, strings.Join(capture.infos(), "\n"),
-		"web: TLS termination enabled (min_version 1.2, client_auth none, cipher_suites default, reload_interval 0s)",
+		"web: TLS termination enabled (min_version 1.2, client_auth none, cipher_suites default, alpn http/1.1, reload_interval 0s)",
 		"the startup report must state the handshake policy an operator is about to serve")
 }
 

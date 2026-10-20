@@ -352,3 +352,97 @@ func TestFreezeRejectsOnePathRegisteredOnBothPlanes(t *testing.T) {
 	_, err = clean.freeze()
 	require.NoError(t, err)
 }
+
+// TestFrozenViewsAreIsolatedFromTheRegistrationMetadataMap pins the freeze-time
+// copy. The mutable route slice a Router still holds after freeze shares no
+// metadata map with the request-time index or the catalog, so a plugin that
+// kept its handle cannot change what Lookup, All, or CurrentRoute report after
+// the table is supposedly immutable. This assertion has to live in package web
+// because only the internal route storage can mutate the registration map after
+// freeze without going through the frozen guard.
+func TestFrozenViewsAreIsolatedFromTheRegistrationMetadataMap(t *testing.T) {
+	router, _ := newTestRouter("/api")
+	router.GET("/orders", noopRoute).Meta("openapi.summary", "list orders")
+	catalog, err := router.freeze()
+	require.NoError(t, err)
+
+	(*router.routes)[0].Metadata["openapi.summary"] = "mutated"
+	(*router.routes)[0].Metadata["late"] = "late"
+
+	indexed := (*router.index)[routeKey(http.MethodGet, "/api/orders")]
+	assert.Equal(t, "list orders", indexed.Metadata["openapi.summary"],
+		"the frozen index must own its metadata map, not alias the registration table's")
+	assert.NotContains(t, indexed.Metadata, "late")
+
+	looked, ok := catalog.Lookup(http.MethodGet, "/api/orders")
+	require.True(t, ok)
+	assert.Equal(t, "list orders", looked.Metadata["openapi.summary"])
+	assert.NotContains(t, looked.Metadata, "late")
+
+	all := catalog.All()
+	require.Len(t, all, 1)
+	assert.Equal(t, "list orders", all[0].Metadata["openapi.summary"])
+	assert.NotContains(t, all[0].Metadata, "late")
+
+	// CurrentRoute is reached through the recorder Router.Handle bakes into the
+	// chain; invoking it directly exercises the same frozen index a dispatched
+	// request reads.
+	c := newCtx(nil)
+	recorder := recordCurrentRoute(http.MethodGet, "/api/orders", router.frozen, router.index)
+	require.NoError(t, recorder(context.Background(), c))
+	current, ok := CurrentRoute(c)
+	require.True(t, ok)
+	assert.Equal(t, "list orders", current.Metadata["openapi.summary"])
+	assert.NotContains(t, current.Metadata, "late")
+}
+
+// TestEveryFrozenReadReturnsItsOwnMetadataMap covers the read side of the same
+// copy: mutating the map a caller received -- whether from Lookup or All -- must
+// not change what the next read reports.
+func TestEveryFrozenReadReturnsItsOwnMetadataMap(t *testing.T) {
+	router, _ := newTestRouter("/api")
+	router.GET("/orders", noopRoute).Meta("openapi.summary", "list orders")
+	catalog, err := router.freeze()
+	require.NoError(t, err)
+
+	first, ok := catalog.Lookup(http.MethodGet, "/api/orders")
+	require.True(t, ok)
+	first.Metadata["openapi.summary"] = "mutated"
+	second, ok := catalog.Lookup(http.MethodGet, "/api/orders")
+	require.True(t, ok)
+	assert.Equal(t, "list orders", second.Metadata["openapi.summary"],
+		"mutating a map Lookup returned must not reach a subsequent Lookup")
+
+	all := catalog.All()
+	require.Len(t, all, 1)
+	all[0].Metadata["openapi.summary"] = "mutated"
+	again := catalog.All()
+	require.Len(t, again, 1)
+	assert.Equal(t, "list orders", again[0].Metadata["openapi.summary"],
+		"mutating a map All returned must not reach a subsequent All")
+}
+
+// TestManagementRouteMayDeclareMetadata pins that a management-plane row
+// accepts metadata: it is declarative and has no enforcement meaning, so
+// validateManagementRoute must keep ignoring it even while it refuses Auth,
+// Perm, and Unmetered. The management plane is configured here so the
+// registration really goes through the distinct management view and lands in a
+// row the validator inspects; freeze accepting it, RouteMeta reading it, and
+// the route table printing its mark are the three halves of the contract.
+func TestManagementRouteMayDeclareMetadata(t *testing.T) {
+	router, _, _ := newManagedTestRouter("/")
+	router.Management().GET("/metrics", noopRoute).Meta("openapi.summary", "operator metrics")
+
+	catalog, err := router.freeze()
+	require.NoError(t, err, "metadata is declarative, so a management route must be allowed to declare it")
+
+	info, ok := catalog.Lookup(http.MethodGet, "/metrics")
+	require.True(t, ok)
+	require.True(t, info.Management, "the registration must be recorded on the management plane")
+	summary, ok := RouteMeta[string](info, "openapi.summary")
+	require.True(t, ok, "a management row's metadata must be readable")
+	assert.Equal(t, "operator metrics", summary)
+
+	assert.Contains(t, renderRouteTable(catalog.All()), `(meta: "openapi.summary"="operator metrics")`,
+		"the route table must print a management row's metadata mark like any other row's")
+}

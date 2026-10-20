@@ -54,6 +54,22 @@ func TestMaxInFlightBindsFromTheWebSection(t *testing.T) {
 	assert.Equal(t, 64, bound.MaxInFlight)
 }
 
+// TestRequireRouteAuthorizerBindsFromTheWebSection pins the key that turns the
+// missing-authorizer warning into a startup failure. The default stays false --
+// covered by TestConfigDefaultsMatchDirectConstruction -- so an existing
+// composition keeps booting; this field is the only place the opt-in is read.
+func TestRequireRouteAuthorizerBindsFromTheWebSection(t *testing.T) {
+	environment, err := config.NewEnvironment(map[string]any{
+		"web": map[string]any{"security": map[string]any{"require_route_authorizer": true}},
+	}, "XBC_WEB_REQUIRE_ROUTE_AUTHORIZER_TEST_")
+	require.NoError(t, err)
+
+	var bound Config
+	require.NoError(t, environment.Bind(ConfigPath, &bound))
+	require.NoError(t, config.Validate(&bound, ConfigPath))
+	assert.True(t, bound.Security.RequireRouteAuthorizer)
+}
+
 func TestConfigRejectsMalformedSecuritySettings(t *testing.T) {
 	tests := []struct {
 		name string
@@ -99,6 +115,7 @@ func TestManagementAndTLSBindFromTheWebSection(t *testing.T) {
 			"tls": map[string]any{
 				"cert_file":       "/etc/tls/tls.crt",
 				"key_file":        "/etc/tls/tls.key",
+				"http2":           true,
 				"min_version":     "1.3",
 				"client_ca_file":  "/etc/tls/ca.crt",
 				"client_auth":     "require_and_verify",
@@ -117,6 +134,7 @@ func TestManagementAndTLSBindFromTheWebSection(t *testing.T) {
 	assert.False(t, bound.Management.AllowRemote)
 	assert.Equal(t, "/etc/tls/tls.crt", bound.TLS.CertFile)
 	assert.Equal(t, "/etc/tls/tls.key", bound.TLS.KeyFile)
+	assert.True(t, bound.TLS.HTTP2)
 	assert.Equal(t, "1.3", bound.TLS.MinVersion)
 	assert.Equal(t, "/etc/tls/ca.crt", bound.TLS.ClientCAFile)
 	assert.Equal(t, "require_and_verify", bound.TLS.ClientAuth)
@@ -250,4 +268,73 @@ func TestConfigRejectsMalformedTLSSettings(t *testing.T) {
 	cfg.TLS.CipherSuites = []string{"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"}
 	cfg.TLS.ReloadInterval = 30 * time.Second
 	assert.NoError(t, cfg.Validate(), "a fully declared TLS section is valid")
+}
+
+// TestConfigGatesHTTP2OnTLSMaterial covers the three states web.tls.http2 can
+// be in at validation time. Validation is I/O-free by contract, so fake paths
+// are enough to accept the enabled case; what the key actually requires is the
+// certificate pair being declared, not being readable.
+func TestConfigGatesHTTP2OnTLSMaterial(t *testing.T) {
+	enabled := DefaultConfig()
+	enabled.TLS = TLSConfig{
+		CertFile: "/etc/tls/tls.crt",
+		KeyFile:  "/etc/tls/tls.key",
+		HTTP2:    true,
+	}
+	assert.NoError(t, enabled.Validate(),
+		"http2 with a declared certificate pair is valid; whether the files load is a startup question")
+
+	disabled := DefaultConfig()
+	assert.False(t, disabled.TLS.HTTP2, "HTTP/2 is opt-in: the default config must keep it off")
+	disabled.TLS = TLSConfig{HTTP2: false}
+	assert.NoError(t, disabled.Validate(), "an explicit false without TLS is the plain-HTTP deployment")
+
+	withoutCertificate := DefaultConfig()
+	withoutCertificate.TLS = TLSConfig{HTTP2: true}
+	err := withoutCertificate.Validate()
+	require.Error(t, err)
+	assert.Equal(t,
+		"web: tls.http2 requires tls.cert_file\n"+
+			"  → HTTP/2 is offered through ALPN by the listener this process terminates; enable TLS with cert_file/key_file, or terminate HTTP/2 at the proxy and keep this listener on HTTP/1.1",
+		err.Error(),
+		"the refusal must name the key that is missing and the two ways to fix it")
+
+	// A TLS 1.2 CBC suite is legal HTTP/1.1 and fatal HTTP/2: the standard
+	// library's h2 server resets every connection that negotiated one, so a
+	// configuration naming it would break h2 clients while HTTP/1.1 kept
+	// working -- exactly the silent split this guard prevents.
+	cbc := DefaultConfig()
+	cbc.TLS = TLSConfig{
+		CertFile:     "/etc/tls/tls.crt",
+		KeyFile:      "/etc/tls/tls.key",
+		HTTP2:        true,
+		CipherSuites: []string{"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"},
+	}
+	err = cbc.Validate()
+	require.Error(t, err)
+	assert.Equal(t,
+		"web: tls.cipher_suites names \"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA\", which HTTP/2 prohibits (RFC 9113 Appendix A)\n"+
+			"  → the standard library's HTTP/2 server resets every connection that negotiates this TLS 1.2 CBC suite; remove the suite, set tls.http2 to false, or raise tls.min_version to 1.3",
+		err.Error(),
+		"an h2 listener must refuse the CBC suite its own server rejects at the handshake")
+
+	aead := DefaultConfig()
+	aead.TLS = TLSConfig{
+		CertFile:     "/etc/tls/tls.crt",
+		KeyFile:      "/etc/tls/tls.key",
+		HTTP2:        true,
+		CipherSuites: []string{"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"},
+	}
+	assert.NoError(t, aead.Validate(), "an AEAD suite is what HTTP/2 requires, so it must stay valid")
+
+	unreachable := DefaultConfig()
+	unreachable.TLS = TLSConfig{
+		CertFile:     "/etc/tls/tls.crt",
+		KeyFile:      "/etc/tls/tls.key",
+		HTTP2:        true,
+		MinVersion:   "1.3",
+		CipherSuites: []string{"TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"},
+	}
+	assert.NoError(t, unreachable.Validate(),
+		"min_version 1.3 makes every TLS 1.2 suite unreachable, so the key has no effect and is not refused")
 }

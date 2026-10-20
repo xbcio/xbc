@@ -10,6 +10,16 @@
 // middleware's Stop fails matched routes closed without stopping the engine
 // other consumers may still be using.
 //
+// The middleware implements web.RouteAuthorizer, the marker a contributed
+// middleware uses to declare that it enforces Route.Perm. It implements the
+// marker in both conventions: under route_permission it evaluates exactly the
+// route's RouteInfo.Perm, and under path_method it authorizes the route by its
+// path and method, so the route stays protected even though the Perm string
+// itself is not the tuple evaluated. Selecting this middleware therefore
+// suppresses the startup warning about permission declarations without an
+// authorizer; the marker describes the guarantee, not which input the
+// middleware reads.
+//
 // By default a protected route is authorized with its RouteInfo.Perm value and
 // the verified subject published by the framework's built-in authentication
 // middleware through web.SetPrincipal. Applications can instead use the

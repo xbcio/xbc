@@ -784,6 +784,7 @@
         },
         "Security": {
           "Default": "deny",
+          "RequireRouteAuthorizer": false,
           "Schemes": null,
           "Policies": null
         },
@@ -797,6 +798,7 @@
         "TLS": {
           "CertFile": "",
           "KeyFile": "",
+          "HTTP2": false,
           "MinVersion": "1.2",
           "ClientCAFile": "",
           "ClientAuth": "none",

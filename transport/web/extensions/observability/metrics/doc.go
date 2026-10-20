@@ -11,6 +11,17 @@
 // endpoint serves them beside application collectors, and contributes the
 // scrape route on the management plane when plugins.metrics.http enables it.
 //
+// The process-level admission gate is exported as three unlabelled series:
+// http_admission_limit (the effective in-flight ceiling),
+// http_admission_in_flight (requests currently holding an admission slot), and
+// http_admission_rejections_total (requests refused with the 503
+// server_overloaded Problem). The gate refuses excess traffic before any
+// contributed middleware runs, so the request instruments never observe those
+// refusals; the admission series are what keep a saturated process visible in
+// the same scrape instead of making it look idle. All three come from one
+// snapshot per gather, and their names carry the configured namespace and
+// subsystem exactly like the request instruments.
+//
 // # Usage
 //
 // Configure plugins.metrics and select this package's Bundle, which includes
@@ -42,5 +53,6 @@
 // Importing this package has no registration side effects. Applications that
 // use XBC's process-wide catalog opt in with a blank import of
 // github.com/xbcio/xbc/transport/web/extensions/observability/metrics/autoload;
-// applications with a private catalog can use Definition directly.
+// applications with a private catalog can use Definition and
+// AdmissionDefinition directly (Bundle selects both together).
 package metrics

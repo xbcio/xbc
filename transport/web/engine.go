@@ -24,6 +24,19 @@ import (
 // that answers is the same bypass with a different author, and an unmatched
 // path has to reach NoRoute so it can render the framework's 404 Problem
 // Detail like any other.
+//
+// Two matching rules are part of the port rather than an adapter's choice.
+// HEAD is implied by GET: a HEAD request runs the chain registered for the
+// same path under GET unless an explicit HEAD registration exists for that
+// pattern, and the HTTP layer -- never the chain -- suppresses the response
+// body. An implied HEAD is a matching rule, not a route row: the route table
+// and CurrentRoute report the GET registration, and the GET entry's
+// authentication and permission policy apply. A request whose path is unclean
+// ("//", "." or ".." segments) reaches NoRoute: an adapter must not canonicalize
+// the path and answer the cleaned form, and the unclean path is not treated as
+// a method mismatch either. A request that differs from a registration only by
+// a trailing slash is not redirected: it reaches NoRoute, or NoMethod when
+// other methods own the path, like any other unmatched path.
 type Engine interface {
 	Handle(method, path string, chain []Handler)
 	// Mount installs chain for a whole subtree on one method: the literal
@@ -56,11 +69,25 @@ type Engine interface {
 	// its Problem Details, and an engine that folded it into 404 would silently
 	// drop that guarantee. RFC 9110 §15.5.6 requires such a response to carry
 	// Allow, and the engine is the only party that knows which methods the path
-	// has: an adapter must set the Allow header to the other registered methods
-	// before running this chain. The chain itself writes the status and body, so
-	// an adapter that skips the header produces a well-formed Problem Detail
-	// that is still a protocol violation.
+	// has: an adapter must set Allow to the other methods the path serves before
+	// running this chain -- HEAD included when it is implied by GET. Allow is a
+	// set: it lists every such method and its order is not significant. The
+	// chain itself writes the status and body, so an adapter that skips the
+	// header produces a well-formed Problem Detail that is still a protocol
+	// violation.
 	NoMethod(chain []Handler)
+	// Serve serves requests accepted from ln until the listener is closed or
+	// the engine is shut down. TLS termination belongs to ln, not to the
+	// adapter: a *tls.Listener has already negotiated the handshake and the
+	// ALPN protocol before a connection reaches this method. An adapter must
+	// therefore not install its own http.Server.TLSConfig, because net/http
+	// then treats the server as TLS it configured itself and skips the HTTP/2
+	// setup that otherwise follows a *tls.Listener -- with web.tls.http2
+	// enabled the standard library serves HTTP/2 on that listener, and an
+	// adapter needs no HTTP/2-specific code at all. For the same reason an
+	// adapter must leave http.Server.Protocols and TLSNextProto untouched:
+	// either one overrides that bundled setup and would disable the HTTP/2
+	// support the listener has already negotiated.
 	Serve(ln net.Listener) error
 	// Shutdown stops serving and must leave no established connection behind
 	// once ctx is done. Draining in-flight requests first is expected, but an

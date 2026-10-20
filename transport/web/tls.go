@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -12,6 +13,16 @@ import (
 	"time"
 
 	"github.com/xbcio/xbc/log"
+)
+
+// http2WithoutCertificateError is the one message both configuration
+// validation and serverTLSConfig report for web.tls.http2 without a
+// certificate pair. It is shared so an embedding host that builds a Config
+// directly and calls Start without the binder fails with exactly the text a
+// bound deployment reads.
+var http2WithoutCertificateError = errors.New(
+	"web: tls.http2 requires tls.cert_file\n" +
+		"  → HTTP/2 is offered through ALPN by the listener this process terminates; enable TLS with cert_file/key_file, or terminate HTTP/2 at the proxy and keep this listener on HTTP/1.1",
 )
 
 // serverTLSConfig builds the *tls.Config this process terminates TLS with. A
@@ -29,8 +40,22 @@ import (
 // arrive over TLS, with no code of ours involved.
 //
 // The cost of that seam is stated rather than hidden: ALPN is negotiated by
-// the config built here, and NextProtos is pinned to "http/1.1", so this
-// process serves HTTP/1.1 over TLS and does not negotiate HTTP/2.
+// the config built here. With HTTP2 off -- the default -- NextProtos offers
+// "http/1.1" alone; with it on, the list is ["h2", "http/1.1"], HTTP/2 first
+// and HTTP/1.1 as the fallback for clients that cannot speak it. The option
+// requires TLS termination here (cert_file/key_file): ALPN is the only
+// upgrade path, and no h2c is offered. The standard library then serves
+// HTTP/2 itself -- http.Server.Serve installs its bundled h2 handler when the
+// listener is a *tls.Listener and the server has no TLSConfig of its own -- so
+// this package only advertises the protocol. write_timeout is enforced on both
+// protocols, but differently: an HTTP/2 stream gets a per-stream write
+// deadline and is reset with INTERNAL_ERROR (RST_STREAM) when it expires, even
+// while its handler is still working, while HTTP/1.1 applies the same value as
+// one absolute deadline on the connection, observed at the next write. A
+// streaming route lifts either with
+// http.NewResponseController(...).SetWriteDeadline(time.Time{}); the HTTP/2
+// response writer implements it and stops the per-stream timer. Request
+// deadlines remain the timeout middleware's cooperative job on both protocols.
 //
 // The certificate is not stored on the config. GetCertificate -- and only
 // GetCertificate -- is what makes reloading possible at all: a value in
@@ -44,6 +69,9 @@ import (
 // the first handshake.
 func (c TLSConfig) serverTLSConfig(logger log.Logger) (*tls.Config, error) {
 	if strings.TrimSpace(c.CertFile) == "" {
+		if c.HTTP2 {
+			return nil, http2WithoutCertificateError
+		}
 		return nil, nil
 	}
 	minVersion, err := c.minVersion()
@@ -68,7 +96,7 @@ func (c TLSConfig) serverTLSConfig(logger log.Logger) (*tls.Config, error) {
 		MinVersion:     minVersion,
 		CipherSuites:   cipherSuites,
 		ClientAuth:     clientAuth,
-		NextProtos:     []string{"http/1.1"},
+		NextProtos:     c.nextProtos(),
 	}
 	if path := strings.TrimSpace(c.ClientCAFile); path != "" {
 		pool, err := loadClientCAs(path)
@@ -78,6 +106,17 @@ func (c TLSConfig) serverTLSConfig(logger log.Logger) (*tls.Config, error) {
 		config.ClientCAs = pool
 	}
 	return config, nil
+}
+
+// nextProtos is the ALPN protocol list the listener advertises. HTTP/2 is
+// preferred when it is enabled, with "http/1.1" kept as the fallback for
+// clients that do not speak it; the default offers HTTP/1.1 alone, exactly as
+// before the option existed. ALPN is the only upgrade path: there is no h2c.
+func (c TLSConfig) nextProtos() []string {
+	if c.HTTP2 {
+		return []string{"h2", "http/1.1"}
+	}
+	return []string{"http/1.1"}
 }
 
 // fileState identifies one file by the two facts a rotation changes: the
@@ -290,8 +329,9 @@ func wrapTLS(ln net.Listener, config *tls.Config) net.Listener {
 
 // renderTLS reports that this process terminates TLS and with which policy,
 // so an operator reading a boot confirms what the handshake will accept
-// instead of inferring it from a proxy's configuration elsewhere. The line
-// is printed only when the section declares a certificate: a plain-HTTP
+// instead of inferring it from a proxy's configuration elsewhere. The ALPN
+// list is part of that report: it is what shows whether HTTP/2 is offered. The
+// line is printed only when the section declares a certificate: a plain-HTTP
 // deployment's report is byte-identical to what it was before this process
 // could terminate TLS at all, which is what keeps the default shape
 // reviewable.
@@ -300,10 +340,11 @@ func renderTLS(cfg TLSConfig) string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"web: TLS termination enabled (min_version %s, client_auth %s, cipher_suites %s, reload_interval %s)",
+		"web: TLS termination enabled (min_version %s, client_auth %s, cipher_suites %s, alpn %s, reload_interval %s)",
 		cfg.MinVersion,
 		cfg.ClientAuth,
 		renderCipherSuites(cfg.CipherSuites),
+		strings.Join(cfg.nextProtos(), ","),
 		cfg.ReloadInterval,
 	)
 }

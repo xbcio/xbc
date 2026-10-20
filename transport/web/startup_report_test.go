@@ -211,3 +211,66 @@ func TestUnmeteredRowsAreMarkedInTheRouteTable(t *testing.T) {
 		t.Fatal("a metered route must not be marked as unmetered")
 	}
 }
+
+// TestRenderRouteTablePrintsMetadataSortedAndQuoted pins the metadata mark: the
+// route table is the one report that prints route metadata. Keys are sorted so
+// the same table always renders the same line. Keys and values are both
+// quoted: a key is application-declared too, so an unquoted key containing a
+// newline would break the one-row invariant and forge a report line, and each
+// value goes through fmt.Sprint and strconv.Quote so an untyped value is
+// rendered consistently and can never escape its row either.
+func TestRenderRouteTablePrintsMetadataSortedAndQuoted(t *testing.T) {
+	t.Parallel()
+
+	report := renderRouteTable([]RouteInfo{{
+		Method: http.MethodGet,
+		Path:   "/api/orders",
+		Metadata: map[string]any{
+			"evil\nkey":       "forged",
+			"openapi.tags":    "orders,list",
+			"openapi.summary": "list \"orders\"\nnow",
+			"openapi.weight":  3,
+		},
+	}})
+
+	assert.Contains(t, report,
+		`  (meta: "evil\nkey"="forged" "openapi.summary"="list \"orders\"\nnow" "openapi.tags"="orders,list" "openapi.weight"="3")`,
+		"metadata must be sorted by key and every key and value quoted")
+	assert.NotContains(t, report, "\nnow", "a quoted value must not break the row")
+	assert.Equal(t, 1, strings.Count(report, "\n"),
+		"a key containing a newline must be quoted rather than forging a second report line")
+}
+
+// TestMetadataMarkOnlyAppearsOnTheRouteTable pins the scope of the mark.
+// public endpoints and policy decisions are policy views, not route
+// declarations, so metadata -- plugin data with no enforcement meaning --
+// must not appear there.
+func TestMetadataMarkOnlyAppearsOnTheRouteTable(t *testing.T) {
+	t.Parallel()
+
+	route := RouteInfo{
+		Method:   http.MethodGet,
+		Path:     "/api/orders",
+		Metadata: map[string]any{"openapi.summary": "list orders"},
+	}
+	decision := policyDecision{
+		route:  route,
+		policy: effectivePolicy{tier: tierDefault, ruleIndex: -1, selection: authentication.DefaultSelection()},
+	}
+
+	assert.Contains(t, renderRouteTable([]RouteInfo{route}), "openapi.summary")
+	assert.NotContains(t, renderPublicEndpoints([]RouteInfo{route}, false), "openapi.summary")
+	assert.NotContains(t, renderPolicyDecisions([]policyDecision{decision}, nil), "openapi.summary")
+}
+
+// TestRenderRouteTableAddsNoMarkWithoutMetadata is the report half of the
+// no-extra-cost path: a row that never calls Meta gains no mark, so a
+// composition that declares no metadata prints exactly the table it printed
+// before the field existed.
+func TestRenderRouteTableAddsNoMarkWithoutMetadata(t *testing.T) {
+	t.Parallel()
+
+	report := renderRouteTable([]RouteInfo{{Method: http.MethodGet, Path: "/api/orders"}})
+
+	assert.NotContains(t, report, "(meta:")
+}

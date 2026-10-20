@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"path"
 	"strings"
@@ -74,6 +75,14 @@ func cloneAuthPolicy(policy *AuthPolicy) *AuthPolicy {
 
 func cloneRouteInfo(info RouteInfo) RouteInfo {
 	info.Auth = cloneAuthPolicy(info.Auth)
+	// maps.Clone copies the map and leaves nil nil. The values are shared
+	// deliberately: an arbitrary any cannot be copied in general, so the
+	// contract states that a value must be treated as immutable rather than
+	// pretending a deep copy happened. Every published route view already goes
+	// through cloneRouteInfo -- the frozen index, RouteCatalog.All and Lookup,
+	// and CurrentRoute -- so this one copy keeps a caller from reaching the
+	// dispatcher's table or another caller's snapshot.
+	info.Metadata = maps.Clone(info.Metadata)
 	return info
 }
 
@@ -115,6 +124,14 @@ type RouteInfo struct {
 	// the serving plane and must not compile, enforce, or report a policy for
 	// a route no request on its chain can reach. See Router.Management.
 	Management bool
+	// Metadata is plugin-owned data attached to the route through Route.Meta.
+	// The map is copied when the route table is frozen and on every read
+	// (CurrentRoute, RouteCatalog.All, RouteCatalog.Lookup); the values are
+	// not deep-copied and must be treated as immutable from the moment Meta
+	// returns. A route that never calls Meta keeps a nil map. Reading a value
+	// requires its exact dynamic type, which RouteMeta asserts. See Route.Meta
+	// for the complete declaration contract.
+	Metadata map[string]any
 }
 
 // Route is the metadata handle returned by Router.Handle and the
@@ -198,6 +215,60 @@ func (r *Route) Unmetered() *Route {
 	return r
 }
 
+// Meta records one metadata entry on every route this handle covers, for
+// consumers that read route declarations rather than serve requests -- OpenAPI
+// generation, per-route rate-limit policy, administrative documentation. The
+// entry reaches each method row of an Any, Match, or Mount handle, just like
+// Perm and Auth; that is the property a side map keyed by method and path
+// cannot provide, because Any, Match, and Mount expand one registration into
+// several rows, and only the row itself travels to CurrentRoute and
+// RouteCatalog.
+//
+// A later Meta with the same key overwrites the earlier value: metadata is a
+// declaration, not an accumulation. Keys are free-form strings; the convention
+// is "<producer>/<key>" or "<producer>.<key>" (for example "openapi.summary"),
+// so two plugins cannot silently collide. The framework does not parse or
+// enforce the convention. Values are read only at their exact dynamic type: an
+// int is not readable as int64, and a named type is distinct from its
+// underlying type, so RouteMeta reports the entry as absent rather than
+// converting it. There is no group-level metadata default and no Router.Meta:
+// Perm and Auth have group defaults because access policy is inherited, while
+// metadata is per-registration data, and a group default would be a second,
+// invisible place a value can come from.
+//
+// Meta panics on an empty key and on a nil value, both at the registration
+// site where a panic can name them. An empty key cannot be namespaced or found
+// deliberately, and a nil any is present in the map but can never satisfy
+// RouteMeta's type assertion, so it would read as absent. It also panics after
+// freeze, through the same update guard as every other route metadata method.
+//
+// The map is copied when the route table is frozen and on every read, so a
+// caller cannot mutate the dispatcher's copy through a returned snapshot. The
+// values are not deep-copied -- arbitrary any values cannot be copied in
+// general, so a map, slice, pointer, or channel value is shared -- and a value
+// must be treated as immutable from the moment Meta returns. Scalars (string,
+// bool, numbers, time.Duration) and values the registrant never mutates
+// afterwards are the intended use. Management-plane rows accept metadata: it is
+// declarative and has no enforcement meaning, so validateManagementRoute does
+// not reject it, unlike Auth, Perm, and Unmetered.
+func (r *Route) Meta(key string, value any) *Route {
+	if key == "" {
+		panic("xbc: Route.Meta requires a non-empty key\n  → an empty key cannot be namespaced or found deliberately; name the data after its producer, for example \"openapi.summary\"")
+	}
+	if value == nil {
+		panic(fmt.Sprintf(
+			"xbc: Route.Meta requires a non-nil value for key %q\n  → a nil any is present in the map but can never satisfy RouteMeta's type assertion, so it would read as absent; pass a typed value, or omit the call",
+			key))
+	}
+	r.update(func(info *RouteInfo) {
+		if info.Metadata == nil {
+			info.Metadata = make(map[string]any, 1)
+		}
+		info.Metadata[key] = value
+	})
+	return r
+}
+
 func (r *Route) update(fn func(*RouteInfo)) {
 	// r.Router must be checked before r.routes/r.frozen: those two fields are
 	// promoted from the embedded *Router, so reading them through a nil
@@ -217,6 +288,25 @@ func (r *Route) update(fn func(*RouteInfo)) {
 		}
 		fn(&(*r.routes)[index])
 	}
+}
+
+// RouteMeta returns the metadata value stored under key, asserted to T. It
+// reports (zero, false) when the key is absent or its dynamic type is not
+// exactly T.
+//
+// Go type assertions do not convert: a value stored as int is not readable as
+// int64, and a named type is distinct from its underlying type. T = any reads
+// any non-nil value. The function reads the route value it is handed, so any
+// snapshot the framework publishes works -- CurrentRoute, RouteCatalog.All,
+// RouteCatalog.Lookup -- because each already carries its own copy of the map.
+func RouteMeta[T any](info RouteInfo, key string) (T, bool) {
+	if value, ok := info.Metadata[key]; ok {
+		if typed, ok := value.(T); ok {
+			return typed, true
+		}
+	}
+	var zero T
+	return zero, false
 }
 
 // Router wraps a neutral Engine with route-table recording and a freeze
@@ -617,6 +707,17 @@ func (r *Router) requireMutable() {
 // it: the mount already owns that whole subtree, so the engine could not
 // route to both. See Router.Mount for the rule and why xbc refuses the
 // overlap itself.
+//
+// An exact duplicate -- the same method and path registered twice on the same
+// plane -- panics here as well, before the engine is asked. The engine would
+// refuse it too, but its panic names neither registration; refusing it in
+// Handle keeps the diagnostic in xbc's own two-line style and names the
+// existing route. Two identical pattern paths ("/orders/:id" registered
+// twice) are the same exact duplicate, because the path strings are equal and
+// no engine pattern semantics are needed to see it. The same method and path
+// on different planes is deliberately not checked here: each plane registers
+// into its own engine, and freeze reports the route-table collision once via
+// validateRouteScopes, with the message that names both planes.
 func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 	r.requireMutable()
 	fullPath := joinPaths(r.basePath, relativePath)
@@ -624,6 +725,9 @@ func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 		panic(fmt.Sprintf(
 			"xbc: route %s %s overlaps the %s registered on the same method, and a mount owns its whole subtree",
 			method, fullPath, describeRoute(existing)))
+	}
+	if existing, duplicate := duplicateRegistration(method, fullPath, r.managementView, *r.routes); duplicate {
+		panic(duplicateRouteMessage(existing))
 	}
 	chain := appendChain([]Handler{recordCurrentRoute(method, fullPath, r.frozen, r.index)}, r.handlers...)
 	chain = appendChain(chain, h...)
@@ -636,6 +740,40 @@ func (r *Router) Handle(method, relativePath string, h ...Handler) *Route {
 		Management: r.managementView,
 	})
 	return &Route{Router: r, indexes: []int{len(*r.routes) - 1}}
+}
+
+// duplicateRegistration reports whether the route table already holds a
+// registration of this exact method and path on the same plane, and returns it
+// so the panic can name it. Paths are compared as the strings the table holds,
+// so two identical pattern paths are the same exact duplicate as two identical
+// literal ones -- no engine pattern semantics are involved. The plane is part
+// of the identity because each plane registers into its own engine: the same
+// method and path on both planes is not an engine conflict but a route-table
+// collision, reported once by validateRouteScopes at freeze.
+func duplicateRegistration(method, fullPath string, management bool, routes []RouteInfo) (RouteInfo, bool) {
+	for _, existing := range routes {
+		if existing.Method == method && existing.Path == fullPath && existing.Management == management {
+			return existing, true
+		}
+	}
+	return RouteInfo{}, false
+}
+
+// duplicateRouteMessage renders the refusal for an exact duplicate. The
+// existing registration is named by its route name when it has one, and the
+// plane is always stated: the two planes share one route table, so "already
+// registered" without the plane would leave the author guessing which
+// listener owns the entry.
+func duplicateRouteMessage(existing RouteInfo) string {
+	plane := "serving"
+	if existing.Management {
+		plane = "management"
+	}
+	registered := fmt.Sprintf("xbc: route %s %s is already registered", existing.Method, existing.Path)
+	if existing.Name != "" {
+		registered += fmt.Sprintf(" by route %q", existing.Name)
+	}
+	return registered + " on the " + plane + " plane\n  → one method and path is served by one handler; remove one of the two registrations"
 }
 
 // joinPaths mirrors gin's own private routergroup.go joinPaths (gin

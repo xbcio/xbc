@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"reflect"
 	"slices"
 	"sync"
 	"time"
@@ -36,6 +37,12 @@ type Server struct {
 	// renderer is the optional failure-body renderer the Definition injects. It
 	// is nil for a Server built by New, which keeps the default Problem Detail.
 	renderer ErrorRenderer
+
+	// listenerProvider is the optional ListenerProvider the Definition injects,
+	// the same post-construction wiring renderer uses. Its zero value -- a nil
+	// Value -- keeps the default net.Listen("tcp", address), and Start is the
+	// only code that consults it.
+	listenerProvider plugin.Entry[ListenerProvider]
 
 	// listener is a test-only pre-bound socket set from export_test.go.
 	listener net.Listener
@@ -371,6 +378,64 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 	}, nil
 }
 
+// listen acquires one plane's listener. The serving plane passes the injected
+// test listener; the management plane passes nil. A configured provider takes
+// precedence over the TCP bind, and both planes go through this one helper so
+// the provider contract -- identity in every failure, the nil-listener refusal,
+// and closing a listener returned beside an error -- cannot drift between them.
+//
+// Only Start calls this, which is what keeps Preflight, validate, and doctor
+// bind-free. The returned listener is unstarted and still plain: TLS is wrapped
+// above it by the caller, so a provider's Accept sees exactly the stream it
+// produced.
+func (s *Server) listen(address string, injected net.Listener, management bool) (net.Listener, error) {
+	if injected != nil {
+		return injected, nil
+	}
+	if provider := s.listenerProvider; provider.Value != nil {
+		ln, err := provider.Value.Listen(address)
+		if err != nil {
+			// A listener returned beside an error has transferred nothing: the
+			// server has no use for the socket and must not leak it.
+			if !nilListener(ln) {
+				_ = ln.Close()
+			}
+			return nil, fmt.Errorf("xbc: listener provider %s failed to listen on %s: %w", provider.Identity, address, err)
+		}
+		if nilListener(ln) {
+			return nil, fmt.Errorf("xbc: listener provider %s returned a nil listener for %s", provider.Identity, address)
+		}
+		return ln, nil
+	}
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		if management {
+			return nil, fmt.Errorf("xbc: failed to listen on management address %s: %w", address, err)
+		}
+		return nil, fmt.Errorf("xbc: failed to listen on %s: %w", address, err)
+	}
+	return ln, nil
+}
+
+// nilListener reports whether ln is nil or a typed nil -- a non-nil interface
+// holding a nil pointer or another nilable value. A typed nil passes an
+// interface comparison against nil, then panics on first use inside the
+// serving goroutine after Start has already reported success, so it is refused
+// exactly like a plain nil. Only nilable kinds are inspected, so a non-pointer
+// implementation of net.Listener stays valid.
+func nilListener(ln net.Listener) bool {
+	if ln == nil {
+		return true
+	}
+	value := reflect.ValueOf(ln)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
 // Start assembles the immutable request pipeline, binds the listener, and
 // submits the serving loop while managed-task admission is open. The pipeline is
 // led by the process-level in-flight gate, the one stage no contributed
@@ -393,12 +458,9 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	engine := pipeline.engine
 	logger := ctx.Log()
 
-	ln := s.listener
-	if ln == nil {
-		ln, err = net.Listen("tcp", cfg.Addr)
-		if err != nil {
-			return fmt.Errorf("xbc: failed to listen on %s: %w", cfg.Addr, err)
-		}
+	ln, err := s.listen(cfg.Addr, s.listener, false)
+	if err != nil {
+		return err
 	}
 	// Wrapping the bound listener -- rather than a TLS-aware branch through the
 	// engine -- is what keeps TLS out of the Engine port: adapters accept
@@ -414,10 +476,10 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	managementEngine := pipeline.managementEngine
 	var managementLn net.Listener
 	if managementEngine != nil {
-		managementLn, err = net.Listen("tcp", cfg.Management.bindAddr())
+		managementLn, err = s.listen(cfg.Management.bindAddr(), nil, true)
 		if err != nil {
 			_ = ln.Close()
-			return fmt.Errorf("xbc: failed to listen on management address %s: %w", cfg.Management.bindAddr(), err)
+			return err
 		}
 		managementLn = wrapTLS(managementLn, pipeline.tlsConfig)
 	}
@@ -538,15 +600,17 @@ func (s *Server) OpenTraffic(ctx *plugin.Context) error {
 	}
 	s.mu.Unlock()
 
-	catalog, err := freezeRoutes(router, authenticator, listeners)
-	if err != nil {
-		return err
-	}
-
+	// The logger is computed before the freeze because the freeze itself can
+	// emit the missing-authorizer warning.
 	logger := log.L()
 	if ctx != nil {
 		logger = ctx.Log()
 	}
+	catalog, err := freezeRoutes(router, authenticator, ordered, listeners, logger, s.cfg.Security.RequireRouteAuthorizer)
+	if err != nil {
+		return err
+	}
+
 	renderStartupReport(logger, s.cfg, managementAddr, ordered, misses, catalog, authenticator)
 
 	s.mu.Lock()
@@ -576,7 +640,7 @@ func (s *Server) Preflight(ctx *plugin.Context) error {
 	if err != nil {
 		return err
 	}
-	catalog, err := freezeRoutes(pipeline.router, pipeline.authentication, s.listeners)
+	catalog, err := freezeRoutes(pipeline.router, pipeline.authentication, pipeline.ordered, s.listeners, ctx.Log(), pipeline.cfg.Security.RequireRouteAuthorizer)
 	if err != nil {
 		return err
 	}
@@ -591,11 +655,12 @@ func (s *Server) Preflight(ctx *plugin.Context) error {
 // has to accept it before the runtime releases the traffic gate: the built-in
 // authentication middleware first, so that a policy mistake fails startup rather
 // than being reported after other listeners have already reacted to the route
-// table, and then each contributed listener in composition order.
+// table, then the permission-declaration check, and then each contributed
+// listener in composition order.
 //
 // Nothing here depends on a listener having been bound, which is why Preflight
 // can run it for a process that will never serve.
-func freezeRoutes(router *Router, authenticator *authenticationMiddleware, listeners []plugin.Entry[RouteCatalogListener]) (RouteCatalog, error) {
+func freezeRoutes(router *Router, authenticator *authenticationMiddleware, ordered []plugin.Entry[Middleware], listeners []plugin.Entry[RouteCatalogListener], logger log.Logger, requireRouteAuthorizer bool) (RouteCatalog, error) {
 	catalog, err := router.freeze()
 	if err != nil {
 		return nil, err
@@ -605,12 +670,72 @@ func freezeRoutes(router *Router, authenticator *authenticationMiddleware, liste
 			return nil, err
 		}
 	}
+	if err := checkRouteAuthorizer(catalog, ordered, logger, requireRouteAuthorizer); err != nil {
+		return nil, err
+	}
 	for _, entry := range listeners {
 		if err := entry.Value.RoutesReady(catalog); err != nil {
 			return nil, fmt.Errorf("xbc: plugin %s RoutesReady failed: %w", entry.Identity, err)
 		}
 	}
 	return catalog, nil
+}
+
+const routeAuthorizerWarning = "web: routes declare permissions but no middleware in the chain enforces Route.Perm"
+
+// checkRouteAuthorizer reports serving routes that declare Route.Perm when no
+// entry of the ordered middleware chain implements RouteAuthorizer, the marker
+// a middleware uses to declare that it enforces that permission. It runs after
+// the route table is frozen and the authentication policy has accepted it, but
+// before any RouteCatalogListener is notified, so a boot and the validate
+// command reach the same conclusion and a failure keeps every listener silent.
+//
+// Management routes are excluded: validateManagementRoute already rejects a
+// permission declared on that plane, whose chain runs no authorization. A
+// missing authorizer is a warning by default, because the declaration itself is
+// legitimate and the middleware may be selected by the application rather than
+// the framework; RequireRouteAuthorizer turns it into startup failure.
+func checkRouteAuthorizer(catalog RouteCatalog, ordered []plugin.Entry[Middleware], logger log.Logger, require bool) error {
+	var declared []RouteInfo
+	for _, route := range catalog.All() {
+		if route.Management || route.Perm == "" {
+			continue
+		}
+		declared = append(declared, route)
+	}
+	if len(declared) == 0 || hasRouteAuthorizer(ordered) {
+		return nil
+	}
+	if require {
+		subject, verb := fmt.Sprintf("%d serving routes", len(declared)), "declare"
+		if len(declared) == 1 {
+			subject, verb = "1 serving route", "declares"
+		}
+		return fmt.Errorf(
+			"xbc: %s %s a permission but no middleware implements web.RouteAuthorizer\n  → Route.Perm is enforced only by a middleware that declares the contract; compose one (for example the casbin-http plugin), remove the permission declarations, or leave web.security.require_route_authorizer unset to keep this a warning",
+			subject, verb)
+	}
+	sample := make([]string, 0, 3)
+	for _, route := range declared {
+		if len(sample) == 3 {
+			break
+		}
+		sample = append(sample, route.Method+" "+route.Path)
+	}
+	logger.Warn(routeAuthorizerWarning, "routes", len(declared), "sample", sample, "require_route_authorizer", false)
+	return nil
+}
+
+// hasRouteAuthorizer type-asserts the ordered chain rather than any declaration
+// registry: an application middleware implements RouteAuthorizer directly, and
+// no framework registration is involved.
+func hasRouteAuthorizer(ordered []plugin.Entry[Middleware]) bool {
+	for _, entry := range ordered {
+		if _, ok := entry.Value.(RouteAuthorizer); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // renderStartupReport prints what a boot decided about its ingress: the ordered

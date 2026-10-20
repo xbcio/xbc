@@ -156,6 +156,27 @@ type ManagementConfig struct {
 // deployment gets one certificate, one client-auth policy, and one reload
 // path for both ports.
 //
+// HTTP2 adds "h2" to the ALPN protocols the listener advertises. With it
+// enabled the offered list is ["h2", "http/1.1"] -- HTTP/2 preferred, HTTP/1.1
+// kept as the fallback so existing clients keep working -- and ["http/1.1"]
+// alone otherwise, which is the default and the wire behavior this process had
+// before the option existed. Cleartext HTTP/2 (h2c) is not offered: ALPN is the
+// only upgrade path, which is why the option requires in-process TLS
+// termination (cert_file/key_file) rather than accepting a plain-HTTP
+// listener. The standard library serves HTTP/2 itself once ALPN has selected
+// it; no engine code is involved. WriteTimeout is enforced on both protocols,
+// but differently: an HTTP/2 stream gets a per-stream write deadline and is
+// reset with INTERNAL_ERROR (RST_STREAM) when it expires, even mid-handler,
+// while HTTP/1.1 applies the value as one absolute deadline on the connection
+// and reports it at the next write. A streaming route lifts either with
+// http.NewResponseController(...).SetWriteDeadline(time.Time{}), which also
+// stops the per-stream timer on HTTP/2. Request deadlines remain the timeout
+// middleware's cooperative job on both protocols. A TLS 1.2 CBC suite named in
+// cipher_suites is refused while HTTP2 is enabled unless tls.min_version is
+// "1.3", where no TLS 1.2 suite can be negotiated: the standard library's h2
+// server resets every connection that negotiates one (RFC 9113 Appendix A),
+// while the same listener keeps answering HTTP/1.1 clients with it.
+//
 // ReloadInterval is how often the certificate pair is allowed to be checked
 // for a change, at most once per handshake: zero -- the default -- checks on
 // every handshake. A nonzero value bounds the check rate rather than the
@@ -165,6 +186,12 @@ type ManagementConfig struct {
 type TLSConfig struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+	// HTTP2 enables HTTP/2 by adding "h2" to the listener's ALPN protocols.
+	// It requires in-process TLS termination (cert_file/key_file): the
+	// listener can only advertise h2 when it terminates TLS itself, while a
+	// deployment behind a proxy terminates HTTP/2 at the proxy and keeps this
+	// listener on HTTP/1.1. The default, false, keeps serving HTTP/1.1 only.
+	HTTP2 bool `yaml:"http2"`
 	// MinVersion is the lowest TLS version accepted, spelled "1.2" or "1.3".
 	// TLS 1.0 and 1.1 are deliberately not addressable: they are deprecated by
 	// RFC 8996, and a framework that let a deployment name them would be
@@ -369,6 +396,9 @@ func (c TLSConfig) validate() error {
 		return fmt.Errorf("web: tls.cert_file and tls.key_file must not be padded with whitespace")
 	}
 	if certFile == "" {
+		if c.HTTP2 {
+			return http2WithoutCertificateError
+		}
 		for _, declaration := range []struct {
 			set     bool
 			message string
@@ -442,15 +472,40 @@ func (c TLSConfig) clientAuth() (tls.ClientAuthType, error) {
 	}
 }
 
+// http2ProhibitedCipherSuites is the set of TLS 1.2 CBC suites HTTP/2 forbids.
+// The list is the intersection of RFC 9113 Appendix A with the suites Go's
+// tls.CipherSuites() still offers: the standard library's HTTP/2 server sends
+// GOAWAY with INADEQUATE_SECURITY on any connection that negotiated one, while
+// the same server keeps answering HTTP/1.1 clients with that suite, so
+// accepting the configuration would break h2 clients silently. The entries are
+// skipped when tls.min_version is 1.3, where no TLS 1.2 suite can be
+// negotiated and the key has no effect.
+var http2ProhibitedCipherSuites = map[uint16]struct{}{
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA: {},
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA: {},
+	tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:   {},
+	tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:   {},
+}
+
 // cipherSuiteIDs resolves the configured cipher-suite names against
 // tls.CipherSuites -- the secure set. Naming an insecure suite is refused
 // rather than honoured: the whole reason to write a suite list is to restrict
 // what gets negotiated, and a list containing RC4 or 3DES does the opposite.
 // Names are matched case-sensitively against Go's own, which is also how a
-// typo is caught here instead of silently restricting nothing.
+// typo is caught here instead of silently restricting nothing. This is the one
+// choke point both TLSConfig.validate and serverTLSConfig run through, so the
+// HTTP/2 CBC refusal covers a directly constructed Config as well.
 func (c TLSConfig) cipherSuiteIDs() ([]uint16, error) {
 	if len(c.CipherSuites) == 0 {
 		return nil, nil
+	}
+	minVersion := uint16(0)
+	if c.HTTP2 {
+		resolved, err := c.minVersion()
+		if err != nil {
+			return nil, err
+		}
+		minVersion = resolved
 	}
 	known := make(map[string]uint16)
 	for _, suite := range tls.CipherSuites() {
@@ -464,6 +519,14 @@ func (c TLSConfig) cipherSuiteIDs() ([]uint16, error) {
 			return nil, fmt.Errorf(
 				"web: tls.cipher_suites names %q, which is not a secure TLS cipher suite known to this Go version",
 				name)
+		}
+		if c.HTTP2 && minVersion < tls.VersionTLS13 {
+			if _, prohibited := http2ProhibitedCipherSuites[id]; prohibited {
+				return nil, fmt.Errorf(
+					"web: tls.cipher_suites names %q, which HTTP/2 prohibits (RFC 9113 Appendix A)\n"+
+						"  → the standard library's HTTP/2 server resets every connection that negotiates this TLS 1.2 CBC suite; remove the suite, set tls.http2 to false, or raise tls.min_version to 1.3",
+					name)
+			}
 		}
 		if previous, duplicate := seen[id]; duplicate {
 			return nil, fmt.Errorf("web: tls.cipher_suites names %q twice (as %q)", name, previous)

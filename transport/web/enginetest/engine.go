@@ -8,12 +8,19 @@
 // live server, a matched route, or a real writer no longer has to import one.
 //
 // It is a test engine and nothing else, and it must never be selected by an
-// application. Three differences from a production engine are deliberate and
-// permanent:
+// application. Its request semantics conform to web.Engine -- HEAD is matched
+// to GET, an unclean path and a trailing-slash mismatch reach the unmatched
+// chains instead of a matcher redirect, and Allow is the set of methods the
+// matcher accepts -- and RunConformance pins those rules against any adapter.
+// Three differences from a production engine are deliberate and permanent:
 //
 //   - Route patterns are http.ServeMux patterns ("GET /items/{id}"), not any
 //     engine's own wildcard syntax. Routing is delegated to ServeMux; this
-//     package implements no matching of its own.
+//     package implements no matching of its own. A route registered with a
+//     trailing slash is a ServeMux subtree pattern that also owns its
+//     slash-less form, and ServeMux answers that form with a redirect; that
+//     shape belongs to this pattern difference and is not part of the Engine
+//     contract RunConformance exercises.
 //   - ClientIP reports the host part of RemoteAddr. There is no trusted-proxy
 //     concept here, so forwarding headers are never consulted. A test that
 //     needs to pin trusted-proxy behaviour must run against the engine that
@@ -30,6 +37,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 
@@ -143,7 +151,41 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 
 // ServeHTTP lets the Engine be driven directly by httptest, without a
 // listener.
-func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) { e.mux.ServeHTTP(w, r) }
+//
+// ServeMux canonicalizes the request path and answers a request whose path
+// changes with a redirect of its own. That is the matcher answering a request,
+// which web.Engine forbids: an unclean path has to reach NoRoute so the
+// framework can render its 404 Problem Detail like any other unmatched
+// request. Comparing the escaped path against the same cleaning rule ServeMux
+// applies lets the unclean request skip the mux entirely; cleanPath below
+// duplicates net/http's rule, not its routing.
+func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.RequestURI != "*" {
+		if escaped := r.URL.EscapedPath(); cleanPath(escaped) != escaped {
+			e.serveUnmatched(w, r)
+			return
+		}
+	}
+	e.mux.ServeHTTP(w, r)
+}
+
+// cleanPath mirrors net/http's own serveMux path canonicalization: clean the
+// path and put a trailing slash back when the input had one. It exists only so
+// ServeHTTP can recognize the paths ServeMux would otherwise redirect; it is
+// not a second matcher.
+func cleanPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	if p[0] != '/' {
+		p = "/" + p
+	}
+	cleaned := path.Clean(p)
+	if p[len(p)-1] == '/' && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned
+}
 
 // -- test convenience --
 
@@ -229,6 +271,15 @@ var probeMethods = [...]string{
 // engine reports them in probeMethods order, because ServeMux exposes no
 // registration order to recover. Callers must treat Allow as a set.
 func (e *Engine) methodsRegisteredForPath(r *http.Request) []string {
+	// An unclean path is not a registered path. ServeMux's Handler cleans the
+	// path before matching and then reports the pattern it found in cleaned
+	// form, so a probe would attribute another method's registration to a path
+	// the request never named -- a HEAD probe reports the GET route, which
+	// would turn the NoRoute response the port requires into a 405 carrying a
+	// false Allow.
+	if escaped := r.URL.EscapedPath(); cleanPath(escaped) != escaped {
+		return nil
+	}
 	var allowed []string
 	for _, method := range probeMethods {
 		if method == r.Method {

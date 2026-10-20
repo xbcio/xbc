@@ -56,6 +56,7 @@ transport/web
 transport/web/engines/gin
 transport/web/extensions/authorization/casbin
 transport/web/extensions/observability/tracing
+transport/web/extensions/reliability/websocket
 "
 
 count=0

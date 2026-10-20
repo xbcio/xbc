@@ -133,11 +133,15 @@ func mountPrefix(basePath, relativePath string) string {
 // panic can name both sides. mounted says whether the incoming registration
 // is a mount.
 //
-// The predicate only ever fires on an overlap a mount is part of. Overlaps
-// that no mount is part of -- two plain routes on one path, two pattern routes
-// whose trees collide -- stay the engine's own registration error: those are
-// one engine's syntax presented to it, while an overlap with a mount is the
-// one the engines disagree about.
+// The predicate only ever fires on an overlap a mount is part of. Of the
+// overlaps that no mount is part of, an exact duplicate -- the same method and
+// path registered twice on one plane -- is refused by Router.Handle before the
+// engine is asked, because the path strings are equal and the verdict does not
+// depend on engine syntax. What remains the engine's own registration error is
+// a non-exact pattern-tree collision, such as two pattern routes matching some
+// of the same paths while their path strings differ: those are one engine's
+// syntax presented to it, while an overlap with a mount is the one the engines
+// disagree about.
 //
 // A mount holds a subtree. So does a route whose path carries engine pattern
 // syntax (":" or "*"), from the last literal segment before the pattern:

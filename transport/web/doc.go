@@ -71,6 +71,17 @@
 //		}).Name("greeting").Auth(web.Public())
 //	}
 //
+// A route can carry plugin-owned data beside its handler with Route.Meta. The
+// entry is written to every row the handle covers -- all of Any's or Match's
+// methods, and every row of a mount -- and is readable, typed, from any frozen
+// snapshot through RouteMeta[T], which asserts the value's exact dynamic type.
+// The map is copied when the table is frozen and on every read, so a caller
+// cannot mutate the dispatcher's copy; values are not deep-copied and must be
+// treated as immutable from the moment Meta returns. There is no group-level
+// default: unlike Perm and Auth, metadata is per-registration data. The startup
+// route table prints the pairs, sorted by key, which also means route metadata
+// must not carry credentials or other secrets.
+//
 // Route access is decided by a three-tier precedence model. An explicit
 // web.security policy rule (tier 1) overrides a route's own .Auth()
 // declaration (tier 2), and the global web.security.default (factory setting
@@ -81,6 +92,19 @@
 // Auth(Accepts(...)) selects explicit schemes. The frozen RouteInfo.Auth
 // pointer preserves those states; absence is never interpreted as public
 // access.
+//
+// Route.Perm declares an authorization permission, but the framework does not
+// enforce it by itself. A contributed middleware that enforces the permission a
+// route declares implements RouteAuthorizer, and startup type-asserts every
+// entry of the ordered middleware chain for that marker. When serving routes
+// declare Route.Perm and no entry implements it, freezing logs one warning
+// carrying the route count and up to three sample routes;
+// web.security.require_route_authorizer turns that warning into a startup
+// failure before any RouteCatalogListener is notified. The key defaults to
+// false, so an existing composition keeps booting. Selecting the casbin-http
+// plugin satisfies the check in either of its request conventions, while the
+// protocol-neutral rbac adapter deliberately does not: its handler-scoped
+// guards never read Route.Perm.
 //
 // A contributor may also mount a handler that arrives with its own routing --
 // an integration library, a file server, another framework's engine -- with
@@ -167,6 +191,29 @@
 // draining begins, but consumes the shared runtime shutdown budget, continues
 // to accept ordinary traffic, and is not acknowledgement that a load balancer
 // has withdrawn the instance.
+//
+// # Listener provider
+//
+// A plugin may export ListenerProvider to supply the sockets both planes serve
+// through, replacing the net.Listen("tcp", address) call Start would make. It
+// is an optional single export: with none selected the TCP behavior and its
+// messages are unchanged, and two exporters fail assembly rather than letting
+// boot order choose. Start calls Listen at most once per configured plane --
+// the serving plane with web.addr, then the management plane with its resolved
+// address -- and no other path calls it: Preflight, validate, doctor, and Stop
+// never bind.
+//
+// TLS is wrapped above whatever the provider returns, so a PROXY-protocol
+// provider must consume its header before the TLS records begin, and the
+// listener it returns must be unstarted: the server owns it for the life of
+// the plane and closes it. web.addr remains required and non-empty because
+// configuration is validated before plugin inputs exist; its host:port shape is
+// not validated, and the TCP path reports a malformed address at bind time.
+// With a provider it is advisory, so a provider that binds something other
+// than TCP keeps a plausible placeholder (the default ":8080" is one) and
+// reads its real address from its own configuration section. Server.Addr and
+// Server.ManagementAddr report the bound listener's address, which for a Unix
+// socket is its path.
 //
 // # Configuration and proxy trust
 //

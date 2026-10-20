@@ -128,6 +128,7 @@ web:
   # tls:
   #   cert_file: "/etc/orders/tls.crt"      # unset = plain HTTP
   #   key_file: "/etc/orders/tls.key"
+  #   http2: false                          # true offers h2 via ALPN; requires cert_file/key_file
   #   min_version: "1.2"                    # "1.2" or "1.3"; 1.0 and 1.1 are not addressable
   #   client_ca_file: ""                    # PEM bundle client certificates verify against
   #   client_auth: none                     # none | verify_if_given | require_and_verify

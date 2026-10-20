@@ -235,6 +235,12 @@
       ]
     },
     {
+      "key": "http-metrics-admission",
+      "config_path": "plugins.http-metrics-admission",
+      "cardinality": "single",
+      "contracts": []
+    },
+    {
       "key": "idempotency",
       "config_path": "plugins.idempotency",
       "cardinality": "single",
@@ -483,7 +489,9 @@
       "key": "web",
       "config_path": "web",
       "cardinality": "single",
-      "contracts": []
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.AdmissionStatsSource"
+      ]
     },
     {
       "key": "webhook",
@@ -491,6 +499,14 @@
       "cardinality": "multiple",
       "contracts": [
         "github.com/xbcio/xbc/extensions/messaging/webhook.Dispatcher"
+      ]
+    },
+    {
+      "key": "websocket",
+      "config_path": "plugins.websocket",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web/extensions/reliability/websocket.Upgrader"
       ]
     }
   ],

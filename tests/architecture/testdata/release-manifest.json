@@ -522,6 +522,18 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/reliability/websocket",
+      "directory": "transport/web/extensions/reliability/websocket",
+      "tag_prefix": "transport/web/extensions/reliability/websocket/",
+      "wave": 3,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
+        "github.com/xbcio/xbc/transport/web"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/examples",
       "directory": "examples",
       "tag_prefix": "examples/",
@@ -681,7 +693,8 @@
         "github.com/xbcio/xbc/transport/web/extensions/observability/metrics",
         "github.com/xbcio/xbc/transport/web/extensions/observability/tracing",
         "github.com/xbcio/xbc/transport/web/extensions/openapi/swag",
-        "github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency"
+        "github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency",
+        "github.com/xbcio/xbc/transport/web/extensions/reliability/websocket"
       ]
     }
   ]

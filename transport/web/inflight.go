@@ -342,6 +342,15 @@ type InFlightStats struct {
 	Rejections int64
 }
 
+// AdmissionStatsSource is the read side of the process-level admission gate.
+// *Server implements it; observation plugins depend on this contract rather
+// than on the server type, so they can be tested against a stub.
+type AdmissionStatsSource interface {
+	InFlightStats() InFlightStats
+}
+
+var _ AdmissionStatsSource = (*Server)(nil)
+
 // InFlightStats reports the admission gate's effective limit, its current
 // occupancy, and how many requests it has refused. It is the read side of a
 // gate that deliberately writes into no business metric: a refused request

@@ -31,7 +31,7 @@ func newEnabledPluginForTest(t *testing.T) (*Plugin, *metricscore.Plugin) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value, err := New(core)
+	value, err := New(core, &recordingAdmissionSource{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestGatherFailureReturnsServerError(t *testing.T) {
 
 func TestDisabledEndpointReturnsNotFound(t *testing.T) {
 	core := newCoreForTest(t)
-	p, err := New(core)
+	p, err := New(core, &recordingAdmissionSource{})
 	if err != nil {
 		t.Fatal(err)
 	}

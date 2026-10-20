@@ -2,6 +2,8 @@ package web
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/xbcio/xbc/extensions/authentication"
@@ -58,7 +60,38 @@ func renderRouteTable(routes []RouteInfo) string {
 		b.WriteString(mountedMark(route))
 		b.WriteString(unmeteredMark(route))
 		b.WriteString(managementMark(route))
+		b.WriteString(metadataMark(route))
 	}
+	return b.String()
+}
+
+// metadataMark renders the plugin-owned metadata a row carries. Keys are
+// sorted lexicographically so the same table always renders the same line.
+// Keys and values are both quoted: a key is application-declared too, so an
+// unquoted key containing a newline would break the one-row invariant and
+// forge a report line. Each value goes through fmt.Sprint -- the bag is
+// untyped, and the report does not pretend to know the value's type -- and
+// then strconv.Quote, which keeps the row on one line and escapes control
+// characters. A row without metadata gains no mark, so the no-extra-cost path
+// is also invisible in the report.
+func metadataMark(route RouteInfo) string {
+	if len(route.Metadata) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(route.Metadata))
+	for key := range route.Metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("  (meta:")
+	for _, key := range keys {
+		b.WriteString(" ")
+		b.WriteString(strconv.Quote(key))
+		b.WriteString("=")
+		b.WriteString(strconv.Quote(fmt.Sprint(route.Metadata[key])))
+	}
+	b.WriteString(")")
 	return b.String()
 }
 

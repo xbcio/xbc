@@ -2,7 +2,7 @@
 
 xbc is a transport-protocol-agnostic Go plugin application runtime. A Definition is one runtime unit, with its Key and applicable configuration, contracts, dependencies, factory, and lifecycle; a Bundle is an explicit, side-effect-free static composition of zero or more Definitions. A package's Definition() accessor, when present, identifies its primary unit, while its Bundle() may select additional independent units or purely aggregate other Bundles. Core is responsible only for explicit composition, strict configuration binding, dependency planning, resource construction, lifecycle, managed tasks, and reverse-order shutdown; transport stacks and optional extensions are isolated by owner and dependency weight, and do not enter core's dependency closure.
 
-Releases travel as tag waves, and the first one is out: every module was tagged `v0.1.0` in dependency-topology order, recorded wave by wave in the checked-in `tests/architecture/testdata/release-manifest.json`; a stable tag is still ahead. The root `go.work` links 54 modules: 53 product modules (core, examples, `transport/web`, `transport/grpc`, 31 protocol-neutral extensions, 13 Web engine, extension, or adapter modules, 4 gRPC extension modules, and the `tests/composition` end-to-end module) and 1 tooling module (`scripts/plugin-snapshots`). Architecture tests guarantee that every `go.mod` in the repository is covered by the workspace, the Makefile, and CI. Publishable submodules must not use local `replace`, `v0.0.0`, or pseudo-versions; their XBC requirements name released tags.
+Releases travel as tag waves, and the first one is out: every module was tagged `v0.1.0` in dependency-topology order, recorded wave by wave in the checked-in `tests/architecture/testdata/release-manifest.json`; a stable tag is still ahead. The root `go.work` links 55 modules: 54 product modules (core, examples, `transport/web`, `transport/grpc`, 31 protocol-neutral extensions, 14 Web engine, extension, or adapter modules, 4 gRPC extension modules, and the `tests/composition` end-to-end module) and 1 tooling module (`scripts/plugin-snapshots`). Architecture tests guarantee that every `go.mod` in the repository is covered by the workspace, the Makefile, and CI. Publishable submodules must not use local `replace`, `v0.0.0`, or pseudo-versions; their XBC requirements name released tags.
 
 ## Directories and boundaries
 
@@ -76,7 +76,7 @@ xbc/
 │       │   ├── observability/{accesslog,auditlog,metrics,pprof,requestid,tracing}/
 │       │   ├── response/{biz,gzip}/
 │       │   ├── reliability/{health,idempotency,
-│       │   │   ratelimit,timeout}/
+│       │   │   ratelimit,timeout,websocket}/
 │       │   └── security/{cors,securityheaders}/
 │       ├── prelude/                     # Side-effect-free Web baseline: composes, never activates
 │       └── starter/                     # Product Web baseline: selects those Bundles, adds the layer that enables them

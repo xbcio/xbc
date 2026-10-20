@@ -64,7 +64,17 @@ type Plugin struct {
 	stopped atomic.Bool
 }
 
-var _ web.Middleware = (*Plugin)(nil)
+var (
+	_ web.Middleware      = (*Plugin)(nil)
+	_ web.RouteAuthorizer = (*Plugin)(nil)
+)
+
+// AuthorizesRoutes implements web.RouteAuthorizer. It declares that this
+// middleware authorizes every matched route, in both request conventions: the
+// route_permission convention evaluates RouteInfo.Perm directly, and the
+// path_method convention evaluates the route's path and method, so the route is
+// protected even though the Perm string itself is not the tuple enforced.
+func (*Plugin) AuthorizesRoutes() {}
 
 // providerInput is the exact engine capability this middleware requires:
 // the default instance of the plugin keyed casbin, read through its

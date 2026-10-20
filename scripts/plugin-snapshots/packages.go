@@ -58,6 +58,7 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/timeout"
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/websocket"
 	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
 	"github.com/xbcio/xbc/transport/web/extensions/response/gzip"
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
@@ -148,6 +149,7 @@ var bundleProviders = []func() plugin.Bundle{
 	securityheaders.Bundle,
 	tenant.Bundle,
 	timeout.Bundle,
+	websocket.Bundle,
 }
 
 // reservedKeyProviders lists every accessor for plugin keys a transport

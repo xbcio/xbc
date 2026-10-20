@@ -25,7 +25,9 @@ import (
 // handler. The /mx case is what keeps "covers the subtree" from degrading into
 // "matches a string prefix", and the POST case pins that a mount answers only
 // the methods it was mounted for -- gin's own 405 with Allow, the same answer
-// an unmounted path gets.
+// an unmounted path gets. HEAD is among the mounted methods because the port
+// implies it from GET, so the test materializes the implied half the way Serve
+// does before driving the engine directly.
 func TestMountCoversThePrefixAndItsSubtree(t *testing.T) {
 	restoreProcessGlobals(t)
 
@@ -41,6 +43,7 @@ func TestMountCoversThePrefixAndItsSubtree(t *testing.T) {
 		return nil
 	}
 	adapter.Mount(http.MethodGet, "/m", []web.Handler{handler})
+	adapter.materializeImpliedHEAD()
 
 	cases := []struct {
 		name     string
@@ -77,8 +80,8 @@ func TestMountCoversThePrefixAndItsSubtree(t *testing.T) {
 
 		assert.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
 		assert.Len(t, seen, before, "an unmounted method must not reach the mounted chain")
-		assert.ElementsMatch(t, []string{http.MethodGet},
+		assert.ElementsMatch(t, []string{http.MethodGet, http.MethodHead},
 			strings.Split(recorder.Result().Header.Get("Allow"), ", "),
-			"the 405 must list the methods the subtree is really mounted for")
+			"the 405 must list the methods the subtree is really mounted for, HEAD included because GET implies it")
 	})
 }

@@ -159,7 +159,9 @@ func TestNewEngineAppliesProcessGlobalsBeforeGinNew(t *testing.T) {
 //
 // Gin sets Allow itself before dispatching to NoMethod. That is precisely why
 // this test is here: behaviour inherited from a dependency is the kind that
-// disappears silently on an upgrade.
+// disappears silently on an upgrade. HEAD is part of the set because the port
+// implies it from GET: materialization registers that half from Serve, and
+// this test drives the gin engine directly, so it performs that step first.
 func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	restoreProcessGlobals(t)
 
@@ -175,6 +177,7 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 		c.Status(http.StatusMethodNotAllowed)
 		return nil
 	}})
+	adapter.materializeImpliedHEAD()
 
 	recorder := httptest.NewRecorder()
 	adapter.e.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/only-get", nil))
@@ -189,9 +192,9 @@ func TestMethodNotAllowedSetsAllowHeader(t *testing.T) {
 	// all -- would still fool the assertion, and silent breakage after a
 	// dependency upgrade, the very thing this guard exists to catch, takes
 	// precisely that shape.
-	assert.ElementsMatch(t, []string{"GET", "DELETE"},
+	assert.ElementsMatch(t, []string{"GET", "HEAD", "DELETE"},
 		strings.Split(recorder.Result().Header.Get("Allow"), ", "),
-		"the 405 must list every other method already registered for that path")
+		"the 405 must list every method the path serves, HEAD included because GET implies it")
 }
 
 // TestTrailingSlashMismatchReachesNoRoute pins this adapter's half of the
