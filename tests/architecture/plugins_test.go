@@ -677,7 +677,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	require.Len(t, grpcPlugins, 4, "expected 4 independently versioned gRPC extension plugins")
 	roots = append(roots, grpcPlugins...)
 
-	require.Len(t, roots, 57, "expected 13 Web package extensions, 24 protocol-neutral extension plugins, 12 independently versioned Web extension plugins, 3 gRPC package extensions, 1 gRPC-owned package extension, and 4 independently versioned gRPC extension plugins; the non-plugin contract and protocol client modules beneath extensions are not plugin implementations")
+	require.Len(t, roots, 58, "expected 14 Web package extensions, 24 protocol-neutral extension plugins, 12 independently versioned Web extension plugins, 3 gRPC package extensions, 1 gRPC-owned package extension, and 4 independently versioned gRPC extension plugins; the non-plugin contract and protocol client modules beneath extensions are not plugin implementations")
 	sort.Strings(roots)
 	return roots
 }

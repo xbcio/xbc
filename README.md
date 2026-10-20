@@ -77,7 +77,7 @@ xbc/
 │       │   ├── response/{biz,gzip}/
 │       │   ├── reliability/{health,idempotency,
 │       │   │   ratelimit,timeout,websocket}/
-│       │   └── security/{cors,securityheaders}/
+│       │   └── security/{cors,csrf,securityheaders}/
 │       ├── prelude/                     # Side-effect-free Web baseline: composes, never activates
 │       └── starter/                     # Product Web baseline: selects those Bundles, adds the layer that enables them
 ├── go.mod                               # Core module manifest

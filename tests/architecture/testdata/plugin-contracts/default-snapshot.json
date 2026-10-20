@@ -231,6 +231,19 @@
       }
     },
     {
+      "key": "csrf",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/security/csrf.Config",
+      "defaults": {
+        "Mode": "origin",
+        "AllowOrigins": null,
+        "ExcludePaths": null,
+        "ExcludeRoutes": null,
+        "Header": "X-CSRF-Token",
+        "SessionCookie": "xbc_session",
+        "Secret": ""
+      }
+    },
+    {
       "key": "elasticsearch",
       "config_type": "github.com/xbcio/xbc/extensions/storage/elasticsearch.Config",
       "defaults": {

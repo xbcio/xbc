@@ -12,6 +12,7 @@ import (
 	"github.com/xbcio/xbc/transport/web/enginetest"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit"
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
+	"github.com/xbcio/xbc/transport/web/extensions/security/csrf"
 )
 
 func TestDefinitionAndPhaseContract(t *testing.T) {
@@ -22,15 +23,31 @@ func TestDefinitionAndPhaseContract(t *testing.T) {
 
 	middleware := New()
 	order := middleware.Order()
-	if order.Phase != web.PhaseSecurity || len(order.Before) != 2 || len(order.After) != 0 || middleware.Handler() == nil {
+	if order.Phase != web.PhaseSecurity || len(order.Before) != 3 || len(order.After) != 0 || middleware.Handler() == nil {
 		t.Fatalf("unexpected middleware order: %#v", order)
 	}
-	want := []plugin.Key{cors.Key, ratelimit.Key}
+	want := []plugin.Key{cors.Key, ratelimit.Key, csrf.Key}
 	for index, ref := range order.Before {
 		if ref.Key() != want[index] || ref.InstanceName() != "" || ref.Required() {
 			t.Fatalf("order.Before[%d] = %#v, want optional %s key", index, ref, want[index])
 		}
 	}
+}
+
+// TestOrderRunsSecurityHeadersBeforeCSRF pins the edge that makes a CSRF
+// refusal carry the framework's response headers: in PhaseSecurity the two
+// plugins are otherwise ordered by canonical identity, which would put csrf
+// first and leave a refused request without these headers.
+func TestOrderRunsSecurityHeadersBeforeCSRF(t *testing.T) {
+	for _, ref := range New().Order().Before {
+		if ref.Key() == csrf.Key {
+			if ref.InstanceName() != "" || ref.Required() {
+				t.Fatalf("csrf order reference = %#v, want an optional all-instances preference", ref)
+			}
+			return
+		}
+	}
+	t.Fatal("security headers declare no order preference before csrf")
 }
 
 func TestSafeDefaultsAndHTTPSOnlyHSTS(t *testing.T) {

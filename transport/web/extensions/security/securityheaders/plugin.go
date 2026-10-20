@@ -7,6 +7,7 @@ import (
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit"
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
+	"github.com/xbcio/xbc/transport/web/extensions/security/csrf"
 )
 
 // Key is the stable configuration and middleware identity.
@@ -67,13 +68,15 @@ func newPlugin(cfg Config) (*Plugin, error) {
 func (p *Plugin) Handler() web.Handler { return p.handle }
 
 // Order runs security headers outside optional same-phase middleware that can
-// short-circuit, so preflight and rejected responses receive the headers too.
+// short-circuit, so preflight, a CSRF refusal, and other rejected responses
+// receive the headers too.
 func (*Plugin) Order() web.Order {
 	return web.Order{
 		Phase: web.PhaseSecurity,
 		Before: []web.OrderRef{
 			web.Prefer(cors.Key),
 			web.Prefer(ratelimit.Key),
+			web.Prefer(csrf.Key),
 		},
 	}
 }

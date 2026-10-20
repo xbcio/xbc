@@ -63,6 +63,7 @@ var archWebPackageExtensionPaths = []string{
 	"reliability/ratelimit",
 	"reliability/timeout",
 	"security/cors",
+	"security/csrf",
 	"security/securityheaders",
 }
 

@@ -123,6 +123,14 @@
       "contracts": []
     },
     {
+      "key": "csrf",
+      "config_path": "plugins.csrf",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.Middleware"
+      ]
+    },
+    {
       "key": "elasticsearch",
       "config_path": "plugins.elasticsearch",
       "cardinality": "multiple",

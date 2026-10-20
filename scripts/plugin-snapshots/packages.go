@@ -62,6 +62,7 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
 	"github.com/xbcio/xbc/transport/web/extensions/response/gzip"
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
+	"github.com/xbcio/xbc/transport/web/extensions/security/csrf"
 	"github.com/xbcio/xbc/transport/web/extensions/security/securityheaders"
 )
 
@@ -130,6 +131,7 @@ var bundleProviders = []func() plugin.Bundle{
 	biz.Bundle,
 	casbinhttp.Bundle,
 	cors.Bundle,
+	csrf.Bundle,
 	federation.Bundle,
 	gzip.Bundle,
 	health.Bundle,
