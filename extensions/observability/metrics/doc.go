@@ -41,6 +41,20 @@
 // gatherer. Collector registration is atomic per Register call and duplicate
 // descriptor errors are returned instead of panicking.
 //
+// # Runtime collectors
+//
+// The plugin also registers the standard Go runtime and process collectors
+// into its private registry, behind two switches that default to on:
+// plugins.metrics.runtime.go_collector yields the go_* series and
+// plugins.metrics.runtime.process_collector the process_* series. Both keep
+// their canonical names -- no namespace or subsystem prefix is applied --
+// because dashboards and recording rules expect go_goroutines,
+// go_memstats_* and process_resident_memory_bytes as they are. These are
+// process-level series without service labels: they describe the process, not
+// the service identity, which stays on build_info and the business
+// instruments. A deployment that must minimize its metric surface turns either
+// switch off.
+//
 // The HTTP server instrumentation and the exposition endpoint live in the Web
 // adapter at
 // github.com/xbcio/xbc/transport/web/extensions/observability/metrics, which

@@ -17,16 +17,23 @@ const (
 // Config is bound from plugins.metrics. The scrape endpoint is deliberately
 // disabled by default.
 type Config struct {
-	Namespace       string     `yaml:"namespace" default:"xbc"`
-	Subsystem       string     `yaml:"subsystem"`
-	DurationBuckets []float64  `yaml:"duration_buckets"`
-	HTTP            HTTPConfig `yaml:"http"`
+	Namespace       string        `yaml:"namespace" default:"xbc"`
+	Subsystem       string        `yaml:"subsystem"`
+	DurationBuckets []float64     `yaml:"duration_buckets"`
+	HTTP            HTTPConfig    `yaml:"http"`
+	Runtime         RuntimeConfig `yaml:"runtime"`
 }
 
 // HTTPConfig controls the optional Prometheus exposition endpoint.
 type HTTPConfig struct {
 	Enabled bool   `yaml:"enabled" default:"false"`
 	Path    string `yaml:"path" default:"/metrics"`
+}
+
+// RuntimeConfig controls the standard process-level collectors.
+type RuntimeConfig struct {
+	GoCollector      bool `yaml:"go_collector" default:"true"`
+	ProcessCollector bool `yaml:"process_collector" default:"true"`
 }
 
 // DefaultConfig returns the same defaults applied by XBC's config binder.
@@ -36,6 +43,10 @@ func DefaultConfig() Config {
 		DurationBuckets: append([]float64(nil), prometheus.DefBuckets...),
 		HTTP: HTTPConfig{
 			Path: defaultPath,
+		},
+		Runtime: RuntimeConfig{
+			GoCollector:      true,
+			ProcessCollector: true,
 		},
 	}
 }
@@ -52,10 +63,12 @@ type endpointConfig struct {
 }
 
 type normalizedConfig struct {
-	namespace string
-	subsystem string
-	buckets   []float64
-	endpoint  endpointConfig
+	namespace        string
+	subsystem        string
+	buckets          []float64
+	endpoint         endpointConfig
+	goCollector      bool
+	processCollector bool
 }
 
 func normalizeConfig(cfg Config) (normalizedConfig, error) {
@@ -101,10 +114,12 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 		path:    endpointPath,
 	}
 	return normalizedConfig{
-		namespace: namespace,
-		subsystem: subsystem,
-		buckets:   buckets,
-		endpoint:  endpoint,
+		namespace:        namespace,
+		subsystem:        subsystem,
+		buckets:          buckets,
+		endpoint:         endpoint,
+		goCollector:      cfg.Runtime.GoCollector,
+		processCollector: cfg.Runtime.ProcessCollector,
 	}, nil
 }
 

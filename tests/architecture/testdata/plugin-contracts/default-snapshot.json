@@ -496,6 +496,10 @@
         "HTTP": {
           "Enabled": false,
           "Path": "/metrics"
+        },
+        "Runtime": {
+          "GoCollector": true,
+          "ProcessCollector": true
         }
       }
     },
@@ -827,7 +831,8 @@
         },
         "Management": {
           "Addr": "",
-          "AllowRemote": false
+          "AllowRemote": false,
+          "ClientCAFile": ""
         },
         "TLS": {
           "CertFile": "",

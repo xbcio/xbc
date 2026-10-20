@@ -1,7 +1,10 @@
 package metrics
 
 import (
+	"fmt"
+
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 
 	"github.com/xbcio/xbc/plugin"
 )
@@ -78,6 +81,20 @@ func newPlugin(service plugin.ServiceIdentity, cfg Config) (*Plugin, error) {
 	registry := newRegistry()
 	if err := registerBuildInfo(registry, normalized.namespace, service); err != nil {
 		return nil, err
+	}
+	// The standard runtime collectors keep their canonical go_ and process_
+	// names -- no namespace or subsystem prefix -- and carry no service labels:
+	// they describe this process, not the service identity, which stays on
+	// build_info and the business series.
+	if normalized.goCollector {
+		if err := registry.Register(collectors.NewGoCollector()); err != nil {
+			return nil, fmt.Errorf("metrics: register Go runtime collector: %w", err)
+		}
+	}
+	if normalized.processCollector {
+		if err := registry.Register(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{})); err != nil {
+			return nil, fmt.Errorf("metrics: register process collector: %w", err)
+		}
 	}
 	return &Plugin{config: normalized, registry: registry}, nil
 }
