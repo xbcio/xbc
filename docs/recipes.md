@@ -30,6 +30,18 @@ plugins:
 
 Authentication is performed once by the framework's built-in authentication middleware; plugins contribute `authentication.Authenticator` and `web.CredentialExtractor` implementations but do not intercept requests themselves. Route access is decided by a three-tier precedence model: an explicit `web.security` policy rule (tier 1) overrides a route's `.Auth()` declaration (tier 2), and the global `web.security.default` (factory setting `deny`) covers routes that neither tier addresses. Protected routes receive the shared `authentication.Principal`, which lets audit records correlate the principal, route name, request ID, status code, and duration.
 
+Audit records and the access log both take the request ID from the
+`X-Request-ID` response header that the `requestid` plugin publishes, never
+from the inbound header, so a client cannot choose the value that appears in
+the logs. The audit event carries the value only when it passes the same
+framework-wide bound the access log applies (1024 bytes and no control
+characters); otherwise the field is empty rather than carrying an unvalidated
+value. `plugins.requestid.trust_incoming` defaults to `true`, which is correct
+only behind a proxy that strips or overwrites a client-supplied
+`X-Request-ID`; a service reached directly must set it to `false` and let the
+framework generate the ID. `plugins.auditlog.request_id_header` has to name the
+same header the request-ID plugin publishes.
+
 Startup cross-checks the two halves of an authentication plugin. Every scheme the authenticator manager can select must have a `web.CredentialExtractor`; a missing extractor fails startup with an error naming the scheme and the plugins on both sides, because such a service could only answer requests selecting that scheme with a generic 500. The remedy is either for the plugin to export both halves or for the application to select the transport's extractor adapter bundle for that scheme -- the `jwt-http` adapter beside the neutral `jwt` authenticator is one example. An extractor that no registered authenticator uses is reported as a warning instead, since it may be shared or prepared for another manager. A registered scheme must also be reachable: it is named by a tier-1 policy rule, or selected by the effective policy of a route no rule covers, including a tier-2 `.Auth(web.Accepts(...))` declaration. Under the `permit` default, a scheme that neither of these names fails startup rather than sitting registered but unreachable.
 
 When a request's selection admits more than one scheme, which authenticator gets to try first is a security decision, not an implementation detail: it determines which credential wins when a client presents more than one. `web.security.schemes` makes that order an explicit, application-declared list rather than letting it fall out of registration or plugin-key order:
@@ -43,6 +55,72 @@ web:
 An application with two or more registered authenticators must declare `schemes` as a full permutation of their scheme names, or startup fails with `web.security.schemes must declare the arbitration order`; a missing, unknown, or duplicate entry fails startup the same way, naming the mistake. An application with exactly one registered authenticator may omit `schemes` entirely -- there is no arbitration to order.
 
 For high-volume or dynamic credentials, inject an API-key repository instead of repeatedly editing static YAML.
+
+## Browser clients: CORS and CSRF
+
+Two browser-facing risks are configured independently of authentication. CORS
+decides which origins may read a response; CSRF decides which cross-site
+requests may change state in the first place. Both extensions are dormant until
+their `plugins` section exists.
+
+`plugins.cors` accepts every origin when the section is enabled without
+`allow_origins` -- `"*"` is its default -- and startup emits one advisory
+warning naming `allow_credentials` and the remedy. That default is convenient
+for a public API and wrong for a service that trusts cookies, so a cross-origin
+deployment should name its origins:
+
+```yaml
+plugins:
+  cors:
+    allow_origins: ["https://admin.example.com"]
+    allow_credentials: true
+```
+
+A wildcard cannot be combined with credentials; configuration validation refuses
+that pair rather than reflecting an arbitrary origin.
+
+`plugins.csrf` protects cookie-authenticated state changes. In origin mode, the
+default, a request carrying an unsafe method (anything but GET, HEAD, OPTIONS,
+and TRACE) must present an `Origin` -- or a `Referer` when `Origin` is absent --
+that is either the request's own origin or an exact entry in `allow_origins`,
+and a present `Sec-Fetch-Site` header must agree with that decision.
+`allow_origins` takes absolute http or https origins only; a wildcard is
+refused. Behind a TLS-terminating proxy the process sees plain HTTP, so the
+public origin is not "same origin" from its point of view: list the public
+origin in `allow_origins` instead of trusting a forwarded scheme header.
+
+Token mode binds a header value to the session cookie:
+`base64url(HMAC-SHA256(secret, session cookie value))`. The login handler
+creates a session, calls `sessionPlugin.SetCookie(c, value)`, and returns
+`csrfPlugin.TokenFor(value.ID)` in its response body; `Token(c)` reads the
+cookie a request already carries. The frontend keeps the value in memory and
+echoes it in the configured header, and rotating the session invalidates every
+token issued for the old one. The secret is required, has no default, and must
+be at least 32 bytes; it is masked in diagnostics like every other secret. A
+cross-origin frontend also needs the token header in the CORS allow list
+(`allow_headers: [Content-Type, X-CSRF-Token]`), or its preflight fails before
+CSRF is ever consulted.
+
+```yaml
+plugins:
+  csrf:
+    mode: token
+    header: "X-CSRF-Token"
+    session_cookie: "xbc_session"
+    exclude_paths: ["/healthz", "/readyz", "/auth/login", "/auth/*/callback"]
+    exclude_routes: ["health.live", "health.ready"]
+```
+
+A token-mode login endpoint is itself exempt: no token can exist before the
+login that issues one. Origin mode protects the same-origin login without an
+exemption.
+
+`exclude_paths` is matched with `path.Match` against both the route template and
+the concrete request path, so one pattern covers every value a parameterized
+route matches; `exclude_routes` matches the route's frozen name. Health probes
+and third-party OAuth/OIDC/SAML callback paths are the documented exemptions.
+Exemption is per route: there is deliberately no setting that disables the
+middleware for the whole process.
 
 ## Redis topologies
 
@@ -266,7 +344,7 @@ A login handler creates a session through `session.Manager.Create` and then call
 
 The server-side authentication flow must write `tenant_id` and `tenant_ids` session attributes. `X-Tenant-ID` merely selects one tenant from that verified membership set; it never proves membership. Anonymous requests receive 401 from the framework's built-in authentication middleware when the route resolves to deny; the tenant middleware itself only produces 403 for forged or unauthorized selections.
 
-A session cookie is a bearer credential. Production deployments must use HTTPS and add appropriate SameSite and CSRF protection for browser requests that change state.
+A session cookie is a bearer credential. Production deployments must use HTTPS and either select the `csrf` extension described in [Browser clients: CORS and CSRF](#browser-clients-cors-and-csrf) or add equivalent protection for browser requests that change state.
 
 ## Transactional outbox and Webhooks
 
@@ -1113,6 +1191,32 @@ Compose that Bundle beside `web.Bundle()` and one engine Bundle. `web.addr` stay
 
 The same seam takes a socket-activation descriptor: return `net.FileListener` over the inherited file, unstarted, and the server owns it from that point — it closes it during shutdown, and the provider must not. TLS is wrapped above the provider, so a PROXY-protocol wrapper has to consume its header before the TLS records; `validate` never asks for a listener, so it passes without the descriptor being present. Configuring `web.management.addr` asks the provider a second time with the resolved management address, which gives a Unix deployment two distinct sockets.
 
+## Runtime metrics the process already knows
+
+The neutral `plugins.metrics` registry exposes the series a plugin registers,
+and it carries the standard Go runtime and process collectors behind two
+switches that default to on:
+
+```yaml
+plugins:
+  metrics:
+    runtime:
+      go_collector: true       # go_* series
+      process_collector: true  # process_* series
+```
+
+These keep their canonical names -- `go_goroutines`, `go_memstats_*`,
+`go_gc_duration_seconds`, `process_cpu_seconds_total`,
+`process_resident_memory_bytes` -- with no namespace or subsystem prefix, which
+is what dashboards and recording rules expect. `plugins.metrics.namespace`
+continues to prefix only the framework's own business series. Each plugin
+instance owns a private registry, so two instances register the collectors
+independently. Keep `go_goroutines`, `go_memstats_alloc_bytes` (or the heap
+family), and `process_resident_memory_bytes` in the standard service dashboard:
+they answer "is the process itself in trouble" before any business series does.
+The series are process-level and carry no service labels; a multi-process
+deployment aggregates them per process, not by summing them across replicas.
+
 ## An operator listener of its own
 
 Health, metrics, and pprof are three different audiences sharing one port by default. Metrics and pprof are operator endpoints, and a deployment can move them onto a second listener:
@@ -1129,8 +1233,26 @@ With an empty `management.addr` — the default — a plugin that registers thro
 Three properties of that second listener are worth knowing before enabling it:
 
 - **It answers while the process is saturated.** The in-flight gate bounds business traffic; a scrape must not be refused because the process is at its ceiling, and a CPU profile is usually wanted precisely then. The management chain carries the panic boundary and nothing else: no authentication, no admission gate, no contributed middleware.
-- **It is protected by its address, not by a policy.** An operator surface has no business principal to authenticate, so access control is where it binds. A hostless `":9091"` binds loopback rather than every interface, and a management address that is not loopback requires `allow_remote: true` — which in turn requires `web.tls.cert_file`, because an unauthenticated operator surface reachable from the network in cleartext is never what an operator meant to configure. The same certificate, client-auth policy, and reload path serve both listeners.
+- **It is protected by its address, and remote access needs mutual TLS.** A hostless `":9091"` binds loopback rather than every interface. A management address that is not loopback requires `allow_remote: true`, which in turn requires both `web.tls.cert_file` and `management.client_ca_file`: a management port reachable from the network must authenticate the operator, and client certificates are the only mechanism this section offers. There is no token option and no switch that turns the requirement off. The management listener clones the serving TLS configuration and requires a certificate the bundle verifies, while business traffic keeps whatever `web.tls.client_auth` declares — including `none`.
 - **It drains after the serving plane, not with it.** During shutdown the serving listener stops accepting and drains first, and the management listener keeps answering until that finishes: a management port that went dark at the same instant would take the one view of the drain with it. It is stopped with the process that follows.
+
+```yaml
+web:
+  tls:
+    cert_file: /etc/xbc/server.crt
+    key_file: /etc/xbc/server.key
+  management:
+    addr: "0.0.0.0:9091"
+    allow_remote: true
+    client_ca_file: /etc/xbc/management-clients.pem
+```
+
+A CA bundle on a loopback management listener is valid too and makes that
+listener demand client certificates locally. A deployment that cannot issue
+client certificates keeps the listener on loopback and reaches it through an
+authenticated proxy or an SSH tunnel. The bundle is read when the listener is
+assembled, so a missing or non-PEM file fails startup naming
+`management.client_ca_file` and the path.
 
 Health probes stay on the serving port deliberately. Readiness is the answer to "should traffic be sent to this process", asked by whatever routes traffic — an ingress, a load balancer, the placement layer — and moving the answer to a second port leaves those probes unable to reach the process they are asking about. pprof and metrics moved for the opposite reason: they are read by a person or a scraper that knows where to look, which is exactly the difference between them and a probe.
 
@@ -1349,33 +1471,83 @@ These boundaries are deliberate, and knowing them prevents several wrong deploym
 - **No per-role process knobs.** `xbc.runtime.*` is installed during bootstrap, before a lease decides which workloads the process hosts, so under lease placement every replica receives the same `gc_percent` and `memory_limit`: they are a property of the process, not of the role it wins. A role that needs its own tuning wants its own deployment -- natural for an exclusive workload -- rather than a knob that follows placement.
 - **No per-workload memory accounting.** CPU is attributable through the profiler label above; heap profiles carry no labels, so `xbc.runtime.memory_limit` bounds the process rather than a role.
 
-## Streaming a response past the write timeout
+## Streaming responses past the write timeout
 
-`web.write_timeout` defaults to 30s and covers a whole response, not a single write. That is the right bound for request/response traffic and the wrong one for a response with no known length: server-sent events, a progress feed, a long export. A stream that outlives the budget is severed mid-body, so the client sees a truncated response rather than a status it can interpret.
+`web.write_timeout` defaults to 30s and covers a whole response, not a single
+write. That is the right bound for request/response traffic and the wrong one
+for a response with no known length: server-sent events, a progress feed, a
+long export. Raising the key for the whole server would remove the bound from
+every ordinary route too.
 
-Raising the key for the whole server is not the fix, because that removes the bound from every ordinary route as well. The route that streams lifts the deadline for its own connection:
+`Ctx.SSE` begins a text/event-stream response and returns an encoder. It sets
+the headers an event stream needs before committing them -- `Content-Type`,
+`Cache-Control: no-cache`, and `X-Accel-Buffering: no` so nginx does not buffer
+the stream -- commits the status, flushes the headers to the client, and lifts
+the connection's write deadline. `Send` frames one event, splitting data on
+CRLF, CR, or LF so a payload can never terminate an event early; `Comment`
+writes a comment line that keeps an idle stream alive through a proxy:
 
 ```go
 router.GET("/events", func(ctx context.Context, c *web.Ctx) error {
-	if err := http.NewResponseController(c.Writer()).SetWriteDeadline(time.Time{}); err != nil {
+	sse, err := c.SSE()
+	if err != nil {
 		return err
 	}
-	c.Writer().Header().Set("Content-Type", "text/event-stream")
-	for event := range events {
-		if _, err := fmt.Fprintf(c.Writer(), "data: %s\n\n", event); err != nil {
-			return err
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case event, ok := <-events:
+			if !ok {
+				return nil
+			}
+			if err := sse.Send("message", event); err != nil {
+				return err
+			}
+		case <-heartbeat.C:
+			if err := sse.Comment("keep-alive"); err != nil {
+				return err
+			}
 		}
-		c.Writer().Flush()
 	}
-	return nil
 })
 ```
 
-The zero time removes the deadline rather than extending it, which is what a stream of unknown length needs. `http.ResponseController` reaches the connection through the framework's whole writer stack, so this keeps working under the gzip, request-timeout and idempotency middleware; those wrappers forward it rather than absorbing it.
+Once the response is committed, a handler error can no longer become an HTTP
+status. A streaming handler that detects a failure sends an error event before
+returning, and the framework logs the returned error instead of writing a second
+status line:
 
-Two bounds still apply and should not be worked around. `read_timeout` and `idle_timeout` are untouched by the call above, and `web.max_in_flight` counts a streaming request for as long as it is open -- a process serving many long-lived streams needs the ceiling raised deliberately, because each open stream is one admission slot that no other request can use.
+```go
+if err := produce(sse); err != nil {
+	_ = sse.Send("error", []byte(`{"code":"internal"}`))
+	return nil
+}
+```
 
-WebSocket needs none of this: hijacking the connection clears the server's deadlines with it.
+`Ctx.BeginStream(status, contentType)` is the primitive underneath, for a
+response that is not SSE; it returns a `StreamWriter` that flushes after every
+write. Both helpers reach the connection through `http.ResponseController`, so
+they keep working under the gzip, timeout, and idempotency writer stacks; a
+writer that cannot lift its deadline reports the failure instead of silently
+leaving the bound in place.
+
+Three bounds still apply and should not be worked around. The timeout plugin's
+context deadline still fires at `plugins.timeout.duration`: its 504 is abandoned
+once the stream begins, but the handler's context is cancelled unless the
+request carries `Accept: text/event-stream` or `Upgrade`, or the route is
+excluded -- a streaming handler must treat `ctx.Done()` as its stop signal.
+`web.read_timeout` and `web.idle_timeout` are untouched. And `web.max_in_flight`
+counts a streaming request for as long as it is open, so a process serving many
+long-lived streams needs that ceiling raised deliberately.
+
+Do not mark a streaming route `Route.Idempotent`: idempotency stores and
+replays a bounded response body, and a stream cannot be captured.
+
+WebSocket needs none of this: hijacking the connection clears the server's
+deadlines with it.
 
 ## WebSocket connections
 
@@ -1517,7 +1689,7 @@ xbc:
 
 Read the `plugin` field first: it names the hook that has not returned, which the startup timing breakdown cannot do — that breakdown is emitted only after every phase returns, so a boot stuck in `Start` produces none of it. The threshold is a reporting threshold, not a deadline: nothing is cancelled or aborted, and the startup keeps waiting. Compare consecutive lines to tell the two failures apart — an unchanged phase and plugin mean stuck, a moving one means slow but progressing. An application whose migrations legitimately run for minutes should raise the value or set `0s` to switch the report off.
 
-pprof is disabled by default. It carries no authentication mechanism of its own: it falls through to the `web.security` global default, which is `deny` out of the box. An application that enables it must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`. A deployment that would rather not expose these endpoints to the business policy at all — or not reach them through the business port — can move metrics and pprof to a listener of their own: see [An operator listener of its own](#an-operator-listener-of-its-own). Doing so removes the routes from this policy discussion entirely, because nothing on that listener is authenticated.
+pprof is disabled by default. It carries no authentication mechanism of its own: it falls through to the `web.security` global default, which is `deny` out of the box. An application that enables it must register at least one authenticator, or startup fails with `requires authentication but no authenticator is registered`. A deployment that would rather not expose these endpoints to the business policy at all — or not reach them through the business port — can move metrics and pprof to a listener of their own: see [An operator listener of its own](#an-operator-listener-of-its-own). Doing so removes the routes from this policy discussion entirely, because that listener does not use the business authentication policy; a remote management listener authenticates the operator with mutual TLS instead (see [An operator listener of its own](#an-operator-listener-of-its-own)), and a loopback one relies on the address.
 
 The `deny` default only means "must authenticate" -- it accepts any registered scheme, not "reachable by operators only". If the application registers an authenticator for any purpose and writes no tier-1 rule for these routes, pprof and metrics become reachable by any authenticated principal, not just operators. Restricting them to operators requires two things: a tier-1 rule that narrows the accepted scheme, and an authorization layer on top of authentication, because neither route carries a `.Perm` for Casbin or another authorizer to check (see below).
 
