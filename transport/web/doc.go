@@ -355,6 +355,25 @@
 // ahead of every other stage, before the resolver exists, so its 503 is one
 // too.
 //
+// # Streaming responses
+//
+// A handler that produces its response incrementally calls Ctx.BeginStream,
+// which sets the content type, commits the status, and returns a StreamWriter
+// that flushes after every write; Ctx.SSE begins a text/event-stream response
+// with the headers an event stream needs and returns an encoder for events and
+// keep-alive comments. Beginning the stream commits the response, so a later
+// handler error can no longer be rendered and must be sent as an error event
+// instead. BeginStream lifts the connection's write deadline for that response
+// only, so a stream is not cut by web.write_timeout while ordinary requests
+// keep their bound. It does not lift the timeout plugin's context deadline:
+// once a stream begins that plugin abandons its 504, but the handler's context
+// is still cancelled at plugins.timeout.duration unless the request carries
+// "Accept: text/event-stream" or an Upgrade, or the path or route is excluded
+// from the middleware, so a streaming handler must treat context cancellation
+// as its own stop signal. Streaming and the idempotency plugin do not combine:
+// idempotency captures a bounded response body and replays it, and a stream
+// cannot be captured, so a route must not enable both.
+//
 // # Request binding and validation
 //
 // Use Ctx.Bind or Ctx.BindURI, which already adapt failures through ParamError.
