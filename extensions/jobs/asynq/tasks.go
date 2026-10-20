@@ -32,8 +32,9 @@ type taskBinding struct {
 // assemblePlugin builds the Plugin from the collected handler contributors and
 // task providers: it groups both handler sources by workload, resolves every
 // group into its worker, checks that each consumed task's queue is fetched by
-// the worker that runs it, and freezes the per-task deployment settings the
-// remote executor submits with.
+// the worker that runs it, freezes the per-task deployment settings the remote
+// executor submits with, and loads the Redis TLS material eagerly so an
+// unreadable file is a construction error rather than a first-command failure.
 func assemblePlugin(cfg Config, contributors []plugin.Entry[HandlerContributor], providers []plugin.Entry[tasks.Provider]) (*Plugin, error) {
 	bindings, err := collectTaskBindings(cfg, providers)
 	if err != nil {
@@ -50,9 +51,14 @@ func assemblePlugin(cfg Config, contributors []plugin.Entry[HandlerContributor],
 	if err := checkTaskQueues(cfg, bindings, groups); err != nil {
 		return nil, err
 	}
+	tlsConfig, err := cfg.Redis.TLS.clientTLSConfig()
+	if err != nil {
+		return nil, err
+	}
 	return &Plugin{
 		cfg:          cfg.clone(),
 		factory:      defaultBackendFactory(),
+		tlsConfig:    tlsConfig,
 		groups:       groups,
 		taskBindings: taskLookup(bindings),
 		taskOptions:  resolvedTaskOptions(cfg),

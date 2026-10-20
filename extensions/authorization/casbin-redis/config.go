@@ -33,6 +33,8 @@ const (
 // Addrs contains exactly one host:port in standalone mode and one or more seed
 // host:port values in cluster mode. Redis clients are not opened while Config
 // is prepared or while the Factory is constructed; Factory.Open owns that I/O.
+// The tls section is the exception to "no work at construction": New reads its
+// files eagerly so an unreadable bundle or certificate pair fails there.
 type Config struct {
 	Mode  Mode     `yaml:"mode" default:"standalone" validate:"oneof=standalone cluster"`
 	Addrs []string `yaml:"addrs" default:"127.0.0.1:6379" validate:"required,min=1,dive,required,hostname_port"`
@@ -47,6 +49,11 @@ type Config struct {
 
 	Channel    string `yaml:"channel" default:"/casbin" validate:"required"`
 	IgnoreSelf bool   `yaml:"ignore_self" default:"true"`
+
+	// TLS enables TLS on the publisher and subscriber connections a watcher
+	// opens. The zero value leaves them in cleartext, exactly as they were
+	// before the section existed.
+	TLS TLSConfig `yaml:"tls"`
 }
 
 // DefaultConfig returns a fresh configuration with production-safe defaults.
@@ -59,11 +66,12 @@ func DefaultConfig() Config {
 		WriteTimeout: defaultWriteTimeout,
 		Channel:      defaultChannel,
 		IgnoreSelf:   true,
+		TLS:          TLSConfig{MinVersion: defaultTLSMinVersion},
 	}
 }
 
-// Validate checks topology and connection settings without opening Redis
-// connections. Password is never included in an error.
+// Validate checks topology, connection, and TLS settings without opening Redis
+// connections or reading TLS material. Password is never included in an error.
 func (c Config) Validate() error {
 	_, err := normalizeConfig(c)
 	return err
@@ -134,6 +142,9 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 	}
 	if c.WriteTimeout <= 0 {
 		return normalizedConfig{}, fmt.Errorf("casbin-redis: write_timeout must be positive")
+	}
+	if err := c.TLS.validate(); err != nil {
+		return normalizedConfig{}, err
 	}
 
 	channel := strings.TrimSpace(c.Channel)

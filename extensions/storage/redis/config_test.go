@@ -62,7 +62,7 @@ func TestConfigBindsAllSupportedOptions(t *testing.T) {
 		"ping":               false,
 	})
 
-	options := cfg.options()
+	options := cfg.options(nil)
 	if options.Addr != cfg.Addr || options.Username != cfg.Username || options.Password != cfg.Password || options.DB != cfg.DB {
 		t.Fatalf("identity options do not match config: %#v", options)
 	}

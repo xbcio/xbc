@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 
@@ -94,21 +95,22 @@ func defaultClientFactory() clientFactory {
 // per-mode constructors are deliberate: goredis.NewUniversalClient picks a
 // client type from which option fields happen to be set, so a section that
 // named both a master and several seeds would resolve by heuristic instead of
-// by its declared mode.
-func (f clientFactory) build(cfg Config) goredis.UniversalClient {
+// by its declared mode. tlsConfig is the material built from the section at
+// construction; it is nil when the section asks for no TLS.
+func (f clientFactory) build(cfg Config, tlsConfig *tls.Config) goredis.UniversalClient {
 	switch cfg.Mode {
 	case ModeSentinel:
-		options := cfg.failoverOptions()
+		options := cfg.failoverOptions(tlsConfig)
 		if cfg.RouteByLatency || cfg.RouteRandomly {
 			return f.failoverCluster(options)
 		}
 		return f.failover(options)
 	case ModeCluster:
-		return f.cluster(cfg.clusterOptions())
+		return f.cluster(cfg.clusterOptions(tlsConfig))
 	default:
 		// prepareConfig admits only the three modes, so the remaining case is
 		// standalone.
-		return f.standalone(cfg.options())
+		return f.standalone(cfg.options(tlsConfig))
 	}
 }
 
@@ -120,9 +122,16 @@ func newClient(_ plugin.BuildContext, cfg Config) (*Client, error) {
 }
 
 // buildClient is the construction path with its factory supplied, so a test can
-// drive it without a live topology of the mode under test.
+// drive it without a live topology of the mode under test. TLS material is
+// loaded here, before any constructor runs: an unreadable bundle or
+// certificate pair is a construction error, not a handshake failure on the
+// first command.
 func buildClient(factory clientFactory, cfg Config) (_ *Client, err error) {
-	client := &Client{UniversalClient: factory.build(cfg)}
+	tlsConfig, err := cfg.TLS.clientTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	client := &Client{UniversalClient: factory.build(cfg, tlsConfig)}
 	committed := false
 	defer func() {
 		if committed {

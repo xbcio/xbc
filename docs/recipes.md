@@ -89,6 +89,24 @@ plugins:
 
 **The mode is invisible to the consumers.** Sessions, idempotency, and the cron lease all resolve the same topology-neutral client contract, so moving a deployment between topologies changes this section and nothing else. `max_retries` keeps the same meaning in every mode, including cluster, where the framework's value replaces the cluster client's own default of no retries; a cluster deployment that prefers the library behavior sets `max_retries: -1`. Integrations that own their own connections keep their own sections rather than the plugin's: `asynq` takes a standalone `redis` block, `casbin-redis` its own `mode` and `addrs`, and the Session store names a plugin instance through `redis_instance`.
 
+## Redis TLS
+
+The four Redis clients XBC owns -- `plugins.redis`, `plugins.asynq.redis`, `plugins.cron.distributed.redis`, and `plugins.casbin-redis` -- accept the same `tls` section:
+
+```yaml
+tls:
+  ca_file: /etc/xbc/redis/ca.pem        # replaces the system roots
+  cert_file: /etc/xbc/redis/client.pem  # optional mTLS, paired with key_file
+  key_file: /etc/xbc/redis/client-key.pem
+  server_name: redis.internal           # defaults to the dialed host
+  min_version: "1.2"                    # "1.2" or "1.3"
+  insecure_skip_verify: false           # development only
+```
+
+TLS stays off until one of `ca_file`, `cert_file`, `key_file`, `server_name`, or `insecure_skip_verify` is set, so existing configurations keep their cleartext behavior. `cert_file` and `key_file` must be configured together, and the files are read at startup: an unreadable bundle fails boot, not the first command. `min_version` accepts `"1.2"` or `"1.3"` only; TLS 1.0 and 1.1 are not addressable. `insecure_skip_verify` disables certificate verification and must not be used in production: it reduces TLS to unauthenticated encryption.
+
+The section belongs to the client the plugin owns. `plugins.cron.distributed.redis.tls` applies only to the client cron creates from `distributed.redis.addr`; configuring it together with `plugins.cron.distributed.redis_instance`, or in a distributed deployment where cron owns no client at all, is rejected at startup because the selected plugin owns that connection's TLS settings.
+
 ## Idempotent write endpoints
 
 Only routes explicitly marked `.Idempotent()` enter idempotency handling. A single-process development environment can use the in-memory backend:

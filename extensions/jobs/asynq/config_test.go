@@ -65,7 +65,7 @@ func TestConfigBindsSupportedOptions(t *testing.T) {
 	if saas := cfg.Workloads["saas"]; saas.Queues["saas"] != 1 || saas.Concurrency != 0 {
 		t.Fatalf("saas workload = %+v", saas)
 	}
-	options := cfg.Redis.options()
+	options := cfg.Redis.options(nil)
 	if options.Addr != cfg.Redis.Addr || options.DB != cfg.Redis.DB || options.PoolSize != cfg.Redis.PoolSize || options.MaxRetries != cfg.Redis.MaxRetries {
 		t.Fatalf("Redis options mapping = %+v", options)
 	}

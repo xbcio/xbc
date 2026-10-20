@@ -147,6 +147,31 @@
 // Redis only once the workers stopped. Tasks may be redelivered, so handlers
 // should be idempotent and payloads should not contain unprotected secrets.
 //
+// # TLS
+//
+// The owned Redis connection can speak TLS:
+//
+//	plugins:
+//	  asynq:
+//	    redis:
+//	      addr: "redis.internal:6379"
+//	      tls:
+//	        ca_file: /etc/xbc/redis/ca.pem
+//	        cert_file: /etc/xbc/redis/client.pem   # optional, for mTLS
+//	        key_file: /etc/xbc/redis/client-key.pem
+//	        server_name: redis.internal
+//	        min_version: "1.2"
+//
+// The section is off by default and the connection stays in cleartext until one
+// of ca_file, cert_file, key_file, server_name, or insecure_skip_verify is set.
+// ca_file replaces the system roots; cert_file and key_file must be configured
+// together. min_version accepts "1.2" or "1.3" only. The material is read while
+// the Plugin is constructed, so an unreadable file fails construction rather
+// than the first enqueue or delivery. The enqueue client and every worker share
+// one connection, so one section covers both directions.
+// insecure_skip_verify disables certificate verification: it exists for
+// development endpoints and must not be used in production.
+//
 // # Readiness
 //
 // The primary Plugin exports health.Contributor and contributes the reachability

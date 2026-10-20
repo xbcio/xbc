@@ -2,6 +2,7 @@ package casbinredis
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -22,6 +23,9 @@ import (
 type Factory struct {
 	config       normalizedConfig
 	constructors watcherConstructors
+	// tlsConfig is the material built from the tls section by New. It is nil
+	// when the section configures no TLS.
+	tlsConfig *tls.Config
 }
 
 type watcherConstructors struct {
@@ -31,8 +35,8 @@ type watcherConstructors struct {
 
 var _ xbccasbin.WatcherFactory = (*Factory)(nil)
 
-// New validates cfg and constructs a connection-free Factory. Redis I/O starts
-// only when Open is called.
+// New validates cfg, loads its TLS material, and constructs a connection-free
+// Factory. Redis I/O starts only when Open is called.
 func New(cfg Config) (*Factory, error) {
 	return newFactory(cfg, watcherConstructors{})
 }
@@ -42,13 +46,17 @@ func newFactory(cfg Config, constructors watcherConstructors) (*Factory, error) 
 	if err != nil {
 		return nil, err
 	}
+	tlsConfig, err := cfg.TLS.clientTLSConfig()
+	if err != nil {
+		return nil, err
+	}
 	if constructors.standalone == nil {
 		constructors.standalone = rediswatcher.NewWatcher
 	}
 	if constructors.cluster == nil {
 		constructors.cluster = rediswatcher.NewWatcherWithCluster
 	}
-	return &Factory{config: normalized, constructors: constructors}, nil
+	return &Factory{config: normalized, constructors: constructors, tlsConfig: tlsConfig}, nil
 }
 
 // Open creates private publisher and subscriber clients, installs Casbin's
@@ -74,7 +82,7 @@ func (f *Factory) Open(enforcer *casbinlib.SyncedEnforcer) (persist.Watcher, err
 }
 
 func (f *Factory) openStandalone(options rediswatcher.WatcherOptions) (persist.Watcher, error) {
-	connections := newConnectionTracker(f.config.dialTimeout)
+	connections := newConnectionTracker(f.config.dialTimeout, f.tlsConfig)
 	clientOptions := goredis.Options{
 		Addr:         f.config.addrs[0],
 		Username:     f.config.username,
@@ -84,6 +92,7 @@ func (f *Factory) openStandalone(options rediswatcher.WatcherOptions) (persist.W
 		ReadTimeout:  f.config.readTimeout,
 		WriteTimeout: f.config.writeTimeout,
 		Dialer:       connections.DialContext,
+		TLSConfig:    f.tlsConfig,
 	}
 	publisher := goredis.NewClient(&clientOptions)
 	subscriber := goredis.NewClient(&clientOptions)
@@ -109,7 +118,7 @@ func (f *Factory) openStandalone(options rediswatcher.WatcherOptions) (persist.W
 }
 
 func (f *Factory) openCluster(options rediswatcher.WatcherOptions) (persist.Watcher, error) {
-	connections := newConnectionTracker(f.config.dialTimeout)
+	connections := newConnectionTracker(f.config.dialTimeout, f.tlsConfig)
 	options.ClusterOptions = goredis.ClusterOptions{
 		Addrs:        append([]string(nil), f.config.addrs...),
 		Username:     f.config.username,
@@ -118,6 +127,7 @@ func (f *Factory) openCluster(options rediswatcher.WatcherOptions) (persist.Watc
 		ReadTimeout:  f.config.readTimeout,
 		WriteTimeout: f.config.writeTimeout,
 		Dialer:       connections.DialContext,
+		TLSConfig:    f.tlsConfig,
 	}
 
 	joinedAddrs := strings.Join(f.config.addrs, ",")
@@ -156,15 +166,22 @@ const (
 
 type connectionTracker struct {
 	dialer net.Dialer
+	// tlsConfig is the handshake parameters for every connection the tracker
+	// dials. It is nil when the section configures no TLS. go-redis applies
+	// Options.TLSConfig only inside its own default dialer, so supplying a
+	// custom dialer means the tracker must complete the handshake itself;
+	// leaving it to the library would silently dial cleartext.
+	tlsConfig *tls.Config
 
 	mu          sync.Mutex
 	state       trackerState
 	connections map[*trackedConnection]struct{}
 }
 
-func newConnectionTracker(timeout time.Duration) *connectionTracker {
+func newConnectionTracker(timeout time.Duration, tlsConfig *tls.Config) *connectionTracker {
 	return &connectionTracker{
 		dialer:      net.Dialer{Timeout: timeout},
+		tlsConfig:   tlsConfig,
 		connections: make(map[*trackedConnection]struct{}),
 	}
 }
@@ -173,6 +190,12 @@ func (t *connectionTracker) DialContext(ctx context.Context, network, address st
 	connection, err := t.dialer.DialContext(ctx, network, address)
 	if err != nil {
 		return nil, err
+	}
+	if t.tlsConfig != nil {
+		connection, err = t.handshake(ctx, connection, address)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	t.mu.Lock()
@@ -190,6 +213,33 @@ func (t *connectionTracker) DialContext(ctx context.Context, network, address st
 		t.mu.Unlock()
 		return tracked, nil
 	}
+}
+
+// handshake completes the TLS handshake on a freshly dialed connection. The
+// name verified is the dialed host unless the section overrides it, matching
+// what go-redis's own dialer does. A failed handshake closes the connection and
+// returns the handshake error, so a peer that is not speaking TLS can never be
+// mistaken for a working connection.
+func (t *connectionTracker) handshake(ctx context.Context, connection net.Conn, address string) (net.Conn, error) {
+	config := t.tlsConfig
+	if config.ServerName == "" {
+		if host, _, err := net.SplitHostPort(address); err == nil {
+			clone := config.Clone()
+			clone.ServerName = host
+			config = clone
+		}
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline && t.dialer.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, t.dialer.Timeout)
+		defer cancel()
+	}
+	tlsConnection := tls.Client(connection, config)
+	if err := tlsConnection.HandshakeContext(ctx); err != nil {
+		_ = connection.Close()
+		return nil, err
+	}
+	return tlsConnection, nil
 }
 
 func (t *connectionTracker) commit() {

@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"crypto/tls"
 	"fmt"
 	"strings"
 	"time"
@@ -82,6 +83,11 @@ type Config struct {
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"  default:"0s" validate:"min=0"`
 	MaxRetries      int           `yaml:"max_retries"        default:"3" validate:"min=-1"`
 	Ping            bool          `yaml:"ping"               default:"true"`
+
+	// TLS enables TLS on the connection this instance owns. The zero value
+	// leaves the connection in cleartext, exactly as it was before the section
+	// existed.
+	TLS TLSConfig `yaml:"tls"`
 }
 
 // prepareConfig implements plugin.ConfigSpec.Prepare. It enforces the
@@ -90,6 +96,9 @@ type Config struct {
 // configuration alone, so prepareConfig performs no I/O and opens no
 // connection -- it runs during planning, before construction.
 func prepareConfig(config Config) (Config, error) {
+	if err := config.TLS.validate(); err != nil {
+		return Config{}, err
+	}
 	switch config.Mode {
 	case ModeStandalone:
 		if fields := standaloneRejectedFields(config); len(fields) > 0 {
@@ -165,7 +174,7 @@ func clusterOnlyFields(config Config) []string {
 	return fields
 }
 
-func (c Config) options() *goredis.Options {
+func (c Config) options(tlsConfig *tls.Config) *goredis.Options {
 	return &goredis.Options{
 		Addr:            c.Addr,
 		Username:        c.Username,
@@ -182,13 +191,14 @@ func (c Config) options() *goredis.Options {
 		ConnMaxIdleTime: c.ConnMaxIdleTime,
 		ConnMaxLifetime: c.ConnMaxLifetime,
 		MaxRetries:      c.MaxRetries,
+		TLSConfig:       tlsConfig,
 	}
 }
 
 // failoverOptions maps the sentinel fields. It is called only in sentinel mode,
 // where prepareConfig has already established that addrs and master_name are
 // set and the cluster-only fields are not.
-func (c Config) failoverOptions() *goredis.FailoverOptions {
+func (c Config) failoverOptions(tlsConfig *tls.Config) *goredis.FailoverOptions {
 	return &goredis.FailoverOptions{
 		MasterName:       c.MasterName,
 		SentinelAddrs:    c.Addrs,
@@ -210,6 +220,7 @@ func (c Config) failoverOptions() *goredis.FailoverOptions {
 		ConnMaxIdleTime:  c.ConnMaxIdleTime,
 		ConnMaxLifetime:  c.ConnMaxLifetime,
 		MaxRetries:       c.MaxRetries,
+		TLSConfig:        tlsConfig,
 	}
 }
 
@@ -219,7 +230,7 @@ func (c Config) failoverOptions() *goredis.FailoverOptions {
 // thing in every mode, and a configured value that one mode silently dropped
 // would be worse than a documented policy. A cluster deployment that wants the
 // library behaviour sets max_retries: -1.
-func (c Config) clusterOptions() *goredis.ClusterOptions {
+func (c Config) clusterOptions(tlsConfig *tls.Config) *goredis.ClusterOptions {
 	return &goredis.ClusterOptions{
 		Addrs:           c.Addrs,
 		Username:        c.Username,
@@ -237,6 +248,7 @@ func (c Config) clusterOptions() *goredis.ClusterOptions {
 		ConnMaxIdleTime: c.ConnMaxIdleTime,
 		ConnMaxLifetime: c.ConnMaxLifetime,
 		MaxRetries:      c.MaxRetries,
+		TLSConfig:       tlsConfig,
 	}
 }
 

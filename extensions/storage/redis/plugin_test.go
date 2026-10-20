@@ -440,7 +440,7 @@ func TestStopClientIsSafeForPartialStateAndConcurrentCalls(t *testing.T) {
 
 	// This client has been constructed but has not opened a connection. That is
 	// the earliest state at which ownership can transfer to the lifecycle.
-	raw := goredis.NewClient((&Config{Addr: "127.0.0.1:1"}).options())
+	raw := goredis.NewClient((&Config{Addr: "127.0.0.1:1"}).options(nil))
 	client := wrapClient(raw)
 
 	const closers = 16

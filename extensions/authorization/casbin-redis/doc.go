@@ -26,6 +26,12 @@
 //	      password: ${CASBIN_REDIS_PASSWORD}
 //	      channel: /casbin
 //	      ignore_self: true
+//	      tls:
+//	        ca_file: /etc/xbc/redis/ca.pem
+//	        cert_file: /etc/xbc/redis/client.pem   # optional, for mTLS
+//	        key_file: /etc/xbc/redis/client-key.pem
+//	        server_name: redis.internal
+//	        min_version: "1.2"
 //	  casbin:
 //	    adapter:
 //	      plugin: casbin-gorm
@@ -37,9 +43,22 @@
 // The base Casbin plugin requires a persistent AdapterProvider whenever a
 // watcher is configured; casbin-gorm above is one such provider. Cluster mode
 // accepts one or more seed addresses and requires db: 0. The Factory is
-// connection-free; the base Casbin plugin calls Open for a live
-// enforcer and owns the returned watcher's exactly-once Close. Applications
-// constructing a watcher directly assume the same ownership obligation:
+// connection-free; the base Casbin plugin calls Open for a live enforcer and
+// owns the returned watcher's exactly-once Close.
+//
+// # TLS
+//
+// The tls section is off by default and the publisher and subscriber
+// connections stay in cleartext until one of ca_file, cert_file, key_file,
+// server_name, or insecure_skip_verify is set. ca_file replaces the system
+// roots; cert_file and key_file must be configured together. min_version
+// accepts "1.2" or "1.3" only. New reads the material eagerly, so an unreadable
+// file fails construction even though no Redis connection is opened until Open.
+// insecure_skip_verify disables certificate verification: it exists for
+// development endpoints and must not be used in production.
+//
+// Applications constructing a watcher directly assume the same ownership
+// obligation:
 //
 //	factory, err := casbinredis.New(casbinredis.DefaultConfig())
 //	if err != nil {

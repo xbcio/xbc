@@ -55,7 +55,15 @@
           "ReadTimeout": 3000000000,
           "WriteTimeout": 3000000000,
           "PoolSize": 10,
-          "MaxRetries": 3
+          "MaxRetries": 3,
+          "TLS": {
+            "CAFile": "",
+            "CertFile": "",
+            "KeyFile": "",
+            "ServerName": "",
+            "MinVersion": "",
+            "InsecureSkipVerify": false
+          }
         },
         "Queues": {
           "default": 1
@@ -150,7 +158,15 @@
         "ReadTimeout": 3000000000,
         "WriteTimeout": 3000000000,
         "Channel": "/casbin",
-        "IgnoreSelf": true
+        "IgnoreSelf": true,
+        "TLS": {
+          "CAFile": "",
+          "CertFile": "",
+          "KeyFile": "",
+          "ServerName": "",
+          "MinVersion": "1.2",
+          "InsecureSkipVerify": false
+        }
       }
     },
     {
@@ -201,7 +217,15 @@
             "DB": 0,
             "DialTimeout": 5000000000,
             "ReadTimeout": 3000000000,
-            "WriteTimeout": 3000000000
+            "WriteTimeout": 3000000000,
+            "TLS": {
+              "CAFile": "",
+              "CertFile": "",
+              "KeyFile": "",
+              "ServerName": "",
+              "MinVersion": "",
+              "InsecureSkipVerify": false
+            }
           }
         }
       }
@@ -625,7 +649,15 @@
         "ConnMaxIdleTime": 0,
         "ConnMaxLifetime": 0,
         "MaxRetries": 0,
-        "Ping": false
+        "Ping": false,
+        "TLS": {
+          "CAFile": "",
+          "CertFile": "",
+          "KeyFile": "",
+          "ServerName": "",
+          "MinVersion": "",
+          "InsecureSkipVerify": false
+        }
       }
     },
     {

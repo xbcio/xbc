@@ -2,6 +2,7 @@ package asynq
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"maps"
@@ -109,6 +110,9 @@ type workerGroup struct {
 type Plugin struct {
 	cfg     Config
 	factory backendFactory
+	// tlsConfig is the material built from plugins.asynq.redis.tls at
+	// construction. It is nil when the section configures no TLS.
+	tlsConfig *tls.Config
 
 	// taskBindings is the binding of every task name this process consumes,
 	// and taskOptions the enqueue options every configured task name resolves
@@ -252,7 +256,7 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 	}
 
 	cfg := p.cfg.clone()
-	redisClient := p.factory.newRedis(cfg.Redis.options())
+	redisClient := p.factory.newRedis(cfg.Redis.options(p.tlsConfig))
 	if redisClient == nil {
 		return fmt.Errorf("asynq: initialize: Redis factory returned nil")
 	}

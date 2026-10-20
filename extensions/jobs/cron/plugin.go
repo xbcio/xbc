@@ -159,15 +159,12 @@ func newConfiguredPlugin(
 			locker = selectedLocker
 		case config.Distributed.Redis.Addr != "":
 			redisConfig := config.Distributed.Redis
-			owned = redis.NewClient(&redis.Options{
-				Addr:         redisConfig.Addr,
-				Username:     redisConfig.Username,
-				Password:     redisConfig.Password,
-				DB:           redisConfig.DB,
-				DialTimeout:  redisConfig.DialTimeout,
-				ReadTimeout:  redisConfig.ReadTimeout,
-				WriteTimeout: redisConfig.WriteTimeout,
-			})
+			options, optionsErr := redisClientOptions(redisConfig)
+			if optionsErr != nil {
+				err = optionsErr
+				break
+			}
+			owned = redis.NewClient(options)
 			if pingErr := owned.Ping(context.Background()).Err(); pingErr != nil {
 				_ = owned.Close()
 				return nil, fmt.Errorf("cron: connect distributed Redis at %q: %w", redisConfig.Addr, pingErr)
@@ -196,6 +193,26 @@ func newConfiguredPlugin(
 		drainCh:       make(chan struct{}),
 		tasksDone:     make(chan struct{}),
 		finalizeDone:  make(chan struct{}),
+	}, nil
+}
+
+// redisClientOptions maps the owned-client section to go-redis options and
+// loads its TLS material eagerly, so an unreadable bundle or certificate pair
+// fails construction instead of the first lock operation.
+func redisClientOptions(config RedisConfig) (*redis.Options, error) {
+	tlsConfig, err := config.TLS.clientTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	return &redis.Options{
+		Addr:         config.Addr,
+		Username:     config.Username,
+		Password:     config.Password,
+		DB:           config.DB,
+		DialTimeout:  config.DialTimeout,
+		ReadTimeout:  config.ReadTimeout,
+		WriteTimeout: config.WriteTimeout,
+		TLSConfig:    tlsConfig,
 	}, nil
 }
 
@@ -249,8 +266,17 @@ func prepareConfig(config Config) (Config, error) {
 	if distributed.RedisInstance != "" && distributed.Redis.Addr != "" {
 		return Config{}, errors.New("cron: configure only one of distributed.redis_instance and distributed.redis.addr")
 	}
+	if distributed.RedisInstance != "" && distributed.Redis.TLS.configured() {
+		return Config{}, errors.New("cron: distributed.redis.tls configures the client cron would own, but distributed.redis_instance selects a client whose TLS configuration belongs to the plugin that owns it")
+	}
+	if distributed.Enabled && distributed.RedisInstance == "" && distributed.Redis.Addr == "" && distributed.Redis.TLS.configured() {
+		return Config{}, errors.New("cron: distributed.redis.tls has nowhere to take effect: with neither distributed.redis.addr nor distributed.redis_instance configured, the distributed lock uses the externally provided lease.Locker and cron opens no Redis connection")
+	}
 	if distributed.Redis.DB < 0 {
 		return Config{}, fmt.Errorf("cron: distributed.redis.db cannot be negative, got %d", distributed.Redis.DB)
+	}
+	if err := distributed.Redis.TLS.validate(); err != nil {
+		return Config{}, err
 	}
 
 	var err error

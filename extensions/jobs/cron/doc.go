@@ -48,6 +48,42 @@
 // distributed.redis_instance selects a named Redis Definition instance and
 // distributed.redis.addr lets cron own its client.
 //
+// # TLS
+//
+// The client cron owns can speak TLS:
+//
+//	plugins:
+//	  cron:
+//	    distributed:
+//	      enabled: true
+//	      redis:
+//	        addr: "redis.internal:6379"
+//	        tls:
+//	          ca_file: /etc/xbc/redis/ca.pem
+//	          cert_file: /etc/xbc/redis/client.pem   # optional, for mTLS
+//	          key_file: /etc/xbc/redis/client-key.pem
+//	          server_name: redis.internal
+//	          min_version: "1.2"
+//
+// The section is off by default and the connection stays in cleartext until one
+// of ca_file, cert_file, key_file, server_name, or insecure_skip_verify is set.
+// ca_file replaces the system roots; cert_file and key_file must be configured
+// together. min_version accepts "1.2" or "1.3" only. The material is read when
+// the Plugin is constructed, so an unreadable file fails construction rather
+// than the first lock operation. insecure_skip_verify disables certificate
+// verification: it exists for development endpoints and must not be used in
+// production.
+//
+// The section belongs to the client cron owns. When distributed.redis_instance
+// selects a client exported by another plugin, that plugin owns its TLS
+// configuration and configuring distributed.redis.tls here is rejected rather
+// than silently ignored. The same applies when distributed mode is enabled but
+// neither distributed.redis.addr nor distributed.redis_instance is set: the
+// lock then comes from an externally exported lease.Locker, cron opens no Redis
+// connection of its own, and configuring distributed.redis.tls is rejected with
+// an error saying the section has nowhere to take effect. When distributed mode
+// is disabled the whole distributed.redis section is unused, TLS included.
+//
 // Definition returns the canonical declaration and Bundle is side-effect free.
 // Executables that deliberately choose process-wide composition may import the
 // autoload subpackage. Every runner and lease-renewal manager is admitted during

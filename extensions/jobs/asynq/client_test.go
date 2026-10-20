@@ -18,7 +18,7 @@ func TestClientEnqueuePersistsNeutralTaskAndOptions(t *testing.T) {
 	server := miniredis.RunT(t)
 	cfg := validTestConfig(server.Addr())
 	cfg.Queues = map[string]int{"default": 1, "critical": 5}
-	redisClient := goredis.NewClient(cfg.Redis.options())
+	redisClient := goredis.NewClient(cfg.Redis.options(nil))
 	t.Cleanup(func() { _ = redisClient.Close() })
 	client := newClient(hibiken.NewClientFromRedisClient(redisClient), cfg)
 	inspector := hibiken.NewInspectorFromRedisClient(redisClient)
@@ -56,7 +56,7 @@ func TestClientEnqueuePersistsNeutralTaskAndOptions(t *testing.T) {
 func TestClientMapsUniqueAndTaskIDConflicts(t *testing.T) {
 	server := miniredis.RunT(t)
 	cfg := validTestConfig(server.Addr())
-	redisClient := goredis.NewClient(cfg.Redis.options())
+	redisClient := goredis.NewClient(cfg.Redis.options(nil))
 	t.Cleanup(func() { _ = redisClient.Close() })
 	client := newClient(hibiken.NewClientFromRedisClient(redisClient), cfg)
 	ctx := context.Background()

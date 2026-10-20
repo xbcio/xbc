@@ -54,6 +54,12 @@ type RedisConfig struct {
 	DialTimeout  time.Duration `yaml:"dial_timeout"  default:"5s"`
 	ReadTimeout  time.Duration `yaml:"read_timeout"  default:"3s"`
 	WriteTimeout time.Duration `yaml:"write_timeout" default:"3s"`
+
+	// TLS enables TLS on the connection cron owns. The zero value leaves it in
+	// cleartext, exactly as it was before the section existed. It has no effect
+	// when RedisInstance selects a client owned by another plugin, and that
+	// combination is rejected rather than silently ignored.
+	TLS TLSConfig `yaml:"tls"`
 }
 
 func defaultConfig() Config {

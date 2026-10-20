@@ -34,9 +34,31 @@
 // The integration owns the go-redis client and its pool. It checks connectivity
 // during construction by default; disabling ping deliberately makes connection
 // establishment lazy. XBC closes the client through a typed, idempotent
-// lifecycle adapter. Keep credentials in secret-backed configuration and use
-// this connection only across a trusted network boundary or a separately
-// secured tunnel.
+// lifecycle adapter. Keep credentials in secret-backed configuration.
+//
+// # TLS
+//
+// Each instance can speak TLS to its Redis deployment:
+//
+//	plugins:
+//	  redis:
+//	    cache:
+//	      addr: "redis.internal:6379"
+//	      tls:
+//	        ca_file: /etc/xbc/redis/ca.pem
+//	        cert_file: /etc/xbc/redis/client.pem   # optional, for mTLS
+//	        key_file: /etc/xbc/redis/client-key.pem
+//	        server_name: redis.internal
+//	        min_version: "1.2"
+//
+// The section is off by default and the connection stays in cleartext until one
+// of ca_file, cert_file, key_file, server_name, or insecure_skip_verify is set.
+// ca_file replaces the system roots; cert_file and key_file must be configured
+// together. min_version accepts "1.2" or "1.3" only. The material is read when
+// the instance is constructed, so an unreadable file fails startup rather than
+// the first command. insecure_skip_verify disables certificate verification: it
+// exists for development endpoints and must not be used in production, where an
+// active attacker would reduce TLS to unauthenticated encryption.
 //
 // # Readiness
 //

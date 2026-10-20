@@ -353,7 +353,7 @@ func TestTwoWatchersSynchronizePolicyGroupingAndFilteredRemoval(t *testing.T) {
 
 func TestConnectionTrackerRejectsDialAfterFailure(t *testing.T) {
 	server := miniredis.RunT(t)
-	tracker := newConnectionTracker(time.Second)
+	tracker := newConnectionTracker(time.Second, nil)
 	connection, err := tracker.DialContext(context.Background(), "tcp", server.Addr())
 	if err != nil {
 		t.Fatal(err)

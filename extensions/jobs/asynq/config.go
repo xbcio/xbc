@@ -1,6 +1,7 @@
 package asynq
 
 import (
+	"crypto/tls"
 	"fmt"
 	"maps"
 	"net"
@@ -109,6 +110,10 @@ type RedisConfig struct {
 	WriteTimeout time.Duration `yaml:"write_timeout" default:"3s" validate:"gt=0"`
 	PoolSize     int           `yaml:"pool_size"     default:"10" validate:"min=1"`
 	MaxRetries   int           `yaml:"max_retries"   default:"3"  validate:"min=-1"`
+
+	// TLS enables TLS on this connection. The zero value leaves it in
+	// cleartext, exactly as it was before the section existed.
+	TLS TLSConfig `yaml:"tls"`
 }
 
 func defaultConfig() Config {
@@ -274,6 +279,9 @@ func (c RedisConfig) validate() error {
 	if strings.TrimSpace(c.Addr) != c.Addr || c.Addr == "" {
 		return fmt.Errorf("asynq: redis.addr must be non-empty and have no surrounding whitespace")
 	}
+	if err := c.TLS.validate(); err != nil {
+		return err
+	}
 	host, portText, err := net.SplitHostPort(c.Addr)
 	if err != nil || host == "" {
 		return fmt.Errorf("asynq: redis.addr %q must be a host:port address", c.Addr)
@@ -297,7 +305,7 @@ func (c RedisConfig) validate() error {
 	return nil
 }
 
-func (c RedisConfig) options() *goredis.Options {
+func (c RedisConfig) options(tlsConfig *tls.Config) *goredis.Options {
 	return &goredis.Options{
 		Addr:         c.Addr,
 		Username:     c.Username,
@@ -308,5 +316,6 @@ func (c RedisConfig) options() *goredis.Options {
 		WriteTimeout: c.WriteTimeout,
 		PoolSize:     c.PoolSize,
 		MaxRetries:   c.MaxRetries,
+		TLSConfig:    tlsConfig,
 	}
 }
