@@ -172,10 +172,24 @@ func (s *policySet) referencedSchemes() []authentication.Scheme {
 	return schemes
 }
 
-// validateSchemeCoverage rejects a registered authenticator that no rule can
-// ever reach. Selecting a plugin and then never naming it is a half-finished
-// migration or a typo, and failing startup is cheaper than discovering it when
-// the credential it was meant to accept is rejected in production.
+// validateSchemeCoverage rejects a registered authenticator that no effective
+// policy can ever select. Selecting a plugin and then never naming it is a
+// half-finished migration or a typo, and failing startup is cheaper than
+// discovering it when the credential it was meant to accept is rejected in
+// production.
+//
+// A scheme is reachable when either tier names it:
+//
+//   - a tier-1 rule authenticates with it (referencedSchemes), or
+//   - a serving route the rules do not cover resolves to an explicit selection
+//     naming it. Route-level .Auth(Accepts(...)) is tier 2 and never enters the
+//     rule list, so scanning rules alone rejected the legitimate
+//     "default: permit plus a route declaration" composition.
+//
+// A route covered by a tier-1 rule contributes nothing here: its compiled
+// selection is the rule's own selection, which referencedSchemes already
+// collects, or the rule is a permit rule, which selects no scheme. The !ok
+// guard is defensive: compiled is built from this same route slice.
 //
 // Under default deny the check is skipped: uncovered routes resolve through the
 // manager's restrictive default selection. This is sound only because the
@@ -183,7 +197,11 @@ func (s *policySet) referencedSchemes() []authentication.Scheme {
 // so an unnamed scheme is still reachable. Narrowing DefaultSchemes to a subset
 // would turn this skip into a hole and this check must then compare against the
 // union of referenced schemes and the manager's actual defaults.
-func (s *policySet) validateSchemeCoverage(registered []authentication.Scheme) error {
+func (s *policySet) validateSchemeCoverage(
+	registered []authentication.Scheme,
+	routes []RouteInfo,
+	compiled map[string]effectivePolicy,
+) error {
 	if s.defaultDecision == SecurityDeny {
 		return nil
 	}
@@ -191,11 +209,21 @@ func (s *policySet) validateSchemeCoverage(registered []authentication.Scheme) e
 	for _, scheme := range s.referencedSchemes() {
 		referenced[scheme] = struct{}{}
 	}
+	for _, route := range routes {
+		policy, ok := compiled[routeKey(route.Method, route.Path)]
+		if !ok || policy.permit {
+			continue
+		}
+		for _, scheme := range policy.selection.Schemes() {
+			referenced[scheme] = struct{}{}
+		}
+	}
 	for _, scheme := range registered {
 		if _, ok := referenced[scheme]; !ok {
 			return fmt.Errorf(
-				"web: authentication scheme %q is registered but no security policy references it; "+
-					"name it in a policy or remove the plugin",
+				"web: authentication scheme %q is registered but no security policy or route "+
+					"authentication declaration references it; name it in a policy or a route "+
+					".Auth() declaration, or remove the plugin",
 				scheme,
 			)
 		}

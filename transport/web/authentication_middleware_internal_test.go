@@ -176,3 +176,36 @@ func TestAuthenticationMiddlewareOrderIsAuthPhase(t *testing.T) {
 		t.Fatalf("Order().Phase = %v, want %v", got.Phase, PhaseAuth)
 	}
 }
+
+// TestFormatExtractorOwnersSortsByScheme pins that the extractor registry in a
+// diagnostic is rendered in scheme order rather than map iteration order. Two
+// identical misconfigurations must produce one reproducible message, and Go
+// randomizes map iteration on every pass. The loop makes an unsorted
+// implementation fail with probability 1-2^-512 on a two-entry map, so this
+// kills a missing sort without depending on a single lucky ordering.
+func TestFormatExtractorOwnersSortsByScheme(t *testing.T) {
+	t.Parallel()
+
+	const want = "apikey (from plugin apikey-auth), mtls (from plugin mtls-auth)"
+	owners := map[authentication.Scheme]plugin.Identity{
+		"mtls":   {Plugin: "mtls-auth"},
+		"apikey": {Plugin: "apikey-auth"},
+	}
+	for i := 0; i < 512; i++ {
+		if got := formatExtractorOwners(owners); got != want {
+			t.Fatalf(
+				"formatExtractorOwners() = %q, want %q (iteration %d): map iteration order "+
+					"must never leak into a diagnostic",
+				got, want, i,
+			)
+		}
+	}
+}
+
+func TestFormatExtractorOwnersReportsEmptyRegistry(t *testing.T) {
+	t.Parallel()
+
+	if got := formatExtractorOwners(nil); got != "(none)" {
+		t.Fatalf("formatExtractorOwners(nil) = %q, want \"(none)\" so the second side of a missing pairing is named", got)
+	}
+}

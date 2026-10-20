@@ -102,7 +102,10 @@ func TestPreflightRejectsAnUnknownAuthenticationScheme(t *testing.T) {
 			Identity: plugin.Identity{Plugin: "apikey"},
 			Value:    &stubAuth{scheme: "apikey"},
 		}},
-		nil,
+		[]plugin.Entry[web.CredentialExtractor]{{
+			Identity: plugin.Identity{Plugin: "apikey"},
+			Value:    &stubExtractor{scheme: "apikey"},
+		}},
 	)
 	t.Cleanup(func() {
 		assert.NoError(t, server.Stop(context.Background()))
@@ -225,4 +228,101 @@ func TestAPreflightLeavesNothingBehindThatChangesALaterBoot(t *testing.T) {
 
 	assert.Equal(t, 2, strings.Count(strings.Join(logger.infos(), "\n"), "web: route table (1)"),
 		"Preflight and OpenTraffic each freeze and report a route table of their own")
+}
+
+// TestPreflightRejectsAnAuthenticatorWithoutCredentialExtractor pins that the
+// authenticator/extractor cross-check is reachable from the command that is
+// supposed to catch deployment mistakes. The authenticator and extractor
+// interfaces are separate plugin exports, so a half-exported plugin used to
+// pass validate and then answer every request selecting the scheme with 500.
+func TestPreflightRejectsAnAuthenticatorWithoutCredentialExtractor(t *testing.T) {
+	cfg := web.DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	// Default deny keeps the fail-closed default on, so the scheme-coverage
+	// check is skipped (every registered scheme is reachable through the
+	// manager's defaults). That isolates the failure under test: without the
+	// cross-check this composition validates cleanly.
+	cfg.Security.Default = web.SecurityDeny
+
+	orders := fakeRouteContributor{register: func(router *web.Router) {
+		router.GET("/orders", func(context.Context, *web.Ctx) error { return nil }).
+			Name("orders.list").
+			Auth(web.Accepts("jwt"))
+	}}
+	host := newFakeHost()
+	ctx := contextFromHost(host)
+	server := web.NewServer(
+		cfg,
+		enginetest.Factory{},
+		nil,
+		nil,
+		[]plugin.Entry[web.RouteContributor]{{
+			Identity: plugin.Identity{Plugin: "orderstest"},
+			Value:    orders,
+		}},
+		nil,
+		[]plugin.Entry[authentication.Authenticator]{{
+			Identity: plugin.Identity{Plugin: "jwt-auth"},
+			Value:    &stubAuth{scheme: "jwt"},
+		}},
+		nil,
+	)
+	t.Cleanup(func() {
+		assert.NoError(t, server.Stop(context.Background()))
+		host.shutdown()
+	})
+
+	err := server.Preflight(ctx)
+	require.Error(t, err, "an authenticator with no matching extractor must not validate")
+	assert.ErrorContains(t, err, `"jwt"`)
+	assert.ErrorContains(t, err, "jwt-auth")
+	assert.ErrorContains(t, err, "CredentialExtractor")
+
+	assert.Empty(t, server.Addr(), "the failure must be found before anything binds")
+	assert.Empty(t, host.submittedTasks(), "Preflight must admit no serving task")
+}
+
+// TestPreflightAcceptsRouteLevelSchemeUnderPermitDefault is the end-to-end
+// regression for the false rejection: under a permit default, the route's own
+// .Auth(web.Accepts("jwt")) is the only selection of the registered scheme,
+// and validate must succeed.
+func TestPreflightAcceptsRouteLevelSchemeUnderPermitDefault(t *testing.T) {
+	cfg := web.DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.Security.Default = web.SecurityPermit
+
+	orders := fakeRouteContributor{register: func(router *web.Router) {
+		router.GET("/orders", func(context.Context, *web.Ctx) error { return nil }).
+			Name("orders.list").
+			Auth(web.Accepts("jwt"))
+	}}
+	host := newFakeHost()
+	ctx := contextFromHost(host)
+	server := web.NewServer(
+		cfg,
+		enginetest.Factory{},
+		nil,
+		nil,
+		[]plugin.Entry[web.RouteContributor]{{
+			Identity: plugin.Identity{Plugin: "orderstest"},
+			Value:    orders,
+		}},
+		nil,
+		[]plugin.Entry[authentication.Authenticator]{{
+			Identity: plugin.Identity{Plugin: "jwt-auth"},
+			Value:    &stubAuth{scheme: "jwt"},
+		}},
+		[]plugin.Entry[web.CredentialExtractor]{{
+			Identity: plugin.Identity{Plugin: "jwt-auth"},
+			Value:    &stubExtractor{scheme: "jwt"},
+		}},
+	)
+	t.Cleanup(func() {
+		assert.NoError(t, server.Stop(context.Background()))
+		host.shutdown()
+	})
+
+	require.NoError(t, server.Preflight(ctx),
+		"a route-level .Auth() declaration is a legitimate reference to a registered scheme")
+	assert.Empty(t, server.Addr(), "Preflight must not bind the configured address")
 }

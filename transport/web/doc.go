@@ -106,6 +106,21 @@
 // protocol-neutral rbac adapter deliberately does not: its handler-scoped
 // guards never read Route.Perm.
 //
+// Registration itself is validated before traffic opens. An Authenticator and
+// a CredentialExtractor are separate plugin exports, so startup cross-checks
+// them: a registered scheme with no extractor fails, naming the scheme and the
+// plugins on both sides, because such a service could only answer requests
+// selecting it with a generic 500. The remedy is either for the plugin to
+// export both halves or for the application to select the transport's
+// extractor adapter bundle for that scheme -- the jwt-http adapter beside the
+// neutral jwt authenticator is one example. An extractor no registered
+// authenticator uses is reported as a warning instead, since it may be shared
+// or prepared for another manager. A registered scheme must also be
+// reachable: it is named by a tier-1 policy rule, or selected by the effective
+// policy of a route no rule covers, including a tier-2 Auth(Accepts(...))
+// declaration. Under the permit default a scheme that neither of these names
+// fails startup rather than sitting registered but unreachable.
+//
 // A contributor may also mount a handler that arrives with its own routing --
 // an integration library, a file server, another framework's engine -- with
 // Router.Mount, which registers the path as a subtree on every method and

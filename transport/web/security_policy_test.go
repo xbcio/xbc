@@ -204,7 +204,7 @@ func TestPolicySetRejectsUnreferencedRegisteredScheme(t *testing.T) {
 		},
 	})
 
-	err := set.validateSchemeCoverage([]authentication.Scheme{"jwt", "apikey"})
+	err := set.validateSchemeCoverage([]authentication.Scheme{"jwt", "apikey"}, nil, nil)
 	if err == nil {
 		t.Fatal("validateSchemeCoverage() error = nil, want unreferenced scheme error")
 	}
@@ -212,7 +212,7 @@ func TestPolicySetRejectsUnreferencedRegisteredScheme(t *testing.T) {
 		t.Fatalf("error = %q, want substring \"apikey\"", err)
 	}
 
-	if err := set.validateSchemeCoverage([]authentication.Scheme{"jwt"}); err != nil {
+	if err := set.validateSchemeCoverage([]authentication.Scheme{"jwt"}, nil, nil); err != nil {
 		t.Fatalf("validateSchemeCoverage(jwt) error = %v, want nil", err)
 	}
 }
@@ -224,7 +224,54 @@ func TestPolicySetDefaultDenyTreatsEverySchemeAsReferenced(t *testing.T) {
 	// restrictive default selection, which can reach any registered scheme.
 	// Reporting those schemes as unreferenced would be a false alarm.
 	set := mustPolicySet(t, SecurityConfig{Default: SecurityDeny})
-	if err := set.validateSchemeCoverage([]authentication.Scheme{"jwt", "apikey"}); err != nil {
+	if err := set.validateSchemeCoverage([]authentication.Scheme{"jwt", "apikey"}, nil, nil); err != nil {
 		t.Fatalf("validateSchemeCoverage() error = %v, want nil under default deny", err)
+	}
+}
+
+func TestPolicySetCountsRouteDeclarationsAsSchemeReferences(t *testing.T) {
+	t.Parallel()
+
+	// A route-level .Auth() declaration is tier 2 and never enters the rule
+	// list, so reachability has to read the compiled decision instead.
+	set := mustPolicySet(t, SecurityConfig{Default: SecurityPermit})
+	jwt := Accepts("jwt")
+	routes := []RouteInfo{{Method: http.MethodGet, Path: "/orders", Auth: &jwt}}
+	compiled := set.compile(routes)
+
+	if err := set.validateSchemeCoverage([]authentication.Scheme{"jwt"}, routes, compiled); err != nil {
+		t.Fatalf("validateSchemeCoverage() error = %v, want nil: the route declaration selects jwt", err)
+	}
+
+	// The same table with an additional registered scheme still fails, so the
+	// widened definition is not "any registered scheme is fine".
+	err := set.validateSchemeCoverage([]authentication.Scheme{"jwt", "apikey"}, routes, compiled)
+	if err == nil {
+		t.Fatal("validateSchemeCoverage() error = nil, want the genuinely unreferenced scheme to fail")
+	}
+	if !strings.Contains(err.Error(), `"apikey"`) {
+		t.Fatalf("validateSchemeCoverage() error = %q, want it to name scheme \"apikey\"", err)
+	}
+}
+
+func TestPolicySetTierOneRuleHidesRouteDeclarationFromCoverage(t *testing.T) {
+	t.Parallel()
+
+	// Tier 1 overrides tier 2: the permit rule decides /api/orders, so the
+	// route's own Accepts("jwt") is not in effect and must not keep jwt alive.
+	set := mustPolicySet(t, SecurityConfig{
+		Default:  SecurityPermit,
+		Policies: []PolicyRule{{Match: "/api/**", Permit: true}},
+	})
+	jwt := Accepts("jwt")
+	routes := []RouteInfo{{Method: http.MethodGet, Path: "/api/orders", Auth: &jwt}}
+	compiled := set.compile(routes)
+
+	err := set.validateSchemeCoverage([]authentication.Scheme{"jwt"}, routes, compiled)
+	if err == nil {
+		t.Fatal("validateSchemeCoverage() error = nil, want the overridden declaration to leave jwt unreachable")
+	}
+	if !strings.Contains(err.Error(), `"jwt"`) {
+		t.Fatalf("validateSchemeCoverage() error = %q, want it to name scheme \"jwt\"", err)
 	}
 }

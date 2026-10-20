@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/xbcio/xbc/extensions/authentication"
+	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -111,7 +113,7 @@ func newAuthenticationMiddleware(
 	if err != nil {
 		return nil, err
 	}
-	extractors, err := newExtractorIndex(extractorEntries)
+	extractors, extractorOwners, err := newExtractorIndex(extractorEntries)
 	if err != nil {
 		return nil, err
 	}
@@ -129,6 +131,7 @@ func newAuthenticationMiddleware(
 		if len(security.Schemes) > 0 {
 			return nil, validateDeclaredSchemes(security.Schemes, nil)
 		}
+		warnUnusedExtractors(extractorOwners, nil)
 		return middleware, nil
 	}
 
@@ -195,8 +198,94 @@ func newAuthenticationMiddleware(
 	if err != nil {
 		return nil, err
 	}
+	// A scheme the manager can select must be collectable from the request.
+	// The two interfaces are separate plugin exports, so a plugin can legally
+	// provide only an Authenticator; without this check that composition passes
+	// validate and Start and then answers every request selecting the scheme
+	// with a generic 500. The check runs last so every pre-existing
+	// configuration diagnosis keeps its precedence.
+	if err := validateExtractorCoverage(schemes, byIdentity, extractorOwners); err != nil {
+		return nil, err
+	}
+	warnUnusedExtractors(extractorOwners, schemes)
 	middleware.manager = manager
 	return middleware, nil
+}
+
+// validateExtractorCoverage rejects a registered scheme no credential extractor
+// can collect. It names the scheme, the plugin that registered the
+// authenticator, and the extractor plugins that do exist, so an operator sees
+// both sides of the missing pairing without reading plugin source.
+func validateExtractorCoverage(
+	schemes []authentication.Scheme,
+	authenticatorOwners map[authentication.Scheme]plugin.Identity,
+	extractorOwners map[authentication.Scheme]plugin.Identity,
+) error {
+	for _, scheme := range schemes {
+		if _, ok := extractorOwners[scheme]; ok {
+			continue
+		}
+		return fmt.Errorf(
+			"xbc: authentication scheme %q is registered by plugin %s but no web.CredentialExtractor "+
+				"provides it; credential extractors: %s; a plugin exporting an Authenticator must also "+
+				"export a web.CredentialExtractor for every scheme it registers, or the application must "+
+				"select the transport's extractor bundle for that scheme (for example a jwt-http adapter)",
+			scheme, authenticatorOwners[scheme], formatExtractorOwners(extractorOwners),
+		)
+	}
+	return nil
+}
+
+// warnUnusedExtractors reports extractors no registered authenticator can use.
+// It deliberately never fails startup: an extractor may be shared or prepared
+// for another authentication manager, and refusing a harmless surplus export
+// would be a false rejection. The warning is emitted through the process-global
+// logger because this constructor has no logger parameter, following the same
+// fallback the panic boundary uses when none was injected.
+func warnUnusedExtractors(
+	owners map[authentication.Scheme]plugin.Identity,
+	registered []authentication.Scheme,
+) {
+	if len(owners) == 0 {
+		return
+	}
+	registeredSet := make(map[authentication.Scheme]struct{}, len(registered))
+	for _, scheme := range registered {
+		registeredSet[scheme] = struct{}{}
+	}
+	unused := make([]authentication.Scheme, 0, len(owners))
+	for scheme := range owners {
+		if _, ok := registeredSet[scheme]; !ok {
+			unused = append(unused, scheme)
+		}
+	}
+	slices.Sort(unused)
+	for _, scheme := range unused {
+		log.L().Warn(fmt.Sprintf(
+			"xbc: web credential extractor for scheme %q (plugin %s) has no registered "+
+				"authenticator; this server ignores it",
+			scheme, owners[scheme],
+		))
+	}
+}
+
+// formatExtractorOwners renders the extractor registry deterministically for a
+// diagnostic: map order must never make two identical misconfigurations produce
+// different messages.
+func formatExtractorOwners(owners map[authentication.Scheme]plugin.Identity) string {
+	if len(owners) == 0 {
+		return "(none)"
+	}
+	schemes := make([]authentication.Scheme, 0, len(owners))
+	for scheme := range owners {
+		schemes = append(schemes, scheme)
+	}
+	slices.Sort(schemes)
+	parts := make([]string, len(schemes))
+	for i, scheme := range schemes {
+		parts[i] = fmt.Sprintf("%s (from plugin %s)", scheme, owners[scheme])
+	}
+	return strings.Join(parts, ", ")
 }
 
 // validateDeclaredSchemes checks that declared is a full permutation of
@@ -269,13 +358,17 @@ func (m *authenticationMiddleware) RoutesReady(catalog RouteCatalog) error {
 	if err := m.policies.validateReachability(); err != nil {
 		return err
 	}
+	// Compile first: reachability must consider the policy that actually
+	// governs each serving route, not only the tier-1 rule list. A route-level
+	// .Auth(Accepts(...)) declaration is tier 2 and never enters the rules, so
+	// the coverage check below needs the compiled decisions to see it.
+	compiled := m.policies.compile(routes)
 	if m.manager != nil {
-		if err := m.policies.validateSchemeCoverage(m.manager.Schemes()); err != nil {
+		if err := m.policies.validateSchemeCoverage(m.manager.Schemes(), routes, compiled); err != nil {
 			return err
 		}
 	}
 
-	compiled := m.policies.compile(routes)
 	decisions := make([]policyDecision, 0, len(routes))
 	for _, route := range routes {
 		policy := compiled[routeKey(route.Method, route.Path)]

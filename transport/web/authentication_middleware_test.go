@@ -147,7 +147,10 @@ func TestAuthenticationMiddlewareHonorsDeclaredArbitrationOrder(t *testing.T) {
 			{Identity: plugin.Identity{Plugin: "alpha"}, Value: alpha},
 			{Identity: plugin.Identity{Plugin: "zeta"}, Value: zeta},
 		},
-		nil,
+		[]plugin.Entry[web.CredentialExtractor]{
+			{Identity: plugin.Identity{Plugin: "alpha"}, Value: &stubExtractor{scheme: "alpha"}},
+			{Identity: plugin.Identity{Plugin: "zeta"}, Value: &stubExtractor{scheme: "zeta"}},
+		},
 	)
 	if err != nil {
 		t.Fatalf("NewAuthenticationMiddleware() error = %v", err)
@@ -235,7 +238,9 @@ func TestAuthenticationMiddlewareAllowsOmittedSchemesForSingleAuthenticator(t *t
 		[]plugin.Entry[authentication.Authenticator]{
 			{Identity: plugin.Identity{Plugin: "jwt"}, Value: &stubAuth{scheme: "jwt"}},
 		},
-		nil,
+		[]plugin.Entry[web.CredentialExtractor]{
+			{Identity: plugin.Identity{Plugin: "jwt"}, Value: &stubExtractor{scheme: "jwt"}},
+		},
 	)
 	if err != nil {
 		t.Fatalf("NewAuthenticationMiddleware() error = %v, want nil: a single authenticator has no arbitration to order", err)
@@ -965,5 +970,298 @@ func TestAuthenticationFailureKeepsAuthenticatorErrorGeneric(t *testing.T) {
 				"an internal authentication failure must leave a server-side trace",
 			logged,
 		)
+	}
+}
+
+// TestAuthenticationMiddlewareRejectsSchemeWithoutCredentialExtractor pins the
+// startup half of the authenticator/extractor contract. The two interfaces are
+// separate plugin exports, so a plugin can legally provide only an
+// Authenticator; before this validation that composition passed Preflight and
+// Start, and the first request selecting the scheme failed with a generic 500.
+// The diagnosis must name the scheme, the plugin that registered the
+// authenticator, and the extractor plugins that do exist, so an operator can
+// see both sides of the missing pairing without reading plugin source.
+func TestAuthenticationMiddlewareRejectsSchemeWithoutCredentialExtractor(t *testing.T) {
+	t.Parallel()
+
+	_, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{Default: web.SecurityDeny},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubAuth{scheme: "jwt"}},
+		},
+		[]plugin.Entry[web.CredentialExtractor]{
+			{Identity: plugin.Identity{Plugin: "apikey-auth"}, Value: &stubExtractor{scheme: "apikey"}},
+			{Identity: plugin.Identity{Plugin: "mtls-auth"}, Value: &stubExtractor{scheme: "mtls"}},
+		},
+	)
+	if err == nil {
+		t.Fatal("NewAuthenticationMiddleware() error = nil, want a missing credential extractor error")
+	}
+	for _, want := range []string{
+		`"jwt"`,
+		"jwt-auth",
+		"apikey-auth",
+		"CredentialExtractor",
+		// The registry is rendered in scheme order, not map iteration order:
+		// a diagnostic that reshuffles between runs is not reproducible.
+		"credential extractors: apikey (from plugin apikey-auth), mtls (from plugin mtls-auth)",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("NewAuthenticationMiddleware() error = %q, want substring %q", err, want)
+		}
+	}
+}
+
+// TestAuthenticationMiddlewareRejectsSchemeWithoutAnyExtractor is the
+// no-extractor-at-all variant: the message must still identify both sides,
+// reporting explicitly that the extractor registry is empty rather than
+// omitting the second identity and leaving the operator to guess.
+func TestAuthenticationMiddlewareRejectsSchemeWithoutAnyExtractor(t *testing.T) {
+	t.Parallel()
+
+	_, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{Default: web.SecurityDeny},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubAuth{scheme: "jwt"}},
+		},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("NewAuthenticationMiddleware() error = nil, want a missing credential extractor error")
+	}
+	if !strings.Contains(err.Error(), `"jwt"`) || !strings.Contains(err.Error(), "jwt-auth") {
+		t.Fatalf("NewAuthenticationMiddleware() error = %q, want it to name the scheme and its authenticator plugin", err)
+	}
+	if !strings.Contains(err.Error(), "(none)") {
+		t.Fatalf("NewAuthenticationMiddleware() error = %q, want it to report an empty extractor registry", err)
+	}
+}
+
+// TestAuthenticationMiddlewareAllowsExtractorWithoutAuthenticator pins the
+// reverse direction: an extractor may be shared or prepared for another
+// manager, so it must not fail startup. A warning is still expected, and the
+// middleware must go on to validate routes normally.
+func TestAuthenticationMiddlewareAllowsExtractorWithoutAuthenticator(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{Default: web.SecurityDeny},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubAuth{scheme: "jwt"}},
+		},
+		[]plugin.Entry[web.CredentialExtractor]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubExtractor{scheme: "jwt"}},
+			{Identity: plugin.Identity{Plugin: "shared-extractors"}, Value: &stubExtractor{scheme: "mtls"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewAuthenticationMiddleware() error = %v, want nil: an extractor without an authenticator warns but never fails", err)
+	}
+	if err := middleware.RoutesReady(web.NewRouteCatalog(nil)); err != nil {
+		t.Fatalf("RoutesReady() error = %v, want nil", err)
+	}
+}
+
+// TestAuthenticationMiddlewareWarnsAboutExtractorWithoutAuthenticator pins that
+// the reverse direction is actually reported. It is not parallel: it swaps the
+// process-global logger the constructor uses when no logger can be injected.
+func TestAuthenticationMiddlewareWarnsAboutExtractorWithoutAuthenticator(t *testing.T) {
+	capture := &captureLogger{Logger: log.Nop()}
+	log.SetLogger(capture)
+	t.Cleanup(func() { log.SetLogger(log.Nop()) })
+
+	if _, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{Default: web.SecurityDeny},
+		nil,
+		[]plugin.Entry[web.CredentialExtractor]{
+			{Identity: plugin.Identity{Plugin: "shared-extractors"}, Value: &stubExtractor{scheme: "mtls"}},
+		},
+	); err != nil {
+		t.Fatalf("NewAuthenticationMiddleware() error = %v, want nil", err)
+	}
+
+	warns := strings.Join(capture.warns(), "\n")
+	if !strings.Contains(warns, `"mtls"`) || !strings.Contains(warns, "shared-extractors") {
+		t.Fatalf("warnings = %q, want them to name the orphaned scheme and its extractor plugin", warns)
+	}
+}
+
+// TestAuthenticationMiddlewareWarnsAboutUnusedExtractorBesideAuthenticators
+// covers the same warning on the ordinary path, where at least one
+// authenticator is registered. That path is a separate call site from the
+// zero-authenticator early return, so it needs its own lock: deleting it leaves
+// every other test green. It is not parallel because it swaps the
+// process-global logger.
+func TestAuthenticationMiddlewareWarnsAboutUnusedExtractorBesideAuthenticators(t *testing.T) {
+	capture := &captureLogger{Logger: log.Nop()}
+	log.SetLogger(capture)
+	t.Cleanup(func() { log.SetLogger(log.Nop()) })
+
+	if _, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{Default: web.SecurityDeny},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "apikey-auth"}, Value: &stubAuth{scheme: "apikey"}},
+		},
+		[]plugin.Entry[web.CredentialExtractor]{
+			{Identity: plugin.Identity{Plugin: "apikey-auth"}, Value: &stubExtractor{scheme: "apikey"}},
+			{Identity: plugin.Identity{Plugin: "shared-extractors"}, Value: &stubExtractor{scheme: "mtls"}},
+		},
+	); err != nil {
+		t.Fatalf("NewAuthenticationMiddleware() error = %v, want nil", err)
+	}
+
+	warns := strings.Join(capture.warns(), "\n")
+	if !strings.Contains(warns, `"mtls"`) || !strings.Contains(warns, "shared-extractors") {
+		t.Fatalf("warnings = %q, want them to name the orphaned scheme and its extractor plugin", warns)
+	}
+	if strings.Contains(warns, `"apikey"`) {
+		t.Fatalf("warnings = %q, must not report the registered apikey scheme as unused", warns)
+	}
+}
+
+// TestRoutesReadyAcceptsRouteLevelSchemeUnderPermitDefault is the regression
+// the coverage check got wrong: with a permit default, a route-level
+// .Auth(Accepts("jwt")) declaration is the only thing that selects the
+// registered jwt scheme, and it is a tier-2 declaration that never enters the
+// rule list. Startup must accept it.
+func TestRoutesReadyAcceptsRouteLevelSchemeUnderPermitDefault(t *testing.T) {
+	t.Parallel()
+
+	jwt := web.Accepts("jwt")
+	middleware, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{Default: web.SecurityPermit},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubAuth{scheme: "jwt"}},
+		},
+		[]plugin.Entry[web.CredentialExtractor]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubExtractor{scheme: "jwt"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewAuthenticationMiddleware() error = %v", err)
+	}
+	err = middleware.RoutesReady(web.NewRouteCatalog([]web.RouteInfo{
+		{Method: http.MethodGet, Path: "/orders", Auth: &jwt},
+	}))
+	if err != nil {
+		t.Fatalf("RoutesReady() error = %v, want nil: a route-level declaration selects the scheme", err)
+	}
+}
+
+// TestRoutesReadyStillRejectsSchemeNoRouteCanSelect keeps the original guard
+// alive under the widened definition: jwt is reachable through a route
+// declaration, apikey is registered but selected by nothing, so startup must
+// still fail -- naming apikey, not the reachable scheme.
+func TestRoutesReadyStillRejectsSchemeNoRouteCanSelect(t *testing.T) {
+	t.Parallel()
+
+	jwt := web.Accepts("jwt")
+	middleware, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{
+			Default: web.SecurityPermit,
+			Schemes: []authentication.Scheme{"jwt", "apikey"},
+		},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubAuth{scheme: "jwt"}},
+			{Identity: plugin.Identity{Plugin: "apikey-auth"}, Value: &stubAuth{scheme: "apikey"}},
+		},
+		[]plugin.Entry[web.CredentialExtractor]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubExtractor{scheme: "jwt"}},
+			{Identity: plugin.Identity{Plugin: "apikey-auth"}, Value: &stubExtractor{scheme: "apikey"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewAuthenticationMiddleware() error = %v", err)
+	}
+	err = middleware.RoutesReady(web.NewRouteCatalog([]web.RouteInfo{
+		{Method: http.MethodGet, Path: "/orders", Auth: &jwt},
+	}))
+	if err == nil {
+		t.Fatal("RoutesReady() error = nil, want the genuinely unreachable scheme to fail startup")
+	}
+	if !strings.Contains(err.Error(), `"apikey"`) {
+		t.Fatalf("RoutesReady() error = %q, want it to name scheme \"apikey\"", err)
+	}
+	if !strings.Contains(err.Error(), "route authentication declaration") {
+		t.Fatalf(
+			"RoutesReady() error = %q, want the diagnosis to say a route-level declaration "+
+				"satisfies the check: the reachability definition now includes tier-2 declarations",
+			err,
+		)
+	}
+	if strings.Contains(err.Error(), `"jwt"`) {
+		t.Fatalf("RoutesReady() error = %q, must not report the reachable scheme \"jwt\"", err)
+	}
+}
+
+// TestRoutesReadyTierOneRuleHidesRouteDeclaration pins that the widened
+// reachability definition keeps tier-1 precedence: a permit rule covering the
+// route decides it, so its .Auth(Accepts("jwt")) declaration is not in effect
+// and must not keep the jwt scheme alive.
+func TestRoutesReadyTierOneRuleHidesRouteDeclaration(t *testing.T) {
+	t.Parallel()
+
+	jwt := web.Accepts("jwt")
+	middleware, err := web.NewAuthenticationMiddleware(
+		web.SecurityConfig{
+			Default:  web.SecurityPermit,
+			Policies: []web.PolicyRule{{Match: "/api/**", Permit: true}},
+		},
+		[]plugin.Entry[authentication.Authenticator]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubAuth{scheme: "jwt"}},
+		},
+		[]plugin.Entry[web.CredentialExtractor]{
+			{Identity: plugin.Identity{Plugin: "jwt-auth"}, Value: &stubExtractor{scheme: "jwt"}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewAuthenticationMiddleware() error = %v", err)
+	}
+	err = middleware.RoutesReady(web.NewRouteCatalog([]web.RouteInfo{
+		{Method: http.MethodGet, Path: "/api/orders", Auth: &jwt},
+	}))
+	if err == nil {
+		t.Fatal("RoutesReady() error = nil, want the overridden declaration to leave jwt unreachable")
+	}
+	if !strings.Contains(err.Error(), `"jwt"`) {
+		t.Fatalf("RoutesReady() error = %q, want it to name scheme \"jwt\"", err)
+	}
+}
+
+// TestAuthenticationMiddlewareWarnsAboutUnusedExtractorsInSchemeOrder pins the
+// order of the orphaned-extractor warnings, not only their contents. Two
+// identical compositions must produce the same two lines in the same order;
+// Go randomizes map iteration, so the loop makes an unsorted implementation
+// fail with probability 1-2^-512. It is not parallel because it swaps the
+// process-global logger.
+func TestAuthenticationMiddlewareWarnsAboutUnusedExtractorsInSchemeOrder(t *testing.T) {
+	capture := &captureLogger{Logger: log.Nop()}
+	log.SetLogger(capture)
+	t.Cleanup(func() { log.SetLogger(log.Nop()) })
+
+	for i := 0; i < 512; i++ {
+		before := len(capture.warns())
+		if _, err := web.NewAuthenticationMiddleware(
+			web.SecurityConfig{Default: web.SecurityDeny},
+			nil,
+			[]plugin.Entry[web.CredentialExtractor]{
+				{Identity: plugin.Identity{Plugin: "mtls-extractor"}, Value: &stubExtractor{scheme: "mtls"}},
+				{Identity: plugin.Identity{Plugin: "apikey-extractor"}, Value: &stubExtractor{scheme: "apikey"}},
+			},
+		); err != nil {
+			t.Fatalf("NewAuthenticationMiddleware() error = %v, want nil", err)
+		}
+
+		warns := capture.warns()[before:]
+		if len(warns) != 2 {
+			t.Fatalf("warnings = %q (iteration %d), want one line per orphaned extractor", warns, i)
+		}
+		if !strings.Contains(warns[0], `"apikey"`) || !strings.Contains(warns[1], `"mtls"`) {
+			t.Fatalf(
+				"warnings = %q (iteration %d), want apikey before mtls: map iteration order "+
+					"must never leak into startup diagnostics",
+				warns, i,
+			)
+		}
 	}
 }

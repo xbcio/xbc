@@ -35,7 +35,7 @@ func TestNewExtractorIndexRejectsDuplicateScheme(t *testing.T) {
 		{Identity: plugin.Identity{Plugin: "jwt-alt"}, Value: &stubExtractor{scheme: "jwt"}},
 	}
 
-	_, err := web.NewExtractorIndex(entries)
+	_, _, err := web.NewExtractorIndex(entries)
 	if err == nil {
 		t.Fatal("newExtractorIndex() error = nil, want duplicate scheme error")
 	}
@@ -60,7 +60,7 @@ func TestNewExtractorIndexRejectsInvalidScheme(t *testing.T) {
 				{Identity: plugin.Identity{Plugin: "jwt"}, Value: &stubExtractor{scheme: scheme}},
 			}
 
-			_, err := web.NewExtractorIndex(entries)
+			_, _, err := web.NewExtractorIndex(entries)
 			if err == nil {
 				t.Fatal("newExtractorIndex() error = nil, want invalid scheme error")
 			}

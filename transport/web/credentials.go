@@ -31,25 +31,30 @@ type CredentialExtractor interface {
 	ExtractCredential(*Ctx) (authentication.CredentialResult, error)
 }
 
-// newExtractorIndex keys extractors by scheme. Two extractors claiming one
-// scheme is unresolvable -- the framework would have to pick arbitrarily, which
-// is exactly the nondeterminism this design exists to remove -- so it fails
-// startup instead.
+// newExtractorIndex keys extractors by scheme and reports each scheme's owning
+// plugin. Two extractors claiming one scheme is unresolvable -- the framework
+// would have to pick arbitrarily, which is exactly the nondeterminism this
+// design exists to remove -- so it fails startup instead.
+//
+// The owner map exists for the startup cross-check against the registered
+// authenticators: a diagnostic about a scheme missing an extractor must be able
+// to name the plugins on both sides of the pairing, and both come from this one
+// validated pass.
 func newExtractorIndex(
 	entries []plugin.Entry[CredentialExtractor],
-) (map[authentication.Scheme]CredentialExtractor, error) {
+) (map[authentication.Scheme]CredentialExtractor, map[authentication.Scheme]plugin.Identity, error) {
 	index := make(map[authentication.Scheme]CredentialExtractor, len(entries))
 	owners := make(map[authentication.Scheme]plugin.Identity, len(entries))
 	for _, entry := range entries {
 		scheme := entry.Value.Scheme()
 		if err := scheme.Validate(); err != nil {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"xbc: web credential extractor %s declares an invalid scheme: %w",
 				entry.Identity, err,
 			)
 		}
 		if owner, exists := owners[scheme]; exists {
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
 				"xbc: web credential extractors %s and %s both claim scheme %q",
 				owner, entry.Identity, scheme,
 			)
@@ -57,7 +62,7 @@ func newExtractorIndex(
 		owners[scheme] = entry.Identity
 		index[scheme] = entry.Value
 	}
-	return index, nil
+	return index, owners, nil
 }
 
 // requestCredentialSource adapts the extractor index to one live request. It is
@@ -78,12 +83,10 @@ func (s requestCredentialSource) Credential(
 ) (authentication.CredentialResult, error) {
 	extractor, ok := s.extractors[scheme]
 	if !ok {
-		// No startup validation guarantees the manager's scheme set and the
-		// extractor index agree; the two are consistent today only because
-		// every authentication plugin exports its Authenticator and
-		// CredentialExtractor from the same value. Reaching this branch means
-		// some plugin exported only half of that pair, which is a
-		// framework/plugin assembly defect rather than a rejected request.
+		// newAuthenticationMiddleware cross-checks every registered scheme
+		// against this index before traffic opens, so a production assembly
+		// cannot reach this branch. It stays as a fail-closed guard for a
+		// caller that builds the manager and the index independently.
 		return authentication.CredentialResult{}, fmt.Errorf(
 			"xbc: web has no credential extractor for scheme %q", scheme,
 		)
