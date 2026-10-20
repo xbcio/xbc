@@ -257,10 +257,16 @@ plugins:
 
   gzip:
     min_length: 1024
+    # Responses past this bound are streamed identity-encoded, not buffered
+    # for compression.
+    max_buffer_bytes: 1048576
 
   timeout:
     # Cooperative handler deadline; streaming and upgrade requests bypass it.
     duration: 15s
+    # Past this bound the response is committed and streamed; the deadline
+    # no longer replaces it with a 504.
+    max_buffer_bytes: 1048576
 
   health:
     # Per-check budget for every contributed probe. Endpoint paths belong to the

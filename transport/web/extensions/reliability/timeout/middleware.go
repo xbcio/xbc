@@ -25,7 +25,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	c.SetContext(ctx)
 
 	original := c.Writer()
-	writer := newTimeoutWriter(original)
+	writer := newTimeoutWriter(original, state.config.maxBufferBytes)
 	c.SetWriter(writer)
 	defer func() {
 		recovered := recover()
@@ -121,18 +121,20 @@ func headerContainsToken(values []string, token string) bool {
 
 type timeoutWriter struct {
 	web.ResponseWriter
-	header      http.Header
-	body        bytes.Buffer
-	status      int
-	written     bool
-	passthrough bool
+	header         http.Header
+	body           bytes.Buffer
+	status         int
+	maxBufferBytes int
+	written        bool
+	passthrough    bool
 }
 
-func newTimeoutWriter(writer web.ResponseWriter) *timeoutWriter {
+func newTimeoutWriter(writer web.ResponseWriter, maxBufferBytes int) *timeoutWriter {
 	return &timeoutWriter{
 		ResponseWriter: writer,
 		header:         cloneHeader(writer.Header()),
 		status:         writer.Status(),
+		maxBufferBytes: maxBufferBytes,
 	}
 }
 
@@ -165,7 +167,26 @@ func (w *timeoutWriter) Write(data []byte) (int, error) {
 		return w.ResponseWriter.Write(data)
 	}
 	w.written = true
+	if w.body.Len()+len(data) > w.maxBufferBytes {
+		return w.overflow(data)
+	}
 	return w.body.Write(data)
+}
+
+// overflow commits the recorded status, headers, and buffered bytes, then
+// switches the response to passthrough and writes data directly. From that
+// point the response is on the wire, so the deadline no longer replaces it
+// with a 504; the request context is still cancelled and the handler may stop
+// on its own. A chunk that does not fit is never copied into the buffer, so
+// the body is neither truncated nor duplicated.
+func (w *timeoutWriter) overflow(data []byte) (int, error) {
+	err := w.commit()
+	w.body.Reset()
+	w.passthrough = true
+	if err != nil {
+		return 0, err
+	}
+	return w.ResponseWriter.Write(data)
 }
 
 func (w *timeoutWriter) Status() int {

@@ -6,20 +6,33 @@ import (
 	"time"
 )
 
-const defaultDuration = 15 * time.Second
+const (
+	defaultDuration = 15 * time.Second
+
+	// defaultMaxBufferBytes bounds the body each request may hold in this
+	// middleware's buffer before it is streamed instead. It covers ordinary
+	// JSON and HTML responses while keeping the worst-case per-request
+	// allocation small enough to reason about under concurrency.
+	defaultMaxBufferBytes = 1 << 20
+)
 
 // Config is bound from plugins.timeout. ExcludePaths supports exact paths and
 // trailing-* prefix rules. ExcludeRoutes matches web.RouteInfo.Name exactly.
+// MaxBufferBytes bounds the body buffered per response so a deadline can
+// replace it with one 504; a response that grows past it streams instead.
 type Config struct {
-	Duration      time.Duration `yaml:"duration"       default:"15s" validate:"gt=0"`
-	ExcludePaths  []string      `yaml:"exclude_paths"`
-	ExcludeRoutes []string      `yaml:"exclude_routes"`
+	Duration       time.Duration `yaml:"duration"         default:"15s" validate:"gt=0"`
+	MaxBufferBytes int           `yaml:"max_buffer_bytes" default:"1048576" validate:"gt=0"`
+	ExcludePaths   []string      `yaml:"exclude_paths"`
+	ExcludeRoutes  []string      `yaml:"exclude_routes"`
 }
 
 // DefaultConfig returns the same defaults applied by XBC's config binder.
-func DefaultConfig() Config { return Config{Duration: defaultDuration} }
+func DefaultConfig() Config {
+	return Config{Duration: defaultDuration, MaxBufferBytes: defaultMaxBufferBytes}
+}
 
-// Validate checks deadline and bypass selectors.
+// Validate checks deadline, buffer bound, and bypass selectors.
 func (c Config) Validate() error {
 	_, err := normalizeConfig(c)
 	return err
@@ -31,14 +44,18 @@ type pathRule struct {
 }
 
 type normalizedConfig struct {
-	duration      time.Duration
-	excludePaths  []pathRule
-	excludeRoutes map[string]struct{}
+	duration       time.Duration
+	maxBufferBytes int
+	excludePaths   []pathRule
+	excludeRoutes  map[string]struct{}
 }
 
 func normalizeConfig(c Config) (normalizedConfig, error) {
 	if c.Duration <= 0 {
 		return normalizedConfig{}, fmt.Errorf("timeout: duration must be greater than zero")
+	}
+	if c.MaxBufferBytes <= 0 {
+		return normalizedConfig{}, fmt.Errorf("timeout: max_buffer_bytes must be greater than zero")
 	}
 	paths := make([]pathRule, 0, len(c.ExcludePaths))
 	for _, raw := range c.ExcludePaths {
@@ -63,7 +80,12 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 		}
 		routes[value] = struct{}{}
 	}
-	return normalizedConfig{duration: c.Duration, excludePaths: paths, excludeRoutes: routes}, nil
+	return normalizedConfig{
+		duration:       c.Duration,
+		maxBufferBytes: c.MaxBufferBytes,
+		excludePaths:   paths,
+		excludeRoutes:  routes,
+	}, nil
 }
 
 func (c normalizedConfig) excludedPath(path string) bool {

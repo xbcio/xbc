@@ -165,7 +165,7 @@ func TestStreamingUpgradeAndExcludedPathsBypassTimeout(t *testing.T) {
 }
 
 func TestExcludedRouteNameMatcher(t *testing.T) {
-	cfg, err := normalizeConfig(Config{Duration: time.Second, ExcludeRoutes: []string{"stream.events"}})
+	cfg, err := normalizeConfig(Config{Duration: time.Second, MaxBufferBytes: defaultMaxBufferBytes, ExcludeRoutes: []string{"stream.events"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +194,9 @@ func pluginFor(t *testing.T, cfg Config) *Plugin {
 	if cfg.Duration == 0 {
 		cfg.Duration = time.Second
 	}
+	if cfg.MaxBufferBytes == 0 {
+		cfg.MaxBufferBytes = defaultMaxBufferBytes
+	}
 	normalized, err := normalizeConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +224,7 @@ func TestTimeoutWriterUnwrapReachesUnderlyingWriter(t *testing.T) {
 	c := enginetest.NewCtx(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	original := c.Writer()
-	writer := newTimeoutWriter(original)
+	writer := newTimeoutWriter(original, defaultMaxBufferBytes)
 
 	unwrapper, ok := any(writer).(interface{ Unwrap() http.ResponseWriter })
 	if !ok {

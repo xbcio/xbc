@@ -20,20 +20,28 @@ var defaultContentTypes = []string{
 	"application/vnd.ms-fontobject",
 }
 
-// Config is bound from plugins.gzip.
+// defaultMaxBufferBytes bounds the body each request may hold in this
+// middleware's buffer while compression is decided. Responses larger than the
+// bound are streamed identity-encoded instead of compressed.
+const defaultMaxBufferBytes = 1 << 20
+
+// Config is bound from plugins.gzip. MaxBufferBytes bounds the body buffered
+// per response before the response is sent identity-encoded.
 type Config struct {
-	Level        int      `yaml:"level"          default:"-1" validate:"min=-2,max=9"`
-	MinLength    int      `yaml:"min_length"     default:"1024" validate:"min=0"`
-	ContentTypes []string `yaml:"content_types"  default:"text/*,application/json,application/javascript,application/xml,application/xhtml+xml,application/wasm,image/svg+xml,font/ttf,font/otf,application/vnd.ms-fontobject"`
-	ExcludePaths []string `yaml:"exclude_paths"`
+	Level          int      `yaml:"level"            default:"-1" validate:"min=-2,max=9"`
+	MinLength      int      `yaml:"min_length"       default:"1024" validate:"min=0"`
+	MaxBufferBytes int      `yaml:"max_buffer_bytes" default:"1048576" validate:"gt=0"`
+	ContentTypes   []string `yaml:"content_types"    default:"text/*,application/json,application/javascript,application/xml,application/xhtml+xml,application/wasm,image/svg+xml,font/ttf,font/otf,application/vnd.ms-fontobject"`
+	ExcludePaths   []string `yaml:"exclude_paths"`
 }
 
 // DefaultConfig returns the same defaults applied by XBC's config binder.
 func DefaultConfig() Config {
 	return Config{
-		Level:        compressgzip.DefaultCompression,
-		MinLength:    1024,
-		ContentTypes: append([]string(nil), defaultContentTypes...),
+		Level:          compressgzip.DefaultCompression,
+		MinLength:      1024,
+		MaxBufferBytes: defaultMaxBufferBytes,
+		ContentTypes:   append([]string(nil), defaultContentTypes...),
 	}
 }
 
@@ -54,10 +62,11 @@ type mediaRule struct {
 }
 
 type normalizedConfig struct {
-	level        int
-	minLength    int
-	contentTypes []mediaRule
-	excludePaths []pathRule
+	level          int
+	minLength      int
+	maxBufferBytes int
+	contentTypes   []mediaRule
+	excludePaths   []pathRule
 }
 
 func normalizeConfig(c Config) (normalizedConfig, error) {
@@ -67,6 +76,9 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 	}
 	if c.MinLength < 0 {
 		return normalizedConfig{}, fmt.Errorf("gzip: min_length cannot be negative")
+	}
+	if c.MaxBufferBytes <= 0 {
+		return normalizedConfig{}, fmt.Errorf("gzip: max_buffer_bytes must be greater than zero")
 	}
 	if len(c.ContentTypes) == 0 {
 		return normalizedConfig{}, fmt.Errorf("gzip: content_types cannot be empty")
@@ -98,7 +110,13 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 		}
 		paths = append(paths, pathRule{value: value, prefix: prefix})
 	}
-	return normalizedConfig{level: c.Level, minLength: c.MinLength, contentTypes: mediaRules, excludePaths: paths}, nil
+	return normalizedConfig{
+		level:          c.Level,
+		minLength:      c.MinLength,
+		maxBufferBytes: c.MaxBufferBytes,
+		contentTypes:   mediaRules,
+		excludePaths:   paths,
+	}, nil
 }
 
 func (c normalizedConfig) matchesContentType(value string) bool {

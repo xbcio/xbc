@@ -224,7 +224,7 @@ func TestBufferingWriterUnwrapReachesUnderlyingWriter(t *testing.T) {
 	c := enginetest.NewCtx(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	original := c.Writer()
-	writer := newBufferingWriter(original)
+	writer := newBufferingWriter(original, defaultMaxBufferBytes)
 
 	unwrapper, ok := any(writer).(interface{ Unwrap() http.ResponseWriter })
 	if !ok {

@@ -26,8 +26,16 @@
 //	  gzip:
 //	    level: -1
 //	    min_length: 1024
+//	    max_buffer_bytes: 1048576
 //	    content_types: ["application/json", "text/*"]
 //	    exclude_paths: ["/exports/*"]
+//
+// Bodies are buffered up to max_buffer_bytes (1 MiB by default) so compression
+// can be decided from the complete response. A response that grows past the
+// bound is sent identity-encoded: this middleware adds no Content-Encoding and
+// preserves a handler-set Content-Length, while Vary: Accept-Encoding still
+// applies. Large responses are therefore not compressed by default; raise the
+// bound if a deployment wants them compressed.
 //
 // Compression is selected only when the request accepts gzip and the response
 // matches the configured size and media type. The middleware automatically

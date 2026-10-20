@@ -1436,6 +1436,20 @@ Shutdown has two halves that must be relied on independently. `Drain` refuses ne
 
 This lifecycle exists because `http.Server.Shutdown` cannot see a hijacked connection: it neither waits for one nor closes it. Without the registry, a boot that stops the server would leave both the socket and the handler blocked on it alive past shutdown, while readiness and the shutdown report claimed the process was draining. The plugin's `Drain` and `Stop` run in the runtime's drain and stop phases, after ingress has stopped accepting new requests.
 
+## Bounding the response buffers in timeout and gzip
+
+`plugins.timeout` holds a handler's response in memory so a deadline can replace the whole thing with one 504. `max_buffer_bytes` bounds that buffer per response: it defaults to `1048576` (1 MiB) and must be greater than zero. A response that grows past the bound is committed and streamed as it arrives, so the handler's status and bytes reach the client complete; the deadline still cancels the request context, but it can no longer replace the response with a 504. The bound is per response: the middleware never buffers more than `max_buffer_bytes` of body, though `bytes.Buffer` growth may reserve up to roughly twice that in capacity. A process can therefore hold on the order of the in-flight request count times `max_buffer_bytes`; raise it only for handlers whose complete responses must stay replaceable.
+
+`plugins.gzip` uses the same `max_buffer_bytes` bound (default `1048576`) while it decides from the complete body whether to compress. A response that grows past the bound is sent identity-encoded: this middleware adds no `Content-Encoding`, a handler-set `Content-Length` is preserved, and `Vary: Accept-Encoding` still applies. Large responses are therefore not compressed by default; raise the bound where compressing large payloads matters more than the additional per-request memory.
+
+```yaml
+plugins:
+  timeout:
+    max_buffer_bytes: 1048576
+  gzip:
+    max_buffer_bytes: 1048576
+```
+
 ## Mounting a handler that owns its own routing
 
 `router.Mount(prefix, h)` takes any `http.Handler` that already knows how to route: an integration library's handler, a file server, another framework's engine. The handler is handed the request with the prefix stripped, `http.StripPrefix` style -- `/flow/status` under a mount at `/flow` arrives as `/status`, the prefix itself arrives with an empty path -- and everything beneath the prefix belongs to it.

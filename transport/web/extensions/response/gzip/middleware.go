@@ -33,7 +33,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 	}
 
 	original := c.Writer()
-	writer := newBufferingWriter(original)
+	writer := newBufferingWriter(original, cfg.maxBufferBytes)
 	c.SetWriter(writer)
 	defer func() {
 		recovered := recover()
@@ -53,18 +53,20 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 
 type bufferingWriter struct {
 	web.ResponseWriter
-	header      http.Header
-	body        bytes.Buffer
-	status      int
-	written     bool
-	passthrough bool
+	header         http.Header
+	body           bytes.Buffer
+	status         int
+	maxBufferBytes int
+	written        bool
+	passthrough    bool
 }
 
-func newBufferingWriter(writer web.ResponseWriter) *bufferingWriter {
+func newBufferingWriter(writer web.ResponseWriter, maxBufferBytes int) *bufferingWriter {
 	return &bufferingWriter{
 		ResponseWriter: writer,
 		header:         cloneHeader(writer.Header()),
 		status:         writer.Status(),
+		maxBufferBytes: maxBufferBytes,
 	}
 }
 
@@ -97,7 +99,32 @@ func (w *bufferingWriter) Write(data []byte) (int, error) {
 		return w.ResponseWriter.Write(data)
 	}
 	w.written = true
+	if w.body.Len()+len(data) > w.maxBufferBytes {
+		return w.overflow(data)
+	}
 	return w.body.Write(data)
+}
+
+// overflow commits the recorded status, headers, and buffered bytes, then
+// switches the response to passthrough. Compression is decided from the
+// complete buffered body, so once the prefix is on the wire the response is
+// sent identity-encoded: no Content-Encoding is added, Vary stays as set
+// before the handler ran, and a handler-set Content-Length describes the
+// identity bytes. Content-Type is detected from the buffered prefix exactly as
+// finish does when the handler did not set one. The incoming chunk is written
+// directly; a chunk that does not fit is never copied into the buffer.
+func (w *bufferingWriter) overflow(data []byte) (int, error) {
+	body := w.body.Bytes()
+	if w.header.Get("Content-Type") == "" && len(body) > 0 {
+		w.header.Set("Content-Type", http.DetectContentType(body))
+	}
+	err := w.commit(body)
+	w.body.Reset()
+	w.passthrough = true
+	if err != nil {
+		return 0, err
+	}
+	return w.ResponseWriter.Write(data)
 }
 
 func (w *bufferingWriter) Status() int {

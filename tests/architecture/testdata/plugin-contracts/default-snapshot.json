@@ -346,6 +346,7 @@
       "defaults": {
         "Level": -1,
         "MinLength": 1024,
+        "MaxBufferBytes": 1048576,
         "ContentTypes": [
           "text/*",
           "application/json",
@@ -752,6 +753,7 @@
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/reliability/timeout.Config",
       "defaults": {
         "Duration": 15000000000,
+        "MaxBufferBytes": 1048576,
         "ExcludePaths": null,
         "ExcludeRoutes": null
       }

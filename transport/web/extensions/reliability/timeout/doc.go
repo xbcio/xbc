@@ -27,8 +27,16 @@
 //	plugins:
 //	  timeout:
 //	    duration: 5s
+//	    max_buffer_bytes: 1048576
 //	    exclude_paths: ["/events", "/downloads/*"]
 //	    exclude_routes: ["reports.stream"]
+//
+// Handler output is buffered up to max_buffer_bytes (1 MiB by default) so a
+// deadline can replace the complete response with one clean 504. A response
+// that grows past the bound is committed and streamed as it arrives; after
+// that the deadline no longer replaces it with a 504, though the handler still
+// observes context cancellation and can stop on its own. Raise the bound to
+// keep larger responses replaceable.
 //
 // Deadline handling is cooperative: handlers and the work they call must
 // observe the request context handed to them. For example:
