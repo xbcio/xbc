@@ -2,11 +2,17 @@ package starter_test
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	pluginmodel "github.com/xbcio/xbc/plugin/model"
+	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog"
+	"github.com/xbcio/xbc/transport/web/extensions/observability/requestid"
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/timeout"
+	"github.com/xbcio/xbc/transport/web/extensions/response/gzip"
+	"github.com/xbcio/xbc/transport/web/extensions/security/securityheaders"
 	"github.com/xbcio/xbc/transport/web/starter"
 )
 
@@ -64,6 +70,53 @@ func TestWebBaselineTurnsOnExactlyTheDormantMembers(t *testing.T) {
 
 	require.Equal(t, dormant, enabledPaths(t),
 		"the baseline must switch on every dormant member of the Bundles it selects, and nothing else")
+}
+
+// maxBaselineBufferBytes is the largest response body a capability the
+// baseline turns on may hold in memory per request. It matches the 1 MiB
+// default gzip and timeout ship; the ceiling is a separate statement so a
+// plugin default cannot raise the baseline's memory profile unexamined.
+const maxBaselineBufferBytes = 1 << 20
+
+// requireBoundedBufferDefault asserts that a buffering capability keeps its
+// own DefaultConfig finite and within the reviewed ceiling. The baseline writes
+// no sizing key, so this default is exactly what a starter user runs with.
+func requireBoundedBufferDefault(t *testing.T, key string, maxBufferBytes int) {
+	t.Helper()
+
+	require.Greaterf(t, maxBufferBytes, 0,
+		"plugins.%s buffers a response body; its DefaultConfig must bound the buffer", key)
+	require.LessOrEqualf(t, maxBufferBytes, maxBaselineBufferBytes,
+		"plugins.%s buffers a response body; its DefaultConfig must stay within the %d-byte baseline ceiling",
+		key, maxBaselineBufferBytes)
+}
+
+// TestWebBaselineKeepsBufferingDefaultsBounded pins the memory side of the
+// baseline. The defaults layer writes only enabled:true entries -- enabledPaths
+// asserts that -- so a buffering middleware runs with whatever its own
+// DefaultConfig declares. If one of those defaults rose above the reviewed
+// ceiling, every starter user's per-request memory ceiling would rise with it,
+// silently. The enabled set is derived from the defaults layer, and every
+// member must be classified here: one this test has not reasoned about fails
+// rather than passing unexamined.
+func TestWebBaselineKeepsBufferingDefaultsBounded(t *testing.T) {
+	for _, section := range enabledPaths(t) {
+		key := strings.TrimPrefix(section, "plugins.")
+		switch key {
+		case gzip.Key.String():
+			requireBoundedBufferDefault(t, key, gzip.DefaultConfig().MaxBufferBytes)
+		case timeout.Key.String():
+			requireBoundedBufferDefault(t, key, timeout.DefaultConfig().MaxBufferBytes)
+		case requestid.Key.String(), accesslog.Key.String(), securityheaders.Key.String():
+			// These members hold no response body, so they expose no
+			// memory-proportional default to bound.
+		default:
+			require.Failf(t, "unclassified baseline member",
+				"the baseline enables %q, but this test does not know whether it buffers a response body; "+
+					"known bounded members are gzip and timeout, known unbuffered members are requestid, accesslog, and securityheaders",
+				key)
+		}
+	}
 }
 
 // TestWebBaselineBundlesAreNotStartableOnTheirOwn pins the engine boundary. A

@@ -18,6 +18,11 @@
 // capability and its probes are assembled by the server itself or are already
 // active as soon as their Bundle is selected, so they need no entry here.
 //
+// Turning a capability on never sizes it: every bound stays with the plugin,
+// and the capabilities this baseline enables ship bounded defaults -- gzip and
+// the timeout middleware each buffer at most 1 MiB of a response body per
+// request before streaming.
+//
 // # What it deliberately leaves alone
 //
 // CORS, authentication and authorization policy, business response envelopes,
