@@ -45,9 +45,14 @@
 //		return nil
 //	}
 //
-// Missing, duplicate, malformed, or oversized inbound IDs are replaced. The
-// middleware runs before accesslog so access records can safely consume the
-// validated response header. Bundle and ordinary imports are side-effect free.
+// Missing, duplicate, malformed, or oversized inbound IDs are replaced. An
+// accepted inbound ID is validated -- one value, an allowed character set, at
+// most max_length bytes -- but it is still chosen by the client. A reverse
+// proxy in front of the service must therefore strip or overwrite the inbound
+// header; a deployment without such a trusted proxy should set
+// trust_incoming: false so every ID is generated server-side. The middleware
+// runs before accesslog so access records can safely consume the validated
+// response header. Bundle and ordinary imports are side-effect free.
 // Applications that prefer xbc.Run may opt into process-global composition
 // through this package's autoload leaf.
 package requestid

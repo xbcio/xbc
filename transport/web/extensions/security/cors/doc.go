@@ -31,10 +31,13 @@
 //	    allow_credentials: true
 //	    max_age: 12h
 //
-// Origins are exact serialized origins; the standalone "*" wildcard is also
-// supported. Wildcard origins and credentials are intentionally rejected as
-// an unsafe combination. New and DefaultConfig support direct construction by
-// custom hosts:
+// Origins are exact serialized origins. The standalone "*" wildcard is also
+// supported and is the default for a section that only sets
+// plugins.cors.enabled: it accepts every origin, so Start logs one advisory
+// warning naming plugins.cors.allow_origins. A cross-origin deployment should
+// name the browser origins that may call it. Wildcard origins and credentials
+// are intentionally rejected as an unsafe combination. New and DefaultConfig
+// support direct construction by custom hosts:
 //
 //	cfg := cors.DefaultConfig()
 //	cfg.AllowOrigins = []string{"https://app.example.com"}

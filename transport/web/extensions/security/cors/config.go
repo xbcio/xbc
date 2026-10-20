@@ -10,9 +10,15 @@ import (
 const defaultMaxAge = 12 * time.Hour
 
 // Config is bound from plugins.cors. AllowOrigins accepts exact serialized
-// origins and the standalone wildcard "*". Wildcard origins and credentials
-// are intentionally mutually exclusive: reflecting arbitrary origins while
-// allowing credentials would silently turn a typo into a cross-site data leak.
+// origins and the standalone wildcard "*", which is also the default for a
+// section that configures only plugins.cors.enabled, so an enabled CORS
+// section accepts every origin unless allow_origins names specific ones;
+// Start logs one advisory warning naming plugins.cors.allow_origins when
+// the compiled policy accepts every origin, and a cross-origin deployment
+// should name the browser origins that may call it. Wildcard origins and
+// credentials are intentionally mutually exclusive: reflecting arbitrary
+// origins while allowing credentials would silently turn a typo into a
+// cross-site data leak.
 type Config struct {
 	AllowOrigins     []string      `yaml:"allow_origins"      default:"*"                                      validate:"min=1,dive,required"`
 	AllowMethods     []string      `yaml:"allow_methods"      default:"GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS" validate:"min=1,dive,required"`

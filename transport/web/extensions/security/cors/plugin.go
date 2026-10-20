@@ -16,7 +16,10 @@ type Plugin struct {
 	policy *policy
 }
 
-var _ web.Middleware = (*Plugin)(nil)
+var (
+	_ web.Middleware = (*Plugin)(nil)
+	_ plugin.Runner  = (*Plugin)(nil)
+)
 
 var definition = plugin.DefineConfigured(
 	Key,
@@ -51,6 +54,30 @@ func prepareConfig(cfg Config) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// Start emits the one advisory warning a wildcard policy deserves: a service
+// whose compiled allow_origins accepts every origin lets any browser origin
+// that can reach it read its responses, which is easy to miss in a
+// configuration that only says plugins.cors.enabled: true. The warning names
+// the remedy and carries no request data. It is emitted once per process --
+// Start runs once -- and never fails: an explicit origin list is silent, and
+// CORS keeps working either way.
+func (p *Plugin) Start(ctx *plugin.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	p.mu.RLock()
+	compiled := p.policy
+	p.mu.RUnlock()
+	if compiled == nil || !compiled.anyOrigin {
+		return nil
+	}
+	ctx.Log().Warn("web: CORS allows every origin",
+		"allow_credentials", compiled.allowCredentials,
+		"remedy", "set plugins.cors.allow_origins to the browser origins allowed to call this service",
+	)
+	return nil
 }
 
 // Handler returns the middleware handler.

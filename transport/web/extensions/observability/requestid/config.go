@@ -13,9 +13,18 @@ const (
 
 // Config is bound from plugins.requestid.
 type Config struct {
-	Header        string `yaml:"header"         default:"X-Request-ID" validate:"required"`
-	TrustIncoming bool   `yaml:"trust_incoming" default:"true"`
-	MaxLength     int    `yaml:"max_length"     default:"128" validate:"min=16,max=1024"`
+	Header string `yaml:"header"         default:"X-Request-ID" validate:"required"`
+
+	// TrustIncoming accepts a well-formed inbound header as the request ID.
+	// The accepted value is validated for shape -- one value, an allowed
+	// character set, at most max_length bytes -- but it is still chosen by the
+	// client, so it can only be trusted when a reverse proxy in front of the
+	// service strips or overwrites the inbound header. A deployment without
+	// such a trusted proxy should set trust_incoming: false so every ID is
+	// generated server-side.
+	TrustIncoming bool `yaml:"trust_incoming" default:"true"`
+
+	MaxLength int `yaml:"max_length" default:"128" validate:"min=16,max=1024"`
 }
 
 // DefaultConfig returns the same defaults applied by XBC's config binder.

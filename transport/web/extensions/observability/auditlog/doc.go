@@ -38,9 +38,17 @@
 // Event cannot represent request bodies, response bodies, or an idempotency-key
 // value. The default client-IP extractor reads RemoteAddr and ignores spoofable
 // forwarding headers; inject WithClientIPExtractor only when it enforces the
-// deployment's trusted-proxy policy. Bundle and ordinary imports are side-effect
-// free. Applications that prefer xbc.Run may opt into process-global
-// composition through this package's autoload leaf.
+// deployment's trusted-proxy policy. The default request-ID extractor reads
+// the response header written by the requestid middleware, so the event
+// carries the same validated ID the framework wrote and the access log
+// recorded. Without requestid composed the field is empty: an inbound header
+// is never promoted to the framework request ID, because its value is
+// client-chosen. An application whose request ID lives elsewhere can inject
+// WithRequestIDExtractor; request_id_header must match plugins.requestid.header
+// when that setting is customized, since both name the same response header.
+// Bundle and ordinary imports are side-effect free. Applications that prefer
+// xbc.Run may opt into process-global composition through this package's
+// autoload leaf.
 //
 // With async dispatch, shutdown is split in two: Drain runs after the Web
 // server has stopped serving and writes every queued event to the sink within

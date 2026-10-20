@@ -59,7 +59,9 @@ type Option func(*options)
 func WithSink(sink Sink) Option { return func(options *options) { options.sink = sink } }
 
 // WithRequestIDExtractor supplies integration with an existing request-ID
-// middleware without importing it.
+// middleware without importing it. The default already reads the response
+// header the requestid middleware writes; replace it only when the
+// application's request ID lives somewhere else.
 func WithRequestIDExtractor(extractor RequestIDExtractor) Option {
 	return func(options *options) { options.requestID = extractor }
 }
@@ -130,7 +132,7 @@ func newPlugin(cfg Config, logger log.Logger, opts ...Option) (*Plugin, error) {
 	}
 	requestID := settings.requestID
 	if requestID == nil {
-		requestID = headerRequestID(config.requestIDHeader)
+		requestID = responseHeaderRequestID(config.requestIDHeader)
 	}
 	clientIP := settings.clientIP
 	if clientIP == nil {
@@ -311,10 +313,30 @@ func (state *runtimeState) skipped(route, rawPath string) bool {
 	return false
 }
 
-func headerRequestID(header string) RequestIDExtractor {
+// maxRequestIDLength is the framework-wide request ID bound: requestid
+// accepts a configured max_length up to 1024 and the access log records
+// values up to 1024 bytes, so the audit event must carry a published ID
+// across that whole range instead of dropping one the other two report.
+const maxRequestIDLength = 1024
+
+// responseHeaderRequestID reads the request ID the requestid middleware
+// published on the response. The response header, not the inbound request
+// header, is the source: an inbound value is chosen by the client, and
+// promoting it to the audit record's RequestID would let a caller pick the
+// identifier an operator correlates on while the access log carries the
+// framework's own value. Without requestid composed the header is absent and
+// the event's RequestID stays empty. The length check uses the framework-wide
+// 1024-byte bound, so an ID requestid accepted and the access log recorded is
+// never dropped here alone; it and the control-character check remain defence
+// in depth: an invalid response value yields an empty field rather than a
+// truncated one.
+func responseHeaderRequestID(header string) RequestIDExtractor {
 	return func(c *web.Ctx) string {
-		value := strings.TrimSpace(c.GetHeader(header))
-		if len(value) > 256 || containsControl(value) {
+		if c == nil || c.Writer() == nil {
+			return ""
+		}
+		value := strings.TrimSpace(c.Writer().Header().Get(header))
+		if len(value) > maxRequestIDLength || containsControl(value) {
 			return ""
 		}
 		return value

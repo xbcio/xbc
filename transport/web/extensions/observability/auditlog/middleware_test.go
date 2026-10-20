@@ -75,13 +75,16 @@ func TestRecordsRequiredMetadataWithoutBodiesOrKeyValue(t *testing.T) {
 	p := initialized(t, sink, nil)
 	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders/:id", Name: "create-order"}
 	engine := auditEngine(p, route, func(_ context.Context, c *web.Ctx) error {
+		// The default extractor reads the response header requestid writes;
+		// the inbound header below must not reach the event.
+		c.SetHeader("X-Request-ID", "req-123")
 		c.String(http.StatusCreated, "response-secret")
 		return nil
 	})
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/orders/42", strings.NewReader("request-secret"))
 	request.RemoteAddr = "192.0.2.10:1234"
-	request.Header.Set("X-Request-ID", "req-123")
+	request.Header.Set("X-Request-ID", "attacker-supplied")
 	request.Header.Set("Idempotency-Key", "never-log-this")
 	engine.ServeHTTP(recorder, request)
 	events, _ := sink.snapshot()
