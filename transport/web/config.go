@@ -132,19 +132,36 @@ const (
 // their own (framework-owned, admission-free) middleware chain; see
 // Router.Management for the registration side of that contract.
 //
-// Access control on the management listener is the bound address itself, not
-// an authentication policy: an operator surface with no business identity has
-// no principal to authenticate. A hostless address (":9091") therefore binds
-// the loopback interface, a host that is not loopback requires AllowRemote,
-// and AllowRemote in turn requires web.tls.cert_file, so a management port is
-// never exposed to a network unencrypted.
+// The bound address is where access control starts: a hostless address
+// (":9091") binds the loopback interface, and a host that is not loopback
+// requires AllowRemote. A management port reachable from the network must also
+// authenticate the operator, and mutual TLS is the only mechanism this section
+// offers: a non-loopback address with AllowRemote requires ClientCAFile (and
+// AllowRemote itself requires web.tls.cert_file), and the management listener
+// then requires and verifies a client certificate on every connection,
+// independently of the serving listener's web.tls.client_auth. There is
+// deliberately no token option and no switch that turns the client-certificate
+// requirement off -- a long-lived shared bearer secret in a configuration file
+// has no per-operator identity and no revocation -- so a deployment that cannot
+// issue client certificates keeps the listener on loopback and reaches it
+// through an authenticated proxy or an SSH tunnel.
 type ManagementConfig struct {
 	Addr string `yaml:"addr" validate:"omitempty,hostname_port"`
 	// AllowRemote permits binding a management address that is not loopback.
-	// It is refused without a serving certificate, because the alternative --
-	// an unauthenticated operator surface reachable from the network in
-	// cleartext -- is never what an operator meant to configure.
+	// It is refused without a serving certificate and a client CA bundle,
+	// because the alternative -- an unauthenticated operator surface reachable
+	// from the network -- is never what an operator meant to configure.
 	AllowRemote bool `yaml:"allow_remote"`
+	// ClientCAFile is the PEM bundle management client certificates are
+	// verified against. Setting it makes the management listener require and
+	// verify a client certificate on every connection, from a TLS config
+	// cloned from the serving listener's, so web.tls.client_auth keeps its
+	// meaning for business traffic. It requires web.tls.cert_file -- otherwise
+	// the management listener terminates no TLS to verify a client certificate
+	// on -- and management.addr, because a CA with no listener protects
+	// nothing. AllowRemote requires it, so a remotely reachable management
+	// listener never answers an unauthenticated operator.
+	ClientCAFile string `yaml:"client_ca_file"`
 }
 
 // TLSConfig terminates TLS on the serving listener from a certificate pair on
@@ -152,9 +169,10 @@ type ManagementConfig struct {
 // shape a deployment behind a TLS-terminating proxy wants; setting it is what
 // moves termination into this process.
 //
-// The management listener (ManagementConfig) reuses the same material, so a
-// deployment gets one certificate, one client-auth policy, and one reload
-// path for both ports.
+// The management listener (ManagementConfig) reuses the same certificate pair
+// and reload path, and may layer a stricter client-auth policy on top through
+// management.client_ca_file without changing what this section declares for
+// business traffic.
 //
 // HTTP2 adds "h2" to the ALPN protocols the listener advertises. With it
 // enabled the offered list is ["h2", "http/1.1"] -- HTTP/2 preferred, HTTP/1.1
@@ -315,9 +333,16 @@ func checkPreDrainBudget(delay, budget time.Duration) error {
 // rule spans both: an address reachable from the network is only permissible
 // when the process terminates TLS itself.
 func (m ManagementConfig) validate(tlsConfig TLSConfig) error {
+	clientCAFile := strings.TrimSpace(m.ClientCAFile)
 	if strings.TrimSpace(m.Addr) == "" {
 		if m.AllowRemote {
 			return fmt.Errorf("web: management.allow_remote is set but management.addr is empty, so there is no management listener to permit")
+		}
+		if clientCAFile != "" {
+			return fmt.Errorf(
+				"web: management.client_ca_file is set but management.addr is empty, so there is no management listener to protect\n" +
+					"  → a CA bundle with no listener has nothing to verify; set management.addr to move the operator endpoints onto their own listener, or remove management.client_ca_file",
+			)
 		}
 		return nil
 	}
@@ -331,16 +356,33 @@ func (m ManagementConfig) validate(tlsConfig TLSConfig) error {
 	if port == "" {
 		return fmt.Errorf("web: management.addr %q must name a port", m.Addr)
 	}
-	if !managementHostIsLoopback(host) && !m.AllowRemote {
+	loopback := managementHostIsLoopback(host)
+	if !loopback && !m.AllowRemote {
 		return fmt.Errorf(
 			"web: management.addr %q binds an address that is not loopback\n"+
 				"  → the management listener carries no business authentication, so its access control is the bound address; set management.allow_remote: true (which requires web.tls.cert_file) to expose it, or leave the host out to bind loopback",
 			m.Addr)
 	}
+	// The certificate check comes before the client-CA rules: a remote listener
+	// without in-process TLS is refused for what it lacks first, so the message
+	// an operator sees names the serving certificate rather than a client CA
+	// that would have nothing to verify against.
 	if m.AllowRemote && strings.TrimSpace(tlsConfig.CertFile) == "" {
 		return fmt.Errorf(
 			"web: management.allow_remote requires web.tls.cert_file\n" +
 				"  → a remotely reachable management listener is an unauthenticated operator surface; the certificate is what keeps it off a cleartext network",
+		)
+	}
+	if clientCAFile != "" && strings.TrimSpace(tlsConfig.CertFile) == "" {
+		return fmt.Errorf(
+			"web: management.client_ca_file is set but web.tls.cert_file is empty, so there is no in-process TLS to require a client certificate on\n" +
+				"  → the management listener only terminates TLS when web.tls.cert_file and web.tls.key_file are configured; enable them, or remove management.client_ca_file",
+		)
+	}
+	if !loopback && m.AllowRemote && clientCAFile == "" {
+		return fmt.Errorf(
+			"web: management.allow_remote requires management.client_ca_file\n" +
+				"  → a remotely reachable management listener must authenticate the operator; issue management client certificates and name their PEM bundle in management.client_ca_file, or bind loopback and reach the listener through an authenticated proxy or an SSH tunnel",
 		)
 	}
 	return nil

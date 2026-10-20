@@ -99,7 +99,7 @@ func (c TLSConfig) serverTLSConfig(logger log.Logger) (*tls.Config, error) {
 		NextProtos:     c.nextProtos(),
 	}
 	if path := strings.TrimSpace(c.ClientCAFile); path != "" {
-		pool, err := loadClientCAs(path)
+		pool, err := loadClientCAs("tls.client_ca_file", path)
 		if err != nil {
 			return nil, err
 		}
@@ -299,19 +299,22 @@ func readCertState(certFile, keyFile string) (certState, error) {
 }
 
 // loadClientCAs reads the PEM bundle client certificates are verified
-// against. An empty or malformed bundle is an error rather than an empty pool:
-// with an empty pool every client certificate fails verification, so a
-// deployment would start and then reject every client at the handshake -- a
-// failure an operator would have to infer from other people's connection
-// errors.
-func loadClientCAs(path string) (*x509.CertPool, error) {
+// against. The setting name is a parameter because the same bundle contract
+// serves both listeners: the serving listener reports tls.client_ca_file, while
+// the management listener reports management.client_ca_file, and an operator
+// has to be pointed at the key they actually configured. An empty or malformed
+// bundle is an error rather than an empty pool: with an empty pool every client
+// certificate fails verification, so a deployment would start and then reject
+// every client at the handshake -- a failure an operator would have to infer
+// from other people's connection errors.
+func loadClientCAs(setting, path string) (*x509.CertPool, error) {
 	pem, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("xbc: web tls.client_ca_file: %w", err)
+		return nil, fmt.Errorf("xbc: web %s: %w", setting, err)
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("xbc: web tls.client_ca_file %s contains no PEM certificate", path)
+		return nil, fmt.Errorf("xbc: web %s %s contains no PEM certificate", setting, path)
 	}
 	return pool, nil
 }

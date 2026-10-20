@@ -139,13 +139,17 @@ web:
   # metrics and pprof on the address above, exactly as if this section did not
   # exist. Configuring an address moves them to their own listener, which
   # answers while the business port is saturated and drains after it; health
-  # probes stay here either way. That listener is protected by where it binds
-  # rather than by a policy: a hostless address binds loopback, and any other
-  # address requires allow_remote, which in turn requires web.tls.cert_file.
+  # probes stay here either way. A hostless address binds loopback. Any other
+  # address requires allow_remote, web.tls.cert_file, and
+  # management.client_ca_file: a management port reachable from the network
+  # must authenticate the operator, and mutual TLS is the only mechanism this
+  # section offers. The management listener then requires a client certificate
+  # the bundle verifies; business traffic keeps web.tls.client_auth.
   #
   # management:
   #   addr: ":9091"
   #   allow_remote: false
+  #   client_ca_file: ""                    # required with allow_remote
 
   # Authentication policy: three-tier precedence model.
   #   Tier 1 — web.security.policies rules (highest, overrides route declarations)

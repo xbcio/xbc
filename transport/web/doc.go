@@ -207,6 +207,22 @@
 // to accept ordinary traffic, and is not acknowledgement that a load balancer
 // has withdrawn the instance.
 //
+// # Management plane
+//
+// Routes contributed through Router.Management are served on a second engine.
+// With web.management.addr empty -- the default -- they stay on the serving
+// listener and its policy. Configuring an address binds a second listener whose
+// chain carries only the panic boundary: no authentication, no admission gate,
+// and no contributed middleware. A hostless address binds loopback, and a
+// non-loopback address requires management.allow_remote, web.tls.cert_file, and
+// management.client_ca_file. With a client CA configured, the management
+// listener requires and verifies a client certificate from a TLS configuration
+// cloned from the serving one -- certificate rotation and ALPN still apply --
+// while business traffic keeps whatever web.tls.client_auth declares. There is
+// no token option and no switch that turns the client-certificate requirement
+// off. The management plane drains after the serving plane and shares its
+// shutdown deadline.
+//
 // # Listener provider
 //
 // A plugin may export ListenerProvider to supply the sockets both planes serve

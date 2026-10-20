@@ -109,8 +109,9 @@ func TestManagementAndTLSBindFromTheWebSection(t *testing.T) {
 	environment, err := config.NewEnvironment(map[string]any{
 		"web": map[string]any{
 			"management": map[string]any{
-				"addr":         "127.0.0.1:9091",
-				"allow_remote": false,
+				"addr":           "127.0.0.1:9091",
+				"allow_remote":   false,
+				"client_ca_file": "/etc/tls/management-ca.crt",
 			},
 			"tls": map[string]any{
 				"cert_file":       "/etc/tls/tls.crt",
@@ -132,6 +133,7 @@ func TestManagementAndTLSBindFromTheWebSection(t *testing.T) {
 	require.NoError(t, bound.Validate())
 	assert.Equal(t, "127.0.0.1:9091", bound.Management.Addr)
 	assert.False(t, bound.Management.AllowRemote)
+	assert.Equal(t, "/etc/tls/management-ca.crt", bound.Management.ClientCAFile)
 	assert.Equal(t, "/etc/tls/tls.crt", bound.TLS.CertFile)
 	assert.Equal(t, "/etc/tls/tls.key", bound.TLS.KeyFile)
 	assert.True(t, bound.TLS.HTTP2)
@@ -166,7 +168,158 @@ func TestConfigAcceptsAManagementListenerOnlyBehindItsAccessRule(t *testing.T) {
 	cfg.Management.Addr = "0.0.0.0:9091"
 	cfg.Management.AllowRemote = true
 	cfg.TLS = TLSConfig{CertFile: "/etc/tls/tls.crt", KeyFile: "/etc/tls/tls.key"}
-	assert.NoError(t, cfg.Validate(), "a remote management address with TLS is the declared-remote case")
+	cfg.Management.ClientCAFile = "/etc/tls/management-ca.pem"
+	assert.NoError(t, cfg.Validate(), "a remote management address with TLS and client certificates is the declared-remote case")
+}
+
+// TestManagementClientCAValidationMatrix walks every row of the management
+// access matrix in .claude/specs/2026-10-20-web-management-remote-auth.md.
+// The refusals that existed before management.client_ca_file are compared
+// verbatim: they are the messages an operator already acts on, and a check
+// inserted in front of one would silently replace the remedy with a different
+// complaint. The rows this change adds are asserted on the setting each one
+// has to name and the remedy it offers -- the outcome a remote management
+// surface gets is a startup failure, so the message is the feature.
+func TestManagementClientCAValidationMatrix(t *testing.T) {
+	const (
+		certFile = "/etc/tls/tls.crt"
+		caFile   = "/etc/tls/management-ca.pem"
+	)
+	const (
+		allowRemoteNeedsAddress = "web: management.allow_remote is set but management.addr is empty, so there is no management listener to permit"
+		allowRemoteNeedsCert    = "web: management.allow_remote requires web.tls.cert_file\n" +
+			"  → a remotely reachable management listener is an unauthenticated operator surface; the certificate is what keeps it off a cleartext network"
+		remoteNeedsAllowRemote = "web: management.addr \"0.0.0.0:9091\" binds an address that is not loopback\n" +
+			"  → the management listener carries no business authentication, so its access control is the bound address; set management.allow_remote: true (which requires web.tls.cert_file) to expose it, or leave the host out to bind loopback"
+	)
+
+	tests := []struct {
+		name        string
+		addr        string
+		allowRemote bool
+		certFile    string
+		clientCA    string
+		wantExact   string
+		wantParts   []string
+	}{
+		{
+			name: "default: no management listener",
+		},
+		{
+			name:      "client CA without a management address",
+			clientCA:  caFile,
+			wantParts: []string{"management.client_ca_file", "management.addr", "no management listener to protect"},
+		},
+		{
+			name:        "allow_remote without a management address",
+			allowRemote: true,
+			wantExact:   allowRemoteNeedsAddress,
+		},
+		{
+			name:        "allow_remote and a client CA without a management address",
+			allowRemote: true,
+			clientCA:    caFile,
+			wantExact:   allowRemoteNeedsAddress,
+		},
+		{
+			name: "loopback without TLS",
+			addr: "127.0.0.1:9091",
+		},
+		{
+			name:     "loopback with serving TLS",
+			addr:     "127.0.0.1:9091",
+			certFile: certFile,
+		},
+		{
+			name:     "loopback with serving TLS and client certificates",
+			addr:     "127.0.0.1:9091",
+			certFile: certFile,
+			clientCA: caFile,
+		},
+		{
+			name:      "loopback client CA without serving TLS",
+			addr:      "127.0.0.1:9091",
+			clientCA:  caFile,
+			wantParts: []string{"management.client_ca_file", "web.tls.cert_file", "no in-process TLS to require a client certificate on"},
+		},
+		{
+			// allow_remote is a permission, not an address: on a listener that
+			// still binds loopback it is inert, and the existing row that
+			// accepts it must keep accepting it.
+			name:        "loopback allow_remote with serving TLS but no client CA",
+			addr:        ":9091",
+			allowRemote: true,
+			certFile:    certFile,
+		},
+		{
+			name:      "remote without allow_remote",
+			addr:      "0.0.0.0:9091",
+			wantExact: remoteNeedsAllowRemote,
+		},
+		{
+			name:      "remote with TLS but without allow_remote",
+			addr:      "0.0.0.0:9091",
+			certFile:  certFile,
+			clientCA:  caFile,
+			wantExact: remoteNeedsAllowRemote,
+		},
+		{
+			name:        "remote allow_remote without serving TLS",
+			addr:        "0.0.0.0:9091",
+			allowRemote: true,
+			wantExact:   allowRemoteNeedsCert,
+		},
+		{
+			// The serving certificate is refused before the client CA is
+			// considered, so the operator fixes the listener that never
+			// terminates TLS rather than a CA that would have nothing to
+			// verify against.
+			name:        "remote allow_remote with a client CA but without serving TLS",
+			addr:        "0.0.0.0:9091",
+			allowRemote: true,
+			clientCA:    caFile,
+			wantExact:   allowRemoteNeedsCert,
+		},
+		{
+			name:        "remote allow_remote without a client CA",
+			addr:        "0.0.0.0:9091",
+			allowRemote: true,
+			certFile:    certFile,
+			wantParts:   []string{"management.allow_remote requires management.client_ca_file", "authenticate the operator", "loopback"},
+		},
+		{
+			name:        "remote allow_remote with both files",
+			addr:        "0.0.0.0:9091",
+			allowRemote: true,
+			certFile:    certFile,
+			clientCA:    caFile,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Management.Addr = test.addr
+			cfg.Management.AllowRemote = test.allowRemote
+			cfg.Management.ClientCAFile = test.clientCA
+			if test.certFile != "" {
+				cfg.TLS = TLSConfig{CertFile: test.certFile, KeyFile: "/etc/tls/tls.key"}
+			}
+
+			err := cfg.Validate()
+			if test.wantExact == "" && len(test.wantParts) == 0 {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			if test.wantExact != "" {
+				assert.Equal(t, test.wantExact, err.Error(),
+					"a refusal that already existed must keep its message, check order included")
+			}
+			for _, part := range test.wantParts {
+				assert.Contains(t, err.Error(), part)
+			}
+		})
+	}
 }
 
 // TestManagementAddressBindsThroughItsTag covers the binder path for the

@@ -34,6 +34,20 @@ func TestServerTLSConfigRefusesHTTP2WithoutACertificate(t *testing.T) {
 		"the direct-construction path must report exactly what the config validator reports")
 }
 
+// TestManagementTLSConfigRefusesAClientCAWithoutServingTLS is the
+// direct-construction defense for management.client_ca_file: Config.Validate
+// refuses the pair, but a Config built past the validator must still fail with
+// an explanation rather than panicking inside Clone, where there is no serving
+// config to clone.
+func TestManagementTLSConfigRefusesAClientCAWithoutServingTLS(t *testing.T) {
+	config, err := managementTLSConfig(nil, "/etc/tls/management-ca.pem")
+
+	require.Error(t, err)
+	assert.Nil(t, config, "a refused configuration must not produce a listener config")
+	assert.Contains(t, err.Error(), "management.client_ca_file")
+	assert.Contains(t, err.Error(), "web.tls.cert_file")
+}
+
 // TestServerTLSConfigRefusesHTTP2WithACBCSuite covers the other refusable h2
 // shape on the direct-construction path. The CBC check lives in cipherSuiteIDs,
 // which the builder calls before it touches the filesystem, so the fake paths

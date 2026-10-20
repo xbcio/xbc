@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -436,6 +437,50 @@ func nilListener(ln net.Listener) bool {
 	}
 }
 
+// managementTLSConfig derives what the management listener is wrapped with
+// from the serving one. Without a client CA bundle it is the serving config
+// itself, which is what keeps the historical behaviour -- one certificate and
+// one client-auth policy on both ports -- byte-identical. With one set, the
+// management listener gets its own config: a clone of the serving config, so
+// GetCertificate and the ALPN list keep certificate rotation and HTTP/2
+// working identically, with ClientAuth and ClientCAs replaced so every
+// management connection must present a certificate the bundle verifies. The
+// clone is what confines that demand to the management listener; mutating the
+// serving config would turn remote management into mutual TLS on business
+// traffic.
+//
+// The bundle is read here, where the listener is assembled, rather than in the
+// I/O-free validator: an unreadable or non-PEM file is a startup error naming
+// management.client_ca_file and the file, the way a serving-listener failure
+// names tls.client_ca_file.
+func managementTLSConfig(serving *tls.Config, clientCAFile string) (*tls.Config, error) {
+	// Trim before loading, exactly as the serving listener does with
+	// tls.client_ca_file: the validator reads presence through TrimSpace, so a
+	// padded path is the same declaration, and loading it untrimmed would fail
+	// Start on a path that only differs by the spaces around it.
+	clientCAFile = strings.TrimSpace(clientCAFile)
+	if clientCAFile == "" {
+		return serving, nil
+	}
+	if serving == nil {
+		// Config.Validate refuses this pair, so reaching it means a Config was
+		// built past the validator. Refusing with the same outcome the validator
+		// reports is clearer than a nil dereference inside Clone.
+		return nil, fmt.Errorf(
+			"xbc: web management.client_ca_file is set but web.tls.cert_file is empty, so there is no in-process TLS to require a client certificate on\n" +
+				"  → the management listener only terminates TLS when web.tls.cert_file and web.tls.key_file are configured; enable them, or remove management.client_ca_file",
+		)
+	}
+	pool, err := loadClientCAs("management.client_ca_file", clientCAFile)
+	if err != nil {
+		return nil, err
+	}
+	management := serving.Clone()
+	management.ClientAuth = tls.RequireAndVerifyClientCert
+	management.ClientCAs = pool
+	return management, nil
+}
+
 // Start assembles the immutable request pipeline, binds the listener, and
 // submits the serving loop while managed-task admission is open. The pipeline is
 // led by the process-level in-flight gate, the one stage no contributed
@@ -468,20 +513,28 @@ func (s *Server) Start(ctx *plugin.Context) error {
 	// serverTLSConfig for why HSTS needs no code of ours behind this.
 	ln = wrapTLS(ln, pipeline.tlsConfig)
 
-	// The management listener reuses the same TLS configuration, so a
-	// deployment terminates TLS with one certificate pair, one client-auth
-	// policy, and one reload path on both ports. Its address is the resolved
+	// The management listener terminates the same certificate pair as the
+	// serving one, but it can carry a stricter client-auth policy: with
+	// management.client_ca_file set, only this listener requires and verifies a
+	// client certificate (see managementTLSConfig). Its address is the resolved
 	// one, not the configured spelling: see ManagementConfig.bindAddr for why a
-	// hostless address binds loopback rather than every interface.
+	// hostless address binds loopback rather than every interface. The CA
+	// bundle is loaded before the second socket is bound, so a bad bundle fails
+	// the Start with the serving listener -- bound above -- closed again.
 	managementEngine := pipeline.managementEngine
 	var managementLn net.Listener
 	if managementEngine != nil {
+		managementTLS, tlsErr := managementTLSConfig(pipeline.tlsConfig, cfg.Management.ClientCAFile)
+		if tlsErr != nil {
+			_ = ln.Close()
+			return tlsErr
+		}
 		managementLn, err = s.listen(cfg.Management.bindAddr(), nil, true)
 		if err != nil {
 			_ = ln.Close()
 			return err
 		}
-		managementLn = wrapTLS(managementLn, pipeline.tlsConfig)
+		managementLn = wrapTLS(managementLn, managementTLS)
 	}
 
 	s.mu.Lock()
