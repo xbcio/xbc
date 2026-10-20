@@ -2,6 +2,7 @@ package idempotency
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -93,6 +94,339 @@ func TestCompletedResponseIsSafelyReplayed(t *testing.T) {
 	}
 }
 
+// TestConcreteRequestPathsAreIndependentIdempotencyScopes locks the scope of a
+// stored response to the path the engine actually routed, not to the template
+// that matched it. One subject reusing one Idempotency-Key for two different
+// order ids must execute both cancellations; only a repeat of the exact same
+// concrete path may replay.
+func TestConcreteRequestPathsAreIndependentIdempotencyScopes(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders/{id}/cancel", Idempotent: true}
+	var calls atomic.Int32
+	engine := enginetest.New()
+	engine.Handle(route.Method, route.Path, []web.Handler{
+		func(_ context.Context, c *web.Ctx) error {
+			c.Set(currentRouteKeyForTest, route)
+			web.SetPrincipal(c, authentication.Principal{Subject: "alice", AuthMethod: "test"})
+			c.Next()
+			return nil
+		},
+		p.Handler(),
+		func(_ context.Context, c *web.Ctx) error {
+			calls.Add(1)
+			c.String(http.StatusOK, "call-%d", calls.Load())
+			return nil
+		},
+	})
+	first := performPath(engine, "/orders/1/cancel", "cancel-key", `{}`)
+	second := performPath(engine, "/orders/2/cancel", "cancel-key", `{}`)
+	if first.Body.String() != "call-1" || second.Body.String() != "call-2" {
+		t.Fatalf("first=%q second=%q, want each concrete path to execute", first.Body.String(), second.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want 2", calls.Load())
+	}
+	if got := second.Result().Header.Get("Idempotency-Replayed"); got != "" {
+		t.Fatalf("second concrete path replayed the first response: %q", got)
+	}
+	repeat := performPath(engine, "/orders/1/cancel", "cancel-key", `{}`)
+	if repeat.Body.String() != "call-1" || repeat.Result().Header.Get("Idempotency-Replayed") != "true" {
+		t.Fatalf("repeat body=%q replay=%q, want the first concrete path replayed", repeat.Body.String(), repeat.Result().Header.Get("Idempotency-Replayed"))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d after replay, want 2", calls.Load())
+	}
+}
+
+// TestReplayRestoresWhitelistedHeadersAndNeverSetCookie locks the replay
+// contract for headers: a retry must observe the same Location, validators and
+// caching directives the original response carried, while Set-Cookie is never
+// reattached to a later request.
+func TestReplayRestoresWhitelistedHeadersAndNeverSetCookie(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	var calls atomic.Int32
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
+		calls.Add(1)
+		c.SetHeader("Location", "/orders/42")
+		c.SetHeader("Content-Language", "en")
+		c.SetHeader("Content-Disposition", `attachment; filename="order.json"`)
+		c.SetHeader("ETag", `"v42"`)
+		c.SetHeader("Last-Modified", "Wed, 21 Oct 2015 07:28:00 GMT")
+		c.SetHeader("Cache-Control", "no-store")
+		c.SetHeader("Set-Cookie", "session=original")
+		c.Data(http.StatusCreated, "application/json", []byte(`{"id":42}`))
+		return nil
+	})
+	first := perform(engine, "header-replay-key", `{}`)
+	second := perform(engine, "header-replay-key", `{}`)
+	if first.Code != http.StatusCreated || second.Code != http.StatusCreated || calls.Load() != 1 {
+		t.Fatalf("first=%d second=%d calls=%d", first.Code, second.Code, calls.Load())
+	}
+	if got := first.Result().Header.Get("Set-Cookie"); got != "session=original" {
+		t.Fatalf("original response lost its Set-Cookie: %q", got)
+	}
+	want := map[string]string{
+		"Content-Type":        "application/json",
+		"Location":            "/orders/42",
+		"Content-Language":    "en",
+		"Content-Disposition": `attachment; filename="order.json"`,
+		"ETag":                `"v42"`,
+		"Last-Modified":       "Wed, 21 Oct 2015 07:28:00 GMT",
+		"Cache-Control":       "no-store",
+	}
+	replayed := second.Result().Header
+	for name, value := range want {
+		if got := replayed.Get(name); got != value {
+			t.Fatalf("replayed %s = %q, want %q", name, got, value)
+		}
+	}
+	if got := replayed.Values("Set-Cookie"); len(got) != 0 {
+		t.Fatalf("replayed Set-Cookie = %q, want none", got)
+	}
+	if got := replayed.Get("Idempotency-Replayed"); got != "true" {
+		t.Fatalf("Idempotency-Replayed = %q", got)
+	}
+}
+
+// TestReplayRefusesStoreResponsesWithUnsafeHeaders locks the replay validation
+// boundary: a Store implementation (or a corrupted record) cannot inject
+// Set-Cookie or an arbitrary header into a replayed response.
+func TestReplayRefusesStoreResponsesWithUnsafeHeaders(t *testing.T) {
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	cases := map[string]Response{
+		"set-cookie": responseWithHeader("Set-Cookie", "session=stolen"),
+		"unknown":    responseWithHeader("X-Injected", "value"),
+		"control":    responseWithHeader("Location", "/ok\r\nX-Injected: value"),
+	}
+	for name, response := range cases {
+		p := initializedPlugin(t, nil, WithStore(completedStore{response: response}))
+		if got := perform(engineFor(p, route, noContent), "unsafe-header-"+name, "").Code; got != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status = %d, want 503", name, got)
+		}
+	}
+}
+
+func responseWithHeader(name, value string) Response {
+	header := http.Header{}
+	header.Set(name, value)
+	return Response{Status: http.StatusOK, Header: header}
+}
+
+// TestReplayDropsCapturedHeaderValuesWithControlCharacters proves capture
+// sanitizes at the source: a handler cannot poison its own record, so the
+// record is still replayable and simply omits the unusable value.
+func TestReplayDropsCapturedHeaderValuesWithControlCharacters(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
+		c.SetHeader("Location", "/ok\r\nX-Injected: value")
+		c.SetHeader("Cache-Control", "no-store")
+		c.String(http.StatusOK, "done")
+		return nil
+	})
+	if got := perform(engine, "control-header-key", "").Code; got != http.StatusOK {
+		t.Fatalf("first = %d", got)
+	}
+	replayed := perform(engine, "control-header-key", "").Result()
+	if replayed.StatusCode != http.StatusOK {
+		t.Fatalf("replay = %d, want a normal replay", replayed.StatusCode)
+	}
+	if got := replayed.Header.Get("Location"); got != "" {
+		t.Fatalf("replayed Location = %q, want the unsafe value dropped at capture", got)
+	}
+	if got := replayed.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("replayed Cache-Control = %q, want no-store", got)
+	}
+}
+
+// TestCaptureAppliesReplayHeaderBounds locks that capture applies the same
+// bounds replay validation enforces. A whitelisted header the handler sets
+// beyond those bounds must be dropped when the record is written, not stored
+// and then rejected on every retry: the record has to stay replayable.
+func TestCaptureAppliesReplayHeaderBounds(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	var calls atomic.Int32
+	oversized := "/" + strings.Repeat("a", maxReplayHeaderValueBytes)
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
+		calls.Add(1)
+		c.SetHeader("Location", oversized)
+		c.SetHeader("ETag", `"kept"`)
+		c.String(http.StatusOK, "done")
+		return nil
+	})
+	if got := perform(engine, "oversized-header-key", "").Code; got != http.StatusOK {
+		t.Fatalf("first = %d", got)
+	}
+	replay := perform(engine, "oversized-header-key", "")
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay = %d, want the oversized value dropped at capture", replay.Code)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want the record replayed", calls.Load())
+	}
+	if got := replay.Result().Header.Get("Location"); got != "" {
+		t.Fatalf("replayed Location = %d bytes, want it dropped at capture", len(got))
+	}
+	if got := replay.Result().Header.Get("ETag"); got != `"kept"` {
+		t.Fatalf("replayed ETag = %q, want the in-bounds value kept", got)
+	}
+}
+
+// TestCaptureAppliesReplayHeaderTotalBound covers the aggregate bound: values
+// that individually fit but together exceed the total budget are dropped at
+// capture so the stored record remains replayable.
+func TestCaptureAppliesReplayHeaderTotalBound(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	value := strings.Repeat("b", maxReplayHeaderValueBytes)
+	var calls atomic.Int32
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
+		calls.Add(1)
+		for range 9 {
+			c.Writer().Header().Add("Cache-Control", value)
+		}
+		c.String(http.StatusOK, "done")
+		return nil
+	})
+	if got := perform(engine, "oversized-total-key", "").Code; got != http.StatusOK {
+		t.Fatalf("first = %d", got)
+	}
+	replay := perform(engine, "oversized-total-key", "")
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay = %d, want the over-budget values dropped at capture", replay.Code)
+	}
+	values := replay.Result().Header.Values("Cache-Control")
+	if len(values) == 0 || len(values) >= 9 {
+		t.Fatalf("replayed Cache-Control values = %d, want some but not all", len(values))
+	}
+	total := 0
+	for _, value := range values {
+		total += len("Cache-Control") + len(value)
+	}
+	if total > maxReplayHeaderTotalBytes {
+		t.Fatalf("replayed header total = %d, want <= %d", total, maxReplayHeaderTotalBytes)
+	}
+}
+
+// TestCaptureDropsOversizedContentType covers the Content-Type field, which is
+// persisted separately but bounded by the same replay validation.
+func TestCaptureDropsOversizedContentType(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	var calls atomic.Int32
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
+		calls.Add(1)
+		c.SetHeader("Content-Type", strings.Repeat("c", maxReplayHeaderValueBytes+1))
+		c.Status(http.StatusOK)
+		return nil
+	})
+	if got := perform(engine, "oversized-content-type", "").Code; got != http.StatusOK {
+		t.Fatalf("first = %d", got)
+	}
+	replay := perform(engine, "oversized-content-type", "")
+	if replay.Code != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("replay = %d calls = %d, want a successful replay", replay.Code, calls.Load())
+	}
+	if got := replay.Result().Header.Get("Content-Type"); got != "" {
+		t.Fatalf("replayed Content-Type = %d bytes, want it dropped at capture", len(got))
+	}
+}
+
+// TestReplayRefusesHeaderValuesBeyondReplayBounds covers the two bounds replay
+// validation enforces on a Store-supplied response: one oversized value, and
+// many individually valid values whose total exceeds the budget.
+func TestReplayRefusesHeaderValuesBeyondReplayBounds(t *testing.T) {
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	single := responseWithHeader("Location", "/"+strings.Repeat("a", maxReplayHeaderValueBytes))
+	total := Response{Status: http.StatusOK, Header: http.Header{}}
+	for range 9 {
+		total.Header.Add("Cache-Control", strings.Repeat("b", maxReplayHeaderValueBytes))
+	}
+	cases := map[string]Response{"single-value": single, "total": total}
+	for name, response := range cases {
+		p := initializedPlugin(t, nil, WithStore(completedStore{response: response}))
+		if got := perform(engineFor(p, route, noContent), "replay-bounds-"+name, "").Code; got != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status = %d, want 503", name, got)
+		}
+	}
+}
+
+// TestReplayRefusesOversizedStoreContentType locks the replay-side bound on the
+// Content-Type field: a Store (or a corrupted record) supplying a value beyond
+// the capture bound must produce 503 idempotency_unavailable, not a replay.
+func TestReplayRefusesOversizedStoreContentType(t *testing.T) {
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	response := Response{Status: http.StatusOK, ContentType: strings.Repeat("c", 2*maxReplayHeaderValueBytes)}
+	p := initializedPlugin(t, nil, WithStore(completedStore{response: response}))
+	if got := perform(engineFor(p, route, noContent), "oversized-store-content-type", "").Code; got != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 for an oversized stored Content-Type", got)
+	}
+}
+
+// TestReplayReplacesPreexistingHeadersInsteadOfAppending locks the Del before
+// Add: middleware ahead of idempotency may already have set one of the
+// whitelisted names on the outgoing response, and a replay must reproduce the
+// stored value rather than append a second one.
+func TestReplayReplacesPreexistingHeadersInsteadOfAppending(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	engine := enginetest.New()
+	engine.Handle(route.Method, route.Path, []web.Handler{
+		func(_ context.Context, c *web.Ctx) error {
+			c.Set(currentRouteKeyForTest, route)
+			web.SetPrincipal(c, authentication.Principal{Subject: "alice", AuthMethod: "test"})
+			c.Next()
+			return nil
+		},
+		func(_ context.Context, c *web.Ctx) error {
+			c.SetHeader("Cache-Control", "upstream")
+			c.SetHeader("Location", "/upstream")
+			c.Next()
+			return nil
+		},
+		p.Handler(),
+		func(_ context.Context, c *web.Ctx) error {
+			c.SetHeader("Cache-Control", "no-store")
+			c.SetHeader("Location", "/stored")
+			c.String(http.StatusOK, "stored")
+			return nil
+		},
+	})
+	perform(engine, "replace-header-key", "")
+	replay := perform(engine, "replace-header-key", "").Result()
+	values := replay.Header.Values("Cache-Control")
+	if len(values) != 1 || values[0] != "no-store" {
+		t.Fatalf("replayed Cache-Control = %q, want only the stored value", values)
+	}
+	if got := replay.Header.Get("Location"); got != "/stored" {
+		t.Fatalf("replayed Location = %q, want the stored value", got)
+	}
+}
+
+// TestCaptureDropsEmptyHeaderValues locks that an explicitly empty whitelisted
+// value is absent from the record, so a replay cannot resurrect it as a
+// present-but-empty header.
+func TestCaptureDropsEmptyHeaderValues(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
+		c.Writer().Header().Set("Location", "")
+		c.SetHeader("Cache-Control", "no-store")
+		c.String(http.StatusOK, "done")
+		return nil
+	})
+	perform(engine, "empty-header-key", "")
+	replay := perform(engine, "empty-header-key", "").Result()
+	if got := replay.Header.Values("Location"); len(got) != 0 {
+		t.Fatalf("replayed Location = %q, want the empty value dropped at capture", got)
+	}
+	if got := replay.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("replayed Cache-Control = %q", got)
+	}
+}
+
 func TestConcurrentDuplicateRunsHandlerOnce(t *testing.T) {
 	p := initializedPlugin(t, nil)
 	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
@@ -178,6 +512,93 @@ func TestQueryAndPrincipalScopeArePartOfSemantics(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("calls = %d", calls.Load())
 	}
+}
+
+// TestPrincipalScopeSeparatesIdenticalRequests locks the cross-caller isolation
+// guarantee: two principals presenting the same idempotency key, method,
+// concrete path, query, content type and body occupy different scopes. Neither
+// may replay the other's response; both handlers execute and each caller
+// receives its own result.
+func TestPrincipalScopeSeparatesIdenticalRequests(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	var calls atomic.Int32
+	engine := enginetest.New()
+	engine.Handle(route.Method, route.Path, []web.Handler{
+		func(_ context.Context, c *web.Ctx) error {
+			c.Set(currentRouteKeyForTest, route)
+			web.SetPrincipal(c, authentication.Principal{Subject: c.GetHeader("X-Test-Principal"), AuthMethod: "test"})
+			c.Next()
+			return nil
+		},
+		p.Handler(),
+		func(_ context.Context, c *web.Ctx) error {
+			calls.Add(1)
+			principal, _ := web.CurrentPrincipal(c)
+			c.String(http.StatusOK, "principal:%s", principal.Subject)
+			return nil
+		},
+	})
+	alice := performAsPrincipal(engine, "shared-key", `{}`, "alice")
+	bob := performAsPrincipal(engine, "shared-key", `{}`, "bob")
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want both principals to execute", calls.Load())
+	}
+	for name, response := range map[string]*httptest.ResponseRecorder{"alice": alice, "bob": bob} {
+		if got := response.Result().Header.Get("Idempotency-Replayed"); got != "" {
+			t.Fatalf("%s replayed = %q, want no replay between principals", name, got)
+		}
+	}
+	if got := alice.Body.String(); got != "principal:alice" {
+		t.Fatalf("alice body = %q", got)
+	}
+	if got := bob.Body.String(); got != "principal:bob" {
+		t.Fatalf("bob body = %q, want his own response rather than alice's", got)
+	}
+}
+
+func performAsPrincipal(engine http.Handler, key, body, subject string) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(body))
+	request.Header.Set("Idempotency-Key", key)
+	request.Header.Set("X-Test-Principal", subject)
+	engine.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// TestRequestContentTypeIsPartOfTheFingerprint locks Content-Type as a
+// documented fingerprint input: the same principal, key, concrete path and body
+// under a different request Content-Type is a different request and must not
+// replay the stored response.
+func TestRequestContentTypeIsPartOfTheFingerprint(t *testing.T) {
+	p := initializedPlugin(t, nil)
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	var calls atomic.Int32
+	engine := engineFor(p, route, func(_ context.Context, c *web.Ctx) error {
+		calls.Add(1)
+		c.Status(http.StatusNoContent)
+		return nil
+	})
+	first := performWithContentType(engine, "application/json", "content-type-key", `{}`)
+	second := performWithContentType(engine, "text/plain", "content-type-key", `{}`)
+	if first.Code != http.StatusNoContent {
+		t.Fatalf("first = %d, want 204", first.Code)
+	}
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second = %d, want 409 idempotency_conflict", second.Code)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d, want only the first request to execute", calls.Load())
+	}
+}
+
+func performWithContentType(engine http.Handler, contentType, key, body string) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(body))
+	request.Header.Set("Idempotency-Key", key)
+	request.Header.Set("Content-Type", contentType)
+	engine.ServeHTTP(recorder, request)
+	return recorder
 }
 
 // TestNoPrincipalRequestWithIdempotencyKeyIsRefused locks the fixed semantics:
@@ -276,3 +697,47 @@ func (completedStore) Complete(context.Context, string, string, string, Response
 	return nil
 }
 func (completedStore) Release(context.Context, string, string, string) error { return nil }
+
+// TestStoreAcquireErrorsMapToUnavailable locks both store-error shapes the
+// middleware must absorb: the memory backend's admission refusal and a generic
+// transport failure. Both are reported as 503 idempotency_unavailable, and
+// neither may leave cleanup behind: Acquire failed, so the middleware never
+// owned a reservation to complete or release.
+func TestStoreAcquireErrorsMapToUnavailable(t *testing.T) {
+	route := web.RouteInfo{Method: http.MethodPost, Path: "/orders", Idempotent: true}
+	cases := map[string]error{
+		"memory-full": errMemoryStoreFull,
+		"transport":   errors.New("idempotency: Redis acquire: connection refused"),
+	}
+	for name, acquireErr := range cases {
+		store := &failingStore{acquireErr: acquireErr}
+		p := initializedPlugin(t, nil, WithStore(store))
+		response := perform(engineFor(p, route, noContent), "store-error-"+name, "")
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status = %d, want 503 idempotency_unavailable", name, response.Code)
+		}
+		if store.completed.Load() != 0 || store.released.Load() != 0 {
+			t.Fatalf("%s: complete=%d release=%d, want no cleanup for a reservation never acquired", name, store.completed.Load(), store.released.Load())
+		}
+	}
+}
+
+// failingStore returns a configured error from Acquire and records any cleanup
+// the middleware attempts afterwards.
+type failingStore struct {
+	acquireErr error
+	completed  atomic.Int32
+	released   atomic.Int32
+}
+
+func (s *failingStore) Acquire(context.Context, string, string, string, time.Duration) (AcquireResult, error) {
+	return AcquireResult{}, s.acquireErr
+}
+func (s *failingStore) Complete(context.Context, string, string, string, Response, time.Duration) error {
+	s.completed.Add(1)
+	return nil
+}
+func (s *failingStore) Release(context.Context, string, string, string) error {
+	s.released.Add(1)
+	return nil
+}

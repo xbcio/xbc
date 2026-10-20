@@ -3,6 +3,7 @@ package idempotency
 import (
 	"context"
 	"errors"
+	"net/http"
 	"time"
 )
 
@@ -16,11 +17,18 @@ const (
 	Conflict
 )
 
-// Response is the replay-safe subset of an HTTP response. Headers other than
-// Content-Type are deliberately excluded.
+// Response is the replay-safe subset of an HTTP response. ContentType carries
+// Content-Type; Header carries the other whitelisted headers -- Location,
+// Content-Language, Content-Disposition, ETag, Last-Modified and Cache-Control.
+// Set-Cookie is never part of a stored response, and a Store that returns one
+// makes the middleware refuse the replay.
+//
+// Header keys follow http.Header's canonical spelling. Implementations must
+// return defensive copies of both Body and Header.
 type Response struct {
 	Status      int
 	ContentType string
+	Header      http.Header
 	Body        []byte
 }
 

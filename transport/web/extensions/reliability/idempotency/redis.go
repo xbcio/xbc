@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"reflect"
 	"strconv"
 	"time"
@@ -25,7 +27,7 @@ if state == 'pending' then
   return {'pending'}
 end
 if state == 'completed' then
-  return {'completed', redis.call('HGET', KEYS[1], 'status') or '', redis.call('HGET', KEYS[1], 'content_type') or '', redis.call('HGET', KEYS[1], 'body') or ''}
+  return {'completed', redis.call('HGET', KEYS[1], 'status') or '', redis.call('HGET', KEYS[1], 'content_type') or '', redis.call('HGET', KEYS[1], 'body') or '', redis.call('HGET', KEYS[1], 'headers') or ''}
 end
 return {'conflict'}
 `)
@@ -35,8 +37,8 @@ if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
 if redis.call('HGET', KEYS[1], 'state') ~= 'pending' then return 0 end
 if redis.call('HGET', KEYS[1], 'fingerprint') ~= ARGV[1] then return 0 end
 if redis.call('HGET', KEYS[1], 'owner') ~= ARGV[2] then return 0 end
-redis.call('HSET', KEYS[1], 'state', 'completed', 'owner', '', 'status', ARGV[3], 'content_type', ARGV[4], 'body', ARGV[5])
-redis.call('PEXPIRE', KEYS[1], ARGV[6])
+redis.call('HSET', KEYS[1], 'state', 'completed', 'owner', '', 'status', ARGV[3], 'content_type', ARGV[4], 'body', ARGV[5], 'headers', ARGV[6])
+redis.call('PEXPIRE', KEYS[1], ARGV[7])
 return 1
 `)
 
@@ -108,14 +110,7 @@ func (s *RedisStore) Acquire(ctx context.Context, key, fingerprint, owner string
 	case "conflict":
 		return AcquireResult{State: Conflict}, nil
 	case "completed":
-		if len(parts) != 4 {
-			return AcquireResult{}, fmt.Errorf("idempotency: Redis completed result is incomplete")
-		}
-		status, parseErr := strconv.Atoi(parts[1])
-		if parseErr != nil || status < 200 || status >= 500 {
-			return AcquireResult{}, fmt.Errorf("idempotency: Redis stored response status is invalid")
-		}
-		return AcquireResult{State: Completed, Response: Response{Status: status, ContentType: parts[2], Body: []byte(parts[3])}}, nil
+		return parseCompletedReply(parts)
 	default:
 		return AcquireResult{}, fmt.Errorf("idempotency: Redis acquire returned unknown state %q", parts[0])
 	}
@@ -123,7 +118,7 @@ func (s *RedisStore) Acquire(ctx context.Context, key, fingerprint, owner string
 
 // Complete atomically verifies ownership and commits a replay response.
 func (s *RedisStore) Complete(ctx context.Context, key, fingerprint, owner string, response Response, ttl time.Duration) error {
-	result, err := completeScript.Run(ctx, s.client, []string{s.redisKey(key)}, fingerprint, owner, response.Status, response.ContentType, response.Body, ttlMillis(ttl)).Int64()
+	result, err := completeScript.Run(ctx, s.client, []string{s.redisKey(key)}, fingerprint, owner, response.Status, response.ContentType, response.Body, encodeReplayHeaders(response.Header), ttlMillis(ttl)).Int64()
 	if err != nil {
 		return fmt.Errorf("idempotency: Redis complete: %w", err)
 	}
@@ -145,12 +140,55 @@ func (s *RedisStore) Release(ctx context.Context, key, fingerprint, owner string
 	return nil
 }
 
+// parseCompletedReply validates the one completed shape acquireScript can
+// produce: state, status, content type, body and encoded headers. The arity
+// guard is defensive -- the Lua script always returns five elements -- but a
+// non-conforming server or proxy must produce an error instead of an index
+// panic, and keeping the guard in a plain function is what lets a unit test
+// exercise it.
+func parseCompletedReply(parts []string) (AcquireResult, error) {
+	if len(parts) != 5 {
+		return AcquireResult{}, fmt.Errorf("idempotency: Redis completed result is incomplete")
+	}
+	status, parseErr := strconv.Atoi(parts[1])
+	if parseErr != nil || status < 200 || status >= 500 {
+		return AcquireResult{}, fmt.Errorf("idempotency: Redis stored response status is invalid")
+	}
+	header, headerErr := decodeReplayHeaders(parts[4])
+	if headerErr != nil {
+		return AcquireResult{}, fmt.Errorf("idempotency: Redis stored response headers are invalid: %w", headerErr)
+	}
+	return AcquireResult{State: Completed, Response: Response{Status: status, ContentType: parts[2], Header: header, Body: []byte(parts[3])}}, nil
+}
+
 func ttlMillis(ttl time.Duration) int64 {
 	milliseconds := ttl.Milliseconds()
 	if milliseconds < 1 {
 		return 1
 	}
 	return milliseconds
+}
+
+// encodeReplayHeaders serializes the replay whitelist into one Redis hash
+// field. url.Values' encoding preserves repeated values and escapes every byte
+// a header value may contain; an empty map becomes the empty string that an
+// old record's absent field reads back as.
+func encodeReplayHeaders(header http.Header) string {
+	if len(header) == 0 {
+		return ""
+	}
+	return url.Values(header).Encode()
+}
+
+func decodeReplayHeaders(value string) (http.Header, error) {
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := url.ParseQuery(value)
+	if err != nil {
+		return nil, err
+	}
+	return http.Header(parsed), nil
 }
 
 func stringSlice(value any) ([]string, error) {

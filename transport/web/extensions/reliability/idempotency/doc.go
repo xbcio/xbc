@@ -30,9 +30,30 @@
 //		return idempotency.New(cfg, idempotency.WithStore(store))
 //	}
 //
-// Retrying the same key, authenticated subject, route, query, content type, and
-// body replays the stored response; reusing a key for a different fingerprint
-// returns a conflict. NewMemoryStore is suitable only for a single process.
+// Retrying the same key, authenticated subject, concrete request path, query,
+// content type, and body replays the stored response; reusing a key for a
+// different request -- including one key on two different path-parameter
+// values routed through the same template -- returns a conflict. The replay
+// carries the whitelisted response headers: Content-Type, Location,
+// Content-Language, Content-Disposition, ETag, Last-Modified and Cache-Control.
+// Set-Cookie is never stored or replayed, and a record written before the
+// whitelist existed replays without the non-Content-Type headers. A whitelisted
+// header value is bounded at 1 KiB, the header map at 8 KiB in total, and the
+// separately carried Content-Type at 1 KiB; a value beyond its bound is dropped
+// when the record is written and is never replayed, so a handler cannot make
+// its own key unreplayable. A record stored by a version that scoped to the
+// route template is not found after an upgrade on a parameterized route: the
+// retry executes again and the old record expires with its TTL. Routes without
+// path parameters are unaffected because their template and concrete path are
+// the same.
+//
+// A MemoryStore retains at most 10000 records. Under pressure it reclaims
+// expired records first, then evicts completed records closest to expiry, and
+// refuses a new key while every retained record is a live pending reservation.
+// An evicted completed record no longer replays, so a retry of that key
+// executes again: size a single-process deployment for key rate times ttl, or
+// use the Redis backend when duplicate suppression must be strict across time
+// or replicas.
 //
 // A stored response is keyed and fingerprinted by the authenticated
 // Principal's Subject, so a request carrying the Idempotency-Key header

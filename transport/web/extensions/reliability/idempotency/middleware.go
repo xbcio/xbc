@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -78,14 +79,19 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		}
 		return nil
 	}
+	requestPath := ""
 	rawQuery := ""
-	contentType := ""
 	if c.Request().URL != nil {
+		requestPath = c.Request().URL.Path
 		rawQuery = c.Request().URL.RawQuery
 	}
-	contentType = strings.TrimSpace(c.GetHeader("Content-Type"))
-	fingerprint := requestFingerprint(c.Request().Method, route.Path, principal.Subject, rawQuery, contentType, body)
-	storageKey := digestParts(c.Request().Method, route.Path, principal.Subject, key)
+	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
+	// Scope stored responses to the concrete path the engine routed, not to the
+	// route template: one template covers every path-parameter value, and a key
+	// reused across two of them must execute both requests. The template stays
+	// available on route.Path as a diagnostic field only.
+	fingerprint := requestFingerprint(c.Request().Method, requestPath, principal.Subject, rawQuery, contentType, body)
+	storageKey := digestParts(c.Request().Method, requestPath, principal.Subject, key)
 	owner, err := newOwner()
 	if err != nil {
 		abortJSON(c, http.StatusInternalServerError, "idempotency_unavailable")
@@ -94,7 +100,7 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 
 	result, err := state.store.Acquire(c.Request().Context(), storageKey, fingerprint, owner, state.config.pendingTTL)
 	if err != nil {
-		state.logger.Error("idempotency acquire failed", "error", err)
+		state.logger.Error("idempotency acquire failed", "error", err, "route", route.Path)
 		abortJSON(c, http.StatusServiceUnavailable, "idempotency_unavailable")
 		return nil
 	}
@@ -114,14 +120,14 @@ func (p *Plugin) handle(_ context.Context, c *web.Ctx) error {
 		replay(c, result.Response)
 		return nil
 	case Acquired:
-		p.executeOwned(c, state, storageKey, fingerprint, owner)
+		p.executeOwned(c, state, storageKey, fingerprint, owner, route.Path)
 	default:
 		abortJSON(c, http.StatusServiceUnavailable, "idempotency_unavailable")
 	}
 	return nil
 }
 
-func (p *Plugin) executeOwned(c *web.Ctx, state *runtimeState, key, fingerprint, owner string) {
+func (p *Plugin) executeOwned(c *web.Ctx, state *runtimeState, key, fingerprint, owner, routePath string) {
 	original := c.Writer()
 	writer := &captureWriter{ResponseWriter: original, limit: state.config.maxResponseBytes}
 	c.SetWriter(writer)
@@ -134,7 +140,7 @@ func (p *Plugin) executeOwned(c *web.Ctx, state *runtimeState, key, fingerprint,
 		cleanupCtx, cancel := detachedTimeout(c.Request().Context(), state.config.operationTimeout)
 		defer cancel()
 		if err := state.store.Release(cleanupCtx, key, fingerprint, owner); err != nil && !errors.Is(err, ErrOwnershipLost) {
-			state.logger.Error("idempotency release failed", "error", err)
+			state.logger.Error("idempotency release failed", "error", err, "route", routePath)
 		}
 	}()
 
@@ -142,15 +148,23 @@ func (p *Plugin) executeOwned(c *web.Ctx, state *runtimeState, key, fingerprint,
 	if c.Request().Context().Err() != nil || writer.tooLarge || writer.Status() >= http.StatusInternalServerError {
 		return
 	}
+	// Headers are captured after the handler returns, not at commit time. A
+	// handler that sets a whitelisted header after committing its response has
+	// that value persisted and replayed even though the original client did not
+	// receive it. A commit-time snapshot is deliberately not used: a bodyless
+	// response (e.g. 204 with Location) commits only after the middleware chain
+	// returns, and a snapshot at the wrapper's Write/WriteHeader would drop
+	// those headers entirely.
 	response := Response{
 		Status:      writer.Status(),
-		ContentType: safeContentType(writer.Header().Get("Content-Type")),
+		ContentType: replayableContentType(writer.Header().Get("Content-Type")),
+		Header:      captureReplayHeaders(writer.Header()),
 		Body:        append([]byte(nil), writer.body.Bytes()...),
 	}
 	completeCtx, cancel := detachedTimeout(c.Request().Context(), state.config.operationTimeout)
 	defer cancel()
 	if err := state.store.Complete(completeCtx, key, fingerprint, owner, response, state.config.ttl); err != nil {
-		state.logger.Error("idempotency completion failed", "error", err)
+		state.logger.Error("idempotency completion failed", "error", err, "route", routePath)
 		return
 	}
 	committed = true
@@ -178,11 +192,15 @@ func readBody(request *http.Request, maximum int64) ([]byte, error) {
 	return body, nil
 }
 
-func requestFingerprint(method, route, subject, rawQuery, contentType string, body []byte) string {
+// requestFingerprint hashes the request identity a stored response is scoped
+// to. path is the concrete request path, never the route template: two
+// different path-parameter values routed through one template are different
+// requests and must not share a fingerprint.
+func requestFingerprint(method, path, subject, rawQuery, contentType string, body []byte) string {
 	bodyHash := sha256.Sum256(body)
 	hash := sha256.New()
 	writeFingerprintPart(hash, strings.ToUpper(method))
-	writeFingerprintPart(hash, route)
+	writeFingerprintPart(hash, path)
 	writeFingerprintPart(hash, subject)
 	writeFingerprintPart(hash, rawQuery)
 	writeFingerprintPart(hash, contentType)
@@ -245,15 +263,112 @@ func validIdempotencyKey(value string, minimum, maximum int) bool {
 	return true
 }
 
+// replayHeaderNames is the response-header whitelist persisted with a stored
+// response. Content-Type is carried separately by Response.ContentType, which
+// is also the only header a record written before this whitelist existed can
+// replay. Set-Cookie is deliberately absent: replaying a cookie would attach
+// one caller's session to a later retry, so it is never persisted at all, not
+// merely filtered on the way out.
+//
+// The entries use the canonical spelling http.Header stores; ETag canonicalizes
+// to Etag, and http.CanonicalHeaderKey folds differently-cased stored names
+// onto the same entry.
+var replayHeaderNames = []string{
+	"Location",
+	"Content-Language",
+	"Content-Disposition",
+	http.CanonicalHeaderKey("ETag"),
+	"Last-Modified",
+	"Cache-Control",
+}
+
+const (
+	maxReplayHeaderValueBytes = 1024
+	maxReplayHeaderTotalBytes = 8192
+)
+
+// captureReplayHeaders copies the whitelisted headers out of a finished
+// response. Values a header writer would have to sanitize -- empty values and
+// values carrying control characters -- are dropped at the source, and the same
+// per-value and total bounds replay validation enforces are applied here. The
+// two must agree: a value admitted here but refused at replay would turn every
+// retry of that key into a 503 for the record's whole TTL.
+func captureReplayHeaders(header http.Header) http.Header {
+	captured := make(http.Header)
+	total := 0
+	for _, name := range replayHeaderNames {
+		for _, value := range header.Values(name) {
+			if value == "" || containsControl(value) || len(value) > maxReplayHeaderValueBytes {
+				continue
+			}
+			if total+len(name)+len(value) > maxReplayHeaderTotalBytes {
+				continue
+			}
+			total += len(name) + len(value)
+			captured[name] = append(captured[name], value)
+		}
+	}
+	if len(captured) == 0 {
+		return nil
+	}
+	return captured
+}
+
+// replayableContentType applies the capture-side bound to Content-Type, which
+// is persisted in its own field rather than in the header map.
+func replayableContentType(value string) string {
+	value = safeContentType(value)
+	if len(value) > maxReplayHeaderValueBytes {
+		return ""
+	}
+	return value
+}
+
+func isReplayHeader(name string) bool {
+	return slices.Contains(replayHeaderNames, http.CanonicalHeaderKey(name))
+}
+
 func validReplay(response Response, maximum int64) bool {
 	return response.Status >= 200 && response.Status < 500 &&
-		int64(len(response.Body)) <= maximum && len(response.ContentType) <= 1024 && !containsControl(response.ContentType)
+		int64(len(response.Body)) <= maximum && len(response.ContentType) <= maxReplayHeaderValueBytes && !containsControl(response.ContentType) &&
+		validReplayHeaders(response.Header)
+}
+
+// validReplayHeaders bounds what a corrupted or hostile Store implementation
+// can inject into a replayed response: only whitelisted names, no control
+// characters, at most 1 KiB per value and 8 KiB in total.
+func validReplayHeaders(header http.Header) bool {
+	total := 0
+	for name, values := range header {
+		if !isReplayHeader(name) || len(values) == 0 {
+			return false
+		}
+		for _, value := range values {
+			if containsControl(value) || len(value) > maxReplayHeaderValueBytes {
+				return false
+			}
+			total += len(name) + len(value)
+		}
+	}
+	return total <= maxReplayHeaderTotalBytes
 }
 
 func replay(c *web.Ctx, response Response) {
 	c.SetHeader("Idempotency-Replayed", "true")
 	if contentType := safeContentType(response.ContentType); contentType != "" {
 		c.SetHeader("Content-Type", contentType)
+	}
+	if writer := c.Writer(); writer != nil {
+		for name, values := range response.Header {
+			if !isReplayHeader(name) {
+				continue
+			}
+			canonical := http.CanonicalHeaderKey(name)
+			writer.Header().Del(canonical)
+			for _, value := range values {
+				writer.Header().Add(canonical, value)
+			}
+		}
 	}
 	c.Status(response.Status)
 	if len(response.Body) != 0 {
