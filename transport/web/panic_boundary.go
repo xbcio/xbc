@@ -54,11 +54,26 @@ func (b *panicBoundary) handle(_ context.Context, c *Ctx) error {
 			return
 		}
 
+		// NewCtx permits a Ctx whose request is nil so plugins can test their
+		// own nil-request guards, and recovery is the stage that must never
+		// panic. Derive both fields defensively rather than dereferencing the
+		// request directly. A nil writer is treated as uncommitted, and
+		// AbortProblem/WriteProblem already tolerate it.
+		request := c.Request()
+		method, path := "", ""
+		if request != nil {
+			method = request.Method
+			if request.URL != nil {
+				path = request.URL.Path
+			}
+		}
+		writer := c.Writer()
+		written := writer != nil && writer.Written()
 		fields := []any{
-			"method", c.Request().Method,
-			"path", c.Request().URL.Path,
+			"method", method,
+			"path", path,
 			"panic_type", reflect.TypeOf(recovered).String(),
-			"response_written", c.Writer().Written(),
+			"response_written", written,
 		}
 		if route, ok := CurrentRoute(c); ok {
 			fields = append(fields, "route", route.Path)
@@ -78,7 +93,7 @@ func (b *panicBoundary) handle(_ context.Context, c *Ctx) error {
 		// enough to diagnose the code path without copying request secrets
 		// into logs.
 		b.logger.Error("http request panic recovered", fields...)
-		if c.Writer().Written() {
+		if written {
 			// The status/body are already on the wire and cannot safely be
 			// replaced.
 			c.Abort()

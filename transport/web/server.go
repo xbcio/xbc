@@ -774,6 +774,8 @@ func renderStartupReport(logger log.Logger, cfg Config, managementAddr string, o
 
 // Stop drains a serving server or closes a listener that never crossed the
 // global traffic gate. It is safe after every partially completed owned state.
+// When both planes are configured, each is shut down even if the other fails,
+// and the failures are combined into one error.
 func (s *Server) Stop(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -798,8 +800,13 @@ func (s *Server) Stop(ctx context.Context) error {
 		// Shutdown itself closes listeners immediately, so the propagation window
 		// must precede it. It consumes only the runtime-owned remaining deadline.
 		waitForPreDrain(ctx, preDrainDelay)
+		// The two planes are independent engines on independent listeners, so
+		// each is settled even when the other fails: a serving-plane failure
+		// must neither leave the management listener unstopped nor hide a
+		// management-plane failure, and the reverse holds as well.
+		var shutdownErrs []error
 		if err := engine.Shutdown(ctx); err != nil {
-			return fmt.Errorf("xbc: graceful shutdown failed: %w", err)
+			shutdownErrs = append(shutdownErrs, fmt.Errorf("xbc: graceful shutdown failed: %w", err))
 		}
 		// The management plane drains after the serving plane, so a scrape
 		// issued while business traffic is still finishing -- the window an
@@ -808,10 +815,10 @@ func (s *Server) Stop(ctx context.Context) error {
 		// exit. Both drains share the runtime's one remaining deadline.
 		if managementEngine != nil {
 			if err := managementEngine.Shutdown(ctx); err != nil {
-				return fmt.Errorf("xbc: management HTTP shutdown failed: %w", err)
+				shutdownErrs = append(shutdownErrs, fmt.Errorf("xbc: management HTTP shutdown failed: %w", err))
 			}
 		}
-		return nil
+		return errors.Join(shutdownErrs...)
 	}
 	for _, listener := range []net.Listener{ln, managementLn} {
 		if listener == nil {
