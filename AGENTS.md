@@ -55,6 +55,11 @@ Split shutdown so the two halves can be relied on independently:
 
 Prefer an unexported `Lifecycle[P].Drain` adapter to an exported method unless the primary type's public API already exposes its lifecycle, and describe the plugin's `Drain`/`Stop` behavior in its package documentation.
 
+### Logging: one facade
+All XBC code logs through the `log` facade (`log.L`, `log.Ctx`, `log.CtxWith`, or the `T*` helpers). `log/slog` is one logging implementation among others, not part of XBC's contract, so no package in this repository may import it. A host whose libraries log through slog writes its own adapter against the facade's `Logger` interface and keeps it in the host; that bridge does not belong in XBC. Do not shape a public type around a specific logging frontend: no `slog.LogValuer` hooks, no slog types in exported signatures, and documentation examples use the facade.
+
+Sensitive values carry their own redacted diagnostic view: implement `String` (`fmt.Stringer`) and `Format` (`fmt.Formatter`) so every fmt verb, including `%#v`, renders the redacted form. The facade writes that view, because its backend renders a `fmt.Stringer` through `String()`. A serializer that bypasses fmt -- `encoding/json`, for example -- sees the raw value, so a type that must also stay redacted there handles it at its own serialization boundary.
+
 ## Build & Validation
 Run commands from the repository root:
 

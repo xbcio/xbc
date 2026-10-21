@@ -9,22 +9,20 @@
 // assembly can inject a Sink for another audit destination; the sink receives
 // metadata only and must honor context cancellation:
 //
-//	type slogSink struct {
-//		logger *slog.Logger
-//	}
+//	type facadeSink struct{}
 //
-//	func (s slogSink) Write(ctx context.Context, event auditlog.Event) error {
-//		s.logger.LogAttrs(ctx, slog.LevelInfo, "http audit",
-//			slog.String("method", event.Method),
-//			slog.String("route", event.RouteTemplate),
-//			slog.Int("status", event.Status),
-//			slog.String("subject", event.Subject),
+//	func (facadeSink) Write(ctx context.Context, event auditlog.Event) error {
+//		log.Ctx(ctx).Info("http audit",
+//			"method", event.Method,
+//			"route", event.RouteTemplate,
+//			"status", event.Status,
+//			"subject", event.Subject,
 //		)
 //		return nil
 //	}
 //
-//	func newAuditPlugin(logger *slog.Logger) (*auditlog.Plugin, error) {
-//		return auditlog.New(auditlog.DefaultConfig(), auditlog.WithSink(slogSink{logger: logger}))
+//	func newAuditPlugin() (*auditlog.Plugin, error) {
+//		return auditlog.New(auditlog.DefaultConfig(), auditlog.WithSink(facadeSink{}))
 //	}
 //
 // Compose the Bundle explicitly with the application's other Bundles:
