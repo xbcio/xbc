@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -182,10 +181,10 @@ func ReadBody(response *http.Response, limit int64) ([]byte, error) {
 }
 
 // Secret is sensitive material such as a client secret or a bind password.
-// String, Format, and LogValue all render [REDACTED]. Format is what makes the
-// guarantee hold for the fmt verbs that dispatch methods: %#v would otherwise
-// print the Go-syntax value and an invalid verb such as %d would otherwise
-// print fmt's %!verb(...) fallback, both carrying the raw string.
+// String and Format both render [REDACTED]. Format is what makes the guarantee
+// hold for the fmt verbs that dispatch methods: %#v would otherwise print the
+// Go-syntax value and an invalid verb such as %d would otherwise print fmt's
+// %!verb(...) fallback, both carrying the raw string.
 //
 // One verb escapes Format: fmt handles %p before any method dispatch, and with
 // a string-kind operand its fallback renders the value. Never apply %p to a
@@ -195,11 +194,10 @@ func ReadBody(response *http.Response, limit int64) ([]byte, error) {
 //
 // Secret protects the value itself when it is formatted or logged as a Secret;
 // it does not protect a structure that embeds it from every consumer.
-// encoding/json sees only the underlying string, and a JSON slog handler
-// encodes a carrying struct through encoding/json, so both render the raw
-// value. A protocol configuration type that carries a Secret must implement
-// slog.LogValuer, and redact its own serialized diagnostic output, instead of
-// relying on this type alone.
+// encoding/json sees only the underlying string, so a structure that embeds a
+// Secret renders the raw value when serialized as JSON. A carrying type that
+// can appear in serialized diagnostics must redact its own serialized form
+// instead of relying on this type alone.
 type Secret string
 
 // String implements fmt.Stringer and renders [REDACTED].
@@ -209,6 +207,3 @@ func (s Secret) String() string { return redacted }
 func (s Secret) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, redacted)
 }
-
-// LogValue implements slog.LogValuer and renders [REDACTED].
-func (s Secret) LogValue() slog.Value { return slog.StringValue(redacted) }

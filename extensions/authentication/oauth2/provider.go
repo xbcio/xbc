@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,8 +38,8 @@ type AuthorizationRequest struct {
 // every endpoint is configured explicitly. Begin builds the authorization URL
 // locally; Exchange redeems the code and makes exactly one userinfo call.
 //
-// String, Format, and LogValue render the provider with the client secret
-// redacted, including for %#v and structured log records.
+// String and Format render the provider with the client secret redacted,
+// including for %#v.
 type Provider struct {
 	settings
 	client         *http.Client
@@ -101,10 +100,6 @@ func (p *Provider) String() string {
 func (p *Provider) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, p.String())
 }
-
-// LogValue implements slog.LogValuer with the client secret redacted, so a
-// provider attached to a log record never carries the credential.
-func (p *Provider) LogValue() slog.Value { return slog.StringValue(p.String()) }
 
 // Begin creates a new authorization-code transaction: a fresh state and PKCE
 // verifier, and the authorization URL that carries their derived values. The

@@ -39,19 +39,17 @@
 //
 // Secret is the type for client_secret and comparable material. It implements
 // fmt.Formatter, so the fmt verbs that dispatch methods -- including %#v and
-// invalid verbs such as %d -- render [REDACTED], and LogValue does the same when
-// the value is logged directly through slog. Converting it to string is the
+// invalid verbs such as %d -- render [REDACTED]. Converting it to string is the
 // deliberate, single point of declassification. The one exception is %p: fmt
 // handles that verb before any method dispatch, so it must never be applied to
 // a Secret value.
 //
 // That protection covers the value itself when it is formatted or logged as a
 // Secret; it does not cover every consumer of a structure that embeds one.
-// encoding/json sees only the underlying string, and a JSON slog handler
-// encodes a carrying struct through encoding/json, so both render the raw
-// value. A protocol configuration type that carries a Secret must implement
-// slog.LogValuer, and redact its own serialized diagnostic output, rather than
-// relying on this type alone.
+// encoding/json sees only the underlying string, so a structure that embeds a
+// Secret renders the raw value when serialized as JSON. A carrying type that
+// can appear in serialized diagnostics must redact its own serialized form
+// rather than relying on this type alone.
 //
 // # Lifecycle
 //

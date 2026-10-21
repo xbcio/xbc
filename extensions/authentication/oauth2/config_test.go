@@ -1,9 +1,7 @@
 package oauth2
 
 import (
-	"bytes"
 	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -138,7 +136,6 @@ func TestConfigRedactsClientSecret(t *testing.T) {
 		"%+v":         fmt.Sprintf("%+v", config),
 		"%#v":         fmt.Sprintf("%#v", config),
 		"%s":          fmt.Sprintf("%s", config),
-		"LogValue":    config.LogValue().String(),
 		"nested view": fmt.Sprintf("%v", struct{ Config Config }{config}),
 	}
 	for name, view := range views {
@@ -164,16 +161,5 @@ func TestProviderRendersWithTheClientSecretRedacted(t *testing.T) {
 		if !strings.Contains(rendered, "[REDACTED]") {
 			t.Fatalf("%s did not mark the client secret as redacted: %s", format, rendered)
 		}
-	}
-
-	var buffer bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buffer, nil))
-	logger.Info("provider", "value", provider, "any", slog.AnyValue(provider))
-	logged := buffer.String()
-	if strings.Contains(logged, secret) {
-		t.Fatalf("log record rendered the client secret: %s", logged)
-	}
-	if !strings.Contains(logged, "[REDACTED]") {
-		t.Fatalf("log record did not mark the client secret as redacted: %s", logged)
 	}
 }

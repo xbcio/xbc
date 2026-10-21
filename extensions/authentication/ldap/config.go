@@ -4,7 +4,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/netip"
 	"net/url"
 	"strconv"
@@ -53,10 +52,10 @@ const (
 // may be changed after construction: a provider is immutable, so a
 // configuration update is a new Provider stored through Registry.Put.
 //
-// String, Format, and LogValue render ServiceBindPassword as [REDACTED].
-// Format is what makes the guarantee hold for the fmt verbs that dispatch
-// methods, including %#v. The one escape is %p, which fmt handles before any
-// method dispatch: never apply it to a Config value.
+// String and Format render ServiceBindPassword as [REDACTED]. Format is what
+// makes the guarantee hold for the fmt verbs that dispatch methods, including
+// %#v. The one escape is %p, which fmt handles before any method dispatch:
+// never apply it to a Config value.
 type Config struct {
 	// Name is the stable application-chosen provider identifier. It is
 	// recorded in ExternalIdentity.Provider and must match the registry key
@@ -139,9 +138,6 @@ func (c Config) String() string {
 func (c Config) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, c.String())
 }
-
-// LogValue implements slog.LogValuer with the service bind password redacted.
-func (c Config) LogValue() slog.Value { return slog.StringValue(c.String()) }
 
 // settings is the immutable, normalized form of a Config. It is the only
 // representation the Provider carries, so a later mutation of the caller's

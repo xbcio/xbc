@@ -1,10 +1,8 @@
 package oidc
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"strings"
 	"testing"
@@ -190,17 +188,6 @@ func TestProviderRendersWithTheClientSecretRedacted(t *testing.T) {
 			t.Fatalf("%s did not mark the client secret as redacted: %s", format, rendered)
 		}
 	}
-
-	var buffer bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buffer, nil))
-	logger.Info("provider", "value", provider, "any", slog.AnyValue(provider))
-	logged := buffer.String()
-	if strings.Contains(logged, secret) {
-		t.Fatalf("log record rendered the client secret: %s", logged)
-	}
-	if !strings.Contains(logged, "[REDACTED]") {
-		t.Fatalf("log record did not mark the client secret as redacted: %s", logged)
-	}
 }
 
 func TestNilProviderRendersWithoutPanicking(t *testing.T) {
@@ -210,12 +197,5 @@ func TestNilProviderRendersWithoutPanicking(t *testing.T) {
 		if rendered != "<nil>" {
 			t.Fatalf("%s on a nil provider rendered %q, want <nil>", format, rendered)
 		}
-	}
-
-	var buffer bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buffer, nil))
-	logger.Info("provider", "value", provider)
-	if !strings.Contains(buffer.String(), "<nil>") {
-		t.Fatalf("nil provider log record = %s, want <nil>", buffer.String())
 	}
 }

@@ -46,15 +46,11 @@
 // Detailed directory diagnostics are deliberately not wrapped into errors for
 // that reason.
 //
-// Diagnostic views are narrower than error text. Config String, Format, and
-// LogValue, and Provider String and Format, always redact the service password
-// -- for a Config value, a Provider value, or a *Provider alike -- and
-// Provider.LogValue does the same for the pointers a registry returns. A
-// Provider value passed to slog falls back to Format under a text handler and
-// is encoded as an empty object under a JSON handler; neither leaks. These
-// views intentionally render the configured URL, ServiceBindDN, BaseDN, and
-// UserFilter so an operator can diagnose a deployment. Those values are
-// configuration, not credentials.
+// Diagnostic views are narrower than error text. Config and Provider String
+// and Format always redact the service password -- for a Config value, a
+// Provider value, or a *Provider alike. These views intentionally render the
+// configured URL, ServiceBindDN, BaseDN, and UserFilter so an operator can
+// diagnose a deployment. Those values are configuration, not credentials.
 //
 // # TLS and timeouts
 //

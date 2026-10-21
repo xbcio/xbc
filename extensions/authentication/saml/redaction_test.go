@@ -1,11 +1,9 @@
 package saml
 
 import (
-	"bytes"
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 )
@@ -68,51 +66,6 @@ func TestNilProviderRendersAsNil(t *testing.T) {
 	}
 	if rendered := provider.String(); rendered != "<nil>" {
 		t.Fatalf("nil provider String = %q, want <nil>", rendered)
-	}
-}
-
-func TestProviderSlogRedactsPrivateKey(t *testing.T) {
-	provider := newTestProvider(t, func(config *Config) {
-		config.SPCertificate = spCertificate
-		config.SPPrivateKey = spKey
-	})
-	var text bytes.Buffer
-	slog.New(slog.NewTextHandler(&text, nil)).Info("probe", "provider", provider)
-	assertRedacted(t, text.String())
-
-	var json bytes.Buffer
-	slog.New(slog.NewJSONHandler(&json, nil)).Info("probe", "provider", provider)
-	assertRedacted(t, json.String())
-
-	var valueText bytes.Buffer
-	slog.New(slog.NewTextHandler(&valueText, nil)).Info("probe", "provider", *provider)
-	assertRedacted(t, valueText.String())
-
-	// The JSON handler marshals a Provider value structurally. Its fields are
-	// unexported, so the result must be an empty object: nothing leaks even
-	// though slog never calls Format here.
-	var valueJSON bytes.Buffer
-	slog.New(slog.NewJSONHandler(&valueJSON, nil)).Info("probe", "provider", *provider)
-	if !strings.Contains(valueJSON.String(), `"provider":{}`) {
-		t.Fatalf("provider value JSON = %q, want an empty object", valueJSON.String())
-	}
-}
-
-func TestConfigSlogRedactsPrivateKey(t *testing.T) {
-	config := testConfig()
-	config.SPCertificate = spCertificate
-	config.SPPrivateKey = spKey
-	var text bytes.Buffer
-	slog.New(slog.NewTextHandler(&text, nil)).Info("probe", "config", config)
-	assertRedacted(t, text.String())
-
-	// Config implements LogValue on the value receiver, so JSON records carry
-	// the redacted string rather than a marshalled struct.
-	var json bytes.Buffer
-	slog.New(slog.NewJSONHandler(&json, nil)).Info("probe", "config", config)
-	assertRedacted(t, json.String())
-	if !strings.Contains(json.String(), `"config":"saml.Config{`) {
-		t.Fatalf("config value JSON = %q, want the redacted diagnostic string", json.String())
 	}
 }
 

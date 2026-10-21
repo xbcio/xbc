@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -431,7 +430,6 @@ func (l *capturingLogger) Error(msg string, kv ...any) { l.record("error", msg, 
 func (l *capturingLogger) Fatal(msg string, kv ...any) { l.record("fatal", msg, kv...) }
 func (l *capturingLogger) With(...any) log.Logger      { return l }
 func (l *capturingLogger) Enabled(log.Level) bool      { return true }
-func (l *capturingLogger) LogValue() slog.Value        { return slog.StringValue("capturing") }
 
 func (l *capturingLogger) text() string {
 	l.mu.Lock()

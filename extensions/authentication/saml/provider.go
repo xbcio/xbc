@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"time"
 
 	"github.com/xbcio/xbc/extensions/authentication/federation"
@@ -23,9 +22,8 @@ const protocolName = "saml"
 // LoadMetadata call, and a refresh is that call followed by Registry.Put of a
 // new provider.
 //
-// String, Format, and LogValue render the provider with the SP private key
-// redacted, including for a dereferenced Provider value and for structured log
-// records.
+// String and Format render the provider with the SP private key redacted,
+// including for a dereferenced Provider value.
 type Provider struct {
 	settings
 	initialized bool
@@ -87,9 +85,6 @@ func (p Provider) Format(state fmt.State, _ rune) {
 	// Format-receiver mutation compilable, so it is killed by behavior.
 	_, _ = io.WriteString(state, p.String())
 }
-
-// LogValue implements slog.LogValuer with the private key redacted.
-func (p *Provider) LogValue() slog.Value { return slog.StringValue(p.String()) }
 
 // usable reports whether the provider was constructed by New.
 func (p *Provider) usable() error {

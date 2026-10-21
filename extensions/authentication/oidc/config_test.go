@@ -140,7 +140,6 @@ func TestConfigRedactsClientSecret(t *testing.T) {
 		"%+v":         fmt.Sprintf("%+v", config),
 		"%#v":         fmt.Sprintf("%#v", config),
 		"%s":          fmt.Sprintf("%s", config),
-		"LogValue":    config.LogValue().String(),
 		"nested view": fmt.Sprintf("%v", struct{ Config Config }{config}),
 	}
 	for name, view := range views {

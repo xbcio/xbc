@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/url"
 	"slices"
 	"strings"
@@ -79,10 +78,10 @@ var (
 // update is a new Provider stored through Registry.Put. IdP metadata is loaded
 // by an explicit LoadMetadata call, never by New or by registry writes.
 //
-// String, Format, and LogValue redact SPPrivateKey unconditionally and never
-// render certificate bodies. Format is what makes the guarantee hold for the
-// fmt verbs that dispatch methods, including %#v. The one escape is %p, which
-// fmt handles before any method dispatch: never apply it to a Config value.
+// String and Format redact SPPrivateKey unconditionally and never render
+// certificate bodies. Format is what makes the guarantee hold for the fmt
+// verbs that dispatch methods, including %#v. The one escape is %p, which fmt
+// handles before any method dispatch: never apply it to a Config value.
 type Config struct {
 	// Name is the stable application-chosen provider identifier. It is
 	// recorded in ExternalIdentity.Provider and must match the registry key
@@ -169,9 +168,6 @@ func (c Config) String() string {
 func (c Config) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, c.String())
 }
-
-// LogValue implements slog.LogValuer with the private key redacted.
-func (c Config) LogValue() slog.Value { return slog.StringValue(c.String()) }
 
 // redactedKey returns the only rendering a private key may produce.
 func redactedKey(key *rsa.PrivateKey) string {

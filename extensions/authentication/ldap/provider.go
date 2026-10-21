@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -20,8 +19,8 @@ import (
 // freezes the configuration. Every Verify call opens its own connections, so a
 // provider never holds a pool and retiring one needs no shutdown call.
 //
-// String, Format, and LogValue render the provider with the service bind
-// password redacted, including for %#v and structured log records.
+// String and Format render the provider with the service bind password
+// redacted, including for %#v.
 type Provider struct {
 	settings
 	initialized bool
@@ -103,9 +102,6 @@ func (p Provider) Format(state fmt.State, _ rune) {
 	// Format-receiver mutation compilable, so it is killed by behavior.
 	_, _ = io.WriteString(state, p.String())
 }
-
-// LogValue implements slog.LogValuer with the service bind password redacted.
-func (p *Provider) LogValue() slog.Value { return slog.StringValue(p.String()) }
 
 // usable reports whether the provider was constructed by New.
 func (p *Provider) usable() error {

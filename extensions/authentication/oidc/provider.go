@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -48,8 +47,8 @@ type AuthorizationRequest struct {
 // token verification and cached with a TTL, so a Provider that is never used
 // opens no connections.
 //
-// String, Format, and LogValue render the provider with the client secret
-// redacted, including for %#v and structured log records.
+// String and Format render the provider with the client secret redacted,
+// including for %#v.
 type Provider struct {
 	settings
 	client      *http.Client
@@ -121,10 +120,6 @@ func (p *Provider) String() string {
 func (p *Provider) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, p.String())
 }
-
-// LogValue implements slog.LogValuer with the client secret redacted, so a
-// provider attached to a log record never carries the credential.
-func (p *Provider) LogValue() slog.Value { return slog.StringValue(p.String()) }
 
 // Discover fetches the discovery document derived from the registered issuer
 // and stores the validated metadata. The document's issuer must equal the

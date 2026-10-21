@@ -1,9 +1,7 @@
 package ldap
 
 import (
-	"bytes"
 	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 )
@@ -88,43 +86,6 @@ func TestDereferencedProviderValuesRedactTheServicePassword(t *testing.T) {
 
 	if rendered := fmt.Sprintf("%v", (*Provider)(nil)); rendered != "<nil>" {
 		t.Fatalf("nil provider renders %q, want <nil>", rendered)
-	}
-}
-
-func TestStructuredLogsRedactTheServicePassword(t *testing.T) {
-	const secret = "super-secret-service-password"
-	config := testConfig("ldaps://directory.example.com")
-	config.ServiceBindPassword = "super-secret-service-password"
-	provider := newProvider(t, config)
-	value := *provider
-
-	var buffer bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buffer, nil))
-	logger.Info("directory configured", "config", config, "provider", provider, "provider_value", value)
-	rendered := buffer.String()
-	if strings.Contains(rendered, secret) {
-		t.Fatalf("text log output leaks the service password: %s", rendered)
-	}
-	if !strings.Contains(rendered, redactedMarker) {
-		t.Fatalf("text log output does not mark the redaction: %s", rendered)
-	}
-
-	buffer.Reset()
-	jsonLogger := slog.New(slog.NewJSONHandler(&buffer, nil))
-	jsonLogger.Info("directory configured", "config", config, "provider", provider, "provider_value", value)
-	rendered = buffer.String()
-	if strings.Contains(rendered, secret) {
-		t.Fatalf("JSON log output leaks the service password: %s", rendered)
-	}
-	// Lock the two distinct JSON shapes: a *Provider is a slog.LogValuer and
-	// logs the redacted string, while a Provider value is not (LogValue has a
-	// pointer receiver) and encoding/json omits its unexported fields, so it
-	// logs as an empty object.
-	if !strings.Contains(rendered, `"provider_value":{}`) {
-		t.Fatalf("JSON log output changed the Provider value shape: %s", rendered)
-	}
-	if !strings.Contains(rendered, redactedMarker) {
-		t.Fatalf("JSON log output does not render the redacted pointer view: %s", rendered)
 	}
 }
 

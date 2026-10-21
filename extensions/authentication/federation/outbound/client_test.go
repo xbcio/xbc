@@ -1,12 +1,10 @@
 package outbound
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -405,15 +403,5 @@ func TestSecretRedactsValue(t *testing.T) {
 		if !strings.Contains(rendered, "[REDACTED]") {
 			t.Fatalf("rendered secret %q does not contain [REDACTED]", rendered)
 		}
-	}
-
-	var buffer bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buffer, nil))
-	logger.Info("provider", "client_secret", secret)
-	if strings.Contains(buffer.String(), value) {
-		t.Fatalf("log line %q contains the raw secret", buffer.String())
-	}
-	if !strings.Contains(buffer.String(), "[REDACTED]") {
-		t.Fatalf("log line %q does not contain [REDACTED]", buffer.String())
 	}
 }
