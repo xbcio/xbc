@@ -19,6 +19,7 @@
 //	      conn_max_idle_time: 30m
 //	      prepare_stmt: false
 //	      skip_default_transaction: false
+//	      translate_error: false
 //	    readonly:
 //	      driver: postgres
 //	      dsn: ${POSTGRES_READONLY_DSN}
@@ -50,6 +51,33 @@
 // prepared statements and the underlying sql.DB safely after any owned
 // lifecycle state. Keep DSNs in secret-backed configuration rather than source
 // or logs, and use a least-privilege account for each instance.
+//
+// translate_error makes GORM translate driver errors into its portable
+// sentinel errors, so callers can test for gorm.ErrDuplicatedKey and
+// gorm.ErrForeignKeyViolated with errors.Is. It is off by default because the
+// translated values replace the driver's own errors.
+//
+// # Direct embedding
+//
+// A caller that owns its connection lifecycle without an XBC application can
+// construct the same value directly: DefaultConfig returns the binder's
+// defaults, Open validates the configuration and applies the pool settings
+// without a separate readiness ping, and Close releases the prepared-statement
+// store and the connection pool. Own the result for as long as the connection
+// is in use, and call Close when it is no longer needed; Close is idempotent
+// and safe on a nil database.
+//
+//	db, err := gormplugin.Open(cfg)
+//	if err != nil {
+//		return err
+//	}
+//	defer gormplugin.Close(db)
+//
+// Open is the path for a host that owns its own lifecycle. It is not part of
+// an XBC application's exports: a process that assembles Bundle takes its
+// instance from the plugin instead. Do not reach the same data source through
+// both paths in one process -- two pools against one database are difficult to
+// attribute when connection or transaction behavior differs.
 //
 // # Readiness
 //

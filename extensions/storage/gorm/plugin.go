@@ -52,18 +52,28 @@ func prepareConfig(cfg Config) (Config, error) {
 	return cfg, nil
 }
 
-// openDatabase constructs the instance's sole primary value. It acquires and
-// configures the connection pool but leaves the fallible readiness ping to the
-// Init lifecycle stage. Any failure before ownership transfer closes locally
-// acquired resources.
-func openDatabase(_ plugin.BuildContext, cfg Config) (result *gormlib.DB, err error) {
+// Open constructs a database from cfg with the same validation and connection
+// pool settings the plugin applies. It opens the pool with GORM's automatic
+// ping disabled and therefore performs no explicit readiness check, matching
+// the plugin's split between opening a pool and the later Init stage. A driver
+// may still contact the server while initializing its dialect -- the MySQL
+// driver reads the server version, for example -- so Open is not a substitute
+// for a connectivity check: a caller that must know the server is reachable
+// pings through the returned DB's sql.DB itself.
+//
+// The caller owns the returned database and must release it with Close. Open
+// exists for callers embedding the database directly; an application assembled
+// through Bundle acquires the same value from the plugin lifecycle instead.
+func Open(cfg Config) (db *gormlib.DB, err error) {
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
+	}
 	dialect, err := dialector(cfg.Driver, cfg.DSN)
 	if err != nil {
 		return nil, err
 	}
 
 	var (
-		db          *gormlib.DB
 		sqlDB       *sql.DB
 		transferred bool
 	)
@@ -80,6 +90,7 @@ func openDatabase(_ plugin.BuildContext, cfg Config) (result *gormlib.DB, err er
 		DisableAutomaticPing:   true,
 		PrepareStmt:            cfg.PrepareStmt,
 		SkipDefaultTransaction: cfg.SkipDefaultTransaction,
+		TranslateError:         cfg.TranslateError,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("xbc gorm: open %s database: %w", cfg.Driver, err)
@@ -96,6 +107,21 @@ func openDatabase(_ plugin.BuildContext, cfg Config) (result *gormlib.DB, err er
 
 	transferred = true
 	return db, nil
+}
+
+// Close releases a database opened by Open: the prepared-statement store when
+// one is configured and the underlying connection pool. It is safe on a nil
+// database and safe to call more than once.
+func Close(db *gormlib.DB) error {
+	return closeDatabase(db, nil)
+}
+
+// openDatabase constructs the instance's sole primary value. It acquires and
+// configures the connection pool but leaves the fallible readiness ping to the
+// Init lifecycle stage. Any failure before ownership transfer closes locally
+// acquired resources.
+func openDatabase(_ plugin.BuildContext, cfg Config) (*gormlib.DB, error) {
+	return Open(cfg)
 }
 
 // initializeDatabase verifies readiness after ownership has transferred to

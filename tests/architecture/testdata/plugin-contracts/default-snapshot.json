@@ -295,7 +295,8 @@
         "ConnMaxLifetime": 3600000000000,
         "ConnMaxIdleTime": 1800000000000,
         "PrepareStmt": false,
-        "SkipDefaultTransaction": false
+        "SkipDefaultTransaction": false,
+        "TranslateError": false
       }
     },
     {

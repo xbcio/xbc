@@ -71,6 +71,11 @@ func TestDefaultConfigMatchesDocumentedValues(t *testing.T) {
 	assert.Equal(t, 30*time.Minute, cfg.ConnMaxIdleTime)
 	assert.False(t, cfg.PrepareStmt)
 	assert.False(t, cfg.SkipDefaultTransaction)
+	assert.False(t, cfg.TranslateError)
+}
+
+func TestDefaultConfigIsTheExportedDefault(t *testing.T) {
+	assert.Equal(t, defaultConfig(), DefaultConfig())
 }
 
 func TestDefinitionIsCanonicalAndBundleDeduplicates(t *testing.T) {
@@ -131,6 +136,7 @@ func TestDefinitionConstructsDBAsThePrimaryValueAndConfiguresPool(t *testing.T) 
 					"conn_max_idle_time":       "4m",
 					"prepare_stmt":             true,
 					"skip_default_transaction": true,
+					"translate_error":          true,
 				},
 			},
 		},
@@ -155,6 +161,7 @@ func TestDefinitionConstructsDBAsThePrimaryValueAndConfiguresPool(t *testing.T) 
 
 	assert.True(t, db.PrepareStmt)
 	assert.True(t, db.SkipDefaultTransaction)
+	assert.True(t, db.Config.TranslateError)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	assert.Equal(t, 7, sqlDB.Stats().MaxOpenConnections)
@@ -294,4 +301,44 @@ func TestInitializeDatabasePreservesWrappedCancellation(t *testing.T) {
 	err = initializeDatabase(db, lifecycleContext(cancelled, "cancelled"))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, context.Canceled))
+}
+
+func TestOpenAppliesDocumentedSettingsAndCloseReleasesThePool(t *testing.T) {
+	cfg := sqliteConfig(t)
+	cfg.MaxOpenConn = 3
+	cfg.MaxIdleConn = 2
+	cfg.PrepareStmt = true
+	cfg.SkipDefaultTransaction = true
+	cfg.TranslateError = true
+
+	db, err := Open(cfg)
+	require.NoError(t, err)
+	assert.True(t, db.PrepareStmt)
+	assert.True(t, db.SkipDefaultTransaction)
+	assert.True(t, db.Config.TranslateError)
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	assert.Equal(t, 3, sqlDB.Stats().MaxOpenConnections)
+	require.NoError(t, sqlDB.PingContext(context.Background()))
+
+	require.NoError(t, Close(db))
+	assert.Error(t, sqlDB.PingContext(context.Background()), "Close must release the underlying pool")
+	require.NoError(t, Close(db), "Close must remain safe after the pool is already closed")
+}
+
+func TestOpenValidatesConfigBeforeAcquiringResources(t *testing.T) {
+	_, err := Open(Config{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dsn is required")
+
+	cfg := sqliteConfig(t)
+	cfg.Driver = "oracle"
+	_, err = Open(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unsupported driver "oracle"`)
+}
+
+func TestCloseIsNilSafe(t *testing.T) {
+	require.NoError(t, Close(nil))
 }
