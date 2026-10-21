@@ -89,3 +89,21 @@ type Registerer interface {
 	// it was present.
 	Unregister(collector prometheus.Collector) bool
 }
+
+// Gatherer is the neutral gathering contract this module exports over its
+// private registry. It is the read half of Registerer: a consumer that serves
+// metrics through its own HTTP stack -- an embedded server, a framework with
+// its own scrape endpoint -- takes Gatherer as an input and renders the
+// returned families itself, so the registry stays private and no process-wide
+// Prometheus state is touched.
+//
+// The signature is identical to prometheus.Gatherer, so a value satisfying
+// this contract can also be passed to promhttp.HandlerFor and
+// prometheus.Gatherers directly.
+type Gatherer interface {
+	// Gather returns the metric families of every registered collector.
+	Gather() ([]*dto.MetricFamily, error)
+}
+
+var _ Gatherer = (*Registry)(nil)
+var _ prometheus.Gatherer = (*Registry)(nil)

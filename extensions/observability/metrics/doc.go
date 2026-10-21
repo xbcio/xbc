@@ -41,6 +41,18 @@
 // gatherer. Collector registration is atomic per Register call and duplicate
 // descriptor errors are returned instead of panicking.
 //
+// # Serving and standard adapters
+//
+// A consumer that serves metrics through its own HTTP stack takes the Gatherer
+// contract as a construction-time input and renders the returned families
+// itself; its signature is prometheus.Gatherer's, so promhttp.HandlerFor and
+// prometheus.Gatherers accept it directly. A library whose constructor only
+// accepts prometheus.Registerer -- promauto, or a framework that registers its
+// own instruments -- reaches the same private registry through
+// PrometheusRegisterer: each collector the library registers becomes one
+// atomic Register call, and MustRegister keeps Prometheus's panicking
+// semantics.
+//
 // # Runtime collectors
 //
 // The plugin also registers the standard Go runtime and process collectors

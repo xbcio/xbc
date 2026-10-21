@@ -5,6 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/xbcio/xbc/plugin"
 )
@@ -25,6 +26,7 @@ type Plugin struct {
 }
 
 var _ Registerer = (*Plugin)(nil)
+var _ Gatherer = (*Plugin)(nil)
 
 var definition = plugin.DefineConfigured(
 	Key,
@@ -39,6 +41,7 @@ var definition = plugin.DefineConfigured(
 		Activation: plugin.WhenConfigured("plugins." + Key.String()),
 		Exports: plugin.Contracts(
 			plugin.ExportAs[Registerer](func(value *Plugin) Registerer { return value }),
+			plugin.ExportAs[Gatherer](func(value *Plugin) Gatherer { return value }),
 		),
 		// No Lifecycle adapter: the plugin owns no resource that outlives the
 		// process beyond memory, so it has no Start, Drain, or Stop stage.
@@ -115,6 +118,12 @@ func (p *Plugin) Register(collectors ...prometheus.Collector) error {
 // Unregister implements Registerer over the private registry.
 func (p *Plugin) Unregister(collector prometheus.Collector) bool {
 	return p.Registry().Unregister(collector)
+}
+
+// Gather implements Gatherer over the private registry. A zero Plugin reports
+// an uninitialized registry rather than panicking, matching Registry.Gather.
+func (p *Plugin) Gather() ([]*dto.MetricFamily, error) {
+	return p.Registry().Gather()
 }
 
 // Namespace returns the validated namespace prefix this application's metric
