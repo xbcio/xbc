@@ -134,6 +134,25 @@ func TestCtxFallsBackToGlobal(t *testing.T) {
 	})
 }
 
+// CtxWith exists for callers that own a base logger of their own: a context
+// with neither a bound logger nor a trace must resolve to that fallback, not to
+// the process-global logger, while a bound logger still wins.
+func TestCtxWithUsesTheExplicitFallback(t *testing.T) {
+	fallback := newZapLogger(zap.NewNop())
+
+	assert.Same(t, fallback, CtxWith(context.Background(), fallback),
+		"a context without a logger or trace resolves to the given fallback")
+	assert.Same(t, fallback, CtxWith(nil, fallback)) //nolint:staticcheck
+
+	tr := NewTrace("http.request")
+	assert.NotSame(t, fallback, CtxWith(WithTrace(context.Background(), tr), fallback),
+		"a trace enriches the fallback instead of replacing it")
+
+	bound := newZapLogger(zap.NewNop())
+	assert.Same(t, bound, CtxWith(NewContext(context.Background(), bound), fallback),
+		"a logger bound to the context wins over the fallback")
+}
+
 func TestTraceKVSkipsZeroValues(t *testing.T) {
 	kv := traceKV(Trace{})
 	assert.Empty(t, kv, "Zero-value Trace should not produce any fields")

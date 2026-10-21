@@ -221,16 +221,27 @@ func NewContext(ctx context.Context, l Logger) context.Context {
 // should always go through NewContext.
 // If neither is present, falls back to the global Logger without panicking.
 func Ctx(ctx context.Context) Logger {
+	return CtxWith(ctx, L())
+}
+
+// CtxWith is Ctx with an explicit fallback: it returns the Logger bound to ctx
+// with NewContext, otherwise fallback enriched with ctx's trace fields when a
+// trace is present, otherwise fallback itself. A wrapper that owns a base
+// logger of its own -- an adapter translating another logging frontend, for
+// example -- passes it as fallback so a context without a bound logger resolves
+// to that wrapper's logger instead of the process-global one. fallback must be
+// non-nil.
+func CtxWith(ctx context.Context, fallback Logger) Logger {
 	if ctx == nil {
-		return L()
+		return fallback
 	}
 	if l, ok := ctx.Value(loggerKey{}).(Logger); ok && l != nil {
 		return l
 	}
 	if t := TraceFrom(ctx); t.Valid() {
-		return L().With(traceKV(t)...)
+		return fallback.With(traceKV(t)...)
 	}
-	return L()
+	return fallback
 }
 
 // Zap returns the underlying *zap.Logger for zap-specific operations. ok is
