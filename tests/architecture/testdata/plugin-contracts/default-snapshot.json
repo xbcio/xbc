@@ -93,6 +93,16 @@
       }
     },
     {
+      "key": "automemlimit",
+      "config_type": "github.com/xbcio/xbc/extensions/reliability/automemlimit.Config",
+      "defaults": {
+        "Ratio": 0.9,
+        "MinBytes": 0,
+        "Fallback": "none",
+        "RefreshInterval": 0
+      }
+    },
+    {
       "key": "biz",
       "config_type": "github.com/xbcio/xbc/transport/web/extensions/response/biz.Config",
       "defaults": {

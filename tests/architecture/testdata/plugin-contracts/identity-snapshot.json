@@ -58,6 +58,12 @@
       ]
     },
     {
+      "key": "automemlimit",
+      "config_path": "plugins.automemlimit",
+      "cardinality": "single",
+      "contracts": []
+    },
+    {
       "key": "biz",
       "config_path": "plugins.biz",
       "cardinality": "single",

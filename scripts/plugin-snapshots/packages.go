@@ -21,6 +21,7 @@ import (
 	"github.com/xbcio/xbc/extensions/messaging/webhook"
 	metricscore "github.com/xbcio/xbc/extensions/observability/metrics"
 	tracingcore "github.com/xbcio/xbc/extensions/observability/tracing"
+	"github.com/xbcio/xbc/extensions/reliability/automemlimit"
 	"github.com/xbcio/xbc/extensions/reliability/gracefulshutdown"
 	corehealth "github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/extensions/storage/elasticsearch"
@@ -92,6 +93,7 @@ import (
 var bundleProviders = []func() plugin.Bundle{
 	async.Bundle,
 	asynq.Bundle,
+	automemlimit.Bundle,
 	casbincore.Bundle,
 	casbingorm.Bundle,
 	casbinredis.Bundle,

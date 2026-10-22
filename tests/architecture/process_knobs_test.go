@@ -15,16 +15,26 @@ import (
 )
 
 // archProcessKnobOwner is the one directory allowed to install the
-// process-level knobs. The runtime package owns them because they are the
-// process's own resource policy: GOMAXPROCS, GOGC and the soft memory limit all
-// apply to every goroutine and every allocation in the binary, so a plugin that
-// sets one is changing the budget of the components beside it, from inside one
-// of them.
+// process-level knobs directly. The runtime package owns them because they are
+// the process's own resource policy: GOMAXPROCS, GOGC and the soft memory limit
+// all apply to every goroutine and every allocation in the binary, so a plugin
+// that sets one is changing the budget of the components beside it, from inside
+// one of them.
 //
 // The configuration that reaches them is xbc.runtime, resolved once during
 // bootstrap (see runtime/runtime_knobs.go). Nothing here is about keeping a
 // capability unreachable -- the same package is open to callers -- it is about
 // keeping a single owner of a decision that only makes sense once per process.
+//
+// One deliberate exception exists, and it is not a second owner: a plugin whose
+// entire purpose is the process memory policy may install the soft limit
+// through the automemlimit library (see archAutomemlimitOwner below). The core
+// cannot derive a container limit without carrying cgroup discovery, so the
+// decision moves to the composition root, which selects that plugin explicitly.
+// The plugin still may not touch runtime/debug itself -- the scan below refuses
+// that everywhere outside this directory -- and it must refuse to install when
+// another owner already has (automemlimit's Init reports the conflict instead
+// of overwriting the limit).
 const archProcessKnobOwner = "runtime"
 
 // Reserved selectors, spelled as the effective-value line and the doctor report
@@ -37,6 +47,25 @@ const (
 	archSelectorSetMemoryLimit = "debug.SetMemoryLimit"
 	archSelectorGOMAXPROCS     = "runtime.GOMAXPROCS"
 )
+
+// archAutomemlimitImportPath is the library that installs the soft memory
+// limit. Its Set is reserved for the same reason the three standard library
+// calls above are: it changes the budget of every goroutine and allocation in
+// the process. Because the call lives in a third-party module, the
+// standard-library scan cannot see it, so this guard recognizes it explicitly.
+const (
+	archAutomemlimitImportPath = "github.com/KimMachineGun/automemlimit/memlimit"
+	archSelectorMemlimitSet    = "memlimit.Set"
+)
+
+// archAutomemlimitOwner is the single directory allowed to call that setter.
+// The exception is narrow on purpose: the member is a plugin whose only
+// responsibility is the process memory policy, selected explicitly by the
+// composition root, and the call must go through the library -- never
+// runtime/debug. A future capability that happens to want the setter is an
+// architecture decision, not a configuration change, so this list is an exact
+// directory rather than a prefix.
+const archAutomemlimitOwner = "extensions/reliability/automemlimit"
 
 // archProcessKnobViolation is one call site that its file is not entitled to.
 type archProcessKnobViolation struct {
@@ -100,6 +129,112 @@ func TestArchProcessKnobsAreInstalledOnlyByTheRuntime(t *testing.T) {
 // inside the one directory allowed to install the knobs.
 func archProcessKnobOwnerFile(name string) bool {
 	return path.Dir(name) == archProcessKnobOwner
+}
+
+// TestArchThirdPartyProcessKnobSettersAreConfined extends the standard-library
+// scan above to the one third-party setter that reaches the same process-wide
+// limit. It fails on any call to the automemlimit library's Set outside the one
+// declared plugin module, and it fails when that module stops calling it, so
+// the exemption cannot become empty permission.
+func TestArchThirdPartyProcessKnobSettersAreConfined(t *testing.T) {
+	root := archRepositoryRoot(t)
+	fset := token.NewFileSet()
+	seenOwnerCall := false
+
+	for _, name := range archAllProductionGoFiles(t, root) {
+		file, err := parser.ParseFile(fset, filepath.Join(root, name), nil, parser.SkipObjectResolution)
+		require.NoError(t, err, "failed to parse %s", name)
+
+		for _, violation := range archAutomemlimitSetterViolations(name, file, fset) {
+			assert.Fail(t, "process-level knob owner drift", "%s", violation.String())
+		}
+		if archAutomemlimitOwnerFile(name) && len(archAutomemlimitSetCalls(file, fset)) > 0 {
+			seenOwnerCall = true
+		}
+	}
+
+	assert.Truef(t, seenOwnerCall,
+		"no production file under %s/ calls %s, so the single exemption is empty and this guard would not notice the plugin no longer installing the limit",
+		archAutomemlimitOwner, archSelectorMemlimitSet)
+}
+
+// archAutomemlimitOwnerFile reports whether a repository-relative slash path
+// is the one directory allowed to call the automemlimit setter.
+func archAutomemlimitOwnerFile(name string) bool {
+	return path.Dir(name) == archAutomemlimitOwner
+}
+
+// archAutomemlimitSetterViolations reports every way a file installs the
+// process memory limit through the automemlimit library that the file's path
+// does not entitle it to: a call through any import alias outside the allowed
+// directory, and a dot import anywhere, which would erase the qualifier this
+// guard resolves calls through.
+func archAutomemlimitSetterViolations(name string, file *ast.File, fset *token.FileSet) []archProcessKnobViolation {
+	var violations []archProcessKnobViolation
+	if line := archAutomemlimitDotImportLine(file, fset); line != 0 {
+		violations = append(violations, archProcessKnobViolation{
+			file:     name,
+			line:     line,
+			selector: archAutomemlimitImportPath,
+			detail:   "dot-importing the package that installs the process memory limit hides its calls from this guard, so the setter could be called here without the guard noticing",
+		})
+		return violations
+	}
+	if archAutomemlimitOwnerFile(name) {
+		return nil
+	}
+	for _, line := range archAutomemlimitSetCalls(file, fset) {
+		violations = append(violations, archProcessKnobViolation{
+			file:     name,
+			line:     line,
+			selector: archSelectorMemlimitSet,
+			detail:   "the soft memory limit applies to the whole process; it is installed once by the framework from xbc.runtime, or by the one explicitly selected automemlimit plugin module",
+		})
+	}
+	return violations
+}
+
+// archAutomemlimitSetCalls returns the line of every call reaching the
+// library's Set through an import alias, so the owner's non-empty check and
+// the violation report agree on what counts as a call.
+func archAutomemlimitSetCalls(file *ast.File, fset *token.FileSet) []int {
+	aliases := archImportAliases(file, archAutomemlimitImportPath)
+	if len(aliases) == 0 {
+		return nil
+	}
+	var lines []int
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := archUnwrapExpression(call.Fun).(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		qualified, ok := selector.X.(*ast.Ident)
+		if !ok || !aliases[qualified.Name] || selector.Sel.Name != "Set" {
+			return true
+		}
+		lines = append(lines, fset.Position(selector.Pos()).Line)
+		return true
+	})
+	return lines
+}
+
+// archAutomemlimitDotImportLine returns the line of a dot import of the
+// automemlimit package, or zero when the file imports it any other way.
+func archAutomemlimitDotImportLine(file *ast.File, fset *token.FileSet) int {
+	for _, specification := range file.Imports {
+		importPath, err := strconv.Unquote(specification.Path.Value)
+		if err != nil || importPath != archAutomemlimitImportPath {
+			continue
+		}
+		if specification.Name != nil && specification.Name.Name == "." {
+			return fset.Position(specification.Pos()).Line
+		}
+	}
+	return 0
 }
 
 // archProcessKnobViolations reports every process-level knob call in one
@@ -353,6 +488,68 @@ func apply() { debug.SetGCPercent(200) }
 		"a directory merely called runtime is not the knob owner")
 	assert.False(t, archProcessKnobOwnerFile("runtime.go"),
 		"a file merely called runtime is not the knob owner")
+}
+
+// TestArchAutomemlimitSetterDetection is the positive control for the
+// third-party half of this guard: it proves the scan recognizes the call it
+// forbids, the alias and dot-import shapes that could hide it, and the shapes
+// that must keep working.
+func TestArchAutomemlimitSetterDetection(t *testing.T) {
+	t.Parallel()
+	for name, testCase := range map[string]struct {
+		file   string
+		source string
+		want   []string
+	}{
+		"the call this guard exists for": {
+			file: "extensions/jobs/cron/plugin.go",
+			source: `package cron
+import "github.com/KimMachineGun/automemlimit/memlimit"
+func configure() { _, _ = memlimit.Set() }
+`,
+			want: []string{archSelectorMemlimitSet},
+		},
+		"an aliased import cannot hide it": {
+			file: "extensions/jobs/cron/plugin.go",
+			source: `package cron
+import limits "github.com/KimMachineGun/automemlimit/memlimit"
+func configure() { _, _ = limits.Set() }
+`,
+			want: []string{archSelectorMemlimitSet},
+		},
+		"the declared plugin module is accepted": {
+			file: archAutomemlimitOwner + "/plugin.go",
+			source: `package automemlimit
+import "github.com/KimMachineGun/automemlimit/memlimit"
+func apply() { _, _ = memlimit.Set() }
+`,
+		},
+		"a dot import is refused even in the plugin module": {
+			file: archAutomemlimitOwner + "/plugin.go",
+			source: `package automemlimit
+import . "github.com/KimMachineGun/automemlimit/memlimit"
+func apply() { _, _ = Set() }
+`,
+			want: []string{archAutomemlimitImportPath},
+		},
+		"other selectors on the same package are not setters": {
+			file: "extensions/jobs/cron/plugin.go",
+			source: `package cron
+import "github.com/KimMachineGun/automemlimit/memlimit"
+var ratio = memlimit.WithRatio(0.5)
+`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			file, fset := archParseSyntheticFile(t, testCase.source)
+			var selectors []string
+			for _, violation := range archAutomemlimitSetterViolations(testCase.file, file, fset) {
+				selectors = append(selectors, violation.selector)
+			}
+			assert.Equal(t, testCase.want, selectors)
+		})
+	}
 }
 
 func archParseSyntheticFile(t *testing.T, source string) (*ast.File, *token.FileSet) {

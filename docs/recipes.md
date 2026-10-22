@@ -1217,6 +1217,61 @@ they answer "is the process itself in trouble" before any business series does.
 The series are process-level and carry no service labels; a multi-process
 deployment aggregates them per process, not by summing them across replicas.
 
+## Container-aware memory limit
+
+The Go garbage collector sizes itself against a soft memory limit, and inside a
+container the number that matters is the cgroup limit rather than the host's
+memory. `plugins.automemlimit` derives that limit from the process's cgroup and
+installs it as `GOMEMLIMIT`. It is an application-level decision, so select its
+Bundle explicitly:
+
+```go
+app, err := xbc.New(xbc.WithBundles(
+	automemlimit.Bundle(),
+))
+```
+
+```yaml
+plugins:
+  automemlimit:
+    ratio: 0.9               # fraction of the cgroup limit, in (0,1]
+    min_bytes: 0             # >0 raises the result to at least this many bytes
+    fallback: none           # none: cgroup only; system: fall back to physical memory
+    refresh_interval: 0s     # 0 installs once in Init; >0 re-reads on this interval
+```
+
+The environment decides before the configuration does:
+
+| Source | Effect |
+| --- | --- |
+| `GOMEMLIMIT` | Present at all: the plugin installs nothing and leaves the value alone. |
+| `AUTOMEMLIMIT=off` | The plugin installs nothing. |
+| `AUTOMEMLIMIT=<ratio>` | Overrides `ratio` for this installation. |
+| `plugins.automemlimit.ratio` | Used when no environment variable decides. |
+
+**It is an alternative to `xbc.runtime.memory_limit`, not a second layer.** If
+the process already has a non-default soft limit when the plugin initializes --
+because `xbc.runtime.memory_limit` installed one, or because application code
+set one -- startup fails and names both owners. Pick one: set
+`xbc.runtime.memory_limit: 0` (or remove it) and select this plugin, or keep the
+framework knob and do not select the plugin.
+
+On a system without cgroups, or in a Linux process that has no cgroup memory
+controller, there is no container limit to derive. The plugin logs one warning
+and the process starts with whatever limit it already had; only a real cgroup
+read failure fails startup. `fallback: system` replaces that warning with a
+fallback to the host's physical memory, which also hides cgroup read errors, so
+choose it only on bare metal. `min_bytes` is applied as a floor; keeping it
+below the container limit is a deployment responsibility.
+
+`refresh_interval` above zero submits one managed task that re-reads and
+re-applies the limit every interval, which suits a container whose limit can be
+adjusted while it runs. A failed refresh is logged and retried, and `0s`
+installs once and submits nothing. The limit is not restored on shutdown: it is
+process-global and disappears with the process. `validate` constructs the
+plugin, so it installs a limit in the validating process and reports a conflict;
+`doctor` constructs nothing and reports neither.
+
 ## An operator listener of its own
 
 Health, metrics, and pprof are three different audiences sharing one port by default. Metrics and pprof are operator endpoints, and a deployment can move them onto a second listener:
