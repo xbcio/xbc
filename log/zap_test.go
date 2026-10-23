@@ -61,6 +61,27 @@ func TestToFieldsRealignsAfterBadKey(t *testing.T) {
 	assert.Equal(t, "user", fs[1].Key, "Subsequent valid KV must realign")
 }
 
+// redactedStringer is the shape a sensitive type takes: its String method is
+// the only diagnostic view it offers.
+type redactedStringer struct{ raw string }
+
+func (s redactedStringer) String() string { return "[REDACTED]" }
+
+// Sensitive types implement String and Format so the rendered record never
+// carries the raw value. That guarantee depends on the facade writing
+// fmt.Stringer values through String(), which this test pins: zap.Any routes a
+// Stringer to its StringerType branch before Reflect, so the redacted view is
+// what reaches the backend.
+func TestFacadeWritesStringersThroughString(t *testing.T) {
+	logs := installObserver(t)
+
+	L().Info("probe", "credential", redactedStringer{raw: "hunter2"})
+
+	require.Len(t, logs.All(), 1)
+	assert.Equal(t, "[REDACTED]", logs.All()[0].ContextMap()["credential"],
+		"the facade must render a fmt.Stringer through String(); sensitive types rely on that view for redaction")
+}
+
 func TestFacadeCallerPointsToCallSite(t *testing.T) {
 	logs := installObserver(t, zap.AddCaller())
 
@@ -151,6 +172,17 @@ func TestCtxWithUsesTheExplicitFallback(t *testing.T) {
 	bound := newZapLogger(zap.NewNop())
 	assert.Same(t, bound, CtxWith(NewContext(context.Background(), bound), fallback),
 		"a logger bound to the context wins over the fallback")
+}
+
+// A nil fallback must not produce a nil Logger: a wrapper that failed to build
+// its own logger still reaches a usable value, and the trace path cannot panic
+// on a nil receiver.
+func TestCtxWithTreatsANilFallbackAsNop(t *testing.T) {
+	assert.NotPanics(t, func() {
+		CtxWith(context.Background(), nil).Info("no fallback")
+		CtxWith(nil, nil).Info("nil ctx") //nolint:staticcheck
+		CtxWith(WithTrace(context.Background(), NewTrace("http.request")), nil).Info("trace without fallback")
+	})
 }
 
 func TestTraceKVSkipsZeroValues(t *testing.T) {

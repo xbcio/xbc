@@ -229,9 +229,14 @@ func Ctx(ctx context.Context) Logger {
 // trace is present, otherwise fallback itself. A wrapper that owns a base
 // logger of its own -- an adapter translating another logging frontend, for
 // example -- passes it as fallback so a context without a bound logger resolves
-// to that wrapper's logger instead of the process-global one. fallback must be
-// non-nil.
+// to that wrapper's logger instead of the process-global one. A nil fallback is
+// treated as Nop, matching SetLogger: a wrapper that could not build its own
+// logger gets a logger that discards records instead of a nil interface that
+// panics on first use.
 func CtxWith(ctx context.Context, fallback Logger) Logger {
+	if fallback == nil {
+		fallback = Nop()
+	}
 	if ctx == nil {
 		return fallback
 	}
