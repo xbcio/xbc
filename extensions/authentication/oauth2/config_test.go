@@ -161,5 +161,16 @@ func TestProviderRendersWithTheClientSecretRedacted(t *testing.T) {
 		if !strings.Contains(rendered, "[REDACTED]") {
 			t.Fatalf("%s did not mark the client secret as redacted: %s", format, rendered)
 		}
+
+		// A dereferenced Provider value must redact too: fmt only dispatches
+		// methods from a struct's exported fields, so a Provider value without
+		// its own formatter would print the embedded settings.
+		rendered = fmt.Sprintf(format, *provider)
+		if strings.Contains(rendered, secret) {
+			t.Fatalf("%s on a Provider value rendered the client secret: %s", format, rendered)
+		}
+		if !strings.Contains(rendered, "[REDACTED]") {
+			t.Fatalf("%s on a Provider value did not mark the client secret as redacted: %s", format, rendered)
+		}
 	}
 }

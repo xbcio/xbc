@@ -39,7 +39,7 @@ type AuthorizationRequest struct {
 // locally; Exchange redeems the code and makes exactly one userinfo call.
 //
 // String and Format render the provider with the client secret redacted,
-// including for %#v.
+// including for a dereferenced Provider value and for %#v.
 type Provider struct {
 	settings
 	client         *http.Client
@@ -97,7 +97,17 @@ func (p *Provider) String() string {
 // Format implements fmt.Formatter so every verb renders the redacted string,
 // including %#v, which would otherwise print the unexported settings fields --
 // and with them the client secret.
-func (p *Provider) Format(state fmt.State, _ rune) {
+//
+// The receiver is a value, not a pointer. fmt dispatches methods on a struct's
+// fields only when they are exported, so a dereferenced Provider value would
+// otherwise render the embedded settings, and the client secret, verbatim. A
+// value receiver makes the Provider value itself satisfy fmt.Formatter.
+// Formatting a nil *Provider still prints "<nil>": fmt converts a nil-pointer
+// panic in a formatting method to that string.
+func (p Provider) Format(state fmt.State, _ rune) {
+	// p is addressable, so the pointer-receiver String is reachable through the
+	// value. Calling it as p.String() rather than (&p).String() keeps a
+	// Format-receiver mutation compilable, so it is killed by behavior.
 	_, _ = io.WriteString(state, p.String())
 }
 

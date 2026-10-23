@@ -48,7 +48,7 @@ type AuthorizationRequest struct {
 // opens no connections.
 //
 // String and Format render the provider with the client secret redacted,
-// including for %#v.
+// including for a dereferenced Provider value and for %#v.
 type Provider struct {
 	settings
 	client      *http.Client
@@ -110,15 +110,29 @@ func (p *Provider) String() string {
 	if p == nil {
 		return "<nil>"
 	}
-	return fmt.Sprintf("oidc.Provider{Name:%q Issuer:%q ClientID:%q ClientSecret:[REDACTED] RedirectURI:%q Scopes:%v TokenEndpointAuthMethod:%q AllowedAlgorithms:%v}",
-		p.name, p.issuer, p.clientID, p.redirectURI, p.scopes, p.authMethod, p.algorithms)
+	return p.settings.String()
 }
 
-// Format implements fmt.Formatter so every verb renders the redacted string,
-// including %#v, which would otherwise print the unexported settings fields --
-// and with them the client secret.
-func (p *Provider) Format(state fmt.State, _ rune) {
-	_, _ = io.WriteString(state, p.String())
+// String renders the embedded settings with the client secret redacted.
+//
+// It has a value receiver, which Provider cannot: Provider holds the mutexes
+// that guard discovery and the JWKS cache, so a Provider value receiver would
+// copy a lock. The value-receiver Format below is promoted onto Provider, so a
+// dereferenced Provider value -- which does not see Provider's pointer-receiver
+// methods -- formats through it instead of printing clientSecret verbatim.
+func (s settings) String() string {
+	return fmt.Sprintf("oidc.Provider{Name:%q Issuer:%q ClientID:%q ClientSecret:[REDACTED] RedirectURI:%q Scopes:%v TokenEndpointAuthMethod:%q AllowedAlgorithms:%v}",
+		s.name, s.issuer, s.clientID, s.redirectURI, s.scopes, s.authMethod, s.algorithms)
+}
+
+// Format implements fmt.Formatter on the embedded settings so both a Provider
+// value and a *Provider render the redacted string. Provider cannot declare its
+// own Format: a value receiver would copy its locks, and a pointer receiver
+// would shadow this promoted method and leave Provider values printing the
+// unexported clientSecret. Formatting a nil *Provider still prints "<nil>":
+// fmt converts a nil-pointer panic in a formatting method to that string.
+func (s settings) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, s.String())
 }
 
 // Discover fetches the discovery document derived from the registered issuer

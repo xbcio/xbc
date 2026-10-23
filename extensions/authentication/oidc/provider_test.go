@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -186,6 +187,19 @@ func TestProviderRendersWithTheClientSecretRedacted(t *testing.T) {
 		}
 		if !strings.Contains(rendered, "[REDACTED]") {
 			t.Fatalf("%s did not mark the client secret as redacted: %s", format, rendered)
+		}
+
+		// A dereferenced Provider value must redact too: Provider holds locks
+		// and cannot take a value receiver, so the view lives on the embedded
+		// settings and is promoted onto the value. The value is produced
+		// through reflect because a direct copy trips the copylocks vet check;
+		// this copy is unlocked and is only read.
+		rendered = fmt.Sprintf(format, reflect.ValueOf(provider).Elem().Interface())
+		if strings.Contains(rendered, secret) {
+			t.Fatalf("%s on a Provider value rendered the client secret: %s", format, rendered)
+		}
+		if !strings.Contains(rendered, "[REDACTED]") {
+			t.Fatalf("%s on a Provider value did not mark the client secret as redacted: %s", format, rendered)
 		}
 	}
 }

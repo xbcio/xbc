@@ -2,6 +2,7 @@ package outbound
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -402,6 +403,26 @@ func TestSecretRedactsValue(t *testing.T) {
 		}
 		if !strings.Contains(rendered, "[REDACTED]") {
 			t.Fatalf("rendered secret %q does not contain [REDACTED]", rendered)
+		}
+	}
+
+	// JSON is the serialization boundary MarshalText exists for: a bare
+	// Secret, a structure that holds one, and a map value all pass through
+	// encoding/json, which consults TextMarshaler rather than String.
+	for name, encode := range map[string]func() ([]byte, error){
+		"bare":   func() ([]byte, error) { return json.Marshal(secret) },
+		"struct": func() ([]byte, error) { return json.Marshal(embedded) },
+		"map":    func() ([]byte, error) { return json.Marshal(map[string]any{"nested": secret}) },
+	} {
+		encoded, err := encode()
+		if err != nil {
+			t.Fatalf("json.Marshal(%s) = %v", name, err)
+		}
+		if strings.Contains(string(encoded), value) {
+			t.Fatalf("json.Marshal(%s) rendered the raw value: %s", name, encoded)
+		}
+		if !strings.Contains(string(encoded), "[REDACTED]") {
+			t.Fatalf("json.Marshal(%s) does not contain [REDACTED]: %s", name, encoded)
 		}
 	}
 }

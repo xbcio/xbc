@@ -192,12 +192,13 @@ func ReadBody(response *http.Response, limit int64) ([]byte, error) {
 // Converting a Secret to string is the deliberate, single point of
 // declassification.
 //
-// Secret protects the value itself when it is formatted or logged as a Secret;
-// it does not protect a structure that embeds it from every consumer.
-// encoding/json sees only the underlying string, so a structure that embeds a
-// Secret renders the raw value when serialized as JSON. A carrying type that
-// can appear in serialized diagnostics must redact its own serialized form
-// instead of relying on this type alone.
+// Secret protects the value itself when it is formatted, logged, or serialized
+// through an interface it implements: String and Format cover fmt, and
+// MarshalText covers encoding/json, a slog JSON handler, and other
+// TextMarshaler-aware encoders -- including when the Secret is a field of a
+// structure encoded as a whole. A serializer that consults neither interface
+// still sees the underlying string, so a carrying type with its own wire format
+// must redact that format instead of relying on this type alone.
 type Secret string
 
 // String implements fmt.Stringer and renders [REDACTED].
@@ -206,4 +207,14 @@ func (s Secret) String() string { return redacted }
 // Format implements fmt.Formatter and renders [REDACTED] for every verb.
 func (s Secret) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, redacted)
+}
+
+// MarshalText implements encoding.TextMarshaler and renders [REDACTED].
+//
+// It is the serialization boundary for interfaces that bypass fmt: encoding/json
+// and a slog JSON handler consult TextMarshaler instead of String, both for a
+// bare Secret and for one held by a structure encoded as a whole. Without it a
+// JSON diagnostic would carry the raw value.
+func (s Secret) MarshalText() ([]byte, error) {
+	return []byte(redacted), nil
 }
