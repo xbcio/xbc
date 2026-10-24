@@ -177,7 +177,7 @@ func L() Logger {
 }
 
 // SetLogger replaces the global backend, corresponding to an SLF4J binding
-// swap.
+// swap. A nil Logger is treated as Nop.
 //
 // Security note: replacing the default backend also replaces the built-in
 // sensitive-field masking -- that's implemented in this package's maskCore,

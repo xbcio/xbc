@@ -53,7 +53,8 @@
 // framework's own request handling carries a logger with trace fields. Ctx
 // falls back to the global when no logger was bound to the context; CtxWith
 // resolves the same way but falls back to a caller-supplied logger instead,
-// for code that owns its base logger and must not read the process global.
+// for code that owns its base logger and must not read the process global. A
+// nil fallback is treated as Nop, never replaced by the process-global Logger.
 //
 // # Fatal
 //

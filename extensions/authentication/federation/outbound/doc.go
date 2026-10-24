@@ -44,12 +44,17 @@
 // handles that verb before any method dispatch, so it must never be applied to
 // a Secret value.
 //
-// That protection covers the value itself when it is formatted or logged as a
-// Secret; it does not cover every consumer of a structure that embeds one.
-// encoding/json sees only the underlying string, so a structure that embeds a
-// Secret renders the raw value when serialized as JSON. A carrying type that
-// can appear in serialized diagnostics must redact its own serialized form
-// rather than relying on this type alone.
+// Secret also implements encoding.TextMarshaler, so encoding/json and other
+// TextMarshaler-aware encoders render [REDACTED] for a Secret, including one
+// held as a field of a structure that is encoded as a whole. Two channels are
+// not covered. encoding/gob does not consult MarshalText and writes the
+// underlying string. And fmt cannot dispatch String or Format on a value it
+// reaches through an unexported field, so a type that carries a Secret (a
+// Provider or Config, for example) stored in an unexported field of another
+// structure prints the underlying string when that outer structure is
+// formatted. A carrying type should implement String and Format of its own, and
+// a host should not format a structure that holds such a type in an unexported
+// field.
 //
 // # Lifecycle
 //
