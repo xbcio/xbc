@@ -17,7 +17,7 @@ func TestModuleManifestIsPublishable(t *testing.T) {
 		"module github.com/xbcio/xbc/extensions/authentication/ldap",
 		"go 1.25.0",
 		"github.com/go-ldap/ldap/v3 v3.4.14",
-		"github.com/xbcio/xbc/extensions/authentication v0.2.0",
+		"github.com/xbcio/xbc/extensions/authentication v0.3.0",
 	} {
 		if !strings.Contains(manifest, expected) {
 			t.Fatalf("go.mod does not contain %q", expected)

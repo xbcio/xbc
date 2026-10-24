@@ -10,7 +10,7 @@ github.com/russellhaering/goxmldsig v1.6.1 h1:SB7R5ttvrGIDB2juJAK/i7DQ2Ivr7agG+o
 github.com/russellhaering/goxmldsig v1.6.1/go.mod h1:haZkRcLs9W/Xp989fIjP3BrTdbFQveRF0QNZSYoH09w=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/xbcio/xbc/extensions/authentication v0.2.0 h1:SRLUvzt7dg8FUSn3AJ+JPkiCGd1UYfxbkM+kOjxhkck=
-github.com/xbcio/xbc/extensions/authentication v0.2.0/go.mod h1:iZRYy4TSPXmfCQCkBtGsc75Q1shOQKtqmZvbpGPgB/c=
+github.com/xbcio/xbc/extensions/authentication v0.3.0 h1:UkWRc+kRRH7xGn0GOLWYDO85e4mBV82WSvAoYIxQubk=
+github.com/xbcio/xbc/extensions/authentication v0.3.0/go.mod h1:iZRYy4TSPXmfCQCkBtGsc75Q1shOQKtqmZvbpGPgB/c=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=

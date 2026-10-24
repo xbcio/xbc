@@ -6,7 +6,7 @@ go 1.25.0
 // tag; repository development resolves the same source through go.work.
 require (
 	github.com/go-ldap/ldap/v3 v3.4.14
-	github.com/xbcio/xbc/extensions/authentication v0.2.0
+	github.com/xbcio/xbc/extensions/authentication v0.3.0
 )
 
 require (

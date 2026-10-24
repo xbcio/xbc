@@ -6,5 +6,5 @@ go 1.25.0
 // tag; repository development resolves the same source through go.work.
 require (
 	github.com/go-jose/go-jose/v4 v4.1.6
-	github.com/xbcio/xbc/extensions/authentication v0.2.0
+	github.com/xbcio/xbc/extensions/authentication v0.3.0
 )
