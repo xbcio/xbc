@@ -51,7 +51,9 @@
 // second logger is genuinely needed, NewContext binds one to a context and Ctx
 // retrieves it -- that path is per-context rather than global, and is how the
 // framework's own request handling carries a logger with trace fields. Ctx
-// falls back to the global when no logger was bound to the context.
+// falls back to the global when no logger was bound to the context; CtxWith
+// resolves the same way but falls back to a caller-supplied logger instead,
+// for code that owns its base logger and must not read the process global.
 //
 // # Fatal
 //

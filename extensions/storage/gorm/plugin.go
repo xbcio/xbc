@@ -61,6 +61,12 @@ func prepareConfig(cfg Config) (Config, error) {
 // for a connectivity check: a caller that must know the server is reachable
 // pings through the returned DB's sql.DB itself.
 //
+// Open applies no configuration defaults: cfg is used as given, unlike the
+// plugin path where the binder fills every unset field from DefaultConfig. A
+// caller starting from a zero Config therefore gets a validation error (dsn is
+// required, max_open_conn must be at least 1) rather than a silently unbounded
+// pool. Start from DefaultConfig and override only what the deployment sets.
+//
 // The caller owns the returned database and must release it with Close. Open
 // exists for callers embedding the database directly; an application assembled
 // through Bundle acquires the same value from the plugin lifecycle instead.
