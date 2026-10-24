@@ -64,6 +64,13 @@ func (r *Registry) Unregister(collector prometheus.Collector) bool {
 // Gather collects the metrics of every registered collector, implementing
 // prometheus.Gatherer over this private registry for the transport adapters
 // that serve them.
+//
+// Gather deliberately does not take r.mu. That mutex is what makes Register's
+// batch all-or-nothing and keeps Register and Unregister from interleaving;
+// prometheus.Registry itself is safe for a Gather concurrent with registration.
+// Holding r.mu across a scrape would therefore only block every registration
+// for the scrape's duration. A nil or zero-value Registry reports the same
+// uninitialized-registry error as Register.
 func (r *Registry) Gather() ([]*dto.MetricFamily, error) {
 	if r == nil || r.inner == nil {
 		return nil, fmt.Errorf("metrics: registry is not initialized")

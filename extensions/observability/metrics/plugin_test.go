@@ -105,6 +105,18 @@ func TestRegisterRejectsNilCollectorWithoutPanic(t *testing.T) {
 	}
 }
 
+func TestGatherRejectsAnUninitializedRegistry(t *testing.T) {
+	var nilRegistry *Registry
+	if _, err := nilRegistry.Gather(); err == nil {
+		t.Fatal("Gather() on a nil registry returned nil error")
+	}
+
+	var zero Registry
+	if _, err := zero.Gather(); err == nil {
+		t.Fatal("Gather() on a zero-value registry returned nil error")
+	}
+}
+
 func TestPluginRegistererDelegatesToRegistry(t *testing.T) {
 	p, err := New(DefaultConfig())
 	if err != nil {
