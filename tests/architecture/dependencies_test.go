@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -852,4 +853,87 @@ func TestArchAssemblyDoesNotReadDefaultAutoload(t *testing.T) {
 		}
 	}
 	require.NotZero(t, checked, "plugin/assembly did not scan production Go files")
+}
+
+// ── guard 13: no package may import log/slog ─────────────────────────────
+//
+// AGENTS.md states the logging convention: every package logs through the log
+// facade, and log/slog is one implementation among others rather than part of
+// XBC's contract. A host whose libraries log through slog writes its own
+// adapter against the facade's Logger interface and keeps it in the host.
+// Until this guard existed the rule was documentation only, and the facade's
+// own module -- the one place a slog bridge is most tempting -- could acquire
+// an import of it without any test turning red.
+
+// archGoSourceFiles returns every .go file beneath root, following the go
+// tool's own directory rules: hidden and underscore-prefixed directories,
+// testdata, and vendor are not part of any package, so a file there neither
+// compiles nor can violate an import rule. Reading the files directly rather
+// than asking `go list` makes the verdict independent of the current build
+// configuration -- a file excluded by a build tag today can re-enter the build
+// tomorrow, and the rule is about what the repository's source declares.
+func archGoSourceFiles(t *testing.T, root string) []string {
+	t.Helper()
+
+	var files []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path == root {
+				return nil
+			}
+			name := entry.Name()
+			if archIgnoresDirectoryEntry(name) || name == "testdata" || name == "vendor" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(entry.Name(), ".go") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	require.NoError(t, err, "Walking the repository's Go source files failed")
+	sort.Strings(files)
+	return files
+}
+
+// TestArchNoPackageImportsLogSlog enforces the logging convention for the whole
+// repository, tests included: a test that imports log/slog still makes that
+// package depend on it. The walk covers every module the repository contains,
+// not only the ones go.work joins, so a module that is added but not yet
+// listed is covered from its first file.
+func TestArchNoPackageImportsLogSlog(t *testing.T) {
+	root := archRepositoryRoot(t)
+	files := archGoSourceFiles(t, root)
+	require.Greater(t, len(files), 1000,
+		"the walk found almost no Go files, so this guard read far less than the repository it claims to cover")
+
+	facadeImporters := 0
+	for _, path := range files {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		require.NoError(t, err, "Parsing %s failed", path)
+		relative, err := filepath.Rel(root, path)
+		require.NoError(t, err, "Locating %s within the repository failed", path)
+		for _, specification := range file.Imports {
+			importPath, err := strconv.Unquote(specification.Path.Value)
+			require.NoError(t, err, "Parsing %s import failed", path)
+			if archPathAtOrBelow(importPath, "log/slog") {
+				t.Errorf("%s imports %q: all XBC code logs through the log facade, so no package in this repository may import log/slog; a host that needs a slog bridge keeps it in the host",
+					filepath.ToSlash(relative), importPath)
+			}
+			if archPathAtOrBelow(importPath, archRootPackage+"/log") {
+				facadeImporters++
+			}
+		}
+	}
+
+	// Positive control: the walk must have seen real code that depends on the
+	// facade. Without it a wrong root, a broken walk, or a repository that
+	// stopped importing its own logger would report a clean result for having
+	// read nothing.
+	require.NotZero(t, facadeImporters,
+		"no file imports the log facade, so the walk read none of the code this rule governs")
 }
