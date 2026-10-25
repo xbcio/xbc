@@ -855,15 +855,16 @@ func TestArchAssemblyDoesNotReadDefaultAutoload(t *testing.T) {
 	require.NotZero(t, checked, "plugin/assembly did not scan production Go files")
 }
 
-// ── guard 13: no package may import log/slog ─────────────────────────────
+// ── guard 13: logging stays behind the log facade ────────────────────────
 //
 // AGENTS.md states the logging convention: every package logs through the log
-// facade, and log/slog is one implementation among others rather than part of
-// XBC's contract. A host whose libraries log through slog writes its own
-// adapter against the facade's Logger interface and keeps it in the host.
-// Until this guard existed the rule was documentation only, and the facade's
-// own module -- the one place a slog bridge is most tempting -- could acquire
-// an import of it without any test turning red.
+// facade, and log/slog (together with its golang.org/x/exp/slog predecessor)
+// is one implementation among others rather than part of XBC's contract. A
+// host whose libraries log through slog writes its own adapter against the
+// facade's Logger interface and keeps it in the host. Until this guard existed
+// the rule was documentation only, and the facade's own module -- the one place
+// a slog bridge is most tempting -- could acquire an import of either slog
+// package without any test turning red.
 
 // archGoSourceFiles returns every .go file beneath root, following the go
 // tool's own directory rules: hidden and underscore-prefixed directories,
@@ -901,16 +902,17 @@ func archGoSourceFiles(t *testing.T, root string) []string {
 }
 
 // TestArchNoPackageImportsLogSlog enforces the logging convention for the whole
-// repository, tests included: a test that imports log/slog still makes that
-// package depend on it. The walk covers every module the repository contains,
-// not only the ones go.work joins, so a module that is added but not yet
-// listed is covered from its first file.
+// repository, tests included: a test that imports log/slog or
+// golang.org/x/exp/slog still makes that package depend on it. The walk covers
+// every module the repository contains, not only the ones go.work joins, so a
+// module that is added but not yet listed is covered from its first file.
 func TestArchNoPackageImportsLogSlog(t *testing.T) {
 	root := archRepositoryRoot(t)
 	files := archGoSourceFiles(t, root)
 	require.NotEmpty(t, files,
 		"the walk found no Go files beneath the repository root")
 
+	slogPaths := []string{"log/slog", "golang.org/x/exp/slog"}
 	facadeImporters := 0
 	for _, path := range files {
 		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
@@ -920,9 +922,11 @@ func TestArchNoPackageImportsLogSlog(t *testing.T) {
 		for _, specification := range file.Imports {
 			importPath, err := strconv.Unquote(specification.Path.Value)
 			require.NoError(t, err, "Parsing %s import failed", path)
-			if archPathAtOrBelow(importPath, "log/slog") {
-				t.Errorf("%s imports %q: all XBC code logs through the log facade, so no package in this repository may import log/slog; a host that needs a slog bridge keeps it in the host",
-					filepath.ToSlash(relative), importPath)
+			for _, slogPath := range slogPaths {
+				if archPathAtOrBelow(importPath, slogPath) {
+					t.Errorf("%s imports %q: all XBC code logs through the log facade, so no package in this repository may import log/slog or golang.org/x/exp/slog; a host that needs a slog bridge keeps it in the host",
+						filepath.ToSlash(relative), importPath)
+				}
 			}
 			if archPathAtOrBelow(importPath, archRootPackage+"/log") {
 				facadeImporters++
@@ -936,4 +940,64 @@ func TestArchNoPackageImportsLogSlog(t *testing.T) {
 	// read nothing.
 	require.NotZero(t, facadeImporters,
 		"no file imports the log facade, so the walk read none of the code this rule governs")
+}
+
+// TestArchOnlyLogImportsTheZapBackend keeps the facade's built-in zap backend
+// private to package log. A zap.Logger created outside the facade writes
+// through no maskCore, so it would emit sensitive fields the facade masks; the
+// only legitimate reason to touch zap elsewhere is to supply a zapcore.Core to
+// log.Attach, which re-wraps that core in the facade's own masking layer. The
+// rule is an allowlist: beyond the three prefixes below, every path at or below
+// go.uber.org/zap is rejected, including subpackages zap adds later
+// (exp/zapslog, zapgrpc, and zapio today). Files beneath the repository's log/
+// directory, tests included, are exempt.
+func TestArchOnlyLogImportsTheZapBackend(t *testing.T) {
+	root := archRepositoryRoot(t)
+	files := archGoSourceFiles(t, root)
+	require.NotEmpty(t, files,
+		"the walk found no Go files beneath the repository root")
+
+	const zapRoot = "go.uber.org/zap"
+	allowedZapPaths := []string{
+		zapRoot + "/zapcore",
+		zapRoot + "/buffer",
+		zapRoot + "/zaptest",
+	}
+	exemptZapImports := 0
+	for _, path := range files {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		require.NoError(t, err, "Parsing %s failed", path)
+		relative, err := filepath.Rel(root, path)
+		require.NoError(t, err, "Locating %s within the repository failed", path)
+		relative = filepath.ToSlash(relative)
+		insideLog := strings.HasPrefix(relative, "log/")
+		for _, specification := range file.Imports {
+			importPath, err := strconv.Unquote(specification.Path.Value)
+			require.NoError(t, err, "Parsing %s import failed", path)
+			if !archPathAtOrBelow(importPath, zapRoot) {
+				continue
+			}
+			if insideLog {
+				exemptZapImports++
+				continue
+			}
+			allowed := false
+			for _, allowedPath := range allowedZapPaths {
+				if archPathAtOrBelow(importPath, allowedPath) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				t.Errorf("%s imports %q: zap is the log facade's built-in backend, so only package log may import it beyond zapcore, buffer and zaptest; a package that supplies a core to log.Attach needs only zapcore",
+					relative, importPath)
+			}
+		}
+	}
+
+	// Positive control: the exempt directory must actually have been read.
+	// Without it a wrong root or a broken walk would report a clean result for
+	// having read nothing.
+	require.NotZero(t, exemptZapImports,
+		"the walk saw no zap import under log/, so it read none of the code this rule exempts, and a wrong root or a broken walk would report a clean result for having read nothing")
 }
