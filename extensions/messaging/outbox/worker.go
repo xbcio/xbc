@@ -110,11 +110,7 @@ func (w *worker) run(parent context.Context) {
 		w.doneOnce.Do(func() { close(w.done) })
 	}()
 	if w.retention.enabled() {
-		maintenance.Add(1)
-		go func() {
-			defer maintenance.Done()
-			w.maintain(ctx)
-		}()
+		maintenance.Go(func() { w.maintain(ctx) })
 	}
 
 	ticker := time.NewTicker(w.cfg.PollInterval)
@@ -154,8 +150,7 @@ func (w *worker) run(parent context.Context) {
 				}
 				for _, record := range records {
 					sem <- struct{}{}
-					active.Add(1)
-					go func(record Record) {
+					active.Go(func() {
 						defer func() {
 							if recover() != nil {
 								select {
@@ -164,10 +159,9 @@ func (w *worker) run(parent context.Context) {
 								}
 							}
 							<-sem
-							active.Done()
 						}()
 						w.publish(ctx, record)
-					}(record)
+					})
 				}
 			}
 		}
