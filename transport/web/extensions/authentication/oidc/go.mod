@@ -11,8 +11,8 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/xbcio/xbc v0.1.0
-	github.com/xbcio/xbc/extensions/authentication v0.2.0
-	github.com/xbcio/xbc/extensions/authentication/oidc v0.1.0
+	github.com/xbcio/xbc/extensions/authentication v0.3.0
+	github.com/xbcio/xbc/extensions/authentication/oidc v0.2.0
 	github.com/xbcio/xbc/transport/web v0.2.0
 	github.com/xbcio/xbc/transport/web/extensions/authentication/federation v0.1.0
 )

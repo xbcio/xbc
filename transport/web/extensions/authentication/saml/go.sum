@@ -61,10 +61,10 @@ github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWD
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 github.com/xbcio/xbc v0.1.0 h1:i4Eyy0xfX6rCZZmn3JUUyf7vSzp4lbXmMJwuSTENqPI=
 github.com/xbcio/xbc v0.1.0/go.mod h1:mISBzd4c6nGJuXdJ0/EUuTxy5nJSUPL5wvM3HQh25lM=
-github.com/xbcio/xbc/extensions/authentication v0.2.0 h1:SRLUvzt7dg8FUSn3AJ+JPkiCGd1UYfxbkM+kOjxhkck=
-github.com/xbcio/xbc/extensions/authentication v0.2.0/go.mod h1:iZRYy4TSPXmfCQCkBtGsc75Q1shOQKtqmZvbpGPgB/c=
-github.com/xbcio/xbc/extensions/authentication/saml v0.1.1 h1:04FYd31dYHPrgA8XNDGxSUPA5J6fVIrwLxIXZzBoxgk=
-github.com/xbcio/xbc/extensions/authentication/saml v0.1.1/go.mod h1:8iO/yv8uhleJwXTTHSVwuH0KCgTrqCSvoij0vPO2dlo=
+github.com/xbcio/xbc/extensions/authentication v0.3.0 h1:UkWRc+kRRH7xGn0GOLWYDO85e4mBV82WSvAoYIxQubk=
+github.com/xbcio/xbc/extensions/authentication v0.3.0/go.mod h1:iZRYy4TSPXmfCQCkBtGsc75Q1shOQKtqmZvbpGPgB/c=
+github.com/xbcio/xbc/extensions/authentication/saml v0.2.0 h1:bnOv8EmHrSfcMG3FDHJD5WRVRy9P7XAo0kBAhbJYkLI=
+github.com/xbcio/xbc/extensions/authentication/saml v0.2.0/go.mod h1:ft8UYpBWo/7YZfU+kYwkMfyUcyy9oUDc73zi4C6rZ5I=
 github.com/xbcio/xbc/extensions/authentication/session v0.2.0 h1:WCBMxkGmfmaswAM+p3vDw5e5vVEaWHyHeOkZcrzDYCU=
 github.com/xbcio/xbc/extensions/authentication/session v0.2.0/go.mod h1:cO2w+RQ7vXkdGJmzZ9fQt61PERVb0n3usufTdDAJlXI=
 github.com/xbcio/xbc/transport/web v0.2.0 h1:qvpermQimLWh55l1vILTanjFiashnJSbfU4g/l9AXps=
