@@ -7,12 +7,20 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	mathrand "math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/xbcio/xbc/log"
 )
 
 var errLeaseUncertain = errors.New("outbox: event lease could not be maintained")
+
+// maxPurgeBatches bounds one maintenance pass. A backlog larger than
+// maxPurgeBatches * retention.batch_size rows is finished by later passes, so
+// a single pass cannot monopolize the database after a long outage.
+const maxPurgeBatches = 20
 
 type worker struct {
 	store       Store
@@ -21,10 +29,19 @@ type worker struct {
 	ownerPrefix string
 	ownerSeq    atomic.Uint64
 
+	// retention and log feed the maintenance goroutine. They are set once,
+	// before the worker is shared, and never change afterwards.
+	retention RetentionConfig
+	log       log.Logger
+
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
 	doneOnce sync.Once
+	// stopCtx is canceled by requestStop. It lets the maintenance goroutine
+	// abandon a database call mid-flight, which the stop channel alone cannot.
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
 
 	mu        sync.Mutex
 	scheduled bool
@@ -43,9 +60,12 @@ func newWorker(store Store, publisher Publisher, cfg WorkerConfig) (*worker, err
 	if err != nil {
 		return nil, err
 	}
+	stopCtx, stopCancel := context.WithCancel(context.Background())
 	return &worker{
 		store: store, publisher: publisher, cfg: cfg, ownerPrefix: ownerPrefix,
+		log:  log.Nop(),
 		stop: make(chan struct{}), done: make(chan struct{}),
+		stopCtx: stopCtx, stopCancel: stopCancel,
 	}, nil
 }
 
@@ -80,10 +100,22 @@ func (w *worker) run(parent context.Context) {
 	w.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(parent)
+	// The maintenance goroutine is part of the worker's completion: done must
+	// not close while it can still touch the store, because Stop releases the
+	// database only after done.
+	var maintenance sync.WaitGroup
 	defer func() {
 		cancel()
+		maintenance.Wait()
 		w.doneOnce.Do(func() { close(w.done) })
 	}()
+	if w.retention.enabled() {
+		maintenance.Add(1)
+		go func() {
+			defer maintenance.Done()
+			w.maintain(ctx)
+		}()
+	}
 
 	ticker := time.NewTicker(w.cfg.PollInterval)
 	defer ticker.Stop()
@@ -159,6 +191,67 @@ func (w *worker) nextOwner() string {
 	return fmt.Sprintf("%s-%016x", w.ownerPrefix, w.ownerSeq.Add(1))
 }
 
+// maintain runs retention passes until ctx or the worker is stopped. It is
+// independent of the claim/publish loop, so a slow DELETE never delays a Claim.
+// The first pass waits a random fraction of the interval so replicas that
+// started together do not all hit the table at once. The timer restarts after
+// each pass, so a slow pass can never pile up another behind it.
+func (w *worker) maintain(parent context.Context) {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	defer context.AfterFunc(w.stopCtx, cancel)()
+
+	interval := w.retention.Interval
+	timer := time.NewTimer(firstPassDelay(interval))
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		w.purgePass(ctx)
+		timer.Reset(interval)
+	}
+}
+
+// firstPassDelay is the random wait before a worker's first cleanup pass, up
+// to a tenth of the interval, which spreads replicas started together.
+func firstPassDelay(interval time.Duration) time.Duration {
+	return time.Duration(mathrand.Int64N(int64(interval)/10 + 1))
+}
+
+// purgePass deletes expired rows in bounded batches, each under its own
+// database timeout, and checks ctx between them. It stops as soon as a batch
+// comes back short, because that state has nothing more to delete, and leaves
+// any remainder to the next pass.
+func (w *worker) purgePass(ctx context.Context) {
+	var published, dead int
+	for range maxPurgeBatches {
+		if ctx.Err() != nil {
+			break
+		}
+		dbCtx, cancel := context.WithTimeout(ctx, w.cfg.DatabaseTimeout)
+		batchPublished, batchDead, err := purgeBatch(dbCtx, w.store, w.retention, time.Now().UTC())
+		cancel()
+		published += batchPublished
+		dead += batchDead
+		if err != nil {
+			// A canceled context is Stop, not a fault.
+			if ctx.Err() == nil {
+				w.log.Warn("outbox: retention purge failed, retrying on the next pass", "error", err)
+			}
+			break
+		}
+		if batchPublished < w.retention.BatchSize && batchDead < w.retention.BatchSize {
+			break
+		}
+	}
+	if published > 0 || dead > 0 {
+		w.log.Info("outbox: purged finished events", "published", published, "dead", dead)
+	}
+}
+
 func (w *worker) publish(runCtx context.Context, record Record) {
 	publishCtx, cancelPublish := context.WithTimeout(runCtx, w.cfg.PublishTimeout)
 	renewDone := make(chan error, 1)
@@ -232,6 +325,7 @@ func (w *worker) requestStop() <-chan struct{} {
 		w.mu.Lock()
 		w.stopping = true
 		close(w.stop)
+		w.stopCancel()
 		running := w.running
 		w.mu.Unlock()
 		// Task admission can close between TasksAccepted and GoCritical. If

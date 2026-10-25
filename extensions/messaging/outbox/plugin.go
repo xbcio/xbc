@@ -28,6 +28,7 @@ var definition = plugin.DefinePlanned(
 		Activation: plugin.WhenConfigured("plugins.outbox"),
 		Exports: plugin.Contracts(
 			plugin.ExportAs(func(service *Service) Dispatcher { return service }),
+			plugin.ExportAs(func(service *Service) Manager { return service }),
 		),
 		Lifecycle: plugin.Lifecycle[*Service]{
 			Migrate:     (*Service).migrate,
@@ -136,6 +137,8 @@ func (service *Service) start(ctx *plugin.Context) error {
 			service.finishFailedStart(nil)
 			return fmt.Errorf("outbox: prepare worker: %w", err)
 		}
+		dispatch.retention = config.Retention
+		dispatch.log = ctx.Log()
 
 		service.lifecycleMu.Lock()
 		if service.stopping || service.stopped {

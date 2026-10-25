@@ -63,6 +63,19 @@ type Dispatcher interface {
 	Enqueue(context.Context, *gorm.DB, Event) (Event, error)
 }
 
+// Manager is the operational API over finished rows. Purge runs one retention
+// pass with the configured limits, ListDead pages dead rows by id, and Requeue
+// returns dead rows to the dispatch queue with a fresh attempt budget.
+//
+// outbox opens no endpoint for these methods. A host that exposes them must
+// authenticate and authorize every caller itself: dead rows carry the original
+// payload and headers, which may be sensitive.
+type Manager interface {
+	Purge(ctx context.Context) (published, dead int, err error)
+	ListDead(ctx context.Context, limit int, afterID string) ([]Record, error)
+	Requeue(ctx context.Context, ids []string) (int, error)
+}
+
 // Service inserts events through a Store while coordinating shutdown
 // admission. It never starts or commits the supplied transaction.
 type Service struct {
@@ -76,6 +89,11 @@ type Service struct {
 	inflight    sync.WaitGroup
 	closeOnce   sync.Once
 	closeDone   chan struct{}
+
+	// manageCtx is canceled when Stop closes admission, so Manager calls that
+	// were already admitted stop promptly instead of holding shutdown open.
+	manageCtx    context.Context
+	cancelManage context.CancelFunc
 
 	lifecycleMu sync.Mutex
 	starting    bool
@@ -95,12 +113,15 @@ func newService(store Store, maxPayloadBytes int) *Service {
 }
 
 func newConfiguredService(config Config, store Store, publisher Publisher) *Service {
+	manageCtx, cancelManage := context.WithCancel(context.Background())
 	return &Service{
 		store:           store,
 		maxPayloadBytes: config.MaxPayloadBytes,
 		config:          config,
 		publisher:       publisher,
 		closeDone:       make(chan struct{}),
+		manageCtx:       manageCtx,
+		cancelManage:    cancelManage,
 	}
 }
 
@@ -177,6 +198,7 @@ func (s *Service) stopAdmission() <-chan struct{} {
 		s.admissionMu.Lock()
 		s.closed.Store(true)
 		s.admissionMu.Unlock()
+		s.cancelManage()
 		go func() {
 			s.inflight.Wait()
 			close(s.closeDone)

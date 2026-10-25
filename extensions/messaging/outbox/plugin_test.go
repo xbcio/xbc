@@ -107,11 +107,26 @@ func TestDefinitionIsCanonicalAndDefaultsRemainStable(t *testing.T) {
 			MaxBackoff:      5 * time.Minute,
 			Jitter:          0.2,
 		},
+		Retention: RetentionConfig{
+			Published: 168 * time.Hour,
+			Dead:      0,
+			Interval:  time.Hour,
+			BatchSize: 1000,
+		},
 	}
 	assert.Equal(t, want, defaultConfig())
-	prepared, err := prepareConfig(Config{})
+	prepared, err := prepareConfig(defaultConfig())
 	require.NoError(t, err)
 	assert.Equal(t, want, prepared)
+
+	// A hand-built Config has no pre-filled retention.published, and normalized
+	// must keep an explicit zero (cleanup disabled) rather than invent a
+	// default, so only the framework path above enables the 168h default.
+	handBuilt := want
+	handBuilt.Retention.Published = 0
+	prepared, err = prepareConfig(Config{})
+	require.NoError(t, err)
+	assert.Equal(t, handBuilt, prepared)
 }
 
 func TestPlannedDefinitionSelectsNamedDatabaseAndExportsDispatcher(t *testing.T) {

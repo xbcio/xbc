@@ -5,7 +5,9 @@
 // # Usage
 //
 // Definition returns one canonical declaration whose sole primary value is
-// *Service. The same value is exported under the Dispatcher contract. Bundle
+// *Service. The same value is exported under the Dispatcher contract, for
+// transactional enqueue, and under the Manager contract, for retention and
+// dead-row replay. Bundle
 // is side-effect free and can be composed explicitly with a GORM producer and
 // application Definitions:
 //
@@ -74,6 +76,50 @@
 // Replicas use renewable leases, but delivery remains at least once, so
 // publishers and consumers must use Event.ID for idempotency.
 //
+// # Retention and replay
+//
+// No state ever leaves the table on its own unless retention removes it.
+// Finished rows are measured from the moment they entered their state:
+//
+//	plugins:
+//	  outbox:
+//	    retention:
+//	      published: 168h # 0 keeps published rows forever
+//	      dead: 0         # 0 keeps dead rows forever (the default)
+//	      interval: 1h    # how often the worker runs a cleanup pass
+//	      batch_size: 1000
+//
+// published defaults to 168h, so upgrading deletes published rows older than a
+// week; set it to 0 to keep them. dead defaults to 0 because dead rows are what
+// an operator investigates and replays. Negative durations are rejected, and
+// interval and batch_size must be positive.
+//
+// When worker.enabled is true and at least one retention is non-zero, the
+// worker runs one maintenance goroutine, separate from the claim and publish
+// loop, so a slow DELETE never delays delivery. Every interval (the first pass
+// after a short random delay, so replicas started together do not align) it
+// deletes expired rows in batches of batch_size, each batch under
+// worker.database_timeout, and leaves a remaining backlog to the next pass.
+// Deletes re-check the state and age of every row they remove, so replicas
+// purging at once, or a row replayed while a pass is running, are harmless. A
+// replica without worker.enabled never purges on its own; a host can call
+// Manager.Purge, for example from a scheduled job, which runs the same bounded
+// pass whether or not a worker exists.
+//
+// Manager.ListDead pages dead rows by id (at most 1000 per page, each with
+// LastError), and Manager.Requeue returns the named dead rows (1 to 1000 ids,
+// duplicates counted once) to pending with a fresh attempt budget. Requeue only
+// acts on rows that are dead at that moment. Replayed rows are delivered again
+// at least once, so the usual Event.ID idempotency applies.
+//
+// outbox opens no HTTP endpoint or command. A host that exposes ListDead or
+// Requeue must add its own authentication and authorization: dead rows carry
+// the original payload and headers, which may be sensitive.
+//
+// The first Migrate after upgrading creates the index idx_outbox_retention on
+// (status, updated_at). On a large table that is a one-off index build, so run
+// the migration stage deliberately rather than at peak traffic.
+//
 // # Shutdown
 //
 // Service implements Stop only, not plugin.Drainer, and that is deliberate
@@ -98,6 +144,14 @@
 // expires first gets back ctx.Err() without blocking further, but the
 // detached wait keeps running underneath and the plugin graph's shared
 // shutdown budget still bounds it.
+//
+// The retention maintenance goroutine belongs to the same worker completion
+// signal. Stop cancels it, abandoning a DELETE that is in flight, and waits for
+// it to exit before the database is released, whether or not it ever ran; the
+// abandoned remainder is picked up by a later pass or another replica. Manager
+// calls follow the same admission rule as Enqueue: once Stop begins, new calls
+// are rejected with ErrClosed and calls already running are canceled and also
+// return ErrClosed.
 //
 // Event payloads and headers are persisted in the configured database. Protect
 // that database appropriately and avoid storing secrets or sensitive data that

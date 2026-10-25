@@ -371,6 +371,11 @@ plugins:
       renew_interval: 10s
       publish_timeout: 10s
       max_attempts: 10
+    retention:
+      published: 168h
+      dead: 0
+      interval: 1h
+      batch_size: 1000
 
   webhook:
     partner:
@@ -385,6 +390,8 @@ plugins:
 ```
 
 `migrate: true` permits table creation only during XBC's migration stage; it never mutates the schema implicitly during ordinary Init. An enabled worker requires the application to inject an `outbox.Publisher`, which can adapt a named Kafka producer or Webhook client.
+
+Finished rows are removed by retention, measured from the moment a row became `published` or `dead`. `retention.published` defaults to `168h`, so an upgrade deletes published rows older than a week; set it to `0` to keep them. `retention.dead` defaults to `0` (kept forever), because dead rows are what an operator investigates and replays. The worker runs cleanup in its own goroutine every `retention.interval`, deleting at most `retention.batch_size` rows per batch and leaving any backlog to the next pass, so a slow delete never delays delivery. A replica without `worker.enabled` does not clean up on its own. Inject `outbox.Manager` to drive the same bounded pass from a scheduled job with `Purge`, to page dead rows with `ListDead`, and to send chosen dead rows back through delivery with `Requeue`, which gives each one a fresh `max_attempts` budget. outbox opens no endpoint for these calls. A host that exposes `ListDead` or `Requeue` must authenticate and authorize its callers, because dead rows carry the original payload and headers. The first `Migrate` after upgrading builds the `idx_outbox_retention` index on `(status, updated_at)`; on a large table, run the migration stage off-peak.
 
 A Webhook adapter should obtain destination URLs and secrets from a trusted subscription repository. Never let an event payload choose arbitrary credentials. The default Webhook transport permits only HTTPS and public addresses, validates resolved IPs at each actual dial, and validates every redirect target again. Response bodies, queues, and retries all have hard limits. Private destinations require an explicitly injected `EndpointPolicy`; `allow_http` alone cannot bypass the SSRF policy.
 

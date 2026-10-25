@@ -219,7 +219,9 @@ plugins:
   # accumulate in the table where an operator (or a later deployment with a
   # Publisher composed) can see exactly what would have been sent. Turning it
   # on requires composing a Bundle that exports outbox.Publisher; construction
-  # fails clearly when the key is true and none is present.
+  # fails clearly when the key is true and none is present. Retention (finished
+  # rows older than retention.published, 168h by default, are deleted) runs
+  # inside the worker, so it is idle here for the same reason.
   outbox:
     db_instance: "default"
     table: "production_outbox_events"

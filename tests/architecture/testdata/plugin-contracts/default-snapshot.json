@@ -592,6 +592,12 @@
           "InitialBackoff": 1000000000,
           "MaxBackoff": 300000000000,
           "Jitter": 0.2
+        },
+        "Retention": {
+          "Published": 604800000000000,
+          "Dead": 0,
+          "Interval": 3600000000000,
+          "BatchSize": 1000
         }
       }
     },

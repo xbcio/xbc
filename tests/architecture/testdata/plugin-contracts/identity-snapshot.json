@@ -334,7 +334,8 @@
       "config_path": "plugins.outbox",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/messaging/outbox.Dispatcher"
+        "github.com/xbcio/xbc/extensions/messaging/outbox.Dispatcher",
+        "github.com/xbcio/xbc/extensions/messaging/outbox.Manager"
       ]
     },
     {

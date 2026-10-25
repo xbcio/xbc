@@ -29,10 +29,20 @@ type Record struct {
 	NextAttemptAt  time.Time
 	LeaseOwner     string
 	LeaseExpiresAt *time.Time
+	// LastError is the most recent failure message. Requeue keeps it, so a
+	// replayed row still shows why it died until its next attempt overwrites it.
+	LastError string
 }
 
 // Store is the persistence seam used by Service and the dispatcher worker.
 // Claim must atomically transfer each returned row to owner.
+//
+// Purge deletes at most limit rows that entered status (published or dead)
+// more than olderThan before now and returns how many it deleted; it must
+// never delete a row whose state changed after it was selected. ListDead pages
+// dead rows by ascending id, starting after afterID. Requeue returns dead rows
+// to pending with a fresh attempt budget and reports how many ids named a dead
+// row; every other row is left alone.
 type Store interface {
 	Migrate(context.Context) error
 	Insert(context.Context, *gorm.DB, Event) error
@@ -40,6 +50,9 @@ type Store interface {
 	Renew(context.Context, string, string, time.Time) (bool, error)
 	MarkPublished(context.Context, string, string, time.Time) (bool, error)
 	MarkFailed(context.Context, string, string, time.Time, bool, string) (bool, error)
+	Purge(ctx context.Context, now time.Time, status Status, olderThan time.Duration, limit int) (int, error)
+	ListDead(ctx context.Context, limit int, afterID string) ([]Record, error)
+	Requeue(ctx context.Context, now time.Time, ids []string) (int, error)
 }
 
 // SQLStore is a portable GORM Store. Claim uses a conditional UPDATE per
@@ -70,14 +83,14 @@ type outboxRow struct {
 	Payload        []byte     `gorm:"column:payload;not null"`
 	Headers        []byte     `gorm:"column:headers;not null"`
 	OccurredAt     time.Time  `gorm:"column:occurred_at;not null"`
-	Status         Status     `gorm:"column:status;size:16;not null;index:idx_outbox_due,priority:1"`
+	Status         Status     `gorm:"column:status;size:16;not null;index:idx_outbox_due,priority:1;index:idx_outbox_retention,priority:1"`
 	Attempts       int        `gorm:"column:attempts;not null"`
 	NextAttemptAt  time.Time  `gorm:"column:next_attempt_at;not null;index:idx_outbox_due,priority:2"`
 	LeaseOwner     string     `gorm:"column:lease_owner;size:64;index"`
 	LeaseExpiresAt *time.Time `gorm:"column:lease_expires_at;index"`
 	LastError      string     `gorm:"column:last_error;size:512"`
 	CreatedAt      time.Time  `gorm:"column:created_at;not null"`
-	UpdatedAt      time.Time  `gorm:"column:updated_at;not null"`
+	UpdatedAt      time.Time  `gorm:"column:updated_at;not null;index:idx_outbox_retention,priority:2"`
 	PublishedAt    *time.Time `gorm:"column:published_at"`
 }
 
@@ -221,6 +234,91 @@ func (s *SQLStore) MarkFailed(ctx context.Context, id, owner string, next time.T
 	return changed("mark failed", result)
 }
 
+// purgeDeleteChunk bounds how many ids one DELETE binds, so a large batch_size
+// cannot exceed a database's bind-parameter limit.
+const purgeDeleteChunk = 500
+
+// Purge selects the expired ids first and deletes them in a second statement
+// that repeats the status and age conditions. It avoids a DELETE over a
+// LIMITed subquery, which MySQL rejects, and the repeated conditions mean a row
+// that was requeued or otherwise changed between the two statements survives.
+// updated_at is the time a row entered published or dead, so both states share
+// one (status, updated_at) index.
+func (s *SQLStore) Purge(ctx context.Context, now time.Time, status Status, olderThan time.Duration, limit int) (int, error) {
+	if status != StatusPublished && status != StatusDead {
+		return 0, fmt.Errorf("outbox: cannot purge rows with status %q", status)
+	}
+	if olderThan <= 0 || limit <= 0 {
+		return 0, errors.New("outbox: invalid purge age or limit")
+	}
+	cutoff := now.UTC().Add(-olderThan)
+
+	var ids []string
+	err := s.db.WithContext(ctx).Table(s.table).Select("id").
+		Where("status = ? AND updated_at < ?", status, cutoff).
+		Order("updated_at ASC").Limit(limit).Scan(&ids).Error
+	if err != nil {
+		return 0, fmt.Errorf("outbox: select expired events: %w", err)
+	}
+
+	deleted := 0
+	for start := 0; start < len(ids); start += purgeDeleteChunk {
+		chunk := ids[start:min(start+purgeDeleteChunk, len(ids))]
+		result := s.db.WithContext(ctx).Table(s.table).
+			Where("id IN ? AND status = ? AND updated_at < ?", chunk, status, cutoff).
+			Delete(&outboxRow{})
+		if result.Error != nil {
+			return deleted, fmt.Errorf("outbox: delete expired events: %w", result.Error)
+		}
+		deleted += int(result.RowsAffected)
+	}
+	return deleted, nil
+}
+
+// ListDead pages dead rows by id. Ids are random, so the order has no business
+// meaning, but it is stable, which is all keyset paging needs.
+func (s *SQLStore) ListDead(ctx context.Context, limit int, afterID string) ([]Record, error) {
+	if limit <= 0 {
+		return nil, errors.New("outbox: dead event page limit must be positive")
+	}
+	var rows []outboxRow
+	err := s.db.WithContext(ctx).Table(s.table).
+		Where("status = ? AND id > ?", StatusDead, afterID).
+		Order("id ASC").Limit(limit).Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("outbox: list dead events: %w", err)
+	}
+	records := make([]Record, 0, len(rows))
+	for _, row := range rows {
+		record, err := row.record()
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+// Requeue returns dead rows to pending. attempts must restart at zero: Claim
+// converts any row whose attempts already reached the maximum straight back to
+// dead. last_error is kept so the replayed row still shows why it died.
+func (s *SQLStore) Requeue(ctx context.Context, now time.Time, ids []string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	now = now.UTC()
+	result := s.db.WithContext(ctx).Table(s.table).
+		Where("id IN ? AND status = ?", ids, StatusDead).
+		Updates(map[string]any{
+			"status": StatusPending, "attempts": 0, "next_attempt_at": now,
+			"lease_owner": "", "lease_expires_at": nil, "updated_at": now,
+		})
+	if result.Error != nil {
+		return 0, fmt.Errorf("outbox: requeue dead events: %w", result.Error)
+	}
+	return int(result.RowsAffected), nil
+}
+
 func changed(operation string, result *gorm.DB) (bool, error) {
 	if result.Error != nil {
 		return false, fmt.Errorf("outbox: %s: %w", operation, result.Error)
@@ -239,6 +337,7 @@ func (r outboxRow) record() (Record, error) {
 		Event:  Event{ID: r.ID, Topic: r.Topic, Key: r.EventKey, Payload: append([]byte(nil), r.Payload...), Headers: headers, OccurredAt: r.OccurredAt.UTC()},
 		Status: r.Status, Attempts: r.Attempts, NextAttemptAt: r.NextAttemptAt.UTC(),
 		LeaseOwner: r.LeaseOwner, LeaseExpiresAt: cloneTime(r.LeaseExpiresAt),
+		LastError: r.LastError,
 	}, nil
 }
 
