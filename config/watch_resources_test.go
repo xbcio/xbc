@@ -101,8 +101,21 @@ func TestWatchFilesSerializesCallbacks(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, stop()) }()
 
-	deadline := time.Now().Add(600 * time.Millisecond)
-	for time.Now().Before(deadline) {
+	// Keep writing for at least the window, and past it until a second callback
+	// has run: on a loaded machine the first report can land late enough that a
+	// fixed window ends with one callback, which says nothing about overlap. The
+	// hard stop bounds a watcher that never reports, so that failure is the
+	// assertion below rather than a hang.
+	window := time.Now().Add(600 * time.Millisecond)
+	hardStop := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		reported := calls
+		mu.Unlock()
+		now := time.Now()
+		if now.After(hardStop) || (now.After(window) && reported >= 2) {
+			break
+		}
 		writeYAML(t, base, "a: 2\n")
 		time.Sleep(15 * time.Millisecond)
 	}
