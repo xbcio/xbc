@@ -45,7 +45,7 @@ func TestParamErrorMapsBothKnownAndStreamedBodyOverflowTo413(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			engine := enginetest.New()
-			engine.Use(web.CapRequestBody(32), web.RejectOversizedRequestBody(32))
+			engine.Use(web.CapRequestBody(32, 32), web.RejectOversizedRequestBody(32, 32))
 			engine.POST("/requests", func(_ context.Context, c *web.Ctx) error {
 				var destination map[string]any
 				body, err := io.ReadAll(c.Request().Body)

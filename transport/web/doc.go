@@ -263,12 +263,21 @@
 //	  idle_timeout: 60s
 //	  max_header_bytes: 1048576
 //	  max_request_body_bytes: 10485760
+//	  max_request_body_bytes_ceiling: 0
 //	  max_multipart_memory: 8388608
 //	  trusted_proxies: []
 //	  recovery:
 //	    stack: true
 //
-// MaxRequestBodyBytes is a hard limit for the complete request body.
+// MaxRequestBodyBytes is the limit on the complete request body for a route that
+// declares none, and MaxRequestBodyBytesCeiling is the bound no route can
+// exceed. A route declares its own limit with Route.MaxRequestBodyBytes and is
+// held to the smaller of that and the ceiling, so one upload route can take 200
+// MiB while every other route stays at 10 MiB. The ceiling is unset by default
+// and then equals MaxRequestBodyBytes: a deployment that never set it keeps
+// exactly the bound it had, and a body larger than max_request_body_bytes is
+// admitted only after the operator raises the ceiling, never as a side effect of
+// a declaration in code. A ceiling below MaxRequestBodyBytes fails startup.
 // MaxMultipartMemory only controls how much memory multipart parsing may use
 // before spilling to temporary files; it does not replace the total body limit.
 //

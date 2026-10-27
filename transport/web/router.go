@@ -108,6 +108,14 @@ type RouteInfo struct {
 	// process-level in-flight gate, so it is answered even when every slot is
 	// taken. See Route.Unmetered for when that is the right declaration.
 	Unmetered bool
+	// MaxRequestBodyBytes is the request-body limit this route declared through
+	// Route.MaxRequestBodyBytes, or zero when it declared none. The limit a
+	// request is held to is this value when it is set and
+	// web.max_request_body_bytes when it is not, and in both cases never more
+	// than web.max_request_body_bytes_ceiling, so a value above the ceiling is
+	// recorded as declared and enforced as the ceiling. See
+	// Route.MaxRequestBodyBytes.
+	MaxRequestBodyBytes int64
 	// Mounted reports that this row covers a subtree rather than a single
 	// path: Router.Mount registered an external http.Handler at Path, and
 	// every path at or beneath it on this method belongs to that handler.
@@ -212,6 +220,45 @@ func (r *Route) Idempotent() *Route {
 // is frozen rather than silently left metered.
 func (r *Route) Unmetered() *Route {
 	r.update(func(info *RouteInfo) { info.Unmetered = true })
+	return r
+}
+
+// MaxRequestBodyBytes sets the request body limit of every route this handle
+// covers, replacing web.max_request_body_bytes for them. It is how a route that
+// takes an upload accepts more than the service's ordinary routes do, and how a
+// route that takes a small JSON document accepts less.
+//
+// A request is held to min(limit, web.max_request_body_bytes_ceiling). The
+// ceiling is the one bound the operator controls, and it is what makes a larger
+// declaration safe to honour: a limit above it is recorded as declared and
+// enforced as the ceiling, so a declaration in code -- including one a plugin
+// registers -- can never admit more than the configuration allows. The ceiling
+// is unset by default and then equals web.max_request_body_bytes, which means a
+// deployment that never raised it cannot be widened by any declaration; an
+// upload route's larger limit takes effect only once the operator sets the
+// ceiling at least that high. A route that declares nothing is held to
+// min(web.max_request_body_bytes, ceiling), and since startup refuses a ceiling
+// below web.max_request_body_bytes that is simply web.max_request_body_bytes.
+//
+// The limit covers the declared Content-Length, every read of the body, and
+// Request.GetBody replays, and all three use the same number, so a chunked body
+// is held to the route's limit rather than to a larger one. It is decided from
+// the route the request matched: a request that matched no route -- the
+// framework's 404 and 405 -- has no declaration and is held to
+// web.max_request_body_bytes.
+//
+// A limit that is not positive panics: zero reads as "undeclared" and a negative
+// value as nothing at all, and neither is a limit anyone meant. A management-
+// plane route may not declare one, because that plane's chain has no body limit
+// stage to enforce it. Like every route declaration it panics after the route
+// table is frozen.
+func (r *Route) MaxRequestBodyBytes(limit int64) *Route {
+	if limit <= 0 {
+		panic(fmt.Sprintf(
+			"xbc: Route.MaxRequestBodyBytes requires a positive limit, got %d\n  → an undeclared route is held to web.max_request_body_bytes; pass the number of bytes this route accepts, or omit the call",
+			limit))
+	}
+	r.update(func(info *RouteInfo) { info.MaxRequestBodyBytes = limit })
 	return r
 }
 
@@ -511,6 +558,10 @@ func validateManagementRoute(route RouteInfo) error {
 	case route.Unmetered:
 		return fmt.Errorf(
 			"xbc: management route %s %s is marked unmetered\n  → the management chain has no in-flight gate for this route to be exempt from; drop the declaration",
+			route.Method, route.Path)
+	case route.MaxRequestBodyBytes != 0:
+		return fmt.Errorf(
+			"xbc: management route %s %s declares a request body limit\n  → the management chain has no body limit stage, so this declaration would never be enforced; drop it, or register the route on the serving plane",
 			route.Method, route.Path)
 	}
 	return nil

@@ -230,7 +230,7 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 	inflight := newInFlightGate(resolveMaxInFlight(cfg.MaxInFlight), frozen, index)
 	handlers := []Handler{
 		inflight.handler(logger),
-		capRequestBody(cfg.MaxRequestBodyBytes),
+		capRequestBody(cfg.MaxRequestBodyBytes, cfg.MaxRequestBodyBytesCeiling),
 		func(_ context.Context, c *Ctx) error {
 			newErrorResolver(logger, renderer).attach(c)
 			return nil
@@ -306,7 +306,7 @@ func (s *Server) assemblePipeline(ctx *plugin.Context) (assembledPipeline, error
 	// already installed outermost by capRequestBody, so moving the rejection
 	// inward costs no safety: nothing downstream can read more than the limit,
 	// whether or not this stage has answered yet.
-	handlers = append(handlers, rejectOversizedRequestBody(cfg.MaxRequestBodyBytes))
+	handlers = append(handlers, rejectOversizedRequestBody(cfg.MaxRequestBodyBytes, cfg.MaxRequestBodyBytesCeiling))
 	// An unmatched request is still a request a client made, so the global
 	// chain must reach it: CORS, request ids, access logs, metrics, panic
 	// recovery and the request-body limit all lose their meaning the moment

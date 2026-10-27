@@ -31,9 +31,34 @@ const (
 //
 // TrustedProxies is empty by default, which makes Gin ignore forwarded client
 // addresses unless the deployment explicitly names trusted reverse proxies.
-// MaxRequestBodyBytes is a transport-wide hard ceiling. MaxMultipartMemory only
-// controls how much parsed multipart data remains in memory; the request-body
-// ceiling still limits the complete request.
+// MaxRequestBodyBytes is the request-body limit a route is held to when it
+// declares none, and MaxRequestBodyBytesCeiling is the bound no route can
+// exceed. MaxMultipartMemory only controls how much parsed multipart data
+// remains in memory; the body limit still limits the complete request.
+//
+// A route declares its own limit with Route.MaxRequestBodyBytes and is held to
+// the smaller of that declaration and the ceiling: a smaller value tightens the
+// route, and a larger one -- up to the ceiling -- admits a bigger body on that
+// route alone. That is what lets a service keep 10 MiB for its ordinary routes
+// and take 200 MiB on its upload routes without raising the limit everywhere.
+// A request that matched no route (the framework's 404 and 405) is held to
+// MaxRequestBodyBytes: no route asked for more on its behalf.
+//
+// MaxRequestBodyBytesCeiling is 0 by default, and 0 means "equal to
+// MaxRequestBodyBytes". The default is the previous behaviour on purpose.
+// Before the ceiling existed, max_request_body_bytes was the transport-wide
+// bound, and a deployment that only ever set that key must still have a bound
+// no code can exceed: if the ceiling defaulted to something larger, a route
+// declaration -- including one a plugin registers -- would silently admit
+// bodies the operator never agreed to, and if it defaulted to a fixed number,
+// raising max_request_body_bytes past that number would stop validating.
+// Following the default keeps both true, so a larger body anywhere is always an
+// explicit edit of this key and never a side effect of a declaration in code.
+//
+// The ceiling is validated, not clamped: a negative value, or a positive one
+// below MaxRequestBodyBytes, fails startup naming both keys, because the
+// default every undeclared route gets would otherwise exceed the bound on it.
+// After normalization the field always holds the resolved, positive value.
 //
 // MaxInFlight is the process-wide admission ceiling: the number of requests the
 // Server serves at once. Zero -- the default -- applies a fixed cap of 1024
@@ -59,22 +84,23 @@ const (
 // works under gzip, request timeout and idempotency as well as on its own. It is
 // per response, so nothing else loses its bound.
 type Config struct {
-	Addr                string           `yaml:"addr"                   default:":8080"   validate:"required"`
-	BasePath            string           `yaml:"base_path"              default:"/"       validate:"required,startswith=/"`
-	ReadTimeout         time.Duration    `yaml:"read_timeout"           default:"10s"     validate:"gt=0"`
-	ReadHeaderTimeout   time.Duration    `yaml:"read_header_timeout"    default:"5s"      validate:"gt=0"`
-	WriteTimeout        time.Duration    `yaml:"write_timeout"          default:"30s"     validate:"gt=0"`
-	IdleTimeout         time.Duration    `yaml:"idle_timeout"           default:"60s"     validate:"gt=0"`
-	MaxHeaderBytes      int              `yaml:"max_header_bytes"       default:"1048576" validate:"gt=0"`
-	MaxRequestBodyBytes int64            `yaml:"max_request_body_bytes" default:"10485760" validate:"gt=0"`
-	MaxMultipartMemory  int64            `yaml:"max_multipart_memory"   default:"8388608" validate:"gt=0"`
-	MaxInFlight         int              `yaml:"max_in_flight"          default:"0"       validate:"gte=0"`
-	TrustedProxies      []string         `yaml:"trusted_proxies"                          validate:"dive,required"`
-	Shutdown            ShutdownConfig   `yaml:"shutdown"`
-	Security            SecurityConfig   `yaml:"security"`
-	Recovery            RecoveryConfig   `yaml:"recovery"`
-	Management          ManagementConfig `yaml:"management"`
-	TLS                 TLSConfig        `yaml:"tls"`
+	Addr                       string           `yaml:"addr"                   default:":8080"   validate:"required"`
+	BasePath                   string           `yaml:"base_path"              default:"/"       validate:"required,startswith=/"`
+	ReadTimeout                time.Duration    `yaml:"read_timeout"           default:"10s"     validate:"gt=0"`
+	ReadHeaderTimeout          time.Duration    `yaml:"read_header_timeout"    default:"5s"      validate:"gt=0"`
+	WriteTimeout               time.Duration    `yaml:"write_timeout"          default:"30s"     validate:"gt=0"`
+	IdleTimeout                time.Duration    `yaml:"idle_timeout"           default:"60s"     validate:"gt=0"`
+	MaxHeaderBytes             int              `yaml:"max_header_bytes"       default:"1048576" validate:"gt=0"`
+	MaxRequestBodyBytes        int64            `yaml:"max_request_body_bytes" default:"10485760" validate:"gt=0"`
+	MaxRequestBodyBytesCeiling int64            `yaml:"max_request_body_bytes_ceiling" default:"0" validate:"gte=0"`
+	MaxMultipartMemory         int64            `yaml:"max_multipart_memory"   default:"8388608" validate:"gt=0"`
+	MaxInFlight                int              `yaml:"max_in_flight"          default:"0"       validate:"gte=0"`
+	TrustedProxies             []string         `yaml:"trusted_proxies"                          validate:"dive,required"`
+	Shutdown                   ShutdownConfig   `yaml:"shutdown"`
+	Security                   SecurityConfig   `yaml:"security"`
+	Recovery                   RecoveryConfig   `yaml:"recovery"`
+	Management                 ManagementConfig `yaml:"management"`
+	TLS                        TLSConfig        `yaml:"tls"`
 }
 
 // ShutdownConfig controls Web-owned behavior after runtime cancellation. The
@@ -273,6 +299,17 @@ func (c Config) Validate() error {
 	}
 	if c.MaxHeaderBytes <= 0 || c.MaxRequestBodyBytes <= 0 || c.MaxMultipartMemory <= 0 {
 		return fmt.Errorf("web: request size limits must be greater than zero")
+	}
+	if c.MaxRequestBodyBytesCeiling < 0 {
+		return fmt.Errorf("web: max_request_body_bytes_ceiling must not be negative\n  → leave it unset to follow max_request_body_bytes, or set the largest body in bytes any route may accept")
+	}
+	// Zero is "unset" here: Validate also runs on the bound value before
+	// normalizeConfig resolves it, and an unset ceiling follows
+	// max_request_body_bytes, so there is nothing to compare yet.
+	if c.MaxRequestBodyBytesCeiling != 0 && c.MaxRequestBodyBytesCeiling < c.MaxRequestBodyBytes {
+		return fmt.Errorf(
+			"web: max_request_body_bytes_ceiling (%d) is below max_request_body_bytes (%d)\n  → the ceiling bounds every route, including the default that undeclared routes get; raise max_request_body_bytes_ceiling to at least max_request_body_bytes, lower max_request_body_bytes, or leave the ceiling unset to follow it",
+			c.MaxRequestBodyBytesCeiling, c.MaxRequestBodyBytes)
 	}
 	if c.MaxInFlight < 0 {
 		return fmt.Errorf("web: max_in_flight must not be negative")
@@ -608,6 +645,11 @@ func normalizeConfig(c Config) (Config, error) {
 	}
 	if c.MaxRequestBodyBytes == 0 {
 		c.MaxRequestBodyBytes = defaults.MaxRequestBodyBytes
+	}
+	// After the default above, so an unset ceiling follows the value actually in
+	// force rather than the compiled-in one.
+	if c.MaxRequestBodyBytesCeiling == 0 {
+		c.MaxRequestBodyBytesCeiling = c.MaxRequestBodyBytes
 	}
 	if c.MaxMultipartMemory == 0 {
 		c.MaxMultipartMemory = defaults.MaxMultipartMemory

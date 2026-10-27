@@ -844,6 +844,7 @@
         "IdleTimeout": 60000000000,
         "MaxHeaderBytes": 1048576,
         "MaxRequestBodyBytes": 10485760,
+        "MaxRequestBodyBytesCeiling": 0,
         "MaxMultipartMemory": 8388608,
         "MaxInFlight": 0,
         "TrustedProxies": null,

@@ -307,6 +307,7 @@ func TestFreezeRejectsDeclarationsAManagementRouteCannotHonor(t *testing.T) {
 		{"explicit policy", func(r *Route) { r.Auth(Accepts(authentication.Scheme("jwt"))) }, "authentication policy"},
 		{"permission", func(r *Route) { r.Perm("ops:read") }, "permission"},
 		{"unmetered", func(r *Route) { r.Unmetered() }, "unmetered"},
+		{"request body limit", func(r *Route) { r.MaxRequestBodyBytes(1024) }, "request body limit"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -32,6 +32,7 @@ func TestConfigUsesProductionHTTPAndPayloadDefaults(t *testing.T) {
 	assert.Equal(t, 60*time.Second, cfg.IdleTimeout)
 	assert.Equal(t, 1<<20, cfg.MaxHeaderBytes)
 	assert.Equal(t, int64(10<<20), cfg.MaxRequestBodyBytes)
+	assert.Zero(t, cfg.MaxRequestBodyBytesCeiling, "unset, so the ceiling follows max_request_body_bytes and no declaration can widen it")
 	assert.Equal(t, int64(8<<20), cfg.MaxMultipartMemory)
 	assert.Empty(t, cfg.TrustedProxies)
 	assert.Zero(t, cfg.Shutdown.PreDrainDelay, "pre-drain is explicit opt-in")
@@ -79,6 +80,8 @@ func TestConfigRejectsMalformedSecuritySettings(t *testing.T) {
 		{"base path query", func(c *Config) { c.BasePath = "/api?admin=true" }},
 		{"zero timeout", func(c *Config) { c.ReadHeaderTimeout = 0 }},
 		{"negative body limit", func(c *Config) { c.MaxRequestBodyBytes = -1 }},
+		{"negative body limit ceiling", func(c *Config) { c.MaxRequestBodyBytesCeiling = -1 }},
+		{"body limit ceiling below the default limit", func(c *Config) { c.MaxRequestBodyBytesCeiling = c.MaxRequestBodyBytes - 1 }},
 		{"negative in-flight limit", func(c *Config) { c.MaxInFlight = -1 }},
 		{"negative pre-drain delay", func(c *Config) { c.Shutdown.PreDrainDelay = -time.Second }},
 		{"invalid proxy", func(c *Config) { c.TrustedProxies = []string{"proxy.example.com"} }},
@@ -490,4 +493,103 @@ func TestConfigGatesHTTP2OnTLSMaterial(t *testing.T) {
 	}
 	assert.NoError(t, unreachable.Validate(),
 		"min_version 1.3 makes every TLS 1.2 suite unreachable, so the key has no effect and is not refused")
+}
+
+// TestMaxRequestBodyBytesCeilingBindsFromTheWebSection pins the configuration key
+// itself. The field is the only thing the ceiling can be read from, so a rename
+// that silently stopped binding would leave a deployment that raised it serving
+// every upload route at the default limit -- a failure with no error attached.
+func TestMaxRequestBodyBytesCeilingBindsFromTheWebSection(t *testing.T) {
+	environment, err := config.NewEnvironment(map[string]any{
+		"web": map[string]any{"max_request_body_bytes_ceiling": 200 << 20},
+	}, "XBC_WEB_BODY_CEILING_TEST_")
+	require.NoError(t, err)
+
+	var bound Config
+	require.NoError(t, environment.Bind(ConfigPath, &bound))
+	require.NoError(t, config.Validate(&bound, ConfigPath))
+	require.NoError(t, bound.Validate())
+	assert.Equal(t, int64(200<<20), bound.MaxRequestBodyBytesCeiling)
+	assert.Equal(t, int64(10<<20), bound.MaxRequestBodyBytes, "the default limit keeps its meaning and its default")
+}
+
+// TestMaxRequestBodyBytesCeilingValidation pins the relationship between the two
+// keys. Unset is valid and means "follow max_request_body_bytes"; equal and
+// larger are valid; anything below the default limit is refused with an error
+// that names both keys, because lowering either one repairs it and the operator
+// should not have to guess which.
+func TestMaxRequestBodyBytesCeilingValidation(t *testing.T) {
+	valid := []struct {
+		name    string
+		limit   int64
+		ceiling int64
+	}{
+		{"unset", 10 << 20, 0},
+		{"equal to the default limit", 10 << 20, 10 << 20},
+		{"above the default limit", 10 << 20, 200 << 20},
+		{"unset while the default limit is raised", 256 << 20, 0},
+	}
+	for _, test := range valid {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.MaxRequestBodyBytes = test.limit
+			cfg.MaxRequestBodyBytesCeiling = test.ceiling
+			assert.NoError(t, cfg.Validate())
+		})
+	}
+
+	t.Run("below the default limit names both keys and both values", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxRequestBodyBytes = 10 << 20
+		cfg.MaxRequestBodyBytesCeiling = 5 << 20
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "max_request_body_bytes_ceiling (5242880)")
+		assert.Contains(t, err.Error(), "max_request_body_bytes (10485760)")
+		assert.Contains(t, err.Error(), "raise max_request_body_bytes_ceiling")
+	})
+	t.Run("negative says to leave it unset", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxRequestBodyBytesCeiling = -1
+		err := cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "max_request_body_bytes_ceiling")
+		assert.Contains(t, err.Error(), "leave it unset")
+	})
+}
+
+// TestNormalizeConfigResolvesTheUnsetBodyCeiling pins the backward-compatible
+// default at the point a Server reads it. An unset ceiling becomes the default
+// limit actually in force -- including a default limit that was itself unset and
+// defaulted a line earlier, which is the ordering a careless edit gets wrong --
+// and a ceiling that was set is left alone.
+func TestNormalizeConfigResolvesTheUnsetBodyCeiling(t *testing.T) {
+	t.Run("unset follows the configured default limit", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxRequestBodyBytes = 32 << 20
+		resolved, err := normalizeConfig(cfg)
+		require.NoError(t, err)
+		assert.Equal(t, int64(32<<20), resolved.MaxRequestBodyBytesCeiling)
+	})
+	t.Run("unset follows a default limit that was itself unset", func(t *testing.T) {
+		resolved, err := normalizeConfig(Config{})
+		require.NoError(t, err)
+		assert.Equal(t, int64(10<<20), resolved.MaxRequestBodyBytes)
+		assert.Equal(t, int64(10<<20), resolved.MaxRequestBodyBytesCeiling,
+			"the ceiling must follow the resolved default, not the zero the caller left")
+	})
+	t.Run("a configured ceiling is kept", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxRequestBodyBytesCeiling = 200 << 20
+		resolved, err := normalizeConfig(cfg)
+		require.NoError(t, err)
+		assert.Equal(t, int64(200<<20), resolved.MaxRequestBodyBytesCeiling)
+	})
+	t.Run("a ceiling below the default limit is refused", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxRequestBodyBytesCeiling = 1 << 20
+		_, err := normalizeConfig(cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "max_request_body_bytes_ceiling")
+	})
 }
