@@ -299,8 +299,8 @@ github.com/xbcio/xbc/extensions/jobs/asynq v0.1.0 h1:gWD1N4ds18vhuqdDcKGZ00FR58D
 github.com/xbcio/xbc/extensions/jobs/asynq v0.1.0/go.mod h1:HZrgqMgfg190e1ch2Tbb5VDQ790wmS3gLvoB8DExuT4=
 github.com/xbcio/xbc/extensions/jobs/cron v0.1.0 h1:7Bx7Oy8txIKcYsBc8WTHxegw9ZCyiU2eBYsHh6pA+UA=
 github.com/xbcio/xbc/extensions/jobs/cron v0.1.0/go.mod h1:QFkT+53qaKTTpnPW4Vo6G0x+BJBLkecIPARGI+9VPmA=
-github.com/xbcio/xbc/extensions/messaging/outbox v0.1.0 h1:ajn4IkrmJo7VjSkXMmnI5VA1/jOBFI/C0OYB7BQogzc=
-github.com/xbcio/xbc/extensions/messaging/outbox v0.1.0/go.mod h1:NC9J3SM8MO0/BAd11df0JahPjnnvz81QuQOCI4dYMS8=
+github.com/xbcio/xbc/extensions/messaging/outbox v0.2.0 h1:F8rtYNuyD3GD+nAnKcKo/bBg/NPIWCEXW+m1tK5fEiE=
+github.com/xbcio/xbc/extensions/messaging/outbox v0.2.0/go.mod h1:NC9J3SM8MO0/BAd11df0JahPjnnvz81QuQOCI4dYMS8=
 github.com/xbcio/xbc/extensions/observability/metrics v0.1.0 h1:+2EO3Xf5m9sEMyOWwGFuV33Q8gN1o/qo1GeWpErpACA=
 github.com/xbcio/xbc/extensions/observability/metrics v0.1.0/go.mod h1:wrnWr/FCbdDvz2in/Kh0N+Xvc8AuB8ECxY5I443dG8E=
 github.com/xbcio/xbc/extensions/observability/tracing v0.1.0 h1:c4eUpTHgAsCtI2idnlIr+xF1f5z2FPyV9gPFZGnsIbE=

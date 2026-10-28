@@ -26,7 +26,7 @@ require (
 	github.com/xbcio/xbc/extensions/concurrency/async v0.1.0
 	github.com/xbcio/xbc/extensions/jobs/asynq v0.1.0
 	github.com/xbcio/xbc/extensions/jobs/cron v0.1.0
-	github.com/xbcio/xbc/extensions/messaging/outbox v0.1.0
+	github.com/xbcio/xbc/extensions/messaging/outbox v0.2.0
 	github.com/xbcio/xbc/extensions/reliability/health v0.1.0
 	github.com/xbcio/xbc/extensions/storage/gorm v0.1.0
 	github.com/xbcio/xbc/extensions/tasks v0.1.0
