@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
@@ -553,4 +554,202 @@ func TestMaxRequestBodyBytesIsRecordedOnEveryRowAndRejectsNonPositiveLimits(t *t
 
 	assert.Panics(t, func() { late.MaxRequestBodyBytes(1) },
 		"declaring after the route table is frozen must panic like every other route declaration")
+}
+
+// bodyLimitMethods is the method set Any and Mount register, spelled out so a
+// change to either surfaces here as a failing row count rather than passing
+// silently against a list the test borrowed from the code under test.
+var bodyLimitMethods = []string{
+	http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch,
+	http.MethodHead, http.MethodOptions, http.MethodDelete,
+}
+
+// TestMaxRequestBodyBytesIsRecordedOnEveryRowOfAnyAndMount covers the two
+// registrations that fan out to one row per method besides Match. Both go
+// through Route.update like Match does, but a row that kept the zero value
+// would be held to the default limit with nothing in the catalog to say so.
+func TestMaxRequestBodyBytesIsRecordedOnEveryRowOfAnyAndMount(t *testing.T) {
+	_, router := newTestEngineAndRouter("/api")
+	noop := func(context.Context, *web.Ctx) error { return nil }
+	router.Any("/any", noop).MaxRequestBodyBytes(512)
+	router.Any("/plain", noop)
+	router.Mount("/mounted", http.NotFoundHandler()).MaxRequestBodyBytes(256)
+	catalog, err := router.Freeze()
+	require.NoError(t, err)
+
+	for _, method := range bodyLimitMethods {
+		anyRow, ok := catalog.Lookup(method, "/api/any")
+		require.True(t, ok, method)
+		assert.Equal(t, int64(512), anyRow.MaxRequestBodyBytes, "Any %s", method)
+
+		plain, ok := catalog.Lookup(method, "/api/plain")
+		require.True(t, ok, method)
+		assert.Zero(t, plain.MaxRequestBodyBytes, "Any without a declaration, %s", method)
+
+		mounted, ok := catalog.Lookup(method, "/api/mounted")
+		require.True(t, ok, method)
+		assert.True(t, mounted.Mounted, method)
+		assert.Equal(t, int64(256), mounted.MaxRequestBodyBytes, "Mount %s", method)
+	}
+}
+
+// TestAnyAndMountedRoutesAreHeldToTheirDeclaredLimit serves requests through a
+// real Server to the same two registrations, so the limit is shown to apply on
+// the request path and not only to be recorded: every method of an Any route,
+// and a path inside a mounted subtree, where the handler is a plain
+// http.Handler that reads r.Body itself.
+func TestAnyAndMountedRoutesAreHeldToTheirDeclaredLimit(t *testing.T) {
+	probe := &bodyProbe{}
+	cfg := web.DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.MaxRequestBodyBytes = bodyDefaultLimit
+	cfg.MaxRequestBodyBytesCeiling = bodyCeiling
+	server, ctx, _ := newPingServer(t, cfg, serverInputs{
+		routes: []plugin.Entry[web.RouteContributor]{{
+			Identity: plugin.Identity{Plugin: "bodylimit-fanout"},
+			Value: fakeRouteContributor{register: func(router *web.Router) {
+				router.Any("/any", func(_ context.Context, c *web.Ctx) error {
+					body, err := io.ReadAll(c.Request().Body)
+					probe.read, probe.err = len(body), err
+					if err != nil {
+						return web.ParamError(err, nil)
+					}
+					c.Status(http.StatusNoContent)
+					return nil
+				}).MaxRequestBodyBytes(bodyUploadDeclared)
+				router.Mount("/mounted", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					probe.read, probe.err = len(body), err
+					if err != nil {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					w.WriteHeader(http.StatusNoContent)
+				})).MaxRequestBodyBytes(bodyUploadDeclared)
+			}},
+		}},
+	})
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		t.Run("Any "+method+" at the declared limit", func(t *testing.T) {
+			response := serveBody(t, server, method, "/any", bodyUploadDeclared, false)
+			assert.Equal(t, http.StatusNoContent, response.Code)
+			assert.Equal(t, bodyUploadDeclared, probe.read)
+		})
+		t.Run("Any "+method+" over the declared limit", func(t *testing.T) {
+			requireBodyTooLarge(t, serveBody(t, server, method, "/any", bodyUploadDeclared+1, false))
+		})
+	}
+	t.Run("Any chunked over the declared limit", func(t *testing.T) {
+		requireBodyTooLarge(t, serveBody(t, server, http.MethodPost, "/any", bodyUploadDeclared+1, true))
+		requireReadLimit(t, probe, bodyUploadDeclared)
+	})
+	t.Run("mounted subtree at the declared limit", func(t *testing.T) {
+		response := serveBody(t, server, http.MethodPost, "/mounted/deep/path", bodyUploadDeclared, false)
+		assert.Equal(t, http.StatusNoContent, response.Code)
+		assert.Equal(t, bodyUploadDeclared, probe.read)
+	})
+	t.Run("mounted subtree over the declared limit", func(t *testing.T) {
+		requireBodyTooLarge(t, serveBody(t, server, http.MethodPost, "/mounted/deep/path", bodyUploadDeclared+1, false))
+	})
+	t.Run("mounted subtree chunked over the declared limit", func(t *testing.T) {
+		// Nothing in the framework answers a chunked overflow for a mounted
+		// handler: it reads r.Body itself, so what is pinned is the reader's
+		// limit and that no byte past it reaches the handler.
+		serveBody(t, server, http.MethodPost, "/mounted/deep/path", bodyUploadDeclared+1, true)
+		requireReadLimit(t, probe, bodyUploadDeclared)
+	})
+}
+
+// bodyLimitHeaderExtractor admits exactly one credential, so a test can send a
+// request that authenticates and one that does not without a token format.
+type bodyLimitHeaderExtractor struct{}
+
+func (bodyLimitHeaderExtractor) Scheme() authentication.Scheme { return "jwt" }
+
+func (bodyLimitHeaderExtractor) ExtractCredential(c *web.Ctx) (authentication.CredentialResult, error) {
+	if c.Request().Header.Get("Authorization") == "Bearer valid" {
+		return authentication.Presented("token"), nil
+	}
+	return authentication.AbsentWithChallenge(`Bearer realm="api"`), nil
+}
+
+// TestOversizedRequestIsAuthenticatedBeforeItIsRejected pins the order of the
+// two refusals on a protected route: a caller with no credential is told 401
+// whatever it sent, so the 413 and its limit are not an oracle for an
+// unauthenticated client, while an authenticated caller over the limit still
+// gets the 413 and the handler never runs. The limit is the declared one on the
+// second route, so a declaration does not change which refusal comes first.
+func TestOversizedRequestIsAuthenticatedBeforeItIsRejected(t *testing.T) {
+	handlerRan := false
+	handler := func(_ context.Context, c *web.Ctx) error {
+		handlerRan = true
+		if _, err := io.ReadAll(c.Request().Body); err != nil {
+			return web.ParamError(err, nil)
+		}
+		c.Status(http.StatusNoContent)
+		return nil
+	}
+	cfg := web.DefaultConfig()
+	cfg.Addr = "127.0.0.1:0"
+	cfg.MaxRequestBodyBytes = bodyDefaultLimit
+	cfg.MaxRequestBodyBytesCeiling = bodyCeiling
+	server, ctx, _ := newPingServer(t, cfg, serverInputs{
+		authenticators: []plugin.Entry[authentication.Authenticator]{{
+			Identity: plugin.Identity{Plugin: "jwt"},
+			Value: &stubAuth{scheme: "jwt", result: authentication.Accepted(
+				authentication.Principal{Subject: "u-1", AuthMethod: "jwt"})},
+		}},
+		extractors: []plugin.Entry[web.CredentialExtractor]{{
+			Identity: plugin.Identity{Plugin: "jwt"},
+			Value:    bodyLimitHeaderExtractor{},
+		}},
+		routes: []plugin.Entry[web.RouteContributor]{{
+			Identity: plugin.Identity{Plugin: "bodylimit-auth"},
+			Value: fakeRouteContributor{register: func(router *web.Router) {
+				router.POST("/secured", handler).Auth(web.Accepts("jwt"))
+				router.POST("/secured-upload", handler).Auth(web.Accepts("jwt")).MaxRequestBodyBytes(bodyUploadDeclared)
+			}},
+		}},
+	})
+	require.NoError(t, server.Start(ctx))
+	require.NoError(t, server.OpenTraffic(ctx))
+
+	send := func(path string, n int, authenticated bool) *httptest.ResponseRecorder {
+		handlerRan = false
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(strings.Repeat("x", n)))
+		if authenticated {
+			request.Header.Set("Authorization", "Bearer valid")
+		}
+		response := httptest.NewRecorder()
+		testEngineOf(t, server).ServeHTTP(response, request)
+		return response
+	}
+
+	for _, test := range []struct {
+		name  string
+		path  string
+		limit int
+	}{
+		{name: "default limit", path: "/secured", limit: bodyDefaultLimit},
+		{name: "declared limit", path: "/secured-upload", limit: bodyUploadDeclared},
+	} {
+		t.Run(test.name+", no credential and over the limit", func(t *testing.T) {
+			response := send(test.path, test.limit+1, false)
+			assert.Equal(t, http.StatusUnauthorized, response.Code)
+			assert.NotEmpty(t, response.Header().Get("WWW-Authenticate"))
+			assert.False(t, handlerRan)
+		})
+		t.Run(test.name+", authenticated and over the limit", func(t *testing.T) {
+			requireBodyTooLarge(t, send(test.path, test.limit+1, true))
+			assert.False(t, handlerRan, "an oversized request must not reach the handler")
+		})
+		t.Run(test.name+", authenticated and at the limit", func(t *testing.T) {
+			response := send(test.path, test.limit, true)
+			assert.Equal(t, http.StatusNoContent, response.Code)
+			assert.True(t, handlerRan)
+		})
+	}
 }
