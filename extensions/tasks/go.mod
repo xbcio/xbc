@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/tasks
 
-go 1.25.0
+go 1.26.0
 
 // This module deliberately requires nothing. The task facade is a
 // protocol-neutral vocabulary -- task handles, provider bindings, and the

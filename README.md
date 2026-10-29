@@ -95,7 +95,7 @@ The root `xbc` package therefore stays a stable, thin facade. All Web plugins ha
 
 ## Quickstart
 
-Requires Go 1.25 or later. Run from the repository root:
+Requires Go 1.26 or later. Run from the repository root:
 
 ```bash
 go run ./examples/quickstart doctor --config examples/quickstart/application.yml

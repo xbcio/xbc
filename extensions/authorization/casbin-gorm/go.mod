@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/authorization/casbin-gorm
 
-go 1.25.0
+go 1.26.0
 
 // XBC modules resolve through their published release tags; repository
 // development resolves the same source through go.work.

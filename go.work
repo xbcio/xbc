@@ -1,4 +1,4 @@
-go 1.25.0
+go 1.26.0
 
 // go.work is committed on purpose. This repository contains independently
 // publishable core, transport, grouped protocol-neutral extensions,

@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/web/extensions/authentication/saml
 
-go 1.25.0
+go 1.26.0
 
 // XBC core, the authentication contract, the neutral SAML service provider,
 // the neutral session module, the Web transport, and the shared federation Web

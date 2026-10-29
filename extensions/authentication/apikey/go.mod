@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/authentication/apikey
 
-go 1.25.0
+go 1.26.0
 
 // github.com/xbcio/xbc and github.com/xbcio/xbc/extensions/authentication
 // resolve through their published release tags; repository development

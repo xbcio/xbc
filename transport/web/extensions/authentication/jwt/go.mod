@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/web/extensions/authentication/jwt
 
-go 1.25.0
+go 1.26.0
 
 // github.com/xbcio/xbc, github.com/xbcio/xbc/transport/web, and the neutral
 // authenticator github.com/xbcio/xbc/extensions/authentication/jwt resolve

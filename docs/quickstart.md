@@ -4,7 +4,7 @@ This guide runs the repository's self-contained Web example, explains its explic
 
 ## Requirements
 
-Install Go 1.25 or newer, then run all commands from the repository root.
+Install Go 1.26 or newer, then run all commands from the repository root.
 
 ## Validate and start the example
 

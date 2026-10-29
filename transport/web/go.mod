@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/web
 
-go 1.25.0
+go 1.26.0
 
 // github.com/xbcio/xbc resolves through its published release tag, which is
 // what lets an outside user `go get` this module; repository development

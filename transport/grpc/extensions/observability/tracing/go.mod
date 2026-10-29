@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/grpc/extensions/observability/tracing
 
-go 1.25.0
+go 1.26.0
 
 // Core, transport/grpc, and the neutral tracing plugin
 // github.com/xbcio/xbc/extensions/observability/tracing resolve through their

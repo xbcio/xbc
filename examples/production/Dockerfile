@@ -15,7 +15,7 @@
 # otherwise have to restate. See docs/recipes.md for the run and migration
 # procedure around this image.
 
-FROM golang:1.25-bookworm AS build
+FROM golang:1.26-bookworm AS build
 
 WORKDIR /src
 

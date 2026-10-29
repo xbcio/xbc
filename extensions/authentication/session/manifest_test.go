@@ -14,7 +14,7 @@ func TestModuleManifestIsPublishableAndPinsThirdPartyDependencies(t *testing.T) 
 	}
 	manifest := string(data)
 	for _, expected := range []string{
-		"go 1.25.0",
+		"go 1.26.0",
 		"github.com/alicebob/miniredis/v2 v2.38.0",
 		"github.com/redis/go-redis/v9 v9.21.0",
 	} {

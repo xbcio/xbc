@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/web/extensions/authentication/oidc
 
-go 1.25.0
+go 1.26.0
 
 // XBC core, the authentication contract, the neutral OIDC client, the neutral
 // session module, the Web transport, and the shared federation Web base

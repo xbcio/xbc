@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/jobs/cron
 
-go 1.25.0
+go 1.26.0
 
 // github.com/xbcio/xbc and the protocol-neutral lease contract resolve through
 // their published release tags; repository development resolves the same source

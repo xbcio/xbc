@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/web/extensions/authentication/session
 
-go 1.25.0
+go 1.26.0
 
 // XBC core, transport/web, and the neutral session module resolve through
 // their published release tags; repository development resolves the same

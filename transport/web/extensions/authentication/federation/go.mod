@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/web/extensions/authentication/federation
 
-go 1.25.0
+go 1.26.0
 
 // XBC core, the authentication contract, the neutral session module, the Web
 // transport, and the Web session adapter resolve through their published

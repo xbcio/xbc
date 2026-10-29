@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/grpc/extensions/authorization/casbin
 
-go 1.25.0
+go 1.26.0
 
 // Core, transport/grpc, and the neutral casbin engine
 // github.com/xbcio/xbc/extensions/authorization/casbin resolve through their

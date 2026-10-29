@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/web/extensions/observability/metrics
 
-go 1.25.0
+go 1.26.0
 
 // Core, transport/web, and the neutral metrics plugin resolve through their
 // published release tags; repository development resolves the same source

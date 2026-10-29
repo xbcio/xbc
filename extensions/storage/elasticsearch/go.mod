@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/storage/elasticsearch
 
-go 1.25.0
+go 1.26.0
 
 // The core module and the protocol-neutral health capability resolve through
 // their published release tags; repository development resolves the same source

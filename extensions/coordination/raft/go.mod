@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/coordination/raft
 
-go 1.25.0
+go 1.26.0
 
 // The XBC core module and the protocol-neutral health capability resolve
 // through their published release tags; repository development resolves the

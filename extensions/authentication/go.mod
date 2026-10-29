@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/authentication
 
-go 1.25.0
+go 1.26.0
 
 // This module deliberately requires nothing. The authentication contract is a
 // protocol-neutral vocabulary of interfaces and value types built only from the

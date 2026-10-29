@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/storage/gorm
 
-go 1.25.0
+go 1.26.0
 
 // github.com/xbcio/xbc and github.com/xbcio/xbc/extensions/reliability/health
 // resolve through their published release tags; repository development resolves

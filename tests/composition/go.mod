@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/tests/composition
 
-go 1.25.0
+go 1.26.0
 
 // XBC modules imported below resolve through their published release tags;
 // repository development resolves the same source through the root go.work.

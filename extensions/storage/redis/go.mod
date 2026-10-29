@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/storage/redis
 
-go 1.25.0
+go 1.26.0
 
 // The core module and the protocol-neutral health and lease contracts resolve
 // through their published release tags; repository development resolves the

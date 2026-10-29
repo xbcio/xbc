@@ -18,7 +18,7 @@ func TestModuleManifestIsPublishableAndPinsReleasedTags(t *testing.T) {
 	}
 	manifest := string(data)
 	for _, expected := range []string{
-		"go 1.25.0",
+		"go 1.26.0",
 		"github.com/redis/go-redis/v9 v9.21.0",
 		"github.com/xbcio/xbc v0.1.0",
 		"github.com/xbcio/xbc/extensions/authentication v0.3.0",

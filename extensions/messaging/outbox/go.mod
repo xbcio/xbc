@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/messaging/outbox
 
-go 1.25.0
+go 1.26.0
 
 // XBC core resolves through its published release tag; repository development
 // resolves the same source through go.work.

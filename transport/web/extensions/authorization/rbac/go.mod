@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/web/extensions/authorization/rbac
 
-go 1.25.0
+go 1.26.0
 
 // The XBC core, protocol-neutral RBAC extension, and Web transport modules
 // resolve through their published release tags; repository development

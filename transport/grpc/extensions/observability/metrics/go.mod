@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics
 
-go 1.25.0
+go 1.26.0
 
 // Core, transport/grpc, and the neutral metrics plugin
 // github.com/xbcio/xbc/extensions/observability/metrics resolve through their

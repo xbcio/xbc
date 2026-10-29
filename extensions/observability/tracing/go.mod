@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/observability/tracing
 
-go 1.25.0
+go 1.26.0
 
 // Core resolves through its published release tag; repository development
 // resolves the same source through go.work.

@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/coordination/lease
 
-go 1.25.0
+go 1.26.0
 
 // This module deliberately requires nothing. The lease contract is a
 // protocol-neutral vocabulary of two interfaces built only from the standard

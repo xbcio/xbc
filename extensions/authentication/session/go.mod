@@ -1,6 +1,6 @@
 module github.com/xbcio/xbc/extensions/authentication/session
 
-go 1.25.0
+go 1.26.0
 
 // XBC core and extensions/authentication resolve through their published
 // release tags; repository development resolves the same source through

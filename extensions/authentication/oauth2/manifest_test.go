@@ -15,7 +15,7 @@ func TestModuleManifestIsPublishable(t *testing.T) {
 	manifest := string(data)
 	for _, expected := range []string{
 		"module github.com/xbcio/xbc/extensions/authentication/oauth2",
-		"go 1.25.0",
+		"go 1.26.0",
 		"github.com/xbcio/xbc/extensions/authentication v0.3.0",
 	} {
 		if !strings.Contains(manifest, expected) {
