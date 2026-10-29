@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"os"
 
 	corelog "github.com/xbcio/xbc/log"
 )
@@ -205,6 +207,31 @@ func (r *errorResolver) mapError(c *Ctx, err error) ProblemDetail {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return NewProblem(http.StatusGatewayTimeout, "gateway_timeout")
+	}
+	// The mappings below only reclassify errors that used to fall through to
+	// 500, so they sit behind every branch above and cannot change an outcome
+	// an application mapper, ParamError or the 504 already decided.
+	//
+	// A handler that returns a body-read failure as-is, without ParamError,
+	// still gets the status ParamError would have chosen. multipart's own
+	// size limits (part header and non-file field bytes) fire before the body
+	// reader's cap and are not *http.MaxBytesError. Both are matched by type or
+	// sentinel identity, never by message text: a client controls what a
+	// rejected value says.
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) || errors.Is(err, multipart.ErrMessageTooLarge) {
+		return NewProblem(http.StatusRequestEntityTooLarge, "request_body_too_large")
+	}
+	// A read deadline that expired on the connection (a slow client under
+	// SetReadDeadline) satisfies os.ErrDeadlineExceeded but not
+	// context.DeadlineExceeded, and net/http cancels the request's context
+	// when the read fails. An upstream call's deadline error is the same kind
+	// of error while the request context is still live, and that stays a 500:
+	// the client did nothing wrong and a 408 would blame it.
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		if request := c.Request(); request != nil && request.Context().Err() != nil {
+			return NewProblem(http.StatusRequestTimeout, "request_timeout")
+		}
 	}
 	return NewProblem(http.StatusInternalServerError, "internal_server_error")
 }
