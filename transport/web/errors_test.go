@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,7 +12,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -347,6 +350,135 @@ func TestUpstreamDeadlineErrorOnALiveRequestStaysAServerError(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, response.StatusCode)
 	assert.Equal(t, "internal_server_error", decodeProblemResponse(t, response).Properties["code"])
+}
+
+// multipartRequest builds a POST whose body the caller shapes through build.
+// The body is a real multipart stream, so any error it provokes comes out of the
+// standard library's own reader rather than out of a hand-made value.
+func multipartRequest(t *testing.T, build func(w *multipart.Writer)) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	build(writer)
+	require.NoError(t, writer.Close())
+	request := httptest.NewRequest(http.MethodPost, "/upload", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
+}
+
+// TestRealMultipartOverflowIs413WhetherReturnedAsIsOrAdaptedByParamError feeds
+// the standard library's multipart reader bodies that really exceed its limits,
+// so the 413 is shown to hold for the error ReadForm itself produces and not
+// only for the sentinel value a unit test can hand to the mapping.
+//
+// ParseMultipartForm(1 MiB) lets non-file data take 1 MiB + 10 MiB. A part
+// header past that limit is reported by net/textproto with an unexported error;
+// mime/multipart converts it to ErrMessageTooLarge, so a header overflow and a
+// field overflow reach the mapping as the same sentinel. The part-count limit
+// (1000) is the third limit and the cheapest to hit.
+//
+// The handler records which error it saw before returning it. Both the body cap
+// and multipart's own limits answer request_body_too_large, so the status alone
+// cannot say which one fired: the control row sets a cap below the body and must
+// see *http.MaxBytesError and no sentinel, and every other row must see the
+// sentinel and no *http.MaxBytesError.
+func TestRealMultipartOverflowIs413WhetherReturnedAsIsOrAdaptedByParamError(t *testing.T) {
+	const (
+		memory = 1 << 20
+		limit  = memory + 10<<20
+	)
+	field := func(size int) func(*multipart.Writer) {
+		return func(w *multipart.Writer) { require.NoError(t, w.WriteField("f", strings.Repeat("x", size))) }
+	}
+	paddedHeader := func(size int) func(*multipart.Writer) {
+		return func(w *multipart.Writer) {
+			part, err := w.CreatePart(textproto.MIMEHeader{
+				"Content-Disposition": {`form-data; name="f"`},
+				"X-Padding":           {strings.Repeat("h", size)},
+			})
+			require.NoError(t, err)
+			_, err = part.Write([]byte("v"))
+			require.NoError(t, err)
+		}
+	}
+	manyParts := func(w *multipart.Writer) {
+		for i := range 1100 {
+			require.NoError(t, w.WriteField(fmt.Sprintf("p%d", i), "1"))
+		}
+	}
+	parseForm := func(r *http.Request) error { return r.ParseMultipartForm(memory) }
+	formFile := func(r *http.Request) error { _, _, err := r.FormFile("p0"); return err }
+
+	const (
+		seenNothing   = "nothing"
+		seenSentinel  = "multipart sentinel"
+		seenBodyLimit = "body cap error"
+	)
+	tests := []struct {
+		name     string
+		build    func(*multipart.Writer)
+		read     func(*http.Request) error
+		bodyCap  int64
+		streamed bool
+		status   int
+		seen     string
+	}{
+		{name: "non-file field past maxMemory plus 10 MiB", build: field(limit + 1<<10), read: parseForm, status: http.StatusRequestEntityTooLarge, seen: seenSentinel},
+		{name: "part header past maxMemory plus 10 MiB", build: paddedHeader(limit + 1<<10), read: parseForm, status: http.StatusRequestEntityTooLarge, seen: seenSentinel},
+		{name: "more parts than ReadForm allows", build: manyParts, read: parseForm, status: http.StatusRequestEntityTooLarge, seen: seenSentinel},
+		{name: "more parts than ReadForm allows through FormFile", build: manyParts, read: formFile, status: http.StatusRequestEntityTooLarge, seen: seenSentinel},
+		{name: "field just inside the limit", build: field(limit - 1<<10), read: parseForm, status: http.StatusNoContent, seen: seenNothing},
+		{name: "body cap below a streamed body fires first", build: field(2 << 20), read: parseForm, bodyCap: 1 << 20, streamed: true, status: http.StatusRequestEntityTooLarge, seen: seenBodyLimit},
+	}
+	adaptations := []struct {
+		name  string
+		apply func(error) error
+	}{
+		{name: "returned as is", apply: func(err error) error { return err }},
+		{name: "adapted by ParamError", apply: func(err error) error { return web.ParamError(err, nil) }},
+	}
+	for _, adaptation := range adaptations {
+		for _, test := range tests {
+			t.Run(adaptation.name+"/"+test.name, func(t *testing.T) {
+				bodyCap := test.bodyCap
+				if bodyCap == 0 {
+					bodyCap = 64 << 20
+				}
+				seen := seenNothing
+				engine := errorEngine()
+				engine.Use(web.CapRequestBody(bodyCap, bodyCap), web.RejectOversizedRequestBody(bodyCap, bodyCap))
+				engine.POST("/upload", func(_ context.Context, c *web.Ctx) error {
+					err := test.read(c.Request())
+					var tooLarge *http.MaxBytesError
+					switch {
+					case errors.As(err, &tooLarge):
+						seen = seenBodyLimit
+					case errors.Is(err, multipart.ErrMessageTooLarge):
+						seen = seenSentinel
+					}
+					if err = adaptation.apply(err); err != nil {
+						return err
+					}
+					c.Status(http.StatusNoContent)
+					return nil
+				})
+				request := multipartRequest(t, test.build)
+				if test.streamed {
+					request.ContentLength = -1
+				}
+
+				response := httptest.NewRecorder()
+				engine.ServeHTTP(response, request)
+
+				assert.Equal(t, test.seen, seen, "the error the handler read must come from the limit the row targets")
+				assert.Equal(t, test.status, response.Code)
+				if test.status == http.StatusRequestEntityTooLarge {
+					assert.Equal(t, "request_body_too_large", decodeProblem(t, response).Properties["code"])
+					assert.NotContains(t, response.Body.String(), "message too large")
+				}
+			})
+		}
+	}
 }
 
 func TestHandleAbortsRemainingHandlersAndPreservesCommittedResponse(t *testing.T) {

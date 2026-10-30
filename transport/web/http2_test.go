@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -368,5 +369,139 @@ func TestHTTP2ShutdownDeadlineCutsBlockedStreams(t *testing.T) {
 		assert.Error(t, err, "the engine must force-close the connection when the deadline expires, so the stream cannot outlive Stop")
 	case <-time.After(5 * time.Second):
 		t.Fatal("the blocked request did not observe the forced close")
+	}
+}
+
+// readDeadlineObservation is what a handler saw while it read a stalled body
+// under a read deadline it had set for itself.
+type readDeadlineObservation struct {
+	proto   string
+	setErr  error
+	readErr error
+	elapsed time.Duration
+	ctxErr  error
+}
+
+// TestStalledBodyUnderAReadDeadlineDiffersBetweenHTTP2AndHTTP1 pins what a read
+// deadline does to a stalled client on each protocol, because the two are not
+// the same and the 408 mapping depends on the part that differs.
+//
+// Both protocols honour http.ResponseController.SetReadDeadline through the
+// writer chain and end the read at the deadline with an error that satisfies
+// os.ErrDeadlineExceeded. What differs is the request context. On HTTP/1.1 the
+// failed connection read makes net/http cancel it, which is the signal the
+// error boundary uses to tell a stalled client from a handler's own upstream
+// timeout, so the stall is a 408. On HTTP/2 the standard library only closes
+// the stream's body pipe with the deadline error (stream.onReadTimeout) and
+// leaves the stream, and so its context, alive. The boundary then sees the same
+// error with a live request and keeps its 500.
+//
+// The h2 row records that outcome as it is rather than as it might be wished:
+// it is the standard library's behavior, and xbc cannot tell this stall from an
+// upstream deadline on that protocol without a signal the request does not
+// carry. Changing the h2 status to 408 would have to be a deliberate decision
+// that accepts blaming the client for upstream timeouts, and would turn this row
+// red.
+//
+// The client never completes its body (the pipe stays open until cleanup), so
+// the deadline is the only thing that can end the handler's read.
+func TestStalledBodyUnderAReadDeadlineDiffersBetweenHTTP2AndHTTP1(t *testing.T) {
+	certFile, keyFile, roots := writeTestCertificate(t)
+
+	observed := make(chan readDeadlineObservation, 1)
+	stall := plugin.Entry[web.RouteContributor]{
+		Identity: plugin.Identity{Plugin: "tls-stall"},
+		Value: fakeRouteContributor{register: func(router *web.Router) {
+			router.POST("/slow-read", func(_ context.Context, c *web.Ctx) error {
+				observation := readDeadlineObservation{proto: c.Request().Proto}
+				observation.setErr = http.NewResponseController(c.Writer()).SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+				if observation.setErr != nil {
+					observed <- observation
+					return observation.setErr
+				}
+				started := time.Now()
+				_, err := io.ReadAll(c.Request().Body)
+				observation.elapsed = time.Since(started)
+				observation.readErr = err
+				observation.ctxErr = c.Request().Context().Err()
+				observed <- observation
+				return err
+			})
+		}},
+	}
+	server := startHTTP2Server(t, http2Config(certFile, keyFile, true), serverInputs{
+		routes: []plugin.Entry[web.RouteContributor]{stall},
+	})
+
+	tests := []struct {
+		name         string
+		client       *http.Client
+		proto        string
+		status       int
+		code         string
+		ctxCancelled bool
+	}{
+		{
+			name:   "http2",
+			client: newHTTP2Client(roots, 5*time.Second),
+			proto:  "HTTP/2.0", status: http.StatusInternalServerError, code: "internal_server_error",
+		},
+		{
+			name: "http1",
+			client: &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
+				TLSClientConfig:   &tls.Config{RootCAs: roots, NextProtos: []string{"http/1.1"}},
+				ForceAttemptHTTP2: false,
+			}},
+			proto: "HTTP/1.1", status: http.StatusRequestTimeout, code: "request_timeout", ctxCancelled: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Cleanup(test.client.CloseIdleConnections)
+			endpoint := "https://" + server.Addr()
+			ping := getEventually(t, test.client, endpoint+"/ping")
+			ping.Body.Close()
+			require.Equal(t, test.proto, ping.Proto, "the row must run on the protocol it names")
+
+			// The body never completes on purpose, so a handler that answers
+			// without reading it would leave the client's write loop blocked on
+			// this pipe past any client timeout. The watchdog turns that into a
+			// failed request instead of a hung test.
+			body, writer := io.Pipe()
+			watchdog := time.AfterFunc(4*time.Second, func() { _ = writer.CloseWithError(errors.New("watchdog: body still open")) })
+			t.Cleanup(func() { watchdog.Stop(); _ = writer.Close() })
+			go func() { _, _ = writer.Write([]byte("abc")) }()
+			request, err := http.NewRequest(http.MethodPost, endpoint+"/slow-read", body)
+			require.NoError(t, err)
+			request.Header.Set("Content-Type", "text/plain")
+
+			response, err := test.client.Do(request)
+			require.NoError(t, err, "the server must answer instead of leaving the stalled client hanging")
+			problem := decodeProblemResponse(t, response)
+
+			var observation readDeadlineObservation
+			select {
+			case observation = <-observed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the handler never reported what its read saw")
+			}
+			assert.Equal(t, test.proto, observation.proto)
+			require.NoError(t, observation.setErr, "SetReadDeadline must reach the stream or connection through the writer chain")
+			assert.ErrorIs(t, observation.readErr, os.ErrDeadlineExceeded,
+				"the stalled read must end with the deadline error, not with EOF or a reset")
+			assert.GreaterOrEqual(t, observation.elapsed, 100*time.Millisecond,
+				"the read must have waited for the deadline rather than failed at once")
+			assert.Less(t, observation.elapsed, 3*time.Second,
+				"only the deadline can end this read, because the client never finishes its body")
+			if test.ctxCancelled {
+				assert.Error(t, observation.ctxErr, "a failed HTTP/1.1 connection read cancels the request context")
+			} else {
+				assert.NoError(t, observation.ctxErr, "an expired HTTP/2 stream read deadline leaves the request context alive")
+			}
+
+			assert.Equal(t, test.proto, response.Proto)
+			assert.Equal(t, test.status, response.StatusCode)
+			assert.Equal(t, test.code, problem.Properties["code"])
+		})
 	}
 }
