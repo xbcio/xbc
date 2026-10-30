@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"reflect"
 	"sort"
@@ -75,8 +76,12 @@ func ParamError(err error, target any) error {
 		return newRequestError(http.StatusInternalServerError, "internal_server_error", "", err)
 	}
 
+	// multipart's own size limits fire before the body reader's cap and are not
+	// a *http.MaxBytesError, so gin's multipart binding reaches here with the
+	// bare sentinel. Matched by identity, never by text: a client controls what
+	// a rejected value says.
 	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
+	if errors.As(err, &tooLarge) || errors.Is(err, multipart.ErrMessageTooLarge) {
 		return newRequestError(http.StatusRequestEntityTooLarge, "request_body_too_large", "", err)
 	}
 

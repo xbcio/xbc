@@ -172,10 +172,14 @@ func TestReturnedBodyReadFailuresKeepTheStatusParamErrorWouldChoose(t *testing.T
 		{name: "multipart sentinel flattened to text", err: fmt.Errorf("x: %s", multipart.ErrMessageTooLarge), status: http.StatusInternalServerError, code: "internal_server_error"},
 		{name: "max bytes text without the type", err: lookalikeError("http: request body too large"), status: http.StatusInternalServerError, code: "internal_server_error"},
 		{name: "unrelated error mentioning the secret", err: errors.New(secret), status: http.StatusInternalServerError, code: "internal_server_error"},
-		// Ctx.Bind and ParamError already own this error: they classify it as a
-		// bad request, and that classification travels in a requestError the
-		// fallback must not look past.
-		{name: "multipart sentinel adapted by ParamError stays a bad request", err: web.ParamError(multipart.ErrMessageTooLarge, nil), status: http.StatusBadRequest, code: "invalid_request"},
+		// Ctx.Bind and ParamError already own these errors: they classify them,
+		// and that classification travels in a requestError the fallback must not
+		// look past. ParamError reaches the same 413 for the multipart sentinel
+		// as this fallback does, and a sentinel it only has as text stays a bad
+		// request.
+		{name: "multipart sentinel adapted by ParamError is a 413", err: web.ParamError(multipart.ErrMessageTooLarge, nil), status: http.StatusRequestEntityTooLarge, code: "request_body_too_large"},
+		{name: "wrapped multipart sentinel adapted by ParamError is a 413", err: web.ParamError(fmt.Errorf("bind: %w", multipart.ErrMessageTooLarge), nil), status: http.StatusRequestEntityTooLarge, code: "request_body_too_large"},
+		{name: "multipart text adapted by ParamError stays a bad request", err: web.ParamError(lookalikeError("multipart: message too large"), nil), status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "max bytes error adapted by ParamError keeps its 413", err: web.ParamError(&http.MaxBytesError{Limit: 8}, nil), status: http.StatusRequestEntityTooLarge, code: "request_body_too_large"},
 	}
 	for _, test := range tests {
