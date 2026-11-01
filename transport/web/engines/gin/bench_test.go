@@ -21,7 +21,7 @@ func benchCtx(b *testing.B) *web.Ctx {
 	gc, _ := ginlib.CreateTestContext(recorder)
 	gc.Request = httptest.NewRequest(http.MethodGet, "/bench?k=v", nil)
 	gc.Request.Header.Set("X-Bench", "1")
-	return web.NewCtx(newRequestContext(gc))
+	return web.NewCtx(newRequestContext(gc, 0))
 }
 
 func BenchmarkCtxRequest(b *testing.B) {

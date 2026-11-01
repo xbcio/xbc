@@ -39,6 +39,12 @@ type engine struct {
 	e   *ginlib.Engine
 	srv *http.Server
 
+	// maxMultipartMemory is Options.MaxMultipartMemory. gin's own binders
+	// ignore Engine.MaxMultipartMemory and parse multipart bodies with a
+	// package constant, so the request context has to receive the configured
+	// value and parse first; see requestContext.parseMultipartForm.
+	maxMultipartMemory int64
+
 	// mu guards the implied-HEAD registration state below. Registration and
 	// Serve normally run on one goroutine; the mutex makes interleaving them a
 	// decided order rather than a data race, and it is also what makes
@@ -97,8 +103,9 @@ func (f Factory) NewEngine(opts web.Options) (web.Engine, error) {
 			IdleTimeout:       opts.IdleTimeout,
 			MaxHeaderBytes:    opts.MaxHeaderBytes,
 		},
-		impliedHead:  make(map[string][]ginlib.HandlerFunc),
-		explicitHead: make(map[string]struct{}),
+		maxMultipartMemory: opts.MaxMultipartMemory,
+		impliedHead:        make(map[string][]ginlib.HandlerFunc),
+		explicitHead:       make(map[string]struct{}),
 	}, nil
 }
 
@@ -202,7 +209,7 @@ func (g *engine) toGinChain(chain []web.Handler) []ginlib.HandlerFunc {
 	converted := make([]ginlib.HandlerFunc, len(chain))
 	for i, handler := range chain {
 		run := web.Handle(handler)
-		converted[i] = func(c *ginlib.Context) { run(ctxFor(c)) }
+		converted[i] = func(c *ginlib.Context) { run(g.ctxFor(c)) }
 	}
 	return converted
 }
@@ -217,13 +224,17 @@ const ctxKey = "xbc/web.ctx"
 // owns the request-scoped value store, so a second Ctx would start empty and
 // lose the matched route, the active error resolver, and the principal that
 // earlier handlers published.
-func ctxFor(c *ginlib.Context) *web.Ctx {
+//
+// It is a method rather than a package function because gin.Context does not
+// expose its engine, and the Ctx it builds carries the engine's multipart
+// memory allowance.
+func (g *engine) ctxFor(c *ginlib.Context) *web.Ctx {
 	if value, ok := c.Get(ctxKey); ok {
 		if ctx, valid := value.(*web.Ctx); valid && ctx != nil {
 			return ctx
 		}
 	}
-	ctx := web.NewCtx(newRequestContext(c))
+	ctx := web.NewCtx(newRequestContext(c, g.maxMultipartMemory))
 	c.Set(ctxKey, ctx)
 	return ctx
 }

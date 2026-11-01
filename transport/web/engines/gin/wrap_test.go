@@ -238,7 +238,7 @@ func TestWrapOrderReturnsConfiguredOrder(t *testing.T) {
 func TestFromCtxReturnsUnderlyingGinContext(t *testing.T) {
 	ginlib.SetMode(ginlib.TestMode)
 	gc, _ := ginlib.CreateTestContext(httptest.NewRecorder())
-	c := web.NewCtx(newRequestContext(gc))
+	c := web.NewCtx(newRequestContext(gc, 0))
 	assert.Same(t, gc, FromCtx(c))
 }
 

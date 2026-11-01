@@ -38,15 +38,17 @@ type bindingRequest struct {
 const problemContentType = "application/problem+json; charset=utf-8"
 
 // run registers chain under method/path on a bare gin engine and serves
-// request, driving each handler exactly the way the adapter's own toGinChain
-// does -- through web.Handle on the request's single shared Ctx.
+// request, driving each handler the way the adapter's own toGinChain does --
+// through web.Handle on a Ctx built over the live gin context. Every chain here
+// is a single handler, so a fresh Ctx per handler is the same instance the
+// adapter would hand the chain.
 func run(method, path string, request *http.Request, chain ...web.Handler) *httptest.ResponseRecorder {
 	ginlib.SetMode(ginlib.TestMode)
 	engine := ginlib.New()
 	converted := make([]ginlib.HandlerFunc, len(chain))
 	for i, handler := range chain {
 		handle := web.Handle(handler)
-		converted[i] = func(c *ginlib.Context) { handle(ctxFor(c)) }
+		converted[i] = func(c *ginlib.Context) { handle(web.NewCtx(newRequestContext(c, 0))) }
 	}
 	engine.Handle(method, path, converted...)
 	recorder := httptest.NewRecorder()

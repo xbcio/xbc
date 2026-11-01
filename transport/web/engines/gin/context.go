@@ -24,14 +24,19 @@ import (
 // transport/web makes once for every engine.
 type requestContext struct {
 	c *ginlib.Context
+	// maxMultipartMemory is Options.MaxMultipartMemory. It is carried here
+	// because gin's multipart binder ignores Engine.MaxMultipartMemory; see
+	// parseMultipartForm.
+	maxMultipartMemory int64
 }
 
 // newRequestContext wraps a live *gin.Context. It stays unexported: the only
 // callers are this adapter's own registration path and its tests, and an
 // exported constructor would put *gin.Context back into a public signature
-// that the Engine port exists to remove.
-func newRequestContext(c *ginlib.Context) *requestContext {
-	return &requestContext{c: c}
+// that the Engine port exists to remove. A non-positive maxMultipartMemory
+// leaves Bind parsing multipart bodies exactly as gin does.
+func newRequestContext(c *ginlib.Context, maxMultipartMemory int64) *requestContext {
+	return &requestContext{c: c, maxMultipartMemory: maxMultipartMemory}
 }
 
 func (rc *requestContext) Request() *http.Request { return rc.c.Request }
@@ -65,7 +70,35 @@ func (rc *requestContext) ClientIP() string { return rc.c.ClientIP() }
 
 func (rc *requestContext) Status(code int) { rc.c.Status(code) }
 
-func (rc *requestContext) Bind(obj any) error { return normalizeBindError(rc.c.ShouldBind(obj)) }
+func (rc *requestContext) Bind(obj any) error {
+	if err := rc.parseMultipartForm(); err != nil {
+		return normalizeBindError(err)
+	}
+	return normalizeBindError(rc.c.ShouldBind(obj))
+}
+
+// parseMultipartForm parses a multipart body with the configured allowance
+// before gin's binder sees it. gin's formMultipartBinding calls
+// Request.ParseMultipartForm with a package constant of 32 MiB and ignores
+// Engine.MaxMultipartMemory, so without this step the configured value has no
+// effect on Ctx.Bind. The parse is observable: net/http caps the accumulated
+// non-file fields at the allowance plus 10 MiB and returns
+// multipart.ErrMessageTooLarge past it. On success the request's MultipartForm
+// is set, which turns gin's own ParseMultipartForm into a no-op.
+//
+// gin's own binder dispatch decides whether this runs, so every request gin
+// would bind any other way -- JSON, urlencoded, or a GET, which gin binds as a
+// plain form -- reaches gin with its body untouched.
+func (rc *requestContext) parseMultipartForm() error {
+	request := rc.c.Request
+	if request == nil || rc.maxMultipartMemory <= 0 || request.MultipartForm != nil {
+		return nil
+	}
+	if binding.Default(request.Method, rc.c.ContentType()) != binding.FormMultipart {
+		return nil
+	}
+	return request.ParseMultipartForm(rc.maxMultipartMemory)
+}
 
 func (rc *requestContext) BindURI(obj any) error { return normalizeBindError(rc.c.ShouldBindUri(obj)) }
 

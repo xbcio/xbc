@@ -23,7 +23,7 @@ func newTestRequestContext(t *testing.T, recorder *httptest.ResponseRecorder) *r
 	ginlib.SetMode(ginlib.TestMode)
 	c, _ := ginlib.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-	return newRequestContext(c)
+	return newRequestContext(c, 0)
 }
 
 // TestStatusRecordsWithoutCommitting pins the half of the Status contract that
@@ -186,7 +186,7 @@ func TestBindURIReadsRouteParameters(t *testing.T) {
 	var bindErr error
 	var param string
 	engine.GET("/items/:id", func(c *ginlib.Context) {
-		rc := newRequestContext(c)
+		rc := newRequestContext(c, 0)
 		param = rc.Param("id")
 		bindErr = rc.BindURI(&bound)
 	})
@@ -209,7 +209,7 @@ func TestClientIPForwardsToTheEngine(t *testing.T) {
 	require.NoError(t, engine.SetTrustedProxies(nil), "SetTrustedProxies(nil) must not fail")
 
 	var got string
-	engine.GET("/ip", func(c *ginlib.Context) { got = newRequestContext(c).ClientIP() })
+	engine.GET("/ip", func(c *ginlib.Context) { got = newRequestContext(c, 0).ClientIP() })
 
 	request := httptest.NewRequest(http.MethodGet, "/ip", nil)
 	request.RemoteAddr = "203.0.113.7:1234"
@@ -240,7 +240,7 @@ func TestClientIPHonoursTrustedProxies(t *testing.T) {
 		c.Status(http.StatusNoContent)
 		return nil
 	})
-	engine.GET("/whoami", func(c *ginlib.Context) { handle(ctxFor(c)) })
+	engine.GET("/whoami", func(c *ginlib.Context) { handle(web.NewCtx(newRequestContext(c, 0))) })
 
 	call := func(remoteAddr string) string {
 		request := httptest.NewRequest(http.MethodGet, "/whoami", nil)
@@ -268,7 +268,7 @@ func TestAbortStopsLaterHandlers(t *testing.T) {
 	engine.GET("/abort",
 		func(c *ginlib.Context) {
 			ran = append(ran, "first")
-			newRequestContext(c).Abort()
+			newRequestContext(c, 0).Abort()
 		},
 		func(c *ginlib.Context) { ran = append(ran, "second") },
 	)
@@ -290,7 +290,7 @@ func TestNextSuspendsUntilTheRestOfTheChainHasRun(t *testing.T) {
 	engine.GET("/next",
 		func(c *ginlib.Context) {
 			ran = append(ran, "before")
-			newRequestContext(c).Next()
+			newRequestContext(c, 0).Next()
 			ran = append(ran, "after")
 		},
 		func(c *ginlib.Context) { ran = append(ran, "inner") },
