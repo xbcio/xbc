@@ -278,8 +278,11 @@
 // exactly the bound it had, and a body larger than max_request_body_bytes is
 // admitted only after the operator raises the ceiling, never as a side effect of
 // a declaration in code. A ceiling below MaxRequestBodyBytes fails startup.
-// MaxMultipartMemory only controls how much memory multipart parsing may use
-// before spilling to temporary files; it does not replace the total body limit.
+// MaxMultipartMemory is the allowance Ctx.Bind parses multipart bodies with.
+// It bounds how much of the body multipart parsing keeps in memory before
+// spilling to temporary files, and net/http rejects accumulated non-file data
+// beyond it plus its fixed 10 MiB reservation with a 413. It does not replace
+// the total body limit.
 //
 // MaxInFlight is the process-wide admission ceiling. A request beyond it is
 // refused with 503 and a Retry-After header before any handler or contributed
@@ -335,6 +338,16 @@
 // non-leaking 500 response, context deadlines become 504, and an error cannot
 // masquerade as HTTP 200. Plugins can contribute a nested boundary with
 // OnError; panic recovery remains an independent outer concern.
+//
+// A connection read deadline that expires while a handler reads the body maps
+// to 408 only where net/http cancels the request context, which is HTTP/1.1.
+// Over HTTP/2 the standard library closes the stream's body pipe with the
+// deadline error and leaves the stream, and so its context, alive; the boundary
+// then sees a live request and keeps its 500, the same answer it gives an
+// upstream call's deadline. That is the standard library's behavior, not a
+// mapping xbc can improve without misreading upstream timeouts on that
+// protocol, so a deployment that depends on the 408 semantics can keep
+// web.tls.http2 off.
 //
 // # Failure body rendering
 //

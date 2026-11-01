@@ -404,7 +404,9 @@ type readDeadlineObservation struct {
 // red.
 //
 // The client never completes its body (the pipe stays open until cleanup), so
-// the deadline is the only thing that can end the handler's read.
+// the deadline is the only thing that can end the handler's read. The contract
+// this records is documented under HTTP error contract in package web's doc
+// comment.
 func TestStalledBodyUnderAReadDeadlineDiffersBetweenHTTP2AndHTTP1(t *testing.T) {
 	certFile, keyFile, roots := writeTestCertificate(t)
 
