@@ -44,6 +44,7 @@ func assemblePlugin(cfg Config, contributors []plugin.Entry[HandlerContributor],
 	if err != nil {
 		return nil, err
 	}
+	applyClusterLimits(cfg, grouped)
 	groups, err := newWorkerGroups(cfg, grouped)
 	if err != nil {
 		return nil, err

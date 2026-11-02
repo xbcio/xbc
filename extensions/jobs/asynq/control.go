@@ -57,6 +57,11 @@ type Controller interface {
 	// olderThan and reports how many it deleted. The zero time purges every
 	// archived task. Tasks are deleted in batches of purgeBatchSize.
 	PurgeArchived(queue string, olderThan time.Time) (int, error)
+	// ResetSemaphore removes expired slots from the cluster-wide concurrency
+	// semaphore of taskType and reports nothing about live slots, which it
+	// leaves untouched. It is safe during a rolling restart; a task type that
+	// holds no semaphore key succeeds without creating one.
+	ResetSemaphore(ctx context.Context, taskType string) error
 }
 
 // DeleteTask implements Controller.
@@ -183,8 +188,7 @@ func (p *Plugin) UnpauseQueue(queue string) error {
 }
 
 // PurgeArchived implements Controller.
-//
-// The archive time is the archived sorted set's score, which is what the queue
+// // The archive time is the archived sorted set's score, which is what the queue
 // library writes when a task is archived, including when it is archived through
 // the Inspector rather than by a failed handler. TaskInfo.LastFailedAt cannot
 // be used instead: it records the last handler failure and is zero or stale for
@@ -243,4 +247,26 @@ func (p *Plugin) PurgeArchived(queue string, olderThan time.Time) (int, error) {
 			}
 		}
 	}
+}
+
+// ResetSemaphore implements Controller.
+func (p *Plugin) ResetSemaphore(ctx context.Context, taskType string) error {
+	if ctx == nil {
+		return fmt.Errorf("asynq: reset semaphore requires a non-nil context")
+	}
+	if taskType == "" || strings.TrimSpace(taskType) != taskType {
+		return fmt.Errorf("asynq: invalid task type %q", taskType)
+	}
+	p.mu.Lock()
+	semaphore := p.semaphore
+	p.mu.Unlock()
+	if semaphore == nil {
+		return ErrClosed
+	}
+	resetCtx, cancel := context.WithTimeout(ctx, semaphoreOpTimeout)
+	defer cancel()
+	if _, err := semaphore.reset(resetCtx, taskType); err != nil {
+		return fmt.Errorf("asynq: reset cluster semaphore for task type %q: %w", taskType, err)
+	}
+	return nil
 }

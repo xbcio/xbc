@@ -15,6 +15,48 @@ import (
 	"github.com/xbcio/xbc/plugin"
 )
 
+// resolvedClusterLimits maps every task type configured with a cluster-wide
+// cap to the limit its deliveries use. A zero lease takes the task's timeout,
+// which itself falls back to the section default, so a slot outlives the
+// handler the queue library will let run rather than expiring while it is
+// still working.
+func resolvedClusterLimits(cfg Config) map[string]clusterLimit {
+	var limits map[string]clusterLimit
+	for name, task := range cfg.Tasks {
+		if task.ClusterConcurrency <= 0 {
+			continue
+		}
+		lease := task.ClusterConcurrencyLease
+		if lease <= 0 {
+			lease = task.Timeout
+		}
+		if lease <= 0 {
+			lease = cfg.DefaultTimeout
+		}
+		if limits == nil {
+			limits = make(map[string]clusterLimit)
+		}
+		limits[name] = clusterLimit{
+			limit:      task.ClusterConcurrency,
+			lease:      lease,
+			retryDelay: cfg.ClusterConcurrencyRetryDelay,
+		}
+	}
+	return limits
+}
+
+// applyClusterLimits makes every group's dispatcher aware of the configured
+// caps. It runs during construction, before any worker can dispatch.
+func applyClusterLimits(cfg Config, groups []handlerGroup) {
+	limits := resolvedClusterLimits(cfg)
+	if len(limits) == 0 {
+		return
+	}
+	for index := range groups {
+		groups[index].dispatcher.limits = limits
+	}
+}
+
 // workloadProfileLabel is the profiler label key a task is filed under, and it
 // is deliberately the same word the runtime files its managed tasks under
 // (runtime/task.go): a profile consumer filters by key, so two names for one
@@ -27,6 +69,14 @@ type dispatcher struct {
 	// contributors that belong to none.
 	workload plugin.WorkloadKey
 	handlers map[string]Handler
+	// limits holds the cluster-wide cap of every task type configured with one,
+	// keyed by task type. It is read-only after construction and nil when no
+	// type is capped.
+	limits map[string]clusterLimit
+	// semaphore is the Redis-backed slot store, attached by Plugin.init once
+	// the owned connection exists. It is nil before Init and in dispatchers
+	// built directly by tests, which leaves limits inert.
+	semaphore *clusterSemaphore
 }
 
 func (d *dispatcher) ProcessTask(ctx context.Context, task *hibiken.Task) error {
@@ -40,6 +90,15 @@ func (d *dispatcher) ProcessTask(ctx context.Context, task *hibiken.Task) error 
 			Payload: append([]byte(nil), task.Payload()...),
 			Headers: maps.Clone(task.Headers()),
 		})
+	}
+	// The cluster-wide cap is applied here rather than per handler source, so
+	// a tasks.New binding and a HandlerContributor registration of the same
+	// type are counted against the same slots.
+	if limit, limited := d.limits[task.Type()]; limited && d.semaphore != nil {
+		inner := work
+		work = func(taskCtx context.Context) error {
+			return d.semaphore.run(taskCtx, task.Type(), limit, inner)
+		}
 	}
 	// A task arrives on a worker goroutine the queue library owns and reuses,
 	// so this is where the workload can be attached to it: the label set

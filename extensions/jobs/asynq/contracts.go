@@ -15,6 +15,11 @@ var (
 	ErrTaskIDConflict = errors.New("asynq: task ID conflict")
 	// ErrHandlerNotFound reports delivery of a task type with no registered handler.
 	ErrHandlerNotFound = errors.New("asynq: task handler not found")
+	// ErrClusterConcurrencyLimit reports that a task type's cluster-wide
+	// concurrency limit is full, so the delivery was deferred rather than run.
+	// It is returned wrapped in RetryAfter, so the retry delay is the one
+	// configured by cluster_concurrency_retry_delay.
+	ErrClusterConcurrencyLimit = errors.New("asynq: cluster concurrency limit reached")
 )
 
 // Task is the transport-neutral task representation used for both enqueueing
