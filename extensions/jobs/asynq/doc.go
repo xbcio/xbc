@@ -127,6 +127,54 @@
 // consumes nothing, and provides the long-lived task the runtime needs, which
 // is what a standby role needs to stay alive until it is restarted with work.
 //
+// # Inspection and control
+//
+// Two further contracts expose queue management. They are separate on purpose,
+// so a process that only reads queue state never receives the ability to mutate
+// it: Inspector is read-only (Queues, QueueInfo, ListTasks, GetTaskInfo) and
+// Controller is destructive (DeleteTask, DeleteAllByState, RunTask,
+// ArchiveTask, CancelProcessing, PauseQueue, UnpauseQueue, PurgeArchived). A
+// consumer declares the one it needs with plugin.RefTo:
+//
+//	inspector := plugin.RefTo[asynq.Inspector](asynq.Key)
+//	controller := plugin.RefTo[asynq.Controller](asynq.Key)
+//
+// Both contracts expose only this package's own value types -- State,
+// QueueInfo, Page, and the extended TaskInfo -- and never a queue-library type,
+// so upgrading the library does not change the consumer API. State has one
+// value per queue-library task state (pending, active, scheduled, retry,
+// archived, completed); StateUnknown reports anything outside that vocabulary.
+//
+// Both contracts are scoped to the queues this plugin declares under
+// plugins.asynq: the top-level queues set plus every workload's queues. An
+// operation on any other queue fails with ErrQueueNotOwned before Redis is
+// touched, so a management endpoint cannot reach another process's queues by
+// mistake. This is scope, not authorization.
+//
+// WARNING: authorization is the consuming application's responsibility. This
+// contract performs no authentication and no access control beyond the
+// declared-queue check; exposing Controller through an operator endpoint
+// without an authorization policy lets any caller pause, purge, or delete the
+// declared queues. Enforce the application's own permission model on that
+// endpoint.
+//
+// Errors are this package's sentinels and are meant to be tested with
+// errors.Is: ErrQueueNotFound, ErrTaskNotFound, ErrQueueNotEmpty,
+// ErrQueueNotOwned, ErrInvalidState, and ErrUnsupportedState. After Stop every
+// method reports ErrClosed. Controller's individual calls are bound only by the
+// Redis client's configured dial/read/write timeouts; the library's Inspector
+// is not context-aware, so these methods take no context and a cancelled
+// caller context cannot interrupt an operation already handed to Redis.
+//
+// PurgeArchived(queue, olderThan) deletes archived tasks whose archive time is
+// at or before olderThan and reports how many it deleted; the zero time purges
+// the whole archive. The archive time is the archived sorted set's score, read
+// from the queue library's Redis keys, because TaskInfo.LastFailedAt is the
+// last handler failure and is zero or stale for tasks archived through the
+// Inspector. A queue Redis has not registered reports ErrQueueNotFound.
+// CancelProcessing takes no queue argument, so it first locates the task in the
+// declared queues and publishes nothing when none contains it.
+//
 // # Queues and shutdown
 //
 // Queue names passed to Queue must exist in plugins.asynq, either in the

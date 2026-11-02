@@ -34,6 +34,8 @@ var definition = plugin.DefineConfigured(
 		Inputs:     plugin.Inputs(handlerContributors, taskProviders),
 		Exports: plugin.Contracts(
 			plugin.ExportAs(func(value *Plugin) Enqueuer { return value }),
+			plugin.ExportAs(func(value *Plugin) Inspector { return value }),
+			plugin.ExportAs(func(value *Plugin) Controller { return value }),
 			plugin.ExportAs(func(value *Plugin) health.Contributor { return value }),
 		),
 		Lifecycle: plugin.Lifecycle[*Plugin]{
@@ -120,6 +122,10 @@ type Plugin struct {
 	// task executor it installs.
 	taskBindings map[string]tasks.Binding
 	taskOptions  map[string][]TaskOption
+	// queues is every queue name this configuration declares, the top-level set
+	// plus each workload's. Inspection and control refuse any other name, so a
+	// management surface cannot reach a queue this process did not declare.
+	queues map[string]struct{}
 	// uninstallTasks unregisters this Plugin's remote task executor, set by
 	// init when it wins the process-wide slot and cleared by stop.
 	uninstallTasks func()
@@ -127,7 +133,11 @@ type Plugin struct {
 	mu       sync.Mutex
 	workerMu sync.Mutex
 
-	redis       *goredis.Client
+	redis *goredis.Client
+	// inspector reads and mutates queue state through the same Redis connection
+	// as the enqueue client and workers. It shares that connection, so stop
+	// clears it rather than closing it.
+	inspector   *hibiken.Inspector
 	client      *Client
 	groups      []*workerGroup
 	initialized bool
@@ -148,6 +158,11 @@ type Plugin struct {
 }
 
 var _ Enqueuer = (*Plugin)(nil)
+
+var (
+	_ Inspector  = (*Plugin)(nil)
+	_ Controller = (*Plugin)(nil)
+)
 
 func prepareConfig(cfg Config) (Config, error) {
 	cfg = cfg.clone()
@@ -278,6 +293,10 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 	if isNilInterface(backend) {
 		return fmt.Errorf("asynq: initialize: enqueue backend factory returned nil")
 	}
+	// The inspector shares the plugin's Redis connection and is never closed
+	// through the library (NewInspectorFromRedisClient reports a shared
+	// connection), so stop only drops the reference before the connection closes.
+	inspector := hibiken.NewInspectorFromRedisClient(redisClient)
 	for _, group := range p.groups {
 		server := p.factory.newServer(redisClient, hibiken.Config{
 			Concurrency:       group.concurrency,
@@ -296,6 +315,7 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 
 	p.cfg = cfg
 	p.redis = redisClient
+	p.inspector = inspector
 	p.client = newClient(backend, cfg)
 	p.uninstallTasks = installRemoteExecutor(&remoteExecutor{
 		client:   p.client,
@@ -584,6 +604,7 @@ func (p *Plugin) stop(ctx context.Context) error {
 		}
 		p.client = nil
 		p.redis = nil
+		p.inspector = nil
 		p.mu.Unlock()
 		// Nothing cancels the handlers' contexts here. Drain left them running
 		// on purpose, and the library Shutdown below is what gives them their

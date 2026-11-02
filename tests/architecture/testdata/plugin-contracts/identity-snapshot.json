@@ -45,7 +45,9 @@
       "config_path": "plugins.asynq",
       "cardinality": "single",
       "contracts": [
+        "github.com/xbcio/xbc/extensions/jobs/asynq.Controller",
         "github.com/xbcio/xbc/extensions/jobs/asynq.Enqueuer",
+        "github.com/xbcio/xbc/extensions/jobs/asynq.Inspector",
         "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
       ]
     },

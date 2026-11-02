@@ -25,14 +25,31 @@ type Task struct {
 	Headers map[string]string
 }
 
-// TaskInfo describes a task accepted by Redis without exposing Asynq types.
+// TaskInfo describes a task known to Redis without exposing Asynq types.
+// Enqueue fills the fields it can know from the submission; inspection fills
+// the rest. State is StateUnknown on a value returned by Enqueue.
 type TaskInfo struct {
-	ID            string
-	Queue         string
-	Type          string
-	MaxRetries    int
+	ID         string
+	Queue      string
+	Type       string
+	Payload    []byte
+	Headers    map[string]string
+	State      State
+	MaxRetries int
+	Retried    int
+	LastErr    string
+	// LastFailedAt is the time of the task's last handler failure, zero if it
+	// never failed. It is not the archive time; use PurgeArchived's olderThan
+	// to select archived tasks by when they were archived.
+	LastFailedAt  time.Time
 	Timeout       time.Duration
+	Deadline      time.Time
 	NextProcessAt time.Time
+	// IsOrphaned reports an active task whose worker lease expired. It is only
+	// meaningful for StateActive.
+	IsOrphaned  bool
+	Retention   time.Duration
+	CompletedAt time.Time
 }
 
 // Enqueuer is the narrow dependency business plugins normally consume.

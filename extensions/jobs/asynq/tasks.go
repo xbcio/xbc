@@ -62,6 +62,7 @@ func assemblePlugin(cfg Config, contributors []plugin.Entry[HandlerContributor],
 		groups:       groups,
 		taskBindings: taskLookup(bindings),
 		taskOptions:  resolvedTaskOptions(cfg),
+		queues:       cfg.knownQueues(),
 	}, nil
 }
 
