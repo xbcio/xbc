@@ -78,6 +78,7 @@
         "RetryBackoffBase": 1000000000,
         "RetryBackoffCap": 60000000000,
         "ClusterConcurrencyRetryDelay": 5000000000,
+        "DefaultRetention": 0,
         "TaskCheckInterval": 1000000000,
         "ShutdownTimeout": 8000000000
       }

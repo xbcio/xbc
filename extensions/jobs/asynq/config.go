@@ -64,6 +64,13 @@ type Config struct {
 	// task's retry budget like any other failed attempt.
 	ClusterConcurrencyRetryDelay time.Duration `yaml:"cluster_concurrency_retry_delay" default:"5s" validate:"gt=0"`
 
+	// DefaultRetention keeps a successful task's result metadata for this
+	// duration when its submission passes no Retention option. Zero, the
+	// default, keeps the queue library's behavior: a successful task is removed
+	// rather than retained. An explicit Retention option, including Retention(0),
+	// overrides this value for that submission.
+	DefaultRetention time.Duration `yaml:"default_retention" default:"0s" validate:"gte=0"`
+
 	TaskCheckInterval time.Duration `yaml:"task_check_interval" default:"1s" validate:"gt=0"`
 
 	// ShutdownTimeout bounds the asynq library's worker Shutdown, which Stop
@@ -292,6 +299,9 @@ func (c Config) validate() error {
 	}
 	if c.ClusterConcurrencyRetryDelay <= 0 {
 		return fmt.Errorf("asynq: cluster_concurrency_retry_delay must be positive, got %s", c.ClusterConcurrencyRetryDelay)
+	}
+	if c.DefaultRetention < 0 {
+		return fmt.Errorf("asynq: default_retention cannot be negative, got %s", c.DefaultRetention)
 	}
 	if c.TaskCheckInterval <= 0 {
 		return fmt.Errorf("asynq: task_check_interval must be positive, got %s", c.TaskCheckInterval)

@@ -141,6 +141,14 @@
 // ResetSemaphore(taskType) removes expired tokens and leaves live ones alone,
 // so it is safe to call during a rolling restart.
 //
+// # Retention
+//
+// default_retention keeps a successful task's result metadata for the
+// configured duration when its submission passes no Retention option; zero,
+// the default, leaves the queue library's behavior unchanged and removes a
+// successful task. An explicit Retention option, including Retention(0),
+// overrides the configured default for that submission.
+//
 // # Workloads
 //
 // A worker serves the handlers of the Plugins that share a workload. A

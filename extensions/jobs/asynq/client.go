@@ -93,7 +93,9 @@ func TaskID(id string) TaskOption {
 	return taskOptionFunc(func(options *taskOptions) { options.taskID = id })
 }
 
-// Retention keeps a successful task's result metadata for duration.
+// Retention keeps a successful task's result metadata for duration. Zero
+// clears a configured default_retention for this submission and leaves the
+// queue library's behavior: the task is removed when it succeeds.
 func Retention(duration time.Duration) TaskOption {
 	return taskOptionFunc(func(options *taskOptions) { options.retention = duration })
 }
@@ -126,6 +128,7 @@ func newClient(backend enqueueBackend, cfg Config) *Client {
 			queue:      cfg.DefaultQueue,
 			maxRetries: cfg.DefaultMaxRetries,
 			timeout:    cfg.DefaultTimeout,
+			retention:  cfg.DefaultRetention,
 		},
 	}
 }
