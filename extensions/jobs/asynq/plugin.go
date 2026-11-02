@@ -137,7 +137,11 @@ type Plugin struct {
 	// inspector reads and mutates queue state through the same Redis connection
 	// as the enqueue client and workers. It shares that connection, so stop
 	// clears it rather than closing it.
-	inspector   *hibiken.Inspector
+	inspector *hibiken.Inspector
+	// semaphore backs the cluster-wide task-type limits with the same Redis
+	// connection. It is shared by every worker group's dispatcher and cleared by
+	// stop, after which ResetSemaphore reports ErrClosed.
+	semaphore   *clusterSemaphore
 	client      *Client
 	groups      []*workerGroup
 	initialized bool
@@ -297,6 +301,7 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 	// through the library (NewInspectorFromRedisClient reports a shared
 	// connection), so stop only drops the reference before the connection closes.
 	inspector := hibiken.NewInspectorFromRedisClient(redisClient)
+	semaphore := newClusterSemaphore(redisClient, ctx.Log())
 	retryDelayFunc := newRetryDelayFunc(cfg.RetryBackoffBase, cfg.RetryBackoffCap)
 	taskErrorHandler := newTaskErrorHandler(ctx.Log())
 	for _, group := range p.groups {
@@ -320,6 +325,10 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 	p.cfg = cfg
 	p.redis = redisClient
 	p.inspector = inspector
+	p.semaphore = semaphore
+	for _, group := range p.groups {
+		group.dispatcher.semaphore = semaphore
+	}
 	p.client = newClient(backend, cfg)
 	p.uninstallTasks = installRemoteExecutor(&remoteExecutor{
 		client:   p.client,
@@ -609,6 +618,7 @@ func (p *Plugin) stop(ctx context.Context) error {
 		p.client = nil
 		p.redis = nil
 		p.inspector = nil
+		p.semaphore = nil
 		p.mu.Unlock()
 		// Nothing cancels the handlers' contexts here. Drain left them running
 		// on purpose, and the library Shutdown below is what gives them their

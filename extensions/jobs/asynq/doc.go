@@ -108,6 +108,39 @@
 // cluster_concurrency_retry_delay; that deferral is logged at WARN because it
 // is capacity behavior rather than a fault.
 //
+// # Cluster-wide concurrency
+//
+// A task entry may bound how many handlers of its type run at once across the
+// whole cluster, not just within one worker:
+//
+//	plugins:
+//	  asynq:
+//	    tasks:
+//	      report.render:
+//	        cluster_concurrency: 4        # 0 (default) leaves the type unbounded
+//	        cluster_concurrency_lease: 10m # defaults to the task's timeout
+//
+// The cap covers both sources of a handler -- a tasks.New binding this process
+// consumes and a HandlerContributor registration of the same type -- because it
+// is applied where the dispatcher routes a delivery, not where the handler was
+// registered. A delivery that cannot take a slot returns
+// asynq.ErrClusterConcurrencyLimit wrapped in asynq.RetryAfter with
+// cluster_concurrency_retry_delay (default 5s), so the task returns to the
+// queue without running; it consumes a retry attempt like any other failure.
+//
+// The slots of one task type live in the Redis sorted set
+// xbc:asynq:sem:<task type>. Its members are per-execution tokens scored by
+// their lease expiry in Unix milliseconds. Acquisition discards expired tokens
+// before counting, a running handler renews its token every lease/3, and the
+// key is set to expire after twice the lease, so a replica that dies frees its
+// slots when the leases lapse instead of blocking the type forever. When
+// renewal finds the token gone, the handler's context is cancelled: the slot
+// no longer protects the work that was admitted under it. If the key holds a
+// Redis type other than a sorted set, acquisition and reset delete and recreate
+// it, recovering a key claimed by an unrelated writer. Controller's
+// ResetSemaphore(taskType) removes expired tokens and leaves live ones alone,
+// so it is safe to call during a rolling restart.
+//
 // # Workloads
 //
 // A worker serves the handlers of the Plugins that share a workload. A

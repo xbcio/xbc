@@ -58,6 +58,12 @@ type Config struct {
 	// how quickly a fault should back off.
 	RetryBackoffCap time.Duration `yaml:"retry_backoff_cap" default:"60s" validate:"gt=0"`
 
+	// ClusterConcurrencyRetryDelay is how long a task reports it should wait
+	// when its type's cluster-wide concurrency limit is full. The deferral is
+	// ordinary capacity behavior: it is logged at WARN and counts against the
+	// task's retry budget like any other failed attempt.
+	ClusterConcurrencyRetryDelay time.Duration `yaml:"cluster_concurrency_retry_delay" default:"5s" validate:"gt=0"`
+
 	TaskCheckInterval time.Duration `yaml:"task_check_interval" default:"1s" validate:"gt=0"`
 
 	// ShutdownTimeout bounds the asynq library's worker Shutdown, which Stop
@@ -98,6 +104,18 @@ type TaskConfig struct {
 	// Timeout bounds one handler attempt. Zero takes the top-level
 	// default_timeout.
 	Timeout time.Duration `yaml:"timeout"`
+	// ClusterConcurrency bounds how many handlers of this task type may run at
+	// once across the whole cluster, across every replica and every worker
+	// group. Zero, the default, leaves the type unbounded; the per-process
+	// worker concurrency still applies. A delivery that finds the limit full is
+	// deferred with ErrClusterConcurrencyLimit after
+	// cluster_concurrency_retry_delay.
+	ClusterConcurrency int `yaml:"cluster_concurrency" validate:"gte=0"`
+	// ClusterConcurrencyLease is the lease one cluster slot is held under. A
+	// handler that outlives it keeps renewing until it returns; a replica that
+	// dies frees its slots when the lease lapses. Zero takes this task's
+	// timeout, which itself falls back to default_timeout.
+	ClusterConcurrencyLease time.Duration `yaml:"cluster_concurrency_lease" validate:"gte=0"`
 	// Consume makes this process consume the task even though no Plugin
 	// provides it: the task must be a tasks.New definition, and its handler
 	// joins the unowned worker. A tasks.Method task is consumed by selecting
@@ -135,15 +153,16 @@ func defaultConfig() Config {
 			PoolSize:     10,
 			MaxRetries:   3,
 		},
-		Queues:            map[string]int{"default": 1},
-		Concurrency:       10,
-		DefaultQueue:      "default",
-		DefaultMaxRetries: 25,
-		DefaultTimeout:    30 * time.Minute,
-		RetryBackoffBase:  time.Second,
-		RetryBackoffCap:   60 * time.Second,
-		TaskCheckInterval: time.Second,
-		ShutdownTimeout:   8 * time.Second,
+		Queues:                       map[string]int{"default": 1},
+		Concurrency:                  10,
+		DefaultQueue:                 "default",
+		DefaultMaxRetries:            25,
+		DefaultTimeout:               30 * time.Minute,
+		RetryBackoffBase:             time.Second,
+		RetryBackoffCap:              60 * time.Second,
+		ClusterConcurrencyRetryDelay: 5 * time.Second,
+		TaskCheckInterval:            time.Second,
+		ShutdownTimeout:              8 * time.Second,
 	}
 }
 
@@ -242,6 +261,12 @@ func (c Config) validate() error {
 			if task.Timeout < 0 {
 				return fmt.Errorf("asynq: task %q timeout cannot be negative, got %s", name, task.Timeout)
 			}
+			if task.ClusterConcurrency < 0 {
+				return fmt.Errorf("asynq: task %q cluster_concurrency cannot be negative, got %d", name, task.ClusterConcurrency)
+			}
+			if task.ClusterConcurrencyLease < 0 {
+				return fmt.Errorf("asynq: task %q cluster_concurrency_lease cannot be negative, got %s", name, task.ClusterConcurrencyLease)
+			}
 		}
 	}
 	if strings.TrimSpace(c.DefaultQueue) != c.DefaultQueue || c.DefaultQueue == "" {
@@ -264,6 +289,9 @@ func (c Config) validate() error {
 	}
 	if c.RetryBackoffCap < c.RetryBackoffBase {
 		return fmt.Errorf("asynq: retry_backoff_cap %s must be at least retry_backoff_base %s", c.RetryBackoffCap, c.RetryBackoffBase)
+	}
+	if c.ClusterConcurrencyRetryDelay <= 0 {
+		return fmt.Errorf("asynq: cluster_concurrency_retry_delay must be positive, got %s", c.ClusterConcurrencyRetryDelay)
 	}
 	if c.TaskCheckInterval <= 0 {
 		return fmt.Errorf("asynq: task_check_interval must be positive, got %s", c.TaskCheckInterval)
