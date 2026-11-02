@@ -75,6 +75,8 @@
         "DefaultQueue": "default",
         "DefaultMaxRetries": 25,
         "DefaultTimeout": 1800000000000,
+        "RetryBackoffBase": 1000000000,
+        "RetryBackoffCap": 60000000000,
         "TaskCheckInterval": 1000000000,
         "ShutdownTimeout": 8000000000
       }

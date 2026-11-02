@@ -94,6 +94,20 @@
 // an encoding failure does not heal on redelivery. Every other handler
 // failure follows the task's configured retry policy.
 //
+// # Retries
+//
+// A failed handler is redelivered after retry_backoff_base, doubling on every
+// later attempt and capped by retry_backoff_cap (both durations; defaults 1s
+// and 60s). A handler that knows when its work should be rechecked returns
+// asynq.RetryAfter(err, delay): the delay wins over the backoff, is recognized
+// through errors.As, and therefore survives further wrapping. A reported delay
+// is still a failed attempt and does not exempt the task from its max_retries
+// budget, so the queue library archives a task that keeps deferring itself
+// once that budget is exhausted. When a task type's cluster-wide limit is full,
+// the delivery is deferred with asynq.ErrClusterConcurrencyLimit and
+// cluster_concurrency_retry_delay; that deferral is logged at WARN because it
+// is capacity behavior rather than a fault.
+//
 // # Workloads
 //
 // A worker serves the handlers of the Plugins that share a workload. A

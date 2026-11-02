@@ -297,6 +297,8 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 	// through the library (NewInspectorFromRedisClient reports a shared
 	// connection), so stop only drops the reference before the connection closes.
 	inspector := hibiken.NewInspectorFromRedisClient(redisClient)
+	retryDelayFunc := newRetryDelayFunc(cfg.RetryBackoffBase, cfg.RetryBackoffCap)
+	taskErrorHandler := newTaskErrorHandler(ctx.Log())
 	for _, group := range p.groups {
 		server := p.factory.newServer(redisClient, hibiken.Config{
 			Concurrency:       group.concurrency,
@@ -304,6 +306,8 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 			StrictPriority:    cfg.StrictPriority,
 			TaskCheckInterval: cfg.TaskCheckInterval,
 			ShutdownTimeout:   cfg.ShutdownTimeout,
+			RetryDelayFunc:    retryDelayFunc,
+			ErrorHandler:      taskErrorHandler,
 			Logger:            asynqLogger{logger: ctx.Log()},
 		})
 		if isNilInterface(server) {

@@ -49,6 +49,15 @@ type Config struct {
 	DefaultMaxRetries int           `yaml:"default_max_retries" default:"25"      validate:"min=0"`
 	DefaultTimeout    time.Duration `yaml:"default_timeout"     default:"30m"     validate:"gt=0"`
 
+	// RetryBackoffBase is the delay before the first redelivery of a failed
+	// handler, and every later attempt doubles it. The delay a handler reports
+	// with RetryAfter overrides the backoff for that failure.
+	RetryBackoffBase time.Duration `yaml:"retry_backoff_base" default:"1s" validate:"gt=0"`
+	// RetryBackoffCap bounds the exponential backoff. A handler-reported delay
+	// is not capped: it expresses when the work should be rechecked rather than
+	// how quickly a fault should back off.
+	RetryBackoffCap time.Duration `yaml:"retry_backoff_cap" default:"60s" validate:"gt=0"`
+
 	TaskCheckInterval time.Duration `yaml:"task_check_interval" default:"1s" validate:"gt=0"`
 
 	// ShutdownTimeout bounds the asynq library's worker Shutdown, which Stop
@@ -131,6 +140,8 @@ func defaultConfig() Config {
 		DefaultQueue:      "default",
 		DefaultMaxRetries: 25,
 		DefaultTimeout:    30 * time.Minute,
+		RetryBackoffBase:  time.Second,
+		RetryBackoffCap:   60 * time.Second,
 		TaskCheckInterval: time.Second,
 		ShutdownTimeout:   8 * time.Second,
 	}
@@ -244,6 +255,15 @@ func (c Config) validate() error {
 	}
 	if c.DefaultTimeout <= 0 {
 		return fmt.Errorf("asynq: default_timeout must be positive, got %s", c.DefaultTimeout)
+	}
+	if c.RetryBackoffBase <= 0 {
+		return fmt.Errorf("asynq: retry_backoff_base must be positive, got %s", c.RetryBackoffBase)
+	}
+	if c.RetryBackoffCap <= 0 {
+		return fmt.Errorf("asynq: retry_backoff_cap must be positive, got %s", c.RetryBackoffCap)
+	}
+	if c.RetryBackoffCap < c.RetryBackoffBase {
+		return fmt.Errorf("asynq: retry_backoff_cap %s must be at least retry_backoff_base %s", c.RetryBackoffCap, c.RetryBackoffBase)
 	}
 	if c.TaskCheckInterval <= 0 {
 		return fmt.Errorf("asynq: task_check_interval must be positive, got %s", c.TaskCheckInterval)
