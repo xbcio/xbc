@@ -25,14 +25,6 @@
       "imports": []
     },
     {
-      "path": "github.com/xbcio/xbc/extensions/coordination/syncmap",
-      "directory": "extensions/coordination/syncmap",
-      "tag_prefix": "extensions/coordination/syncmap/",
-      "wave": 0,
-      "release": true,
-      "imports": []
-    },
-    {
       "path": "github.com/xbcio/xbc/extensions/tasks",
       "directory": "extensions/tasks",
       "tag_prefix": "extensions/tasks/",
@@ -385,18 +377,6 @@
         "github.com/xbcio/xbc/extensions/coordination/lease",
         "github.com/xbcio/xbc/extensions/observability/metrics",
         "github.com/xbcio/xbc/extensions/reliability/health",
-        "github.com/xbcio/xbc/extensions/storage/redis"
-      ]
-    },
-    {
-      "path": "github.com/xbcio/xbc/extensions/coordination/redis-syncmap",
-      "directory": "extensions/coordination/redis-syncmap",
-      "tag_prefix": "extensions/coordination/redis-syncmap/",
-      "wave": 3,
-      "release": true,
-      "imports": [
-        "github.com/xbcio/xbc",
-        "github.com/xbcio/xbc/extensions/coordination/syncmap",
         "github.com/xbcio/xbc/extensions/storage/redis"
       ]
     },

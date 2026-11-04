@@ -57,12 +57,6 @@ import (
 //     Bundle. TestArchContractModulesOwnNoDefinitionConfigOrBundle is what makes
 //     that a checked claim rather than a description.
 //
-//   - coordination/syncmap is the same shape: a contract module publishing the
-//     Map and Factory interfaces, the persist-mode and option vocabulary, and
-//     the sentinel errors that a synchronized-map implementation satisfies. The
-//     redis implementation depends on those types and never composes a
-//     Definition, Config, or Bundle from the contract, because it owns none.
-//
 //   - extensions/tasks is the same shape: a contract module publishing the
 //     task vocabulary -- Task handles, Provider bindings, the Local and Remote
 //     executor interfaces -- that async and asynq implement and every plugin
@@ -110,7 +104,6 @@ var archExtensionSharedVocabularyModules = []string{
 	"extensions/authorization/casbin",
 	"extensions/authorization/rbac",
 	"extensions/coordination/lease",
-	"extensions/coordination/syncmap",
 	"extensions/tasks",
 	"extensions/reliability/health",
 	"extensions/observability/metrics",

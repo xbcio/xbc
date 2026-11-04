@@ -135,7 +135,6 @@ type Map[V any] struct {
 
 	mu      sync.Mutex
 	pubsub  *redis.PubSub
-	events  <-chan interface{}
 	done    chan struct{}
 	serving bool
 	closed  bool
@@ -281,7 +280,6 @@ func (m *Map[V]) start(ctx context.Context) error {
 
 	m.mu.Lock()
 	m.pubsub = pubsub
-	m.events = events
 	m.serving = true
 	m.mu.Unlock()
 
@@ -546,11 +544,11 @@ func (m *Map[V]) Len() int { return m.store.Len() }
 // concurrent with its snapshot read may be overwritten locally. Callers that
 // must not lose concurrent writes serialize the two themselves.
 func (m *Map[V]) Resync(ctx context.Context) error {
-	if m.persist == PersistNone {
-		return ErrPersistRequired
-	}
 	if err := m.ensureOpen(); err != nil {
 		return err
+	}
+	if m.persist == PersistNone {
+		return ErrPersistRequired
 	}
 	return m.loadSnapshot(orBackground(ctx))
 }

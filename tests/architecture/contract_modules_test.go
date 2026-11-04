@@ -40,7 +40,6 @@ import (
 var archContractModules = []string{
 	"extensions/authentication",
 	"extensions/coordination/lease",
-	"extensions/coordination/syncmap",
 	"extensions/tasks",
 }
 
