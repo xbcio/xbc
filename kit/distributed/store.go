@@ -1,4 +1,4 @@
-package redissyncmap
+package distributed
 
 import (
 	"container/list"
@@ -7,23 +7,22 @@ import (
 
 // store is the map's local cache. It always keeps recency order; size 0 means
 // it never evicts. Eviction is deliberately local: an entry dropped here is
-// still in the backing store and still reaches peers, so the next Load of an
-// evicted key reports absence until a later write, notification, or Resync
-// brings it back.
-type store struct {
+// still in Redis and still reaches peers, so the next Load of an evicted key
+// reports absence until a later write, notification, or Resync brings it back.
+type store[V any] struct {
 	mu      sync.Mutex
 	maxSize int
 	order   *list.List
 	entries map[string]*list.Element
 }
 
-type storeEntry struct {
+type storeEntry[V any] struct {
 	key   string
-	value any
+	value V
 }
 
-func newStore(maxSize int) *store {
-	return &store{
+func newStore[V any](maxSize int) *store[V] {
+	return &store[V]{
 		maxSize: maxSize,
 		order:   list.New(),
 		entries: make(map[string]*list.Element),
@@ -32,16 +31,16 @@ func newStore(maxSize int) *store {
 
 // Set inserts or replaces one entry and evicts the least recently used entries
 // beyond the configured size.
-func (s *store) Set(key string, value any) {
+func (s *store[V]) Set(key string, value V) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if element, ok := s.entries[key]; ok {
-		element.Value.(*storeEntry).value = value
+		element.Value.(*storeEntry[V]).value = value
 		s.order.MoveToFront(element)
 		return
 	}
-	s.entries[key] = s.order.PushFront(&storeEntry{key: key, value: value})
+	s.entries[key] = s.order.PushFront(&storeEntry[V]{key: key, value: value})
 	if s.maxSize <= 0 {
 		return
 	}
@@ -51,25 +50,26 @@ func (s *store) Set(key string, value any) {
 			return
 		}
 		s.order.Remove(oldest)
-		delete(s.entries, oldest.Value.(*storeEntry).key)
+		delete(s.entries, oldest.Value.(*storeEntry[V]).key)
 	}
 }
 
 // Get returns one value and marks it most recently used.
-func (s *store) Get(key string) (any, bool) {
+func (s *store[V]) Get(key string) (V, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	element, ok := s.entries[key]
 	if !ok {
-		return nil, false
+		var zero V
+		return zero, false
 	}
 	s.order.MoveToFront(element)
-	return element.Value.(*storeEntry).value, true
+	return element.Value.(*storeEntry[V]).value, true
 }
 
 // Delete removes one entry.
-func (s *store) Delete(key string) {
+func (s *store[V]) Delete(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -82,7 +82,7 @@ func (s *store) Delete(key string) {
 }
 
 // Clear removes every entry.
-func (s *store) Clear() {
+func (s *store[V]) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -93,12 +93,12 @@ func (s *store) Clear() {
 // Range snapshots the entries under the lock and then calls f without it, so a
 // callback may call back into the map without deadlocking. The values
 // themselves are shared, as they are between Load calls.
-func (s *store) Range(f func(key string, value any) bool) {
+func (s *store[V]) Range(f func(key string, value V) bool) {
 	s.mu.Lock()
-	snapshot := make([]storeEntry, 0, len(s.entries))
+	snapshot := make([]storeEntry[V], 0, len(s.entries))
 	for element := s.order.Front(); element != nil; element = element.Next() {
-		entry := element.Value.(*storeEntry)
-		snapshot = append(snapshot, storeEntry{key: entry.key, value: entry.value})
+		entry := element.Value.(*storeEntry[V])
+		snapshot = append(snapshot, storeEntry[V]{key: entry.key, value: entry.value})
 	}
 	s.mu.Unlock()
 
@@ -110,7 +110,7 @@ func (s *store) Range(f func(key string, value any) bool) {
 }
 
 // Len reports the number of locally held entries.
-func (s *store) Len() int {
+func (s *store[V]) Len() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.entries)
