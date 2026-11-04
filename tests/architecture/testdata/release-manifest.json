@@ -41,6 +41,14 @@
       "imports": []
     },
     {
+      "path": "github.com/xbcio/xbc/kit/distributed",
+      "directory": "kit/distributed",
+      "tag_prefix": "kit/distributed/",
+      "wave": 0,
+      "release": true,
+      "imports": []
+    },
+    {
       "path": "github.com/xbcio/xbc/extensions/authentication/apikey",
       "directory": "extensions/authentication/apikey",
       "tag_prefix": "extensions/authentication/apikey/",

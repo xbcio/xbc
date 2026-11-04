@@ -50,6 +50,7 @@ use (
 	./extensions/storage/objectstorage
 	./extensions/storage/redis
 	./extensions/tasks
+	./kit/distributed
 	./scripts/plugin-snapshots
 	./tests/composition
 	./transport/grpc
