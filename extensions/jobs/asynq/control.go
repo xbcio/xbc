@@ -17,6 +17,10 @@ import (
 // rather than one unbounded read.
 const purgeBatchSize = 500
 
+// semaphoreResetTimeout caps one ResetSemaphore Redis operation; a caller's
+// context with an earlier deadline still wins.
+const semaphoreResetTimeout = 5 * time.Second
+
 // Controller is the destructive half of queue management: it deletes, moves,
 // archives, cancels, pauses, and purges. It is exported as a separate contract
 // from Inspector so a read-only consumer cannot accidentally receive the
@@ -263,9 +267,9 @@ func (p *Plugin) ResetSemaphore(ctx context.Context, taskType string) error {
 	if semaphore == nil {
 		return ErrClosed
 	}
-	resetCtx, cancel := context.WithTimeout(ctx, semaphoreOpTimeout)
+	resetCtx, cancel := context.WithTimeout(ctx, semaphoreResetTimeout)
 	defer cancel()
-	if _, err := semaphore.reset(resetCtx, taskType); err != nil {
+	if _, err := semaphore.Reset(resetCtx, taskType); err != nil {
 		return fmt.Errorf("asynq: reset cluster semaphore for task type %q: %w", taskType, err)
 	}
 	return nil

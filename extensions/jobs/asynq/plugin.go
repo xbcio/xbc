@@ -13,6 +13,7 @@ import (
 
 	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/extensions/tasks"
+	"github.com/xbcio/xbc/kit/distributed"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -141,7 +142,7 @@ type Plugin struct {
 	// semaphore backs the cluster-wide task-type limits with the same Redis
 	// connection. It is shared by every worker group's dispatcher and cleared by
 	// stop, after which ResetSemaphore reports ErrClosed.
-	semaphore   *clusterSemaphore
+	semaphore   *distributed.Semaphore
 	client      *Client
 	groups      []*workerGroup
 	initialized bool
@@ -301,7 +302,12 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 	// through the library (NewInspectorFromRedisClient reports a shared
 	// connection), so stop only drops the reference before the connection closes.
 	inspector := hibiken.NewInspectorFromRedisClient(redisClient)
-	semaphore := newClusterSemaphore(redisClient, ctx.Log())
+	semaphore, semaphoreErr := distributed.NewSemaphore(redisClient, distributed.SemaphoreOptions{
+		Logger: newSlogLogger(ctx.Log()),
+	})
+	if semaphoreErr != nil {
+		return fmt.Errorf("asynq: initialize cluster semaphore: %w", semaphoreErr)
+	}
 	retryDelayFunc := newRetryDelayFunc(cfg.RetryBackoffBase, cfg.RetryBackoffCap)
 	taskErrorHandler := newTaskErrorHandler(ctx.Log())
 	for _, group := range p.groups {
