@@ -128,18 +128,25 @@
 // cluster_concurrency_retry_delay (default 5s), so the task returns to the
 // queue without running; it consumes a retry attempt like any other failure.
 //
-// The slots of one task type live in the Redis sorted set
-// xbc:asynq:sem:<task type>. Its members are per-execution tokens scored by
-// their lease expiry in Unix milliseconds. Acquisition discards expired tokens
-// before counting, a running handler renews its token every lease/3, and the
-// key is set to expire after twice the lease, so a replica that dies frees its
-// slots when the leases lapse instead of blocking the type forever. When
-// renewal finds the token gone, the handler's context is cancelled: the slot
-// no longer protects the work that was admitted under it. If the key holds a
-// Redis type other than a sorted set, acquisition and reset delete and recreate
-// it, recovering a key claimed by an unrelated writer. Controller's
-// ResetSemaphore(taskType) removes expired tokens and leaves live ones alone,
-// so it is safe to call during a rolling restart.
+// The implementation lives in the framework-free kit/distributed package: the
+// slots of one task type live in the Redis sorted set distributed:sem:<task
+// type>. Its members are per-execution tokens scored by their lease expiry in
+// Unix milliseconds. Acquisition discards expired tokens before counting, a
+// running handler renews its token every lease/3, and the key is set to expire
+// after twice the lease, so a replica that dies frees its slots when the leases
+// lapse instead of blocking the type forever. When renewal finds the token gone,
+// the handler's context is cancelled: the slot no longer protects the work that
+// was admitted under it. If the key holds a Redis type other than a sorted set,
+// acquisition and reset delete and recreate it, recovering a key claimed by an
+// unrelated writer. Controller's ResetSemaphore(taskType) removes expired tokens
+// and leaves live ones alone, so it is safe to call during a rolling restart.
+//
+// The key prefix belongs to the library rather than to plugins.asynq.
+// Versions before this migration wrote a different layout
+// (xbc:asynq:sem:<task type>); while old and new processes run together, the
+// two semaphore families are mutually invisible, so one task type is limited
+// once per layout rather than once cluster-wide until every process runs this
+// version.
 //
 // # Retention
 //

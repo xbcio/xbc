@@ -8,12 +8,23 @@ import (
 	"reflect"
 	"runtime/pprof"
 	"strings"
+	"time"
 
 	hibiken "github.com/hibiken/asynq"
 
 	"github.com/xbcio/xbc/extensions/tasks"
+	"github.com/xbcio/xbc/kit/distributed"
 	"github.com/xbcio/xbc/plugin"
 )
+
+// clusterLimit is the resolved deployment cap of one task type: how many
+// handlers may run across the cluster, the lease one slot is held under, and
+// the delay a deferred delivery reports.
+type clusterLimit struct {
+	limit      int
+	lease      time.Duration
+	retryDelay time.Duration
+}
 
 // resolvedClusterLimits maps every task type configured with a cluster-wide
 // cap to the limit its deliveries use. A zero lease takes the task's timeout,
@@ -76,7 +87,7 @@ type dispatcher struct {
 	// semaphore is the Redis-backed slot store, attached by Plugin.init once
 	// the owned connection exists. It is nil before Init and in dispatchers
 	// built directly by tests, which leaves limits inert.
-	semaphore *clusterSemaphore
+	semaphore *distributed.Semaphore
 }
 
 func (d *dispatcher) ProcessTask(ctx context.Context, task *hibiken.Task) error {
@@ -97,7 +108,14 @@ func (d *dispatcher) ProcessTask(ctx context.Context, task *hibiken.Task) error 
 	if limit, limited := d.limits[task.Type()]; limited && d.semaphore != nil {
 		inner := work
 		work = func(taskCtx context.Context) error {
-			return d.semaphore.run(taskCtx, task.Type(), limit, inner)
+			err := d.semaphore.Run(taskCtx, task.Type(), limit.limit, limit.lease, inner)
+			if errors.Is(err, distributed.ErrLimitReached) {
+				return RetryAfter(
+					fmt.Errorf("%w: task type %q is at its cluster-wide limit of %d", ErrClusterConcurrencyLimit, task.Type(), limit.limit),
+					limit.retryDelay,
+				)
+			}
+			return err
 		}
 	}
 	// A task arrives on a worker goroutine the queue library owns and reuses,

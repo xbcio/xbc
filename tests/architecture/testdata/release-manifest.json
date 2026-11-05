@@ -258,7 +258,8 @@
       "imports": [
         "github.com/xbcio/xbc",
         "github.com/xbcio/xbc/extensions/reliability/health",
-        "github.com/xbcio/xbc/extensions/tasks"
+        "github.com/xbcio/xbc/extensions/tasks",
+        "github.com/xbcio/xbc/kit/distributed"
       ]
     },
     {

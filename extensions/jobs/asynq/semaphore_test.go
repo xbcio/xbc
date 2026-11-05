@@ -3,6 +3,8 @@ package asynq
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -14,7 +16,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/xbcio/xbc/extensions/tasks"
-	corelog "github.com/xbcio/xbc/log"
+	"github.com/xbcio/xbc/kit/distributed"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -23,6 +25,26 @@ func newSemaphoreTestClient(t *testing.T, server *miniredis.Miniredis) *goredis.
 	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 	return client
+}
+
+// newSemaphoreTestValue builds the kit semaphore the dispatcher uses, with a
+// discarded logger so a deliberately lost lease does not write into the test
+// output.
+func newSemaphoreTestValue(t *testing.T, client goredis.UniversalClient) *distributed.Semaphore {
+	t.Helper()
+	semaphore, err := distributed.NewSemaphore(client, distributed.SemaphoreOptions{
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("distributed.NewSemaphore() error = %v", err)
+	}
+	return semaphore
+}
+
+// clusterSemaphoreTestKey is the Redis key kit/distributed uses for one task
+// type under its default prefix.
+func clusterSemaphoreTestKey(taskType string) string {
+	return "distributed:sem:" + taskType
 }
 
 func TestDispatcherClusterConcurrencyCapsParallelHandlers(t *testing.T) {
@@ -54,7 +76,7 @@ func TestDispatcherClusterConcurrencyCapsParallelHandlers(t *testing.T) {
 		limits: map[string]clusterLimit{
 			"work": {limit: 2, lease: 5 * time.Second, retryDelay: deferDelay},
 		},
-		semaphore: newClusterSemaphore(client, corelog.Nop()),
+		semaphore: newSemaphoreTestValue(t, client),
 	}
 
 	var returned atomic.Int32
@@ -97,86 +119,8 @@ func TestDispatcherClusterConcurrencyCapsParallelHandlers(t *testing.T) {
 	if got := peak.Load(); got > 2 {
 		t.Fatalf("peak concurrent handlers = %d, want at most 2", got)
 	}
-	if card := client.ZCard(context.Background(), clusterSemaphoreKey("work")).Val(); card != 0 {
+	if card := client.ZCard(context.Background(), clusterSemaphoreTestKey("work")).Val(); card != 0 {
 		t.Fatalf("slots left after every handler returned = %d, want 0", card)
-	}
-}
-
-func TestClusterSemaphoreRecoversExpiredSlots(t *testing.T) {
-	server := miniredis.RunT(t)
-	client := newSemaphoreTestClient(t, server)
-	semaphore := newClusterSemaphore(client, corelog.Nop())
-	ctx := context.Background()
-
-	// A replica that died holds the only slot. Nobody will ever release it.
-	if _, acquired, err := semaphore.tryAcquire(ctx, "work", 1, 100*time.Millisecond); err != nil || !acquired {
-		t.Fatalf("first acquisition = %v/%v", acquired, err)
-	}
-	if _, acquired, err := semaphore.tryAcquire(ctx, "work", 1, time.Second); err != nil || acquired {
-		t.Fatalf("acquisition while the slot is live = %v/%v, want refused", acquired, err)
-	}
-
-	time.Sleep(150 * time.Millisecond)
-	if _, acquired, err := semaphore.tryAcquire(ctx, "work", 1, time.Second); err != nil || !acquired {
-		t.Fatalf("acquisition after the lease lapsed = %v/%v, want admitted", acquired, err)
-	}
-}
-
-func TestClusterSemaphoreRecoversAForeignRedisType(t *testing.T) {
-	server := miniredis.RunT(t)
-	client := newSemaphoreTestClient(t, server)
-	semaphore := newClusterSemaphore(client, corelog.Nop())
-	ctx := context.Background()
-	key := clusterSemaphoreKey("work")
-
-	if err := client.Set(ctx, key, "claimed by another writer", 0).Err(); err != nil {
-		t.Fatalf("seed foreign key error = %v", err)
-	}
-	token, acquired, err := semaphore.tryAcquire(ctx, "work", 1, time.Second)
-	if err != nil || !acquired || token == "" {
-		t.Fatalf("acquisition over a foreign type = %v/%v/%q", acquired, err, token)
-	}
-	if typ := client.Type(ctx, key).Val(); typ != "zset" {
-		t.Fatalf("key type after recovery = %q, want zset", typ)
-	}
-	if card := client.ZCard(ctx, key).Val(); card != 1 {
-		t.Fatalf("recovered key card = %d, want the new slot", card)
-	}
-}
-
-func TestClusterSemaphoreRenewalLossCancelsHandlerContext(t *testing.T) {
-	server := miniredis.RunT(t)
-	client := newSemaphoreTestClient(t, server)
-	semaphore := newClusterSemaphore(client, corelog.Nop())
-	key := clusterSemaphoreKey("work")
-	ctx := context.Background()
-
-	started := make(chan struct{})
-	result := make(chan error, 1)
-	go func() {
-		result <- semaphore.run(ctx, "work", clusterLimit{limit: 1, lease: 150 * time.Millisecond, retryDelay: time.Second}, func(runCtx context.Context) error {
-			close(started)
-			<-runCtx.Done()
-			return runCtx.Err()
-		})
-	}()
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not start")
-	}
-	// Remove the slot as a reset or an operator would; the renewal loop then
-	// observes that the token is gone.
-	if err := client.Del(ctx, key).Err(); err != nil {
-		t.Fatalf("delete semaphore key error = %v", err)
-	}
-	select {
-	case err := <-result:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("handler result = %v, want the cancelled context", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("a lost lease did not cancel the handler context")
 	}
 }
 
@@ -212,7 +156,7 @@ func TestClusterLimitAppliesToFunctionTasksAndContributorHandlers(t *testing.T) 
 		t.Fatalf("groups/limits = %d/%v, want one group with two caps", len(groups), groups[0].dispatcher.limits)
 	}
 	dispatch := groups[0].dispatcher
-	dispatch.semaphore = newClusterSemaphore(client, corelog.Nop())
+	dispatch.semaphore = newSemaphoreTestValue(t, client)
 
 	contributorCtx, cancelContributor := context.WithCancel(context.Background())
 	contributorErr := make(chan error, 1)
@@ -241,7 +185,7 @@ func TestClusterLimitAppliesToFunctionTasksAndContributorHandlers(t *testing.T) 
 		functionErr <- dispatch.ProcessTask(functionCtx, hibiken.NewTask("test.asynq.cluster.function", []byte("7")))
 	}()
 	waitForCondition(t, 2*time.Second, func() bool {
-		return client.ZCard(context.Background(), clusterSemaphoreKey("test.asynq.cluster.function")).Val() == 1
+		return client.ZCard(context.Background(), clusterSemaphoreTestKey("test.asynq.cluster.function")).Val() == 1
 	}, "the function task to take its slot")
 	assertClusterLimitDeferred(t, dispatch.ProcessTask(context.Background(), hibiken.NewTask("test.asynq.cluster.function", []byte("7"))), 2*time.Second)
 	cancelFunction()
@@ -316,7 +260,7 @@ func TestInitAttachesSemaphoreAndLimitsToDispatchers(t *testing.T) {
 func TestResetSemaphoreKeepsLiveSlots(t *testing.T) {
 	p, _, _ := initInspectionPlugin(t, nil, nil)
 	ctx := context.Background()
-	key := clusterSemaphoreKey("work")
+	key := clusterSemaphoreTestKey("work")
 
 	expired := float64(time.Now().Add(-time.Minute).UnixMilli())
 	live := float64(time.Now().Add(time.Minute).UnixMilli())
@@ -338,13 +282,13 @@ func TestResetSemaphoreKeepsLiveSlots(t *testing.T) {
 	}
 
 	// A key claimed by a foreign type is dropped rather than left wedged.
-	if err := p.redis.Set(ctx, clusterSemaphoreKey("foreign"), "junk", 0).Err(); err != nil {
+	if err := p.redis.Set(ctx, clusterSemaphoreTestKey("foreign"), "junk", 0).Err(); err != nil {
 		t.Fatalf("seed foreign key error = %v", err)
 	}
 	if err := p.ResetSemaphore(ctx, "foreign"); err != nil {
 		t.Fatalf("ResetSemaphore(foreign) error = %v", err)
 	}
-	if typ := p.redis.Type(ctx, clusterSemaphoreKey("foreign")).Val(); typ != "none" {
+	if typ := p.redis.Type(ctx, clusterSemaphoreTestKey("foreign")).Val(); typ != "none" {
 		t.Fatalf("foreign key type after reset = %q, want none", typ)
 	}
 }

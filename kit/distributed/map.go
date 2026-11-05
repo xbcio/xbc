@@ -636,8 +636,8 @@ type broadcastMessage struct {
 var (
 	// ErrClosed reports that the map has been closed.
 	ErrClosed = errors.New("distributed: map is closed")
-	// ErrInvalidName reports an empty or malformed map name.
-	ErrInvalidName = errors.New("distributed: invalid map name")
+	// ErrInvalidName reports an empty or malformed map or semaphore name.
+	ErrInvalidName = errors.New("distributed: invalid name")
 	// ErrInvalidKey reports an empty key.
 	ErrInvalidKey = errors.New("distributed: key cannot be empty")
 	// ErrInvalidOption reports an option combination this package refuses,
