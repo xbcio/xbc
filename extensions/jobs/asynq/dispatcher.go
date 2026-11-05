@@ -96,10 +96,18 @@ func (d *dispatcher) ProcessTask(ctx context.Context, task *hibiken.Task) error 
 		return fmt.Errorf("%w for type %q", ErrHandlerNotFound, task.Type())
 	}
 	work := func(taskCtx context.Context) error {
+		// The delivery's retry state lives on the context the queue library
+		// hands this handler, so it is read here rather than from task, which
+		// carries no retry bookkeeping. A missing value stays zero, mirroring
+		// the library's own answer for a context it did not populate.
+		retried, _ := hibiken.GetRetryCount(taskCtx)
+		maxRetries, _ := hibiken.GetMaxRetry(taskCtx)
 		return handler.HandleTask(taskCtx, Task{
-			Type:    task.Type(),
-			Payload: append([]byte(nil), task.Payload()...),
-			Headers: maps.Clone(task.Headers()),
+			Type:       task.Type(),
+			Payload:    append([]byte(nil), task.Payload()...),
+			Headers:    maps.Clone(task.Headers()),
+			Retried:    retried,
+			MaxRetries: maxRetries,
 		})
 	}
 	// The cluster-wide cap is applied here rather than per handler source, so

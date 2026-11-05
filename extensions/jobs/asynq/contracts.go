@@ -28,6 +28,13 @@ type Task struct {
 	Type    string
 	Payload []byte
 	Headers map[string]string
+	// Retried is how many times this delivery has already been retried. It is
+	// filled in when the task is delivered to a Handler and ignored by Enqueue.
+	Retried int
+	// MaxRetries is the retry budget attached to this delivery. It is filled in
+	// when the task is delivered to a Handler and ignored by Enqueue. A zero
+	// value means the delivery reports no budget, not that retries are disabled.
+	MaxRetries int
 }
 
 // TaskInfo describes a task known to Redis without exposing Asynq types.
