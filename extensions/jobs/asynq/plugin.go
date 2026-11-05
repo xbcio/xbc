@@ -303,7 +303,7 @@ func (p *Plugin) init(ctx *plugin.Context) (err error) {
 	// connection), so stop only drops the reference before the connection closes.
 	inspector := hibiken.NewInspectorFromRedisClient(redisClient)
 	semaphore, semaphoreErr := distributed.NewSemaphore(redisClient, distributed.SemaphoreOptions{
-		Logger: newSlogLogger(ctx.Log()),
+		Logger: ctx.Log(),
 	})
 	if semaphoreErr != nil {
 		return fmt.Errorf("asynq: initialize cluster semaphore: %w", semaphoreErr)

@@ -3,8 +3,6 @@ package distributed
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -12,14 +10,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// newTestSemaphore builds a semaphore over client with a discarded logger, so
-// a test that deliberately loses a lease does not write diagnostics into the
-// test output.
+// newTestSemaphore builds a semaphore over client. The default nil logger
+// discards diagnostics, so a test that deliberately loses a lease does not
+// write into the test output.
 func newTestSemaphore(t *testing.T, client redis.UniversalClient, options SemaphoreOptions) *Semaphore {
 	t.Helper()
-	if options.Logger == nil {
-		options.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
-	}
 	created, err := NewSemaphore(client, options)
 	if err != nil {
 		t.Fatalf("NewSemaphore(): %v", err)
