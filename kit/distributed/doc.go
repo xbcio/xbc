@@ -1,6 +1,7 @@
 // Package distributed provides coordination primitives whose state lives in
 // Redis and is shared by every process that uses the same prefix: a
-// synchronized string-keyed map and a cluster-wide semaphore.
+// synchronized string-keyed map, a cluster-wide semaphore, and a cluster-wide
+// rate limiter.
 //
 // The package is an ordinary framework-free library: it depends on the
 // standard library and one Redis client, and it never imports any package of
@@ -67,6 +68,52 @@
 // is taken, and a key holding a Redis type other than a sorted set is deleted
 // and recreated by both acquisition and Reset.
 //
+// # Rate limiters
+//
+// A RateLimiter paces one named operation across the cluster at limit events
+// per per. It is the cluster-wide counterpart of a process-local limiter: the
+// process-local limiter keeps a schedule per replica, so N replicas each admit
+// limit events per window; a RateLimiter keeps one schedule in Redis, so the
+// replicas share the quota.
+//
+// The algorithm is GCRA (the generic cell rate algorithm), a leaky bucket
+// viewed as a meter. One value per name is a theoretical arrival time (TAT) in
+// Unix milliseconds. The emission interval is per/limit, and the burst
+// tolerance is one emission interval short of the window. A request arriving
+// at t may run when t >= TAT - tolerance; a reservation then moves TAT to
+// max(TAT, t) + interval. The first limit reservations in a window therefore
+// run at once, and every later reservation is scheduled one interval after the
+// previous one. A burst cannot exceed limit, the long-term rate cannot exceed
+// limit per per, and there is no fixed-window boundary at which twice the
+// quota can be admitted back to back.
+//
+// The clock is the Redis server's TIME, read inside the same Lua script that
+// reads and writes TAT. Every replica schedules against one clock, so clock
+// skew between hosts cannot distort the rate, and concurrent reservations are
+// serialized by Redis: the script is one atomic read-modify-write, not a GET
+// followed by a SET that two replicas could interleave.
+//
+// per/limit is rarely a whole number of milliseconds. The stored TAT keeps its
+// fractional millisecond part instead of being rounded on every step, so the
+// rounding error does not accumulate into a rate error: 3 per 10ms is an
+// emission interval of 10/3ms, and the schedule stays at 300 events per second
+// rather than drifting toward 333 or 250.
+//
+// Reserve consumes a slot and returns how long the caller must wait before it
+// may run; zero means run now. It consumes even when the delay is positive, so
+// a later caller observes the reservation. Wait is Reserve followed by a
+// sleep, and returns the caller's context error if the context ends first; the
+// slot is not returned, because a reservation is the consumption. Allow
+// consumes a slot only when one is available now and reports false otherwise,
+// leaving the schedule untouched; it does not report a suggested delay, so a
+// caller that must retry applies its own backoff. Use Reserve when the caller
+// wants to schedule work itself, Wait when it can simply block, and Allow when
+// it has other work to do on refusal.
+//
+// The key expires after twice per and every reservation refreshes that expiry,
+// so an abandoned name does not leak. The trade-off is that reservation debt
+// not touched for twice per is forgotten; the bucket then refills early.
+//
 // # Usage in an XBC application
 //
 // A plugin declares the Redis client as an input and creates the map in its
@@ -110,7 +157,8 @@
 // With the default prefix, one map named "rules" uses the Redis hash
 // distributed:map:rules and the channel distributed:map:rules:events. One
 // semaphore named "report.render" uses the sorted set
-// distributed:sem:report.render. Two deployments that share a Redis instance
-// share state when they share a prefix; give each logical cluster its own
-// prefix.
+// distributed:sem:report.render. One rate limiter named "report.render" uses
+// the string distributed:rate:report.render. Two deployments that share a
+// Redis instance share state when they share a prefix; give each logical
+// cluster its own prefix.
 package distributed
