@@ -3,8 +3,6 @@ package asynq
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -27,14 +25,12 @@ func newSemaphoreTestClient(t *testing.T, server *miniredis.Miniredis) *goredis.
 	return client
 }
 
-// newSemaphoreTestValue builds the kit semaphore the dispatcher uses, with a
-// discarded logger so a deliberately lost lease does not write into the test
-// output.
+// newSemaphoreTestValue builds the kit semaphore the dispatcher uses; the
+// default nil logger discards diagnostics, so a deliberately lost lease does
+// not write into the test output.
 func newSemaphoreTestValue(t *testing.T, client goredis.UniversalClient) *distributed.Semaphore {
 	t.Helper()
-	semaphore, err := distributed.NewSemaphore(client, distributed.SemaphoreOptions{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	semaphore, err := distributed.NewSemaphore(client, distributed.SemaphoreOptions{})
 	if err != nil {
 		t.Fatalf("distributed.NewSemaphore() error = %v", err)
 	}

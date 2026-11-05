@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -95,7 +94,7 @@ return redis.call('ZCARD', key)
 `)
 
 // SemaphoreOptions configures one semaphore. The zero value is valid: it uses
-// the default prefix and slog.Default().
+// the default prefix and discards diagnostics.
 type SemaphoreOptions struct {
 	// Prefix namespaces every key this semaphore uses. It defaults to
 	// DefaultPrefix. Two deployments that share a Redis instance and prefix
@@ -103,8 +102,8 @@ type SemaphoreOptions struct {
 	// not safe in a Redis key is rejected with ErrInvalidOption.
 	Prefix string
 	// Logger receives renewal failures, lost slots, and release failures. It
-	// defaults to slog.Default().
-	Logger *slog.Logger
+	// defaults to discarding diagnostics.
+	Logger Logger
 }
 
 // Semaphore bounds how many executions of one named operation run at once
@@ -129,7 +128,7 @@ type SemaphoreOptions struct {
 // cluster-wide.
 type Semaphore struct {
 	client redis.UniversalClient
-	log    *slog.Logger
+	log    Logger
 	prefix string
 }
 
@@ -148,7 +147,7 @@ func NewSemaphore(client redis.UniversalClient, options SemaphoreOptions) (*Sema
 	}
 	logger := options.Logger
 	if logger == nil {
-		logger = slog.Default()
+		logger = nopLogger{}
 	}
 	return &Semaphore{client: client, log: logger, prefix: prefix}, nil
 }

@@ -228,9 +228,12 @@
 // is not context-aware, so these methods take no context and a cancelled
 // caller context cannot interrupt an operation already handed to Redis.
 //
-// PurgeArchived(queue, olderThan) deletes archived tasks whose archive time is
-// at or before olderThan and reports how many it deleted; the zero time purges
-// the whole archive. The archive time is the archived sorted set's score, read
+// PurgeArchived(queue, olderThan, taskTypes...) deletes archived tasks whose
+// archive time is at or before olderThan and reports how many it deleted; the
+// zero time purges the whole archive. With no task types it considers every
+// task; with one or more it deletes only archived tasks of those exact types,
+// reading each candidate's metadata because the archive itself records no
+// type. The archive time is the archived sorted set's score, read
 // from the queue library's Redis keys, because TaskInfo.LastFailedAt is the
 // last handler failure and is zero or stale for tasks archived through the
 // Inspector. A queue Redis has not registered reports ErrQueueNotFound.

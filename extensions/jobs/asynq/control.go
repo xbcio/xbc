@@ -59,8 +59,11 @@ type Controller interface {
 	UnpauseQueue(queue string) error
 	// PurgeArchived deletes archived tasks whose archive time is at or before
 	// olderThan and reports how many it deleted. The zero time purges every
-	// archived task. Tasks are deleted in batches of purgeBatchSize.
-	PurgeArchived(queue string, olderThan time.Time) (int, error)
+	// archived task. With no taskTypes every type is purged; with one or more,
+	// only archived tasks whose type equals one of them are deleted, and each
+	// considered task's metadata is read to learn its type. Tasks are deleted
+	// in batches of purgeBatchSize.
+	PurgeArchived(queue string, olderThan time.Time, taskTypes ...string) (int, error)
 	// ResetSemaphore removes expired slots from the cluster-wide concurrency
 	// semaphore of taskType and reports nothing about live slots, which it
 	// leaves untouched. It is safe during a rolling restart; a task type that
@@ -192,15 +195,27 @@ func (p *Plugin) UnpauseQueue(queue string) error {
 }
 
 // PurgeArchived implements Controller.
-// // The archive time is the archived sorted set's score, which is what the queue
+//
+// The archive time is the archived sorted set's score, which is what the queue
 // library writes when a task is archived, including when it is archived through
 // the Inspector rather than by a failed handler. TaskInfo.LastFailedAt cannot
 // be used instead: it records the last handler failure and is zero or stale for
 // tasks archived by the Inspector, so a purge keyed on it would delete new
 // archived tasks as if they were old.
-func (p *Plugin) PurgeArchived(queue string, olderThan time.Time) (int, error) {
+//
+// A task type filter turns the purge into a metadata read per considered task:
+// the sorted set carries no type, so GetTaskInfo decodes the stored task to
+// learn it. Without a filter this method reads no task metadata at all.
+func (p *Plugin) PurgeArchived(queue string, olderThan time.Time, taskTypes ...string) (int, error) {
 	if err := p.authorizeQueue(queue); err != nil {
 		return 0, err
+	}
+	types := make(map[string]struct{}, len(taskTypes))
+	for _, taskType := range taskTypes {
+		if taskType == "" || strings.TrimSpace(taskType) != taskType {
+			return 0, fmt.Errorf("asynq: invalid task type %q", taskType)
+		}
+		types[taskType] = struct{}{}
 	}
 	redisClient, inspector, err := p.backends()
 	if err != nil {
@@ -223,11 +238,18 @@ func (p *Plugin) PurgeArchived(queue string, olderThan time.Time) (int, error) {
 	archivedKey := queueKey(queue, "archived")
 
 	purged := 0
+	// retained counts the archived tasks in the score range that the type
+	// filter keeps. A non-matching task stays in the range, so reading the next
+	// batch at a fixed offset would return the same leading tasks forever; using
+	// the retained count as the offset moves the window past them. Deleted
+	// matches and removed orphans no longer occupy the range, so only retained
+	// entries can precede the next batch.
+	retained := 0
 	for {
 		ids, err := redisClient.ZRangeByScore(ctx, archivedKey, &goredis.ZRangeBy{
 			Min:    "-inf",
 			Max:    max,
-			Offset: 0,
+			Offset: int64(retained),
 			Count:  purgeBatchSize,
 		}).Result()
 		if err != nil {
@@ -237,6 +259,25 @@ func (p *Plugin) PurgeArchived(queue string, olderThan time.Time) (int, error) {
 			return purged, nil
 		}
 		for _, id := range ids {
+			if len(types) > 0 {
+				info, infoErr := inspector.GetTaskInfo(queue, id)
+				switch {
+				case infoErr != nil && errors.Is(infoErr, hibiken.ErrTaskNotFound):
+					// An orphan archive entry under a type filter: it names a task
+					// whose hash is gone, so it matches no type and must be removed
+					// or it would stay in the range for every later batch.
+					if _, zerr := redisClient.ZRem(ctx, archivedKey, id).Result(); zerr != nil {
+						return purged, fmt.Errorf("asynq: remove orphan archived task %q of queue %q: %w", id, queue, zerr)
+					}
+					continue
+				case infoErr != nil:
+					return purged, fmt.Errorf("asynq: inspect archived task %q of queue %q: %w", id, queue, mapInspectionError(infoErr, queue))
+				}
+				if _, ok := types[info.Type]; !ok {
+					retained++
+					continue
+				}
+			}
 			switch deleteErr := inspector.DeleteTask(queue, id); {
 			case deleteErr == nil:
 				purged++

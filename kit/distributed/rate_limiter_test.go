@@ -3,8 +3,6 @@ package distributed
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"strconv"
 	"sync"
 	"testing"
@@ -14,14 +12,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// newTestRateLimiter builds a rate limiter over client with a discarded
-// logger, so a test that deliberately corrupts state does not write warnings
-// into the test output.
+// newTestRateLimiter builds a rate limiter over client. The default nil logger
+// discards diagnostics, so a test that deliberately corrupts state does not
+// write warnings into the test output.
 func newTestRateLimiter(t *testing.T, client redis.UniversalClient, options RateLimiterOptions) *RateLimiter {
 	t.Helper()
-	if options.Logger == nil {
-		options.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
-	}
 	created, err := NewRateLimiter(client, options)
 	if err != nil {
 		t.Fatalf("NewRateLimiter(): %v", err)

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
@@ -62,7 +61,7 @@ const (
 )
 
 // MapOptions configures one map. The zero value is valid: it uses the default
-// prefix, no persistence, an unlimited local cache, and slog.Default().
+// prefix, no persistence, an unlimited local cache, and discards diagnostics.
 type MapOptions[V any] struct {
 	// Prefix namespaces every key and channel this map uses. It defaults to
 	// DefaultPrefix. Two deployments that share a Redis instance and prefix
@@ -91,8 +90,8 @@ type MapOptions[V any] struct {
 	// only: it never deletes from Redis and never broadcasts.
 	MaxSize int
 	// Logger receives diagnostics about discarded notifications and snapshot
-	// entries. It defaults to slog.Default().
-	Logger *slog.Logger
+	// entries. It defaults to discarding diagnostics.
+	Logger Logger
 }
 
 // Map is one synchronized string-keyed map.
@@ -120,7 +119,7 @@ type MapOptions[V any] struct {
 // would observe both.
 type Map[V any] struct {
 	client redis.UniversalClient
-	log    *slog.Logger
+	log    Logger
 
 	name    string
 	hashKey string
@@ -233,7 +232,7 @@ func resolveMapOptions[V any](name string, options MapOptions[V]) (MapOptions[V]
 		options.Decode = decodeJSON[V]
 	}
 	if options.Logger == nil {
-		options.Logger = slog.Default()
+		options.Logger = nopLogger{}
 	}
 	return options, nil
 }

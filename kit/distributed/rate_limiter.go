@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -90,7 +89,7 @@ return { string.format('%.3f', wait * 1000), recovered }
 `)
 
 // RateLimiterOptions configures one rate limiter. The zero value is valid: it
-// uses the default prefix and slog.Default().
+// uses the default prefix and discards diagnostics.
 type RateLimiterOptions struct {
 	// Prefix namespaces every key this rate limiter uses. It defaults to
 	// DefaultPrefix. Two deployments that share a Redis instance and prefix
@@ -99,8 +98,8 @@ type RateLimiterOptions struct {
 	Prefix string
 	// Logger receives a warning when a key holding another Redis type or an
 	// unreadable value is reset, and diagnosis after that reset. It defaults to
-	// slog.Default().
-	Logger *slog.Logger
+	// discarding diagnostics.
+	Logger Logger
 }
 
 // RateLimiter paces one named operation across every process that shares the
@@ -125,7 +124,7 @@ type RateLimiterOptions struct {
 // cluster-wide.
 type RateLimiter struct {
 	client redis.UniversalClient
-	log    *slog.Logger
+	log    Logger
 	prefix string
 }
 
@@ -144,7 +143,7 @@ func NewRateLimiter(client redis.UniversalClient, options RateLimiterOptions) (*
 	}
 	logger := options.Logger
 	if logger == nil {
-		logger = slog.Default()
+		logger = nopLogger{}
 	}
 	return &RateLimiter{client: client, log: logger, prefix: prefix}, nil
 }
