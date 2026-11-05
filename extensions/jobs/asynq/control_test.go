@@ -3,6 +3,7 @@ package asynq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -168,6 +169,164 @@ func TestInspectorAndControllerRejectUndeclaredQueues(t *testing.T) {
 	}
 	if archived.State != hibiken.TaskStateArchived {
 		t.Fatalf("foreign archived task state = %v", archived.State)
+	}
+}
+
+// archiveInspectionTasks archives each already-enqueued task in the default
+// queue, failing the test on the first error.
+func archiveInspectionTasks(t *testing.T, p *Plugin, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		if err := p.ArchiveTask("default", id); err != nil {
+			t.Fatalf("ArchiveTask(%q) error = %v", id, err)
+		}
+	}
+}
+
+func TestPurgeArchivedFiltersByTaskType(t *testing.T) {
+	p, _, _ := initInspectionPlugin(t, nil, nil)
+	enqueueInspectionTask(t, p, "alpha", "alpha-1")
+	enqueueInspectionTask(t, p, "beta", "beta-1")
+	archiveInspectionTasks(t, p, "alpha-1", "beta-1")
+
+	purged, err := p.PurgeArchived("default", time.Time{}, "alpha")
+	if err != nil {
+		t.Fatalf("PurgeArchived(type) error = %v", err)
+	}
+	if purged != 1 {
+		t.Fatalf("PurgeArchived(type) purged %d tasks, want 1", purged)
+	}
+	requireIDs(t, listedIDs(t, p, "default", StateArchived), "beta-1")
+
+	purged, err = p.PurgeArchived("default", time.Time{}, "alpha")
+	if err != nil || purged != 0 {
+		t.Fatalf("second PurgeArchived(type) = %d, %v; want 0, nil", purged, err)
+	}
+	requireIDs(t, listedIDs(t, p, "default", StateArchived), "beta-1")
+
+	for _, taskType := range []string{"", "  ", " alpha"} {
+		if _, err := p.PurgeArchived("default", time.Time{}, taskType); err == nil {
+			t.Fatalf("PurgeArchived(type %q) error = nil, want an invalid task type error", taskType)
+		}
+	}
+}
+
+func TestPurgeArchivedCombinesCutoffAndTaskType(t *testing.T) {
+	p, _, _ := initInspectionPlugin(t, nil, nil)
+	enqueueInspectionTask(t, p, "alpha", "old-alpha")
+	enqueueInspectionTask(t, p, "alpha", "new-alpha")
+	enqueueInspectionTask(t, p, "beta", "old-beta")
+	archiveInspectionTasks(t, p, "old-alpha", "new-alpha", "old-beta")
+
+	redisClient, _, err := p.backends()
+	if err != nil {
+		t.Fatalf("backends() error = %v", err)
+	}
+	old := float64(time.Now().Add(-100 * 24 * time.Hour).Unix())
+	ctx := context.Background()
+	for _, id := range []string{"old-alpha", "old-beta"} {
+		if err := redisClient.ZAdd(ctx, queueKey("default", "archived"), goredis.Z{Score: old, Member: id}).Err(); err != nil {
+			t.Fatalf("age archived task %q: %v", id, err)
+		}
+	}
+
+	purged, err := p.PurgeArchived("default", time.Now().Add(-24*time.Hour), "alpha")
+	if err != nil {
+		t.Fatalf("PurgeArchived(cutoff, type) error = %v", err)
+	}
+	// old-beta is older than the cutoff but of another type, so it stays.
+	if purged != 1 {
+		t.Fatalf("PurgeArchived(cutoff, type) purged %d tasks, want 1", purged)
+	}
+	requireIDs(t, listedIDs(t, p, "default", StateArchived), "new-alpha", "old-beta")
+}
+
+func TestPurgeArchivedAcceptsMultipleTaskTypes(t *testing.T) {
+	p, _, _ := initInspectionPlugin(t, nil, nil)
+	enqueueInspectionTask(t, p, "alpha", "alpha-1")
+	enqueueInspectionTask(t, p, "beta", "beta-1")
+	enqueueInspectionTask(t, p, "gamma", "gamma-1")
+	archiveInspectionTasks(t, p, "alpha-1", "beta-1", "gamma-1")
+
+	purged, err := p.PurgeArchived("default", time.Time{}, "alpha", "beta")
+	if err != nil {
+		t.Fatalf("PurgeArchived(types) error = %v", err)
+	}
+	if purged != 2 {
+		t.Fatalf("PurgeArchived(types) purged %d tasks, want 2", purged)
+	}
+	requireIDs(t, listedIDs(t, p, "default", StateArchived), "gamma-1")
+}
+
+func TestPurgeArchivedRemovesOrphansWithTypeFilter(t *testing.T) {
+	p, _, _ := initInspectionPlugin(t, nil, nil)
+	// Register the queue with Redis without touching the archive.
+	enqueueInspectionTask(t, p, "alpha", "pending-1")
+
+	redisClient, _, err := p.backends()
+	if err != nil {
+		t.Fatalf("backends() error = %v", err)
+	}
+	ctx := context.Background()
+	archivedKey := queueKey("default", "archived")
+	if err := redisClient.ZAdd(ctx, archivedKey, goredis.Z{
+		Score:  float64(time.Now().Unix()),
+		Member: "orphan-1",
+	}).Err(); err != nil {
+		t.Fatalf("add orphan archive entry: %v", err)
+	}
+
+	purged, err := p.PurgeArchived("default", time.Time{}, "alpha")
+	if err != nil {
+		t.Fatalf("PurgeArchived(orphan, type) error = %v", err)
+	}
+	if purged != 0 {
+		t.Fatalf("PurgeArchived(orphan, type) purged %d tasks, want 0", purged)
+	}
+	if count, err := redisClient.ZCard(ctx, archivedKey).Result(); err != nil || count != 0 {
+		t.Fatalf("archived sorted set after orphan cleanup = %d, %v; want 0, nil", count, err)
+	}
+}
+
+func TestPurgeArchivedPagesPastRetainedTasks(t *testing.T) {
+	p, _, _ := initInspectionPlugin(t, nil, nil)
+	// One more non-matching archive entry than a purge batch forces a second
+	// read, and the matching task is archived last so it sorts after all of
+	// them. A fixed offset would never reach it.
+	const kept = purgeBatchSize + 1
+	ids := make([]string, 0, kept+1)
+	for index := 0; index < kept; index++ {
+		id := fmt.Sprintf("bulk-%04d", index)
+		enqueueInspectionTask(t, p, "bulk", id)
+		ids = append(ids, id)
+	}
+	enqueueInspectionTask(t, p, "target", "zzz-target")
+	ids = append(ids, "zzz-target")
+	archiveInspectionTasks(t, p, ids...)
+
+	purged, err := p.PurgeArchived("default", time.Time{}, "target")
+	if err != nil {
+		t.Fatalf("PurgeArchived(paged, type) error = %v", err)
+	}
+	if purged != 1 {
+		t.Fatalf("PurgeArchived(paged, type) purged %d tasks, want 1", purged)
+	}
+	redisClient, _, err := p.backends()
+	if err != nil {
+		t.Fatalf("backends() error = %v", err)
+	}
+	ctx := context.Background()
+	archivedKey := queueKey("default", "archived")
+	if count, err := redisClient.ZCard(ctx, archivedKey).Result(); err != nil || count != kept {
+		t.Fatalf("archived sorted set after paged purge = %d, %v; want %d, nil", count, err, kept)
+	}
+	if _, err := redisClient.ZScore(ctx, archivedKey, "zzz-target").Result(); !errors.Is(err, goredis.Nil) {
+		t.Fatalf("matching task remains archived: %v", err)
+	}
+
+	purged, err = p.PurgeArchived("default", time.Time{}, "target")
+	if err != nil || purged != 0 {
+		t.Fatalf("second PurgeArchived(paged, type) = %d, %v; want 0, nil", purged, err)
 	}
 }
 
