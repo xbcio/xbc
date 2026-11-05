@@ -1,14 +1,15 @@
-// Package distributed provides a string-keyed map whose entries stay in step
-// across process replicas, with Redis as the only backend.
+// Package distributed provides coordination primitives whose state lives in
+// Redis and is shared by every process that uses the same prefix: a
+// synchronized string-keyed map and a cluster-wide semaphore.
 //
 // The package is an ordinary framework-free library: it depends on the
 // standard library and one Redis client, and it never imports any package of
 // the framework it is developed beside. That is what lets a component use a
-// synchronized cache without inheriting an application runtime, a plugin
-// Definition, or a transport. When an application wants an interface over the
-// map, it declares one at the call site; the Go convention is to consume a
-// concrete type and accept an interface only where a boundary needs it, so
-// this package exports no interface of its own.
+// synchronized cache or a distributed limit without inheriting an application
+// runtime, a plugin Definition, or a transport. When an application wants an
+// interface over a primitive, it declares one at the call site; the Go
+// convention is to consume a concrete type and accept an interface only where
+// a boundary needs it, so this package exports no interface of its own.
 //
 // # What the map promises
 //
@@ -46,6 +47,25 @@
 // collection holds, because Redis has one expiry per hash. MaxSize bounds the
 // local cache with LRU eviction; eviction is local only and never deletes from
 // Redis or broadcasts.
+//
+// # Semaphores
+//
+// A Semaphore bounds how many executions of one named operation run at once
+// across the cluster. Run acquires a slot, renews its lease in the background,
+// and releases it when the callback returns; Reset discards expired slots and
+// leaves live ones alone, which is safe during a rolling restart.
+//
+// The slots of one name live in the Redis sorted set distributed:sem:<name>
+// (the prefix is configurable). Its members are per-execution tokens scored by
+// their lease expiry in Unix milliseconds. Acquisition discards expired tokens
+// before counting, a running execution renews its token every lease/3, and the
+// key is set to expire after twice the lease, so a process that dies frees its
+// slots when the leases lapse instead of blocking the name forever. When
+// renewal finds the token gone, or Redis could not renew it three times in a
+// row, the callback's context is cancelled: the slot no longer protects the
+// work that was admitted under it. Run reports ErrLimitReached when every slot
+// is taken, and a key holding a Redis type other than a sorted set is deleted
+// and recreated by both acquisition and Reset.
 //
 // # Usage in an XBC application
 //
@@ -88,7 +108,9 @@
 // # Keys
 //
 // With the default prefix, one map named "rules" uses the Redis hash
-// distributed:map:rules and the channel distributed:map:rules:events. Two
-// deployments that share a Redis instance share state when they share a
-// prefix; give each logical cluster its own prefix.
+// distributed:map:rules and the channel distributed:map:rules:events. One
+// semaphore named "report.render" uses the sorted set
+// distributed:sem:report.render. Two deployments that share a Redis instance
+// share state when they share a prefix; give each logical cluster its own
+// prefix.
 package distributed
