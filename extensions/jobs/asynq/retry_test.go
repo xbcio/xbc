@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -218,3 +219,93 @@ func (l *levelRecorder) With(...any) corelog.Logger {
 	return l
 }
 func (*levelRecorder) Enabled(corelog.Level) bool { return true }
+
+// deliveryRecord is what one handler invocation observed on its Task.
+type deliveryRecord struct {
+	retried    int
+	maxRetries int
+	taskType   string
+	payload    string
+}
+
+// TestTaskRetryMetadata drives a real worker through one failed
+// attempt and its redelivery, checking that the Task a handler receives carries
+// this delivery's retry state rather than a zero value in every field.
+func TestTaskRetryMetadata(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	cfg := validTestConfig(redisServer.Addr())
+	cfg.Concurrency = 1
+	// A near-zero backoff makes the scheduled retry immediate, but the queue
+	// library's forwarder still polls on its own interval, so the waits below
+	// are generous rather than tight.
+	cfg.RetryBackoffBase = 10 * time.Millisecond
+	cfg.RetryBackoffCap = 10 * time.Millisecond
+
+	deliveries := make(chan deliveryRecord, 2)
+	var attempts atomic.Int32
+	handler := HandlerFunc(func(_ context.Context, task Task) error {
+		deliveries <- deliveryRecord{
+			retried:    task.Retried,
+			maxRetries: task.MaxRetries,
+			taskType:   task.Type,
+			payload:    string(task.Payload),
+		}
+		if attempts.Add(1) == 1 {
+			return errors.New("first attempt fails so the worker retries")
+		}
+		return nil
+	})
+
+	p := newTestPlugin(t, cfg, handler)
+	host := newTestHost()
+	defer host.stopTasks()
+	ctx := testContext(host)
+	if err := p.init(ctx); err != nil {
+		t.Fatalf("init() error = %v", err)
+	}
+	if err := p.start(ctx); err != nil {
+		t.Fatalf("start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = p.stop(context.Background()) })
+	host.openTraffic()
+
+	if _, err := p.Enqueue(context.Background(), Task{Type: "work", Payload: []byte("retry-payload")}, MaxRetries(1)); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+
+	first := waitForDelivery(t, deliveries, "first")
+	if first.retried != 0 {
+		t.Fatalf("first delivery Retried = %d, want 0", first.retried)
+	}
+	if first.maxRetries != 1 {
+		t.Fatalf("first delivery MaxRetries = %d, want 1", first.maxRetries)
+	}
+	if first.taskType != "work" || first.payload != "retry-payload" {
+		t.Fatalf("first delivery = %q/%q, want work/retry-payload", first.taskType, first.payload)
+	}
+
+	second := waitForDelivery(t, deliveries, "retried")
+	if second.retried != 1 {
+		t.Fatalf("retried delivery Retried = %d, want 1", second.retried)
+	}
+	if second.maxRetries != 1 {
+		t.Fatalf("retried delivery MaxRetries = %d, want 1", second.maxRetries)
+	}
+	if second.taskType != "work" || second.payload != "retry-payload" {
+		t.Fatalf("retried delivery = %q/%q, want work/retry-payload", second.taskType, second.payload)
+	}
+}
+
+// waitForDelivery returns the next handler observation or fails the test. The
+// redelivery wait spans the queue library's forwarder interval, which is not
+// configurable through this package.
+func waitForDelivery(t *testing.T, deliveries <-chan deliveryRecord, attempt string) deliveryRecord {
+	t.Helper()
+	select {
+	case record := <-deliveries:
+		return record
+	case <-time.After(15 * time.Second):
+		t.Fatalf("timed out waiting for the %s delivery; the worker did not redeliver the task", attempt)
+		return deliveryRecord{}
+	}
+}
