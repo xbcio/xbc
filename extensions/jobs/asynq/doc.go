@@ -142,11 +142,6 @@
 // and leaves live ones alone, so it is safe to call during a rolling restart.
 //
 // The key prefix belongs to the library rather than to plugins.asynq.
-// Versions before this migration wrote a different layout
-// (xbc:asynq:sem:<task type>); while old and new processes run together, the
-// two semaphore families are mutually invisible, so one task type is limited
-// once per layout rather than once cluster-wide until every process runs this
-// version.
 //
 // # Retention
 //
