@@ -40,6 +40,7 @@ use (
 	./extensions/jobs/asynq
 	./extensions/jobs/cron
 	./extensions/messaging/kafka
+	./extensions/messaging/mail
 	./extensions/messaging/outbox
 	./extensions/messaging/webhook
 	./extensions/observability/metrics
@@ -53,6 +54,8 @@ use (
 	./extensions/storage/redis
 	./extensions/tasks
 	./kit/distributed
+	./kit/gormquery
+	./kit/oncetoken
 	./scripts/plugin-snapshots
 	./tests/composition
 	./transport/grpc
@@ -70,9 +73,11 @@ use (
 	./transport/web/extensions/authentication/session
 	./transport/web/extensions/authorization/casbin
 	./transport/web/extensions/authorization/rbac
+	./transport/web/extensions/interop/ginmount
 	./transport/web/extensions/observability/metrics
 	./transport/web/extensions/observability/tracing
 	./transport/web/extensions/openapi/swag
 	./transport/web/extensions/reliability/idempotency
 	./transport/web/extensions/reliability/websocket
+	./transport/web/extensions/testing/apptest
 )

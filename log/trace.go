@@ -2,6 +2,7 @@ package log
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/oklog/ulid/v2"
 	"go.opentelemetry.io/otel/trace"
@@ -32,6 +33,28 @@ type Trace struct {
 }
 
 type traceKey struct{}
+
+// traceConfigState holds the normalized field names Init published. A nil
+// pointer means no Init has run yet, in which case the built-in names apply --
+// the same output this package produced before the names were configurable.
+//
+// The state is process-global for the same reason the backend is: trace fields
+// are stamped into a logger by Extract, Span and Ctx's slow path, all of which
+// read the layout at derivation time.
+var traceConfigState atomic.Pointer[TraceConfig]
+
+func currentTraceConfig() TraceConfig {
+	if p := traceConfigState.Load(); p != nil {
+		return *p
+	}
+	return defaultTraceConfig()
+}
+
+// applyTraceConfig publishes names for trace fields derived from now on. Init
+// calls it only after every sink opened, so a failed Init changes nothing.
+func applyTraceConfig(names TraceConfig) {
+	traceConfigState.Store(&names)
+}
 
 // NewTrace starts a new trace.
 func NewTrace(name string) Trace {
@@ -201,23 +224,27 @@ func SpanWith(ctx context.Context, name string, opts ...SpanOption) (context.Con
 
 // traceKV unrolls a trace into a KV sequence. Zero-value fields are omitted.
 //
+// The keys come from the layout Init published (Config.Trace); leaving that
+// configuration untouched yields trace_id/span_id/span_name/request_id.
+//
 // This lives beside Trace rather than in zap.go, where it used to sit: it
 // touches nothing but Trace and []any, and all three of its callers -- Ctx,
 // SpanWith and the propagation helpers -- consume it as a property of the
 // trace, not of the backend. A zap-free backend would still need it verbatim.
 func traceKV(t Trace) []any {
+	names := currentTraceConfig()
 	kv := make([]any, 0, 8)
 	if t.TraceID().IsValid() {
-		kv = append(kv, "trace_id", t.TraceID().String())
+		kv = append(kv, names.TraceID, t.TraceID().String())
 	}
 	if t.SpanID().IsValid() {
-		kv = append(kv, "span_id", t.SpanID().String())
+		kv = append(kv, names.SpanID, t.SpanID().String())
 	}
 	if t.SpanName != "" {
-		kv = append(kv, "span_name", t.SpanName)
+		kv = append(kv, names.SpanName, t.SpanName)
 	}
 	if t.RequestID != "" {
-		kv = append(kv, "request_id", t.RequestID)
+		kv = append(kv, names.RequestID, t.RequestID)
 	}
 	return kv
 }

@@ -33,6 +33,14 @@
       ]
     },
     {
+      "key": "apptest",
+      "config_path": "plugins.apptest",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
+      ]
+    },
+    {
       "key": "async",
       "config_path": "plugins.async",
       "cardinality": "single",
@@ -153,6 +161,14 @@
       "cardinality": "single",
       "contracts": [
         "github.com/xbcio/xbc/transport/web/extensions/authentication/federation.Login"
+      ]
+    },
+    {
+      "key": "ginmount",
+      "config_path": "plugins.ginmount",
+      "cardinality": "single",
+      "contracts": [
+        "github.com/xbcio/xbc/transport/web.RouteContributor"
       ]
     },
     {
@@ -294,6 +310,15 @@
       "cardinality": "multiple",
       "contracts": [
         "github.com/xbcio/xbc/extensions/messaging/kafka.Producer",
+        "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
+      ]
+    },
+    {
+      "key": "mail",
+      "config_path": "plugins.mail",
+      "cardinality": "multiple",
+      "contracts": [
+        "github.com/xbcio/xbc/extensions/messaging/mail.Sender",
         "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
       ]
     },

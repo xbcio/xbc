@@ -15,10 +15,10 @@ const (
 	jsonContentType = "application/json; charset=utf-8"
 )
 
-// Response is the opt-in business envelope inspired by GFA. Success responses
-// always use it. Failures remain RFC 9457 Problem Details with semantic status
-// codes unless Config.FailureEnvelope is on, in which case Plugin.RenderError
-// writes them in this same shape with Success false.
+// Response is the opt-in business envelope with a conventional success shape.
+// Success responses always use it. Failures remain RFC 9457 Problem Details
+// with semantic status codes unless Config.FailureEnvelope is on, in which
+// case Plugin.RenderError writes them in this same shape with Success false.
 type Response[T any] struct {
 	Success   bool   `json:"success"`
 	Code      string `json:"code"`
@@ -30,9 +30,9 @@ type Response[T any] struct {
 // PaginatedData is the stable payload produced by Paginated. It carries one
 // page of items plus the total across all pages; it is not a page number.
 //
-// The wire name is "list", matching GFA's established pagination contract. The
-// Go field carries the same name so both ends of a discussion refer to one
-// identifier.
+// The wire name is "list", following the established pagination contract of
+// earlier XBC consumers. The Go field carries the same name so both ends of a
+// discussion refer to one identifier.
 type PaginatedData[T any] struct {
 	List  []T   `json:"list"`
 	Total int64 `json:"total"`

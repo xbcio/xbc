@@ -162,3 +162,52 @@ func TestNormalizeClampsBoundaryValues(t *testing.T) {
 		assert.Equal(t, 0, c.Sampling.Thereafter, "Negative sampling subsequent value must be clamped to 0")
 	})
 }
+
+// TestTraceFieldNamesDefaultAndOverride pins the compatibility half of the
+// naming option: an untouched config keeps the historical names, and a
+// partial override defaults only the names it leaves empty.
+func TestTraceFieldNamesDefaultAndOverride(t *testing.T) {
+	c := DefaultConfig()
+	require.NoError(t, c.Normalize())
+	assert.Equal(t, TraceConfig{
+		TraceID:   "trace_id",
+		SpanID:    "span_id",
+		SpanName:  "span_name",
+		RequestID: "request_id",
+	}, c.Trace, "the zero-value layout must keep the names this package always emitted")
+
+	c = Config{}
+	require.NoError(t, c.Normalize())
+	assert.Equal(t, defaultTraceConfig(), c.Trace, "a config built from its zero value must normalize to the same layout")
+
+	c.Trace = TraceConfig{TraceID: "traceID", SpanName: "operation"}
+	require.NoError(t, c.Normalize())
+	assert.Equal(t, "traceID", c.Trace.TraceID)
+	assert.Equal(t, "span_id", c.Trace.SpanID, "an empty name keeps its default")
+	assert.Equal(t, "operation", c.Trace.SpanName)
+	assert.Equal(t, "request_id", c.Trace.RequestID, "an empty name keeps its default")
+}
+
+// TestNormalizeRejectsBadTraceFieldNames covers the two ambiguous layouts the
+// encoder cannot represent: a blank name, and a name already taken.
+func TestNormalizeRejectsBadTraceFieldNames(t *testing.T) {
+	cases := map[string]TraceConfig{
+		"blank trace_id":    {TraceID: "   "},
+		"blank span_name":   {SpanName: "\t"},
+		"reserved time key": {TraceID: "ts"},
+		"reserved level":    {SpanID: "level"},
+		"reserved message":  {SpanName: "msg"},
+		"reserved caller":   {RequestID: "caller"},
+		"reserved stack":    {TraceID: "stack"},
+		"reserved identity": {SpanName: "service.name"},
+		"duplicate names":   {TraceID: "shared", SpanID: "shared"},
+		"duplicate default": {TraceID: "trace_id", SpanID: "trace_id"},
+	}
+	for name, names := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := DefaultConfig()
+			c.Trace = names
+			assert.Error(t, c.Normalize())
+		})
+	}
+}

@@ -81,6 +81,15 @@
 // compared by eye. Span opens a child span and logs one debug line carrying
 // elapsed_ms when its done() callback runs.
 //
+// The field names carrying trace context default to trace_id, span_id,
+// span_name, and request_id, and Config.Trace may rename them -- useful when
+// an external log collector expects a different layout. Names are applied by
+// Init and stamped into a logger at derivation time by Extract, Span, and
+// Ctx's slow path, so loggers derived before Init are unaffected. The console
+// encoder follows the configured trace ID name for its fixed column and keeps
+// the configured ID fields out of its KV section, matching the default
+// layout's behavior.
+//
 // Interop with an OTel SDK is currently read-only: TraceFrom reads a
 // SpanContext an OTel SDK or OTel-based instrumentation already placed into
 // ctx when this package's own Trace is absent, but Span never calls into the

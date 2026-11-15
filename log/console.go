@@ -70,17 +70,6 @@ const (
 	widthTime         = len(consoleTimeLayout)
 )
 
-// Fields excluded from the KV section under console: trace_id already has
-// its own fixed column, and the other two are 128/64 bit IDs that add no
-// value crammed into a human-readable line.
-// The json sink does not apply this exclusion -- that one is for machine
-// search.
-var consoleHiddenFields = map[string]struct{}{
-	"trace_id":   {},
-	"span_id":    {},
-	"request_id": {},
-}
-
 var consolePool = buffer.NewPool()
 
 // consoleEncoder renders a single human-readable line.
@@ -103,6 +92,10 @@ var consolePool = buffer.NewPool()
 type consoleEncoder struct {
 	*zapcore.MapObjectEncoder
 	color bool
+	// trace is the field layout this encoder was built with. Init passes the
+	// config's normalized TraceConfig explicitly, so the console sink follows
+	// a rename instead of assuming the built-in keys.
+	trace TraceConfig
 	// ns is the currently open namespace path, e.g. after
 	// With(Namespace("a")).With(Namespace("b")) it is []string{"a", "b"}.
 	//
@@ -121,7 +114,11 @@ type consoleEncoder struct {
 }
 
 func newConsoleEncoder(color bool) zapcore.Encoder {
-	return &consoleEncoder{MapObjectEncoder: zapcore.NewMapObjectEncoder(), color: color}
+	return newConsoleEncoderWithTrace(color, currentTraceConfig())
+}
+
+func newConsoleEncoderWithTrace(color bool, trace TraceConfig) zapcore.Encoder {
+	return &consoleEncoder{MapObjectEncoder: zapcore.NewMapObjectEncoder(), color: color, trace: trace}
 }
 
 // OpenNamespace opens a namespace and records the path into e.ns at the
@@ -132,7 +129,7 @@ func (e *consoleEncoder) OpenNamespace(k string) {
 }
 
 func (e *consoleEncoder) Clone() zapcore.Encoder {
-	c := &consoleEncoder{MapObjectEncoder: zapcore.NewMapObjectEncoder(), color: e.color}
+	c := &consoleEncoder{MapObjectEncoder: zapcore.NewMapObjectEncoder(), color: e.color, trace: e.trace}
 
 	// Deep-copy the fields into c.Fields -- the existing c.Fields map must be
 	// the target (not a replacement), because NewMapObjectEncoder()'s private
@@ -219,8 +216,8 @@ func (e *consoleEncoder) EncodeEntry(ent zapcore.Entry, fs []zapcore.Field) (*bu
 	e.paintPadRight(b, levelColor(ent.Level), ent.Level.CapitalString(), widthLevel)
 	b.AppendByte(' ')
 
-	// (3) trace: fixed 8 wide, first 8 chars of trace_id
-	e.paintPadRight(b, ansiDim, shortTrace(e.Fields, call.Fields), widthTrace)
+	// (3) trace: fixed 8 wide, first 8 chars of the trace ID field
+	e.paintPadRight(b, ansiDim, e.shortTrace(e.Fields, call.Fields), widthTrace)
 	b.AppendByte(' ')
 
 	// (4) caller: right-aligned to widthCaller wide, truncated from the left
@@ -274,7 +271,7 @@ const maxConsoleDepth = 8
 // Measured: after Namespace("ns"), all three fields AddTo'd afterward land
 // in ns's sub-map, and the top level has len == 1. Stringifying it directly
 // would print Go's map[k:v] literal, which is both hard to read, and would
-// make consoleHiddenFields' exclusion completely ineffective at the nested
+// make the console ID-field exclusion completely ineffective at the nested
 // layer too.
 //
 // Flattening it into db.host=... db.port=... solves both problems at once:
@@ -297,7 +294,7 @@ func (e *consoleEncoder) writeFieldsPrefixed(b *buffer.Buffer, m map[string]any,
 		if prefix != "" {
 			full = prefix + "." + k
 		}
-		if _, hidden := consoleHiddenFields[full]; hidden {
+		if e.trace.hiddenUnderConsole(full) {
 			continue
 		}
 
@@ -396,12 +393,12 @@ func levelColor(lv zapcore.Level) string {
 
 func isErrorKey(k string) bool { return k == "err" || k == "error" }
 
-// shortTrace takes the first 8 characters of trace_id. Returns an empty
-// string when there is no trace (paintPadRight then pads it out to a blank
-// column).
-func shortTrace(ms ...map[string]any) string {
+// shortTrace takes the first 8 characters of the configured trace ID field.
+// Returns an empty string when there is no trace (paintPadRight then pads it
+// out to a blank column).
+func (e *consoleEncoder) shortTrace(ms ...map[string]any) string {
 	for _, m := range ms {
-		if v, ok := m["trace_id"].(string); ok && v != "" {
+		if v, ok := m[e.trace.TraceID].(string); ok && v != "" {
 			if len(v) > widthTrace {
 				return v[:widthTrace]
 			}

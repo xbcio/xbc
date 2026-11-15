@@ -145,11 +145,13 @@ var archProtocolNeutralModuleLeaves = []string{
 var archWebExtensionGroups = []string{
 	"authentication",
 	"authorization",
+	"interop",
 	"openapi",
 	"observability",
 	"response",
 	"reliability",
 	"security",
+	"testing",
 }
 
 // TestArchRetiredPathsStayRetired prevents retired packages and repository

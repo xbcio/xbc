@@ -46,7 +46,7 @@ func TestToFieldsOddCountProducesBadKey(t *testing.T) {
 	assert.Equal(t, badKeyName, fs[1].Key, "Single parameter goes to !BADKEY, cannot be silently dropped")
 }
 
-// A call migrated from gfa's Sprintln semantics will hit this case.
+// A call written with Sprintln-style arguments will hit this case.
 func TestToFieldsNonStringKeyProducesBadKey(t *testing.T) {
 	fs := toFields([]any{1001, 99.5}) // the kv portion of TInfo(ctx, "payment", id, amt)
 	require.Len(t, fs, 2)

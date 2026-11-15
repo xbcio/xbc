@@ -140,7 +140,7 @@ func (l *zapLogger) WithCallerSkip(n int) Logger {
 //
 // Produces a !BADKEY field when the key isn't a string or an argument is
 // left dangling, without panicking or silently swallowing it.
-// A call migrated from gfa's Sprintln semantics (TInfo(ctx, "payment", id, amt),
+// A call written with Sprintln-style arguments (TInfo(ctx, "payment", id, amt),
 // where id is an int) turns into two !BADKEY fields here, immediately
 // visible.
 func toFields(kv []any) []zap.Field {
@@ -285,7 +285,7 @@ func Init(cfg Config) error {
 
 	if cfg.Console.Enabled {
 		cores = append(cores, newMaskCore(zapcore.NewCore(
-			buildEncoder(cfg.Console.Format, wantColor(cfg.Console.Color, os.Stdout), cfg.Service),
+			buildEncoder(cfg.Console.Format, wantColor(cfg.Console.Color, os.Stdout), cfg.Service, cfg.Trace),
 			zapcore.Lock(os.Stdout),
 			levelState.level,
 		), m))
@@ -299,7 +299,7 @@ func Init(cfg Config) error {
 		}
 		cls = append(cls, closeFn)
 		cores = append(cores, newMaskCore(zapcore.NewCore(
-			buildEncoder(cfg.File.Format, false, cfg.Service), w, levelState.level), m))
+			buildEncoder(cfg.File.Format, false, cfg.Service, cfg.Trace), w, levelState.level), m))
 
 		if cfg.File.ErrorPath != "" {
 			ew, ecloseFn, err := buildFileWriter(cfg.File, cfg.File.ErrorPath)
@@ -309,7 +309,7 @@ func Init(cfg Config) error {
 			}
 			cls = append(cls, ecloseFn)
 			cores = append(cores, newMaskCore(zapcore.NewCore(
-				buildEncoder(cfg.File.errorFormat, false, cfg.Service), ew, zapcore.ErrorLevel), m))
+				buildEncoder(cfg.File.errorFormat, false, cfg.Service, cfg.Trace), ew, zapcore.ErrorLevel), m))
 		}
 	}
 
@@ -320,7 +320,12 @@ func Init(cfg Config) error {
 	// SetLevel reach loggers that already exist (see level.go). It moves even
 	// when no sink is enabled, so a disabled backend still reports the level
 	// its config decided.
+	//
+	// The trace field layout moves here for the same reason: a failed Init must
+	// leave it alone, and loggers derived after this point carry trace fields
+	// under the new names.
 	applyLevel(lv)
+	applyTraceConfig(cfg.Trace)
 
 	// The attach seam joins every assembled backend, even one with every
 	// built-in sink disabled: an application that ships its records to an
@@ -386,7 +391,12 @@ func Init(cfg Config) error {
 // same three fields on every line are noise. The split is by format rather
 // than by sink, so a JSON file sink and a JSON console sink both carry it and
 // a console-format error file does not.
-func buildEncoder(format string, color bool, identity ServiceIdentity) zapcore.Encoder {
+//
+// trace only reaches the console encoder, which needs the configured field
+// names for its fixed trace column and its ID-field exclusion; JSON encoders
+// write whatever KV pairs the logger carries, so the names are already in the
+// record itself.
+func buildEncoder(format string, color bool, identity ServiceIdentity, trace TraceConfig) zapcore.Encoder {
 	if format == FormatJSON {
 		encoder := zapcore.NewJSONEncoder(jsonEncoderConfig())
 		if identity.populated() {
@@ -394,7 +404,7 @@ func buildEncoder(format string, color bool, identity ServiceIdentity) zapcore.E
 		}
 		return encoder
 	}
-	return newConsoleEncoder(color)
+	return newConsoleEncoderWithTrace(color, trace)
 }
 
 func jsonEncoderConfig() zapcore.EncoderConfig {

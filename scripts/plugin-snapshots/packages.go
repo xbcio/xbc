@@ -17,6 +17,7 @@ import (
 	"github.com/xbcio/xbc/extensions/jobs/asynq"
 	"github.com/xbcio/xbc/extensions/jobs/cron"
 	"github.com/xbcio/xbc/extensions/messaging/kafka"
+	"github.com/xbcio/xbc/extensions/messaging/mail"
 	"github.com/xbcio/xbc/extensions/messaging/outbox"
 	"github.com/xbcio/xbc/extensions/messaging/webhook"
 	metricscore "github.com/xbcio/xbc/extensions/observability/metrics"
@@ -48,6 +49,7 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/session"
 	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
 	"github.com/xbcio/xbc/transport/web/extensions/authorization/tenant"
+	"github.com/xbcio/xbc/transport/web/extensions/interop/ginmount"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/auditlog"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/metrics"
@@ -65,6 +67,7 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
 	"github.com/xbcio/xbc/transport/web/extensions/security/csrf"
 	"github.com/xbcio/xbc/transport/web/extensions/security/securityheaders"
+	"github.com/xbcio/xbc/transport/web/extensions/testing/apptest"
 )
 
 // bundleProviders is the exhaustive, manually curated list of every reusable
@@ -109,6 +112,7 @@ var bundleProviders = []func() plugin.Bundle{
 	metricscore.Bundle,
 	tracingcore.Bundle,
 	kafka.Bundle,
+	mail.Bundle,
 	objectstorage.Bundle,
 	outbox.Bundle,
 	placement.Bundle,
@@ -129,12 +133,14 @@ var bundleProviders = []func() plugin.Bundle{
 	web.Bundle,
 	accesslog.Bundle,
 	apikey.Bundle,
+	apptest.Bundle,
 	auditlog.Bundle,
 	biz.Bundle,
 	casbinhttp.Bundle,
 	cors.Bundle,
 	csrf.Bundle,
 	federation.Bundle,
+	ginmount.Bundle,
 	gzip.Bundle,
 	health.Bundle,
 	idempotency.Bundle,

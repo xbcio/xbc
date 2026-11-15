@@ -41,6 +41,22 @@
       "imports": []
     },
     {
+      "path": "github.com/xbcio/xbc/kit/gormquery",
+      "directory": "kit/gormquery",
+      "tag_prefix": "kit/gormquery/",
+      "wave": 0,
+      "release": true,
+      "imports": []
+    },
+    {
+      "path": "github.com/xbcio/xbc/kit/oncetoken",
+      "directory": "kit/oncetoken",
+      "tag_prefix": "kit/oncetoken/",
+      "wave": 0,
+      "release": true,
+      "imports": []
+    },
+    {
       "path": "github.com/xbcio/xbc/extensions/authentication/apikey",
       "directory": "extensions/authentication/apikey",
       "tag_prefix": "extensions/authentication/apikey/",
@@ -266,6 +282,17 @@
       "path": "github.com/xbcio/xbc/extensions/messaging/kafka",
       "directory": "extensions/messaging/kafka",
       "tag_prefix": "extensions/messaging/kafka/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/reliability/health"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/messaging/mail",
+      "directory": "extensions/messaging/mail",
+      "tag_prefix": "extensions/messaging/mail/",
       "wave": 2,
       "release": true,
       "imports": [
@@ -619,6 +646,18 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/testing/apptest",
+      "directory": "transport/web/extensions/testing/apptest",
+      "tag_prefix": "transport/web/extensions/testing/apptest/",
+      "wave": 4,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/transport/web",
+        "github.com/xbcio/xbc/transport/web/engines/gin"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/transport/web/extensions/authentication/oauth2",
       "directory": "transport/web/extensions/authentication/oauth2",
       "tag_prefix": "transport/web/extensions/authentication/oauth2/",
@@ -664,6 +703,19 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/interop/ginmount",
+      "directory": "transport/web/extensions/interop/ginmount",
+      "tag_prefix": "transport/web/extensions/interop/ginmount/",
+      "wave": 5,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/transport/web",
+        "github.com/xbcio/xbc/transport/web/engines/gin",
+        "github.com/xbcio/xbc/transport/web/extensions/testing/apptest"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/scripts/plugin-snapshots",
       "directory": "scripts/plugin-snapshots",
       "tag_prefix": "scripts/plugin-snapshots/",
@@ -685,6 +737,7 @@
         "github.com/xbcio/xbc/extensions/jobs/asynq",
         "github.com/xbcio/xbc/extensions/jobs/cron",
         "github.com/xbcio/xbc/extensions/messaging/kafka",
+        "github.com/xbcio/xbc/extensions/messaging/mail",
         "github.com/xbcio/xbc/extensions/messaging/outbox",
         "github.com/xbcio/xbc/extensions/messaging/webhook",
         "github.com/xbcio/xbc/extensions/observability/metrics",
@@ -710,11 +763,13 @@
         "github.com/xbcio/xbc/transport/web/extensions/authentication/saml",
         "github.com/xbcio/xbc/transport/web/extensions/authentication/session",
         "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin",
+        "github.com/xbcio/xbc/transport/web/extensions/interop/ginmount",
         "github.com/xbcio/xbc/transport/web/extensions/observability/metrics",
         "github.com/xbcio/xbc/transport/web/extensions/observability/tracing",
         "github.com/xbcio/xbc/transport/web/extensions/openapi/swag",
         "github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency",
-        "github.com/xbcio/xbc/transport/web/extensions/reliability/websocket"
+        "github.com/xbcio/xbc/transport/web/extensions/reliability/websocket",
+        "github.com/xbcio/xbc/transport/web/extensions/testing/apptest"
       ]
     }
   ]

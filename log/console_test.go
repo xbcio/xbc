@@ -265,9 +265,9 @@ func TestConsoleFlattensNamespace(t *testing.T) {
 	assert.NotContains(t, out, "map[", "Cannot fall into Go's map literal")
 }
 
-// After flattening, consoleHiddenFields uses the full path for the check:
-// the top-level trace_id is excluded as before, while a same-named field
-// inside a namespace was explicitly placed there by the caller, and is
+// After flattening, the console ID-field exclusion uses the full path for the
+// check: the top-level trace_id is excluded as before, while a same-named
+// field inside a namespace was explicitly placed there by the caller, and is
 // kept.
 func TestConsoleHiddenFieldsUseFullPath(t *testing.T) {
 	out := encodeOne(t, false, sampleEntry(), nil, []zapcore.Field{

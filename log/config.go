@@ -40,6 +40,11 @@ type Config struct {
 
 	Sampling SamplingConfig `yaml:"sampling" json:"sampling"`
 
+	// Trace overrides the field names under which trace context is emitted.
+	// Empty names keep the built-in ones, so the zero value reproduces the
+	// historical output exactly. See TraceConfig.
+	Trace TraceConfig `yaml:"trace" json:"trace"`
+
 	// MaskFields is appended to the built-in mask blacklist. Additive only -- built-in entries cannot be removed.
 	MaskFields []string `yaml:"mask_fields" json:"mask_fields"`
 
@@ -83,6 +88,106 @@ type SamplingConfig struct {
 	Thereafter int `yaml:"thereafter" json:"thereafter"`
 }
 
+// TraceConfig overrides the field names under which trace context is emitted.
+//
+// An empty name keeps the built-in one (trace_id, span_id, span_name,
+// request_id), so the zero value leaves both the JSON sinks and the console
+// layout byte-for-byte unchanged. Names are applied by Init; they affect
+// loggers derived afterwards (Extract, Span, and Ctx's slow path fix trace
+// fields into a logger at derivation time).
+//
+// The console encoder keeps its fixed trace column and its ID-field exclusion
+// pointed at the configured names, so renaming a field does not push a raw
+// 128-bit ID into the human-readable KV section.
+//
+// A name must be non-blank and must not collide with another trace field or
+// with a key the package's own JSON encoder writes (ts/level/msg/caller/stack);
+// Normalize enforces both.
+type TraceConfig struct {
+	TraceID   string `yaml:"trace_id"   json:"trace_id"`
+	SpanID    string `yaml:"span_id"    json:"span_id"`
+	SpanName  string `yaml:"span_name"  json:"span_name"`
+	RequestID string `yaml:"request_id" json:"request_id"`
+}
+
+const (
+	defaultTraceIDField   = "trace_id"
+	defaultSpanIDField    = "span_id"
+	defaultSpanNameField  = "span_name"
+	defaultRequestIDField = "request_id"
+)
+
+// defaultTraceConfig is the field layout this package emitted before the
+// names were configurable. It is both the zero-value fill-in and the value
+// Init publishes when a config leaves Trace untouched.
+func defaultTraceConfig() TraceConfig {
+	return TraceConfig{
+		TraceID:   defaultTraceIDField,
+		SpanID:    defaultSpanIDField,
+		SpanName:  defaultSpanNameField,
+		RequestID: defaultRequestIDField,
+	}
+}
+
+// reservedEncoderKeys are the keys this package's own JSON encoders write: the
+// five base keys jsonEncoderConfig sets, plus the three identityEncoder
+// prepends when Config.Service is populated. A trace field reusing one would
+// make the encoder emit a duplicate JSON object key.
+var reservedEncoderKeys = map[string]struct{}{
+	"ts":                  {},
+	"level":               {},
+	"msg":                 {},
+	"caller":              {},
+	"stack":               {},
+	"service.name":        {},
+	"service.version":     {},
+	"service.instance.id": {},
+}
+
+// normalize fills built-in names and rejects a layout that cannot be encoded
+// unambiguously. Idempotent.
+func (c *TraceConfig) normalize() error {
+	fields := []struct {
+		name  string
+		value *string
+		def   string
+	}{
+		{"log.trace.trace_id", &c.TraceID, defaultTraceIDField},
+		{"log.trace.span_id", &c.SpanID, defaultSpanIDField},
+		{"log.trace.span_name", &c.SpanName, defaultSpanNameField},
+		{"log.trace.request_id", &c.RequestID, defaultRequestIDField},
+	}
+	for _, f := range fields {
+		if *f.value == "" {
+			*f.value = f.def
+			continue
+		}
+		if strings.TrimSpace(*f.value) == "" {
+			return fmt.Errorf("%s: field name must not be blank", f.name)
+		}
+	}
+	seen := make(map[string]string, len(fields))
+	for _, f := range fields {
+		if _, reserved := reservedEncoderKeys[*f.value]; reserved {
+			return fmt.Errorf("%s: field name %q is reserved by the encoder", f.name, *f.value)
+		}
+		if prev, dup := seen[*f.value]; dup {
+			return fmt.Errorf("%s: field name %q already used by %s", f.name, *f.value, prev)
+		}
+		seen[*f.value] = f.name
+	}
+	return nil
+}
+
+// hiddenUnderConsole reports whether name is one of the ID fields the console
+// encoder keeps out of its KV section: the trace ID already occupies a fixed
+// column, and the other two are long IDs that add no value to a human-readable
+// line. The JSON sinks do not apply this exclusion -- those are for machine
+// search.
+func (c TraceConfig) hiddenUnderConsole(name string) bool {
+	return name == c.TraceID || name == c.SpanID || name == c.RequestID
+}
+
 // DefaultConfig is the source of truth for this package's default values.
 // The kernel's config plugin can deserialize YAML into this struct and then call Normalize.
 func DefaultConfig() Config {
@@ -105,6 +210,7 @@ func DefaultConfig() Config {
 			Compress:   true,
 		},
 		Sampling: SamplingConfig{Initial: 100, Thereafter: 100},
+		Trace:    defaultTraceConfig(),
 	}
 }
 
@@ -177,6 +283,9 @@ func (c *Config) Normalize() error {
 	}
 	if c.Sampling.Thereafter < 0 {
 		c.Sampling.Thereafter = 0
+	}
+	if err := c.Trace.normalize(); err != nil {
+		return err
 	}
 	return nil
 }

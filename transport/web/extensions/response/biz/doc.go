@@ -1,8 +1,8 @@
 // Package biz provides an optional HTTP business-response contract for
-// XBC Web. It adopts GFA's useful explicit success-envelope and business-error
-// ideas while preserving semantic HTTP statuses. Failures are RFC 9457 Problem
-// Details by default, and the same envelope as success once failure_envelope is
-// on.
+// XBC Web. It adopts an explicit success-envelope and business-error model
+// while preserving semantic HTTP statuses. Failures are RFC 9457 Problem
+// Details by default, and the same envelope as success once failure_envelope
+// is on.
 //
 // # Usage
 //

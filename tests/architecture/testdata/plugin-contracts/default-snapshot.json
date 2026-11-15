@@ -503,6 +503,27 @@
       }
     },
     {
+      "key": "mail",
+      "config_type": "github.com/xbcio/xbc/extensions/messaging/mail.Config",
+      "defaults": {
+        "Host": "",
+        "Port": 0,
+        "Username": "",
+        "Password": "",
+        "AuthType": "",
+        "SSL": {
+          "Enable": false,
+          "Port": 0
+        },
+        "TLS": {
+          "Policy": ""
+        },
+        "Timeout": 0,
+        "ConnectionTimeout": 0,
+        "Verify": false
+      }
+    },
+    {
       "key": "metrics",
       "config_type": "github.com/xbcio/xbc/extensions/observability/metrics.Config",
       "defaults": {

@@ -22,11 +22,13 @@ type ginMiddleware struct {
 	order   web.Order
 }
 
-// errNotGinEngine is what Handler reports when the request is not being served
-// by this adapter. It is a refusal rather than a silent skip: a gin-native
-// middleware that quietly does not run is an authentication, rate limit, or
-// tracing span that has disappeared without a trace.
-var errNotGinEngine = errors.New("xbc: gin.Wrap middleware requires the gin engine, but this request is served by another engine")
+// errNotGinEngine is what this adapter's gin-native entry points -- the
+// middleware Wrap produces and the terminal handler Handler produces -- report
+// when the request is not being served by the gin engine. It is a refusal
+// rather than a silent skip: a gin-native handler or middleware that quietly
+// does not run is an authentication check, a rate limit, or a tracing span that
+// has disappeared without a trace.
+var errNotGinEngine = errors.New("xbc: a gin-native adapter requires the gin engine, but this request is served by another engine")
 
 // Wrap adapts a native gin middleware into a web.Middleware, so existing
 // Gin-native middleware (otelgin, gin-contrib/*, ...) keeps working unchanged
@@ -64,31 +66,31 @@ func (m ginMiddleware) Handler() web.Handler {
 	}
 }
 
-// reportedErrors joins whatever the wrapped middleware pushed onto gin's
-// accumulator during this call. Entries that predate the call belong to someone
-// else and are left alone.
+// reportedErrors joins whatever the wrapped gin-native handler or middleware
+// pushed onto gin's accumulator during this call. Entries that predate the call
+// belong to someone else and are left alone.
 //
 // An already-committed response is not a reason to drop them. It only changes
 // what the error boundary can do with them: transport/web's resolver logs, with
 // full detail, a failure it can no longer render, and leaves the response the
 // client is already receiving exactly as it is (errors.go, errorResolver.write).
-// Returning nil here instead would make a gin-native middleware's failure vanish
+// Returning nil here instead would make a gin-native handler's failure vanish
 // without a trace on precisely the requests where something had already gone out
 // the door, and it would do so asymmetrically: the same failure reported by
 // return value is logged.
 //
 // The scope is deliberately narrower than a per-request sweep of gc.Errors
 // would be, and the narrowing is a design choice rather than an oversight.
-// The web.Engine port accepts nothing but []web.Handler, so Wrap is the only
-// door a gin-native middleware can enter an xbc chain through; aggregating per
-// Wrap therefore covers every real entry point, and it attributes a failure to
-// the middleware that produced it instead of to whichever handler happened to
-// be outermost. The price is that an error pushed onto gc.Errors from outside
-// a Wrap call -- by gin itself, or through the FromCtx escape hatch -- is no
-// longer collected. That remainder is empty in practice: gin's own pushes
-// either accompany a response gin has already written itself, or come from a
-// binding path that reports its failure by return value rather than by
-// accumulator.
+// The web.Engine port accepts nothing but []web.Handler, so Wrap and Handler
+// are the only doors a gin-native piece can enter an xbc chain through; each
+// drains the entries appended during its own call, which covers every real
+// entry point and attributes a failure to the handler or middleware that
+// produced it instead of to whichever handler happened to be outermost. The
+// price is that an error pushed onto gc.Errors from outside a Wrap or Handler
+// call -- by gin itself, or through the FromCtx escape hatch -- is no longer
+// collected. That remainder is empty in practice: gin's own pushes either
+// accompany a response gin has already written itself, or come from a binding
+// path that reports its failure by return value rather than by accumulator.
 func reportedErrors(gc *ginlib.Context, before int) error {
 	if len(gc.Errors) <= before {
 		return nil

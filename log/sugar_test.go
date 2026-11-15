@@ -14,7 +14,7 @@ import (
 
 // The T-series adds one more stack frame than the facade methods; the caller
 // must still point to the calling business code.
-// gfa's single AddCallerSkip(2) would point to the wrong frame when going
+// A single AddCallerSkip(2) would point to the wrong frame when going
 // through the facade methods -- both paths are tested here.
 func TestTSeriesCallerPointsToCallSite(t *testing.T) {
 	logs := installObserver(t, zap.AddCaller())
