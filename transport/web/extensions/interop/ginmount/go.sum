@@ -98,8 +98,10 @@ github.com/xbcio/xbc/extensions/authentication v0.1.0 h1:jkvV7QiFibSDaDwGZirhWS0
 github.com/xbcio/xbc/extensions/authentication v0.1.0/go.mod h1:iZRYy4TSPXmfCQCkBtGsc75Q1shOQKtqmZvbpGPgB/c=
 github.com/xbcio/xbc/transport/web v0.2.0 h1:qvpermQimLWh55l1vILTanjFiashnJSbfU4g/l9AXps=
 github.com/xbcio/xbc/transport/web v0.2.0/go.mod h1:XjrCsCdAhCFQyH/1/doiH7ZDxuWTjpVO6SufbbT/HNY=
-github.com/xbcio/xbc/transport/web/engines/gin v0.1.0 h1:LMdUoWvxvz5OHjXcPYWSCG+VIijRdwT+SicI32UuEKc=
-github.com/xbcio/xbc/transport/web/engines/gin v0.1.0/go.mod h1:LWBQDKYHU4Wi9jhg/KYYoP838v2S4tZtXYKHM5ei1Ls=
+github.com/xbcio/xbc/transport/web/engines/gin v0.1.1 h1:UU3rywF3yGzatbwbQtZXllR5CotW+VIVvGEHMMhhYUk=
+github.com/xbcio/xbc/transport/web/engines/gin v0.1.1/go.mod h1:WNqduA3bAlOptr59QBoEsd1q06s26a4Skl67iWpLOJ4=
+github.com/xbcio/xbc/transport/web/extensions/testing/apptest v0.1.0 h1:fG/W1SC4vnS1NvN/4xaZptqcYs8ovSzVhwj/NWz3W1g=
+github.com/xbcio/xbc/transport/web/extensions/testing/apptest v0.1.0/go.mod h1:LbegwksRv0etP+BinOQXZHsMKY9eeexY5z9lPSzS6Ao=
 go.mongodb.org/mongo-driver/v2 v2.5.0 h1:yXUhImUjjAInNcpTcAlPHiT7bIXhshCTL3jVBkF3xaE=
 go.mongodb.org/mongo-driver/v2 v2.5.0/go.mod h1:yOI9kBsufol30iFsl1slpdq1I0eHPzybRWdyYUs8K/0=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=

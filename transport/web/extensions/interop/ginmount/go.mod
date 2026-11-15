@@ -4,17 +4,15 @@ go 1.26.0
 
 // XBC core and the Web transport resolve through their published release tags;
 // repository development resolves the same source through go.work. The Gin
-// engine adapter is a test-only requirement. apptest is imported only by tests
-// and has no release tag yet, so it is deliberately absent from this manifest:
-// a versioned requirement on an untagged module cannot be resolved outside the
-// workspace. The release step that tags apptest, which the release manifest
-// orders before this module, adds the requirement and re-runs go mod tidy.
+// engine adapter and apptest are imported only by tests.
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/xbcio/xbc v0.1.0
 	github.com/xbcio/xbc/transport/web v0.2.0
-	github.com/xbcio/xbc/transport/web/engines/gin v0.1.0
+	github.com/xbcio/xbc/transport/web/engines/gin v0.1.1
 )
+
+require github.com/xbcio/xbc/transport/web/extensions/testing/apptest v0.1.0
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
