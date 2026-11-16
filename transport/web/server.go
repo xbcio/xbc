@@ -709,7 +709,8 @@ func (s *Server) Preflight(ctx *plugin.Context) error {
 // authentication middleware first, so that a policy mistake fails startup rather
 // than being reported after other listeners have already reacted to the route
 // table, then the permission-declaration check, and then each contributed
-// listener in composition order.
+// listener in composition order. Every listener also receives the compiled
+// policy resolver, built from the same middleware that just accepted the table.
 //
 // Nothing here depends on a listener having been bound, which is why Preflight
 // can run it for a process that will never serve.
@@ -726,8 +727,9 @@ func freezeRoutes(router *Router, authenticator *authenticationMiddleware, order
 	if err := checkRouteAuthorizer(catalog, ordered, logger, requireRouteAuthorizer); err != nil {
 		return nil, err
 	}
+	resolver := authenticator.policyResolver()
 	for _, entry := range listeners {
-		if err := entry.Value.RoutesReady(catalog); err != nil {
+		if err := entry.Value.RoutesReady(catalog, resolver); err != nil {
 			return nil, fmt.Errorf("xbc: plugin %s RoutesReady failed: %w", entry.Identity, err)
 		}
 	}
@@ -822,6 +824,9 @@ func renderStartupReport(logger log.Logger, cfg Config, managementAddr string, o
 		}
 		logger.Info(renderPublicEndpoints(authenticator.publicRoutes(), authenticator.permitAll))
 		logger.Info(renderPolicyDecisions(authenticator.decisions(), authenticator.manager.DefaultSchemes()))
+		if coverages := authenticator.policyCoverage(); len(coverages) > 0 {
+			logger.Info(renderPolicyCoverage(coverages))
+		}
 	}
 }
 

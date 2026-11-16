@@ -137,8 +137,9 @@ func (p *Plugin) RegisterRoutes(r *web.Router) {
 // and prepares Swagger UI at the moment the route table is frozen: on a boot
 // before the global traffic gate opens, and under the validate command, where
 // the gate is never opened at all and the served documentation is what is being
-// checked.
-func (p *Plugin) RoutesReady(routes web.RouteCatalog) error {
+// checked. The frozen authentication policy is not consulted: documentation
+// paths depend only on the route table.
+func (p *Plugin) RoutesReady(routes web.RouteCatalog, _ web.PolicyResolver) error {
 	if routes == nil {
 		return fmt.Errorf("swag: route catalog is nil")
 	}

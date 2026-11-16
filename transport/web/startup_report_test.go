@@ -20,6 +20,32 @@ const rateLimitKey plugin.Key = "ratelimit"
 // the startup log never wrote the reference and cannot have misspelled it. The
 // report must name the two causes they can actually check instead of asking
 // them to look for a typo.
+// TestRenderPolicyCoverageReportsPermitRuleHitCount pins that a permit rule's
+// reach is part of the startup report, not only the routes that ended up
+// public after precedence. The count is the actionable number when reviewing a
+// permit rule, and an optional rule's zero must read differently from a
+// mandatory zero, which would have failed startup.
+func TestRenderPolicyCoverageReportsPermitRuleHitCount(t *testing.T) {
+	t.Parallel()
+
+	got := renderPolicyCoverage([]policyRuleCoverage{
+		{rule: PolicyRule{Match: "GET /health", Permit: true}, index: 0, hits: 3},
+		{rule: PolicyRule{Match: "/api/**", Authenticate: []authentication.Scheme{"jwt"}}, index: 1, hits: 1},
+		{rule: PolicyRule{Match: "/optional/**", Permit: true, Optional: true}, index: 2, hits: 0},
+	})
+
+	for _, want := range []string{
+		"web: security policy coverage (3)",
+		`0. "GET /health" (permit) matched 3 routes`,
+		`1. "/api/**" (authenticate jwt) matched 1 route`,
+		`2. "/optional/**" (permit, optional) matched 0 routes`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("report = %q, want substring %q", got, want)
+		}
+	}
+}
+
 func TestRenderSoftMissesDoesNotBlameTheOperator(t *testing.T) {
 	t.Parallel()
 

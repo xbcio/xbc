@@ -61,10 +61,18 @@ type SecurityConfig struct {
 //
 // Permit and Authenticate are mutually exclusive and exactly one must be set:
 // a rule that decides nothing is a configuration mistake, not a no-op.
+//
+// Every rule must match at least one route in the frozen serving route table;
+// a rule that matches nothing fails startup, because a typo in Match would
+// otherwise silently leave the endpoints it was meant to decide on their
+// previous policy. Set Optional when the rule legitimately targets routes that
+// only exist under another build tag: startup still resolves and reports it,
+// but stops requiring a match. Optional never weakens a rule that does match.
 type PolicyRule struct {
 	Match        string                  `yaml:"match"`
 	Permit       bool                    `yaml:"permit"`
 	Authenticate []authentication.Scheme `yaml:"authenticate"`
+	Optional     bool                    `yaml:"optional"`
 }
 
 // normalize fills in the restrictive default for a configuration section that

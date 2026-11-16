@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -273,5 +274,155 @@ func TestPolicySetTierOneRuleHidesRouteDeclarationFromCoverage(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `"jwt"`) {
 		t.Fatalf("validateSchemeCoverage() error = %q, want it to name scheme \"jwt\"", err)
+	}
+}
+
+// TestPolicySetCoverage pins the mandatory-rule check and the facts that make a
+// mounted subtree usable: matching is done against frozen RouteInfo rows, so a
+// mounted row counts at its prefix -- the only row that exists for the subtree
+// -- and a path inside that prefix is not a row at all.
+func TestPolicySetCoverage(t *testing.T) {
+	t.Parallel()
+
+	routes := []RouteInfo{
+		{Method: http.MethodGet, Path: "/health"},
+		{Method: http.MethodGet, Path: "/assets", Mounted: true},
+		{Method: http.MethodPost, Path: "/assets/upload"},
+	}
+
+	tests := []struct {
+		name     string
+		rule     PolicyRule
+		wantHits int
+		wantErr  bool
+	}{
+		{
+			name:     "exact route",
+			rule:     PolicyRule{Match: "GET /health", Permit: true},
+			wantHits: 1,
+		},
+		{
+			name:     "wildcard route",
+			rule:     PolicyRule{Match: "/assets/**", Authenticate: []authentication.Scheme{"jwt"}},
+			wantHits: 2,
+		},
+		{
+			name:     "mount row matches at its prefix",
+			rule:     PolicyRule{Match: "GET /assets", Permit: true},
+			wantHits: 1,
+		},
+		{
+			name:     "path inside a mounted subtree is not a row",
+			rule:     PolicyRule{Match: "GET /assets/logo.png", Permit: true},
+			wantHits: 0,
+			wantErr:  true,
+		},
+		{
+			name:    "mandatory rule matching nothing fails",
+			rule:    PolicyRule{Match: "GET /missing", Permit: true},
+			wantErr: true,
+		},
+		{
+			name:     "optional rule may match nothing",
+			rule:     PolicyRule{Match: "GET /missing", Permit: true, Optional: true},
+			wantHits: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			set := mustPolicySet(t, SecurityConfig{Policies: []PolicyRule{tt.rule}})
+			coverages := set.coverage(routes)
+			if len(coverages) != 1 {
+				t.Fatalf("coverage() returned %d entries, want 1", len(coverages))
+			}
+			if coverages[0].hits != tt.wantHits {
+				t.Fatalf("hits = %d, want %d", coverages[0].hits, tt.wantHits)
+			}
+
+			err := set.validateCoverage(coverages)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("validateCoverage() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("validateCoverage() error = nil, want the unmatched rule to fail")
+			}
+			for _, want := range []string{"policy 0", strconv.Quote(tt.rule.Match), "optional: true"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want substring %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestPolicyResolverFirstMatchWins pins that the exported resolver preserves
+// the rule order the runtime enforces: when two rules match, the decision must
+// name the first one, not whichever rule happens to be more specific.
+func TestPolicyResolverFirstMatchWins(t *testing.T) {
+	t.Parallel()
+
+	set := mustPolicySet(t, SecurityConfig{
+		Policies: []PolicyRule{
+			{Match: "GET /api/orders", Permit: true},
+			{Match: "/api/**", Authenticate: []authentication.Scheme{"jwt"}},
+		},
+	})
+	resolver := PolicyResolver{policies: set, defaultSchemes: []authentication.Scheme{"jwt"}}
+
+	got := resolver.Resolve(RouteInfo{Method: http.MethodGet, Path: "/api/orders"})
+	if got.Outcome != PolicyPermit {
+		t.Fatalf("outcome = %s, want permit from the first matching rule", got.Outcome)
+	}
+	if got.Source != PolicySourceRule || got.RuleIndex != 0 || got.RuleMatch != "GET /api/orders" {
+		t.Fatalf("decision = %+v, want rule 0 to be named", got)
+	}
+
+	got = resolver.Resolve(RouteInfo{Method: http.MethodPost, Path: "/api/orders"})
+	if got.Outcome != PolicyAuthenticate || got.Source != PolicySourceRule || got.RuleIndex != 1 {
+		t.Fatalf("decision = %+v, want the second rule for the unmatched method", got)
+	}
+}
+
+// TestPolicyResolverManagementRouteIsNotApplicable pins that the read-only API
+// does not invent a serving-plane policy for a row whose chain runs no
+// authentication middleware.
+func TestPolicyResolverManagementRouteIsNotApplicable(t *testing.T) {
+	t.Parallel()
+
+	set := mustPolicySet(t, SecurityConfig{
+		Policies: []PolicyRule{{Match: "/**", Permit: true}},
+	})
+	resolver := PolicyResolver{policies: set}
+
+	got := resolver.Resolve(RouteInfo{Method: http.MethodGet, Path: "/-/metrics", Management: true})
+	if got.Outcome != PolicyNotApplicable {
+		t.Fatalf("outcome = %s, want %s", got.Outcome, PolicyNotApplicable)
+	}
+	if len(got.Schemes) != 0 || got.RuleIndex != -1 || got.RuleMatch != "" {
+		t.Fatalf("decision = %+v, want no schemes, no rule, and index -1", got)
+	}
+}
+
+// TestPolicyResolverZeroValueIsFailClosed pins the documented zero value: a
+// resolver a caller never received from the framework must not resolve routes
+// as public.
+func TestPolicyResolverZeroValueIsFailClosed(t *testing.T) {
+	t.Parallel()
+
+	got := PolicyResolver{}.Resolve(RouteInfo{Method: http.MethodGet, Path: "/orders"})
+	if got.Outcome != PolicyDeny {
+		t.Fatalf("outcome = %s, want deny", got.Outcome)
+	}
+	if got.Source != PolicySourceDefault || got.RuleIndex != -1 {
+		t.Fatalf("decision = %+v, want the default tier and no rule", got)
+	}
+	if len(got.Schemes) != 0 {
+		t.Fatalf("schemes = %v, want none", got.Schemes)
 	}
 }

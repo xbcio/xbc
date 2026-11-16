@@ -12,8 +12,13 @@ type RouteContributor interface {
 // validate command's Preflight, which freezes the same table for a process that
 // will never serve. An error keeps the runtime traffic gate closed and triggers
 // normal lifecycle unwind.
+//
+// The resolver alongside the catalog is the application's compiled
+// authentication policy, exposing the same resolution the request path
+// enforces through PolicyResolver.Resolve. It is read-only, immutable for the
+// lifetime of the process, and safe for concurrent use.
 type RouteCatalogListener interface {
-	RoutesReady(RouteCatalog) error
+	RoutesReady(RouteCatalog, PolicyResolver) error
 }
 
 // RouteAuthorizer marks a contributed middleware that enforces the permission

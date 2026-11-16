@@ -203,6 +203,16 @@ type goModRequire struct {
 // engines/ is exempt by construction: an engine adapter module requiring its
 // engine is the entire reason it exists.
 func TestWebGoModsDoNotRequireAnHTTPEngine(t *testing.T) {
+	// engineBoundModules names the modules that exist to host or drive a
+	// specific engine, so requiring it is their purpose rather than a leak:
+	// ginmount mounts a gin subtree, and apptest runs the real plugin graph
+	// through the gin engine adapter. Each entry is a directory relative to
+	// transport/web; adding one needs the same justification.
+	engineBoundModules := map[string]bool{
+		"extensions/interop/ginmount": true,
+		"extensions/testing/apptest":  true,
+	}
+
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go command is unavailable, skipping HTTP engine manifest guard")
 	}
@@ -218,10 +228,14 @@ func TestWebGoModsDoNotRequireAnHTTPEngine(t *testing.T) {
 		if d.Name() != "go.mod" {
 			return nil
 		}
-		for _, part := range strings.Split(filepath.ToSlash(filepath.Dir(path)), "/") {
+		dir := filepath.ToSlash(filepath.Dir(path))
+		for _, part := range strings.Split(dir, "/") {
 			if part == "engines" {
 				return nil
 			}
+		}
+		if engineBoundModules[dir] {
+			return nil
 		}
 		manifests = append(manifests, path)
 		return nil

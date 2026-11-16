@@ -6,35 +6,47 @@ import (
 	"github.com/xbcio/xbc/extensions/authentication"
 )
 
-// policyTier names which precedence level decided a route's effective policy.
-// It exists for the startup report: an operator diagnosing "why is this route
-// public" needs to know whether an application rule, the route's own
-// declaration, or the global fallback made that call.
-type policyTier uint8
+// PolicySource names which precedence level decided a route's effective
+// policy. It exists for the startup report: an operator diagnosing "why is
+// this route public" needs to know whether an application rule, the route's own
+// declaration, or the global fallback made that call. PolicyResolver.Resolve
+// reports the same value, so reading the report and querying the policy never
+// name the tier differently.
+type PolicySource uint8
 
 const (
-	// tierApplicationRule is an explicit rule from web.security.policies. It
+	// PolicySourceRule is an explicit rule from web.security.policies. It
 	// outranks everything, which is what makes the application the final arbiter.
-	tierApplicationRule policyTier = iota + 1
-	// tierRoute is the route's own .Auth() declaration.
-	tierRoute
-	// tierDefault is the global fallback. It never overrides a route
+	PolicySourceRule PolicySource = iota + 1
+	// PolicySourceRoute is the route's own .Auth() declaration.
+	PolicySourceRoute
+	// PolicySourceDefault is the global fallback. It never overrides a route
 	// declaration; it only fills in routes nothing else covered.
-	tierDefault
+	PolicySourceDefault
 )
 
-func (t policyTier) String() string {
-	switch t {
-	case tierApplicationRule:
+func (s PolicySource) String() string {
+	switch s {
+	case PolicySourceRule:
 		return "application-rule"
-	case tierRoute:
+	case PolicySourceRoute:
 		return "route"
-	case tierDefault:
+	case PolicySourceDefault:
 		return "default"
 	default:
 		return "invalid"
 	}
 }
+
+// policyTier and the tier* constants are the unexported spelling the runtime
+// resolution code uses for the same values PolicySource reports.
+type policyTier = PolicySource
+
+const (
+	tierApplicationRule = PolicySourceRule
+	tierRoute           = PolicySourceRoute
+	tierDefault         = PolicySourceDefault
+)
 
 // effectivePolicy is one frozen route's resolved authentication decision.
 //
@@ -131,6 +143,181 @@ func (s *policySet) compile(routes []RouteInfo) map[string]effectivePolicy {
 		compiled[routeKey(route.Method, route.Path)] = s.resolve(route)
 	}
 	return compiled
+}
+
+// PolicyOutcome classifies the effective decision PolicyResolver.Resolve
+// returns.
+type PolicyOutcome uint8
+
+const (
+	// PolicyPermit means the route is served without authentication: either an
+	// application rule or the route's own declaration resolved to public.
+	PolicyPermit PolicyOutcome = iota + 1
+	// PolicyAuthenticate means the route requires a credential for one of the
+	// schemes in PolicyDecision.Schemes, selected by an application rule or by
+	// the route's own declaration.
+	PolicyAuthenticate
+	// PolicyDeny means neither an application rule nor a route declaration
+	// covers the route and web.security.default is "deny". The request must
+	// authenticate through the authentication manager's default scheme set,
+	// which PolicyDecision.Schemes reports; it does not mean the request is
+	// rejected without consulting an authenticator.
+	PolicyDeny
+	// PolicyNotApplicable means web.security does not govern the route at all:
+	// it is registered on the management plane, whose chain runs no
+	// authentication middleware. PolicyDecision.Schemes is empty and Source is
+	// unused for this outcome.
+	PolicyNotApplicable
+)
+
+func (o PolicyOutcome) String() string {
+	switch o {
+	case PolicyPermit:
+		return "permit"
+	case PolicyAuthenticate:
+		return "authenticate"
+	case PolicyDeny:
+		return "deny"
+	case PolicyNotApplicable:
+		return "not-applicable"
+	default:
+		return "invalid"
+	}
+}
+
+// PolicyDecision is the resolved authentication policy for one frozen route.
+//
+// It carries exactly what the runtime decided, plus the provenance needed to
+// explain the decision: which precedence tier made it and, when a rule made it,
+// that rule's declaration index and original match expression. Values are
+// snapshots; mutating the returned slice never affects the server.
+type PolicyDecision struct {
+	// Outcome is the effective decision.
+	Outcome PolicyOutcome
+	// Schemes lists the authentication schemes a request is checked against, in
+	// arbitration order. It is empty for PolicyPermit and PolicyNotApplicable,
+	// and for PolicyDeny it is the manager's default scheme set.
+	Schemes []authentication.Scheme
+	// Source names the tier that decided: an application rule, the route's own
+	// declaration, or the global default.
+	Source PolicySource
+	// RuleIndex is the zero-based position in web.security.policies of the rule
+	// that decided, or -1 when no rule decided.
+	RuleIndex int
+	// RuleMatch is that rule's original match expression, or empty when no rule
+	// decided.
+	RuleMatch string
+}
+
+// PolicyResolver is a read-only view of an application's compiled
+// authentication policy. The Server constructs it after the route table has
+// been validated and hands it to every RouteCatalogListener beside the frozen
+// catalog; it is the same policySet the request path enforces, so it answers
+// with the same precedence implementation rather than a reimplementation.
+//
+// A resolver obtained from RoutesReady is immutable and safe for concurrent
+// use. The zero value is fail-closed: it resolves every serving route as the
+// strict default ("deny", no default schemes), which is what a caller holding
+// a PolicyResolver that was never populated observes.
+type PolicyResolver struct {
+	policies       *policySet
+	defaultSchemes []authentication.Scheme
+}
+
+// Resolve returns the effective authentication decision for route, using the
+// same precedence implementation the request path uses -- the application rule
+// list first, then the route's own .Auth() declaration, then the global
+// default. Passing a RouteInfo from the frozen catalog (or one equal to it)
+// yields what that route's requests are held to.
+//
+// A route registered on the management plane is resolved to
+// PolicyNotApplicable: that plane runs no authentication middleware, so
+// web.security neither decides nor reports a policy for it.
+func (r PolicyResolver) Resolve(route RouteInfo) PolicyDecision {
+	if route.Management {
+		return PolicyDecision{Outcome: PolicyNotApplicable, RuleIndex: -1}
+	}
+	policy := effectivePolicy{
+		selection: authentication.DefaultSelection(),
+		tier:      tierDefault,
+		ruleIndex: -1,
+	}
+	if r.policies != nil {
+		policy = r.policies.resolve(route)
+	}
+
+	decision := PolicyDecision{Source: policy.tier, RuleIndex: policy.ruleIndex}
+	if policy.tier == tierApplicationRule && r.policies != nil &&
+		policy.ruleIndex >= 0 && policy.ruleIndex < len(r.policies.rules) {
+		decision.RuleMatch = r.policies.rules[policy.ruleIndex].rule.Match
+	}
+	switch {
+	case policy.permit:
+		decision.Outcome = PolicyPermit
+	case policy.selection.UsesDefault():
+		// A non-permit default decision is deny-by-default: the manager still
+		// attempts its default scheme set, so the schemes are reported rather
+		// than leaving the caller to guess them.
+		decision.Outcome = PolicyDeny
+		decision.Schemes = append([]authentication.Scheme(nil), r.defaultSchemes...)
+	default:
+		decision.Outcome = PolicyAuthenticate
+		decision.Schemes = policy.selection.Schemes()
+	}
+	return decision
+}
+
+// policyRuleCoverage records how many frozen serving routes one application
+// rule matches. Coverage is computed once during startup: it feeds both the
+// mandatory-rule check and the startup report, so the line an operator reads
+// and the check that let the process boot can never disagree.
+type policyRuleCoverage struct {
+	rule  PolicyRule
+	index int
+	hits  int
+}
+
+// coverage counts the frozen serving routes each rule matches. Matching is
+// done against RouteInfo rows exactly as runtime resolution does it, so a
+// mounted subtree counts as one hit at its prefix row -- a rule naming the
+// prefix covers the row, which is what makes the subtree reachable.
+func (s *policySet) coverage(routes []RouteInfo) []policyRuleCoverage {
+	coverages := make([]policyRuleCoverage, len(s.rules))
+	for i, candidate := range s.rules {
+		hits := 0
+		for _, route := range routes {
+			if candidate.matcher.matches(route.Method, route.Path) {
+				hits++
+			}
+		}
+		coverages[i] = policyRuleCoverage{rule: candidate.rule, index: candidate.index, hits: hits}
+	}
+	return coverages
+}
+
+// validateCoverage rejects a mandatory rule that matches no frozen serving
+// route. Rules are the application's final say over endpoint access, so a rule
+// that matches nothing is almost always a typo in Match -- and its intended
+// endpoints keep whatever policy the lower tiers gave them. Failing startup
+// makes that mistake visible instead of letting it serve.
+//
+// Management-plane rows are excluded, exactly as they are from policy
+// compilation: web.security does not govern that plane, so a rule that only
+// names a management route has no effect to validate. A rule may opt out with
+// Optional when it targets routes compiled into another build.
+func (s *policySet) validateCoverage(coverages []policyRuleCoverage) error {
+	for _, coverage := range coverages {
+		if coverage.hits > 0 || coverage.rule.Optional {
+			continue
+		}
+		return fmt.Errorf(
+			"web: security policy %d (%q) matches no route in the frozen serving route table; "+
+				"fix the match expression, or set optional: true when the rule only targets routes "+
+				"compiled into another build",
+			coverage.index, coverage.rule.Match,
+		)
+	}
+	return nil
 }
 
 // validateReachability rejects a rule that an earlier, broader rule already

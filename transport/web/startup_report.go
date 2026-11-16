@@ -215,6 +215,39 @@ func renderPolicyDecisions(decisions []policyDecision, defaultSchemes []authenti
 	return b.String()
 }
 
+// renderPolicyCoverage reports every web.security.policies rule and how many
+// frozen serving routes it matches. Permit rules are included deliberately: the
+// public-endpoints table above only shows routes that actually resolved to
+// permit after precedence, while a permit rule's own reach is what an operator
+// reviewing the rule needs to see. Optional rules carry their marker here so a
+// deliberate zero-match rule reads differently from a mandatory one, which
+// would have failed startup.
+func renderPolicyCoverage(coverages []policyRuleCoverage) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "web: security policy coverage (%d)", len(coverages))
+	for _, coverage := range coverages {
+		kind := "authenticate"
+		if coverage.rule.Permit {
+			kind = "permit"
+		} else if len(coverage.rule.Authenticate) > 0 {
+			parts := make([]string, len(coverage.rule.Authenticate))
+			for i, scheme := range coverage.rule.Authenticate {
+				parts[i] = string(scheme)
+			}
+			kind += " " + strings.Join(parts, ",")
+		}
+		if coverage.rule.Optional {
+			kind += ", optional"
+		}
+		nouns := "routes"
+		if coverage.hits == 1 {
+			nouns = "route"
+		}
+		fmt.Fprintf(&b, "\n  %d. %q (%s) matched %d %s", coverage.index, coverage.rule.Match, kind, coverage.hits, nouns)
+	}
+	return b.String()
+}
+
 // renderSoftMisses reports Prefer references that had no target in the frozen
 // chain. This is what a soft reference is documented to do -- a plugin declares
 // "order me relative to X if X is here", and X is not -- so the report states

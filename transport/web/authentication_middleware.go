@@ -26,9 +26,11 @@ type policyDecision struct {
 // exemption checks that previously asked "does this request need auth" in four
 // different ways.
 //
-// It is both a Middleware and a RouteCatalogListener: policy compilation and
-// the three startup validations need the frozen route table, which only exists
-// after freeze, while request handling needs the compiled table.
+// It is a Middleware, and the Server feeds it the frozen route table ahead of
+// every contributed RouteCatalogListener: policy compilation and the startup
+// validations need that table, which only exists after freeze, while request
+// handling needs the compiled table. The resolver it publishes for listeners
+// wraps this same policy set.
 type authenticationMiddleware struct {
 	manager    *authentication.Manager
 	policies   *policySet
@@ -36,6 +38,10 @@ type authenticationMiddleware struct {
 
 	compiled map[string]effectivePolicy
 	resolved []policyDecision
+	// coverages records each application rule's match count against the frozen
+	// serving routes. RoutesReady computes and validates it once; the startup
+	// report prints the same values.
+	coverages []policyRuleCoverage
 	// permitAll records that the whole service runs fail-open. Nothing on the
 	// request path reads it: it exists for the startup report, which must print
 	// a prominent warning when "default: permit" is in effect, alongside
@@ -43,10 +49,7 @@ type authenticationMiddleware struct {
 	permitAll bool
 }
 
-var (
-	_ Middleware           = (*authenticationMiddleware)(nil)
-	_ RouteCatalogListener = (*authenticationMiddleware)(nil)
-)
+var _ Middleware = (*authenticationMiddleware)(nil)
 
 // authenticationExemptContextKey marks that this request's authentication
 // policy resolved to permit inside the authentication middleware itself.
@@ -358,10 +361,17 @@ func (m *authenticationMiddleware) RoutesReady(catalog RouteCatalog) error {
 	if err := m.policies.validateReachability(); err != nil {
 		return err
 	}
+	// A rule that matches no served route cannot decide anything. Checking
+	// this before compiling keeps the diagnosis about the rule itself, rather
+	// than about a scheme it names but never applies.
+	coverages := m.policies.coverage(routes)
+	if err := m.policies.validateCoverage(coverages); err != nil {
+		return err
+	}
 	// Compile first: reachability must consider the policy that actually
 	// governs each serving route, not only the tier-1 rule list. A route-level
 	// .Auth(Accepts(...)) declaration is tier 2 and never enters the rules, so
-	// the coverage check below needs the compiled decisions to see it.
+	// the scheme-coverage check below needs the compiled decisions to see it.
 	compiled := m.policies.compile(routes)
 	if m.manager != nil {
 		if err := m.policies.validateSchemeCoverage(m.manager.Schemes(), routes, compiled); err != nil {
@@ -391,6 +401,7 @@ func (m *authenticationMiddleware) RoutesReady(catalog RouteCatalog) error {
 
 	m.compiled = compiled
 	m.resolved = decisions
+	m.coverages = coverages
 	m.permitAll = m.policies.defaultDecision == SecurityPermit
 	return nil
 }
@@ -563,4 +574,28 @@ func (m *authenticationMiddleware) publicRoutes() []RouteInfo {
 // it, for the startup report.
 func (m *authenticationMiddleware) decisions() []policyDecision {
 	return append([]policyDecision(nil), m.resolved...)
+}
+
+// policyResolver returns the read-only policy view every RouteCatalogListener
+// receives beside the frozen catalog. It wraps the same policySet and manager
+// the request path uses, so a listener cannot observe a second interpretation
+// of web.security. Callers must not use it before RoutesReady has accepted the
+// table; the Server only publishes it after that.
+func (m *authenticationMiddleware) policyResolver() PolicyResolver {
+	if m == nil {
+		return PolicyResolver{}
+	}
+	return PolicyResolver{
+		policies:       m.policies,
+		defaultSchemes: m.manager.DefaultSchemes(),
+	}
+}
+
+// policyCoverage returns the per-rule match counts computed by RoutesReady, for
+// the startup report.
+func (m *authenticationMiddleware) policyCoverage() []policyRuleCoverage {
+	if m == nil {
+		return nil
+	}
+	return append([]policyRuleCoverage(nil), m.coverages...)
 }

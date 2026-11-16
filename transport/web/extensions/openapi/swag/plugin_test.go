@@ -134,7 +134,7 @@ func TestRoutesReadyPreparesSwaggerUIWithFinalTransportPaths(t *testing.T) {
 	if err := p.RoutesReady(catalogStub{routes: []web.RouteInfo{
 		{Method: http.MethodGet, Path: "/api/v1/swagger.json", Name: "swag.document"},
 		{Method: http.MethodGet, Path: "/api/v1/docs", Name: "swag.ui"},
-	}}); err != nil {
+	}}, web.PolicyResolver{}); err != nil {
 		t.Fatal(err)
 	}
 

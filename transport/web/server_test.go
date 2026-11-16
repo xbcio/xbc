@@ -34,10 +34,12 @@ type fakeRouteContributor struct{ register func(*web.Router) }
 
 func (f fakeRouteContributor) RegisterRoutes(router *web.Router) { f.register(router) }
 
-type fakeRouteCatalogListener struct{ ready func(web.RouteCatalog) error }
+type fakeRouteCatalogListener struct {
+	ready func(web.RouteCatalog, web.PolicyResolver) error
+}
 
-func (f fakeRouteCatalogListener) RoutesReady(catalog web.RouteCatalog) error {
-	return f.ready(catalog)
+func (f fakeRouteCatalogListener) RoutesReady(catalog web.RouteCatalog, policies web.PolicyResolver) error {
+	return f.ready(catalog, policies)
 }
 
 type serverInputs struct {
@@ -497,7 +499,7 @@ func TestGlobalMiddlewareRunsOnUnmatchedRequests(t *testing.T) {
 
 func TestOpenTrafficPropagatesRouteCatalogListenerErrorWithoutReleasingGate(t *testing.T) {
 	wantErr := errors.New("swagger generation failed")
-	listener := fakeRouteCatalogListener{ready: func(web.RouteCatalog) error { return wantErr }}
+	listener := fakeRouteCatalogListener{ready: func(web.RouteCatalog, web.PolicyResolver) error { return wantErr }}
 	server, ctx, host := newPingServer(t, web.Config{Addr: "127.0.0.1:0", BasePath: "/"}, serverInputs{
 		listeners: []plugin.Entry[web.RouteCatalogListener]{
 			{Identity: plugin.Identity{Plugin: "swagger"}, Value: listener},
@@ -519,7 +521,7 @@ func TestOpenTrafficReturnsRouteFreezeErrorWithoutNotifyingListeners(t *testing.
 	invalidRoute := fakeRouteContributor{register: func(router *web.Router) {
 		router.GET("/private", func(context.Context, *web.Ctx) error { return nil }).Auth(web.Accepts())
 	}}
-	listener := fakeRouteCatalogListener{ready: func(web.RouteCatalog) error {
+	listener := fakeRouteCatalogListener{ready: func(web.RouteCatalog, web.PolicyResolver) error {
 		listenerCalled = true
 		return nil
 	}}
@@ -622,7 +624,7 @@ func TestContributorPolicyDefaultsDoNotLeakToLaterContributors(t *testing.T) {
 	} {
 		t.Run(order.name, func(t *testing.T) {
 			var catalog web.RouteCatalog
-			listener := fakeRouteCatalogListener{ready: func(ready web.RouteCatalog) error {
+			listener := fakeRouteCatalogListener{ready: func(ready web.RouteCatalog, _ web.PolicyResolver) error {
 				catalog = ready
 				return nil
 			}}

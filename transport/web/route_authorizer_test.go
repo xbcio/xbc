@@ -132,7 +132,7 @@ func TestRequireRouteAuthorizerFailsPreflightWithoutNotifyingListeners(t *testin
 		}},
 		listeners: []plugin.Entry[web.RouteCatalogListener]{{
 			Identity: plugin.Identity{Plugin: "catalog"},
-			Value: fakeRouteCatalogListener{ready: func(web.RouteCatalog) error {
+			Value: fakeRouteCatalogListener{ready: func(web.RouteCatalog, web.PolicyResolver) error {
 				listenerCalled = true
 				return nil
 			}},
@@ -182,7 +182,7 @@ func TestRequireRouteAuthorizerFailsOpenTrafficWithoutNotifyingListeners(t *test
 		}},
 		listeners: []plugin.Entry[web.RouteCatalogListener]{{
 			Identity: plugin.Identity{Plugin: "catalog"},
-			Value: fakeRouteCatalogListener{ready: func(web.RouteCatalog) error {
+			Value: fakeRouteCatalogListener{ready: func(web.RouteCatalog, web.PolicyResolver) error {
 				listenerCalled = true
 				return nil
 			}},

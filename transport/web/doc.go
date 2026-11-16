@@ -93,6 +93,16 @@
 // pointer preserves those states; absence is never interpreted as public
 // access.
 //
+// Rules are validated against the frozen serving route table before traffic
+// opens. Every rule must match at least one served RouteInfo, including a
+// mounted subtree's prefix row, whose path is the prefix rather than a path
+// inside it; a rule that matches nothing fails startup with its index and
+// original match expression, because a typo would otherwise leave the endpoints
+// it was meant to decide on their lower-tier policy. A rule that legitimately
+// targets routes compiled into another build opts out with optional: true.
+// Startup also reports each rule's match count, so the reach of a permit rule
+// is visible even when precedence means fewer routes actually become public.
+//
 // Route.Perm declares an authorization permission, but the framework does not
 // enforce it by itself. A contributed middleware that enforces the permission a
 // route declares implements RouteAuthorizer, and startup type-asserts every
@@ -180,8 +190,11 @@
 //
 // RouteCatalogListener receives the complete immutable catalog during traffic
 // preparation, after every contributor has run and authentication metadata has
-// validated. CurrentRoute exposes the matching frozen RouteInfo to handlers and
-// middleware.
+// validated. It also receives a read-only PolicyResolver, the same compiled
+// policy the request path enforces: calling Resolve on a frozen RouteInfo
+// answers permit, authenticate with named schemes, or deny-by-default, and names
+// the deciding application rule, route declaration, or default. CurrentRoute
+// exposes the matching frozen RouteInfo to handlers and middleware.
 //
 // # Lifecycle and traffic gate
 //

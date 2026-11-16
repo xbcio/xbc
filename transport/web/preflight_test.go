@@ -149,7 +149,7 @@ func TestPreflightPrintsTheStartupReportAndBindsNothing(t *testing.T) {
 		router.POST("/extra", func(context.Context, *web.Ctx) error { return nil }).Name("preflight.extra")
 	}}
 	var catalog web.RouteCatalog
-	listener := fakeRouteCatalogListener{ready: func(received web.RouteCatalog) error {
+	listener := fakeRouteCatalogListener{ready: func(received web.RouteCatalog, _ web.PolicyResolver) error {
 		catalog = received
 		return nil
 	}}
