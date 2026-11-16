@@ -12,9 +12,10 @@ require (
 )
 
 require (
-	github.com/xbcio/xbc v0.1.0
+	github.com/xbcio/xbc v0.2.1
 	github.com/xbcio/xbc/extensions/reliability/health v0.1.0
 	github.com/xbcio/xbc/extensions/tasks v0.1.0
+	github.com/xbcio/xbc/kit/distributed v0.1.0
 )
 
 require (
