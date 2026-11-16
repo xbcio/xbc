@@ -12,7 +12,7 @@ require (
 
 require (
 	github.com/xbcio/xbc v0.1.0
-	github.com/xbcio/xbc/transport/web v0.1.0
+	github.com/xbcio/xbc/transport/web v0.3.0
 )
 
 require (

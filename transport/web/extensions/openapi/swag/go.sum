@@ -95,6 +95,8 @@ github.com/xbcio/xbc/extensions/authentication v0.1.0 h1:jkvV7QiFibSDaDwGZirhWS0
 github.com/xbcio/xbc/extensions/authentication v0.1.0/go.mod h1:iZRYy4TSPXmfCQCkBtGsc75Q1shOQKtqmZvbpGPgB/c=
 github.com/xbcio/xbc/transport/web v0.1.0 h1:G+ER3ZKIbonJ+L0DZLAW2tOK3iYFCfW9zi9NFiIJ/MQ=
 github.com/xbcio/xbc/transport/web v0.1.0/go.mod h1:XjrCsCdAhCFQyH/1/doiH7ZDxuWTjpVO6SufbbT/HNY=
+github.com/xbcio/xbc/transport/web v0.3.0 h1:kXqBNs1bKq3n75vUchBnMsxb5qxr5S9sVS1yjcANxKA=
+github.com/xbcio/xbc/transport/web v0.3.0/go.mod h1:M1GGT9YA7iR2W/GHrpnLL45EHQVKzE7rvTtda33bvWM=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/otel v1.45.0 h1:pdrWmLHofpubmArBv1LgFSv1Z0Ie/ppdZzu+kUN5EeU=
