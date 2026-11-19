@@ -20,11 +20,11 @@ func TestModuleManifestIsPublishableAndPinsReleasedTags(t *testing.T) {
 	for _, expected := range []string{
 		"go 1.26.0",
 		"github.com/go-jose/go-jose/v4 v4.1.6",
-		"github.com/xbcio/xbc v0.1.0",
+		"github.com/xbcio/xbc v0.4.0",
 		"github.com/xbcio/xbc/extensions/authentication v0.3.0",
 		"github.com/xbcio/xbc/extensions/authentication/oidc v0.2.0",
-		"github.com/xbcio/xbc/extensions/authentication/session v0.2.0",
-		"github.com/xbcio/xbc/transport/web v0.2.0",
+		"github.com/xbcio/xbc/extensions/authentication/session v0.4.0",
+		"github.com/xbcio/xbc/transport/web v0.4.0",
 		"github.com/xbcio/xbc/transport/web/extensions/authentication/federation v0.1.0",
 	} {
 		if !strings.Contains(manifest, expected) {

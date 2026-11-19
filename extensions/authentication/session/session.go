@@ -18,9 +18,62 @@ var (
 	// ErrStopped reports use after the owning plugin or store was stopped.
 	ErrStopped = errors.New("session: stopped")
 	// ErrNotSupported reports an operation the configured Store does not
-	// implement: the subject-index methods of Manager need an IndexedStore.
+	// implement: the subject-index methods of Manager need an IndexedStore,
+	// UpdateAttributes and PatchAttributes of AttributeManager need an
+	// AttributeStore and a PatchStore respectively, and a configured
+	// max_sessions needs an IndexedStore.
 	ErrNotSupported = errors.New("session: operation not supported by the store")
+	// ErrConflict reports that an attribute patch could not be applied within
+	// the store's bounded retry budget because concurrent writers kept changing
+	// the session. The session is unchanged by that attempt, and the caller may
+	// retry the whole patch.
+	ErrConflict = errors.New("session: concurrent update conflict")
+	// ErrTooManySessions reports that the configured max_sessions limit refused
+	// a new session under the reject_new policy.
+	ErrTooManySessions = errors.New("session: too many concurrent sessions")
 )
+
+// Verdict is AttributeManager.Verify's internal classification of a presented
+// session ID. It exists for host-side auditing, metrics, and diagnostics and
+// must never be returned to a client: telling a caller whether an ID was
+// malformed, unknown, or lost to a store failure turns the session check into
+// an oracle for which IDs exist. The authentication adapter collapses every
+// non-valid verdict into one rejection reason.
+//
+// The zero value is Malformed so a Verdict that was never assigned never
+// reads as Valid.
+type Verdict int
+
+const (
+	// VerdictMalformed reports an ID that fails the shape check (validID)
+	// shared by Create, Rotate, and Revoke; no store lookup is performed.
+	VerdictMalformed Verdict = iota
+	// VerdictValid reports a live session. Verify has already renewed its
+	// idle lease, subject to touch_interval throttling.
+	VerdictValid
+	// VerdictNotFound reports a well-formed ID the store did not resolve. An
+	// expired session, an evicted one, a revoked one, and an ID that never
+	// existed are all indistinguishable here and must stay so toward clients.
+	VerdictNotFound
+	// VerdictStoreError reports that the store could not answer. Verify
+	// returns the underlying error alongside this verdict.
+	VerdictStoreError
+)
+
+func (v Verdict) String() string {
+	switch v {
+	case VerdictMalformed:
+		return "malformed"
+	case VerdictValid:
+		return "valid"
+	case VerdictNotFound:
+		return "not_found"
+	case VerdictStoreError:
+		return "store_error"
+	default:
+		return fmt.Sprintf("Verdict(%d)", int(v))
+	}
+}
 
 // Session is the authenticated server-side session value. ID is the opaque
 // identifier also carried by the cookie; Attributes must contain JSON-safe
@@ -103,4 +156,51 @@ func cloneValue(value any) any {
 	default:
 		return value
 	}
+}
+
+// validatePatchArguments rejects a patch that names one attribute as both set
+// and unset. The order between the two halves would otherwise be the only
+// thing deciding the outcome, which no caller can rely on by accident.
+func validatePatchArguments(set map[string]any, unset []string) error {
+	for _, key := range unset {
+		if _, both := set[key]; both {
+			return fmt.Errorf("session: attribute %q cannot be both set and unset", key)
+		}
+	}
+	return nil
+}
+
+// patchedAttributes returns a new attributes map with every unset key removed
+// and every set key assigned. A nil current map with no set keys stays nil, so
+// a patch that only removes absent keys never turns "no attributes" into a
+// stored empty object.
+func patchedAttributes(current, set map[string]any, unset []string) map[string]any {
+	if current == nil && len(set) == 0 {
+		return nil
+	}
+	merged := cloneMap(current)
+	if merged == nil {
+		merged = make(map[string]any, len(set))
+	}
+	for _, key := range unset {
+		delete(merged, key)
+	}
+	for key, value := range set {
+		merged[key] = cloneValue(value)
+	}
+	return merged
+}
+
+// patchKeyCount is the number of distinct attribute keys a patch names. It is
+// the Count an attributes-patched event carries: a size, never a key name or a
+// value.
+func patchKeyCount(set map[string]any, unset []string) int {
+	keys := make(map[string]struct{}, len(set)+len(unset))
+	for key := range set {
+		keys[key] = struct{}{}
+	}
+	for _, key := range unset {
+		keys[key] = struct{}{}
+	}
+	return len(keys)
 }

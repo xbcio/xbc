@@ -11,6 +11,11 @@ import (
 // Key is the stable configuration and middleware identity.
 const Key plugin.Key = "requestid"
 
+// tracingKey mirrors the stable plugin.Key identity owned by the sibling HTTP
+// tracing middleware. requestid must not import that independently versioned
+// extension module for a bare identity value.
+const tracingKey plugin.Key = "tracing-http"
+
 // Plugin contributes request-ID propagation to transport/web.
 type Plugin struct {
 	state atomic.Pointer[normalizedConfig]
@@ -66,9 +71,12 @@ func newPlugin(cfg Config) (*Plugin, error) {
 func (p *Plugin) Handler() web.Handler { return p.handle }
 
 // Order makes the validated/generated ID available to optional access logging.
+// When HTTP tracing is composed it runs first, so the logger bound below also
+// carries the request's trace fields.
 func (*Plugin) Order() web.Order {
 	return web.Order{
 		Phase:  web.PhaseObserve,
+		After:  []web.OrderRef{web.Prefer(tracingKey)},
 		Before: []web.OrderRef{web.Prefer(accesslog.Key)},
 	}
 }

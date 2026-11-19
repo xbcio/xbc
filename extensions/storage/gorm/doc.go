@@ -57,6 +57,23 @@
 // gorm.ErrForeignKeyViolated with errors.Is. It is off by default because the
 // translated values replace the driver's own errors.
 //
+// # Error classification
+//
+// IsDuplicateKey classifies unique-key conflicts so application code can branch
+// without importing driver internals or matching message text. It recognizes:
+//
+//   - MySQL error number 1062;
+//   - PostgreSQL SQLSTATE 23505;
+//   - SQLite driver errors: the extended UNIQUE and PRIMARY-KEY result codes;
+//   - GORM's ErrDuplicatedKey sentinel, which IsDuplicateKey also accepts when
+//     translate_error has replaced the driver error.
+//
+// Message-substring matching is deliberately absent. Text varies across driver
+// versions, localization, and wrapping, and a substring such as "duplicate
+// key" appears in unrelated failures, so it produces false positives. Errors
+// from other dialects, including SQL Server, and errors that carry no
+// structured signal return false.
+//
 // # Direct embedding
 //
 // A caller that owns its connection lifecycle without an XBC application can

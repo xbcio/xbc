@@ -20,6 +20,40 @@
 // lapsed is not a claim that moved, and only the backend can tell the two
 // apart.
 //
+// # Blocking acquisition
+//
+// Acquire polls any Locker until it wins or the caller's context ends. It is a
+// function over the contract rather than another interface, so a backend gains
+// blocking acquisition by implementing TryAcquire alone. WithMaxAttempts and
+// WithRetryInterval correspond to the tries and retry-delay settings of the
+// redsync library this contract is intended to replace: a caller that wants
+// redsync's default attempt budget passes WithMaxAttempts(32), and the 50ms
+// default interval matches redsync's default delay. Without that option the
+// attempt budget is unbounded and the context is the only bound.
+//
+// The wait between attempts is jittered within [interval/2, interval], so
+// callers started together -- a rolling restart, a node that came back with its
+// pods -- do not poll the store in lockstep, and no wait exceeds the configured
+// interval. Exhausting the attempt budget while the context is still live
+// reports ErrNotAcquired; a context that ends first reports a wrapped context
+// error, so a caller can tell its own policy from a deadline.
+//
+// # Strict renewal
+//
+// Renew's re-establishment rule serves placement, where abandoning a slot costs
+// a cluster-wide reshuffle and a claim that merely lapsed is better
+// re-confirmed than given up. A caller whose work must stop the moment it can
+// no longer prove ownership -- mutual exclusion, where two copies of the work
+// running is worse than none -- asserts StrictLease and calls RenewStrict: the
+// key is extended only while it still carries the lease's token, and an absent
+// key or another owner's token reports ErrLeaseLost instead of re-creating the
+// key. The ordinary Renew keeps its default behaviour for every existing
+// consumer.
+//
+// Strict renewal does not add a fencing token either. A caller that uses it as
+// a stop signal still treats a lost lease as a reason to stop, not as proof
+// that no other copy of the work is running; see below.
+//
 // # Who holds a key
 //
 // TryAcquire takes a claimant: the name of the process asking. An

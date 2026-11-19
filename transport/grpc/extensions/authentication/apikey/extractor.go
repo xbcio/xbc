@@ -11,7 +11,7 @@ import (
 )
 
 // Scheme pairs the extractor with the neutral authenticator it feeds.
-func (*Extractor) Scheme() authentication.Scheme { return apikeycore.Scheme }
+func (e *Extractor) Scheme() authentication.Scheme { return e.scheme }
 
 // entryState classifies why singleEntry could not return one clean value:
 // missing entirely, one usable value, repeated, or present but blank or padded
@@ -58,7 +58,10 @@ func (e *Extractor) ExtractCredential(_ context.Context, md metadata.MD) (authen
 
 	entryKey, keyPresent, keyState := singleEntry(md, e.key)
 	authorization, authorizationPresent, authState := singleEntry(md, "authorization")
-	appIDValue, _, appIDState := singleEntry(md, e.appIDKey)
+	appIDValue, appIDState := "", entryAbsent
+	if !e.ignoreAppID {
+		appIDValue, _, appIDState = singleEntry(md, e.appIDKey)
+	}
 
 	// Phase A. The key entry names apikey in any form, valid or not.
 	// authorization names it only when AllowBearer makes it one of apikey's

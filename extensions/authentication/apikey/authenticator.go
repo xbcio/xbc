@@ -14,8 +14,9 @@ const Scheme authentication.Scheme = "apikey"
 
 var _ authentication.Authenticator = (*Plugin)(nil)
 
-// Scheme identifies this plugin to the authentication manager.
-func (*Plugin) Scheme() authentication.Scheme { return Scheme }
+// Scheme identifies this instance to the authentication manager: the scheme
+// given to WithScheme, or the package constant Scheme by default.
+func (p *Plugin) Scheme() authentication.Scheme { return p.state.scheme }
 
 // PresentedKey is the credential value a transport adapter hands to
 // Authenticate: the presented secret and the caller-supplied app ID, which is
@@ -72,7 +73,7 @@ func (p *Plugin) Authenticate(
 	}
 	return authentication.Accepted(authentication.Principal{
 		Subject:    stored.Subject,
-		AuthMethod: string(Scheme),
+		AuthMethod: string(state.scheme),
 		Attributes: attributes,
 	}), nil
 }

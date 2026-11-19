@@ -87,4 +87,10 @@
 // belongs to one connection. NewLocker is the same implementation without the
 // plugin graph, for composition roots that must decide placement before a plan
 // exists; it accepts any topology's client, this plugin's included.
+//
+// Every lease this package exports implements lease.StrictLease beside
+// lease.Lease. RenewStrict extends the key only while it still carries the
+// lease's token and reports lease.ErrLeaseLost when the key is absent or held
+// by another owner, never re-establishing a key that lapsed; Renew keeps the
+// ordinary rule, where a lapsed key is re-confirmed under the same token.
 package redis

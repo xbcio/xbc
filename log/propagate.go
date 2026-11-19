@@ -13,6 +13,12 @@ import (
 // W3C only specifies traceparent; request_id is the human-friendly half.
 const RequestIDHeader = "X-Request-Id"
 
+// RequestIDField is the fixed structured-log key that carries the request ID
+// bound with WithRequestID. It deliberately does not follow the configurable
+// trace layout: log collectors and access-log queries select the request ID by
+// this name.
+const RequestIDField = "request_id"
+
 // Only W3C TraceContext is used. Formats like B3 or Jaeger can be wired up
 // by the caller if needed.
 var propagator = propagation.TraceContext{}

@@ -100,6 +100,92 @@ func WithTrace(ctx context.Context, t Trace) context.Context {
 	return context.WithValue(ctx, traceKey{}, t)
 }
 
+type requestIDKey struct{}
+
+// requestIDBinding remembers the base a bound request-ID logger was derived
+// from, so a second WithRequestID call replaces the fixed field instead of
+// stacking another one. The Logger is kept as the base because the fields it
+// captured at derivation time cannot be recomputed from ctx.
+type requestIDBinding struct {
+	id   string
+	base Logger
+}
+
+// WithRequestID binds a Logger into ctx that carries id under RequestIDField,
+// and returns the derived context. It is how an HTTP entry middleware
+// publishes the request ID that its response header and the access log report,
+// so business code logging through Ctx(ctx) joins those records on one value.
+//
+// The base is the Logger already bound to ctx when one is present; otherwise
+// the process Logger, enriched with ctx's trace fields when a trace is present
+// (trace_id, span_id, span_name). ctx's trace is rewritten so its RequestID is
+// id: later derivations -- Span, Inject, and Ctx's own slow path -- then also
+// carry the same request ID, and the trace's previous request ID never appears
+// beside the bound one. The trace's trace_id is untouched. request_id and
+// trace_id are different fields with different jobs, and WithRequestID never
+// makes their values equal.
+//
+// Calling WithRequestID again with the same id on the returned context is a
+// no-op; a different id re-derives from the base the first call captured, so
+// the context never holds two request_id fields fixed by this function. A
+// logger bound by something other than this function is used as the base as
+// it stands; if that logger already fixed a request_id field, the duplicate is
+// the caller's. An empty id leaves ctx unchanged, and a nil ctx is treated as
+// context.Background.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if id == "" {
+		return ctx
+	}
+
+	binding, bound := ctx.Value(requestIDKey{}).(requestIDBinding)
+	if bound && binding.id == id {
+		return ctx
+	}
+
+	// The HTTP layer's request ID is authoritative for this hop, the same way
+	// Extract lets an upstream X-Request-Id override the ID derived from
+	// trace_id. Keep the trace in step so this one decision reaches every
+	// derivation that reads the trace.
+	if t := TraceFrom(ctx); t.Valid() {
+		t.RequestID = id
+		ctx = WithTrace(ctx, t)
+	}
+
+	base := L()
+	switch {
+	case bound:
+		base = binding.base
+	default:
+		if l, ok := ctx.Value(loggerKey{}).(Logger); ok && l != nil {
+			base = l
+		} else if t := TraceFrom(ctx); t.Valid() {
+			base = base.With(fieldsWithoutRequestID(traceKV(t))...)
+		}
+	}
+
+	boundCtx := context.WithValue(ctx, requestIDKey{}, requestIDBinding{id: id, base: base})
+	return NewContext(boundCtx, base.With(RequestIDField, id))
+}
+
+// fieldsWithoutRequestID drops the trace-derived request-ID pair -- under both
+// the fixed name and whatever name Config.Trace configured -- so exactly one
+// request_id, the HTTP one, is appended in its place.
+func fieldsWithoutRequestID(fields []any) []any {
+	traceNames := currentTraceConfig()
+	kept := fields[:0]
+	for i := 0; i+1 < len(fields); i += 2 {
+		key, _ := fields[i].(string)
+		if key == RequestIDField || key == traceNames.RequestID {
+			continue
+		}
+		kept = append(kept, fields[i], fields[i+1])
+	}
+	return kept
+}
+
 // TraceFrom retrieves the trace from ctx. Returns the zero-value Trace
 // (Valid() == false) if not found, without panicking.
 //

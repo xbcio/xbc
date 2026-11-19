@@ -1,4 +1,4 @@
-package gormquery
+package gormx
 
 import (
 	"fmt"
@@ -216,7 +216,7 @@ func parseColumnString(value string) TypedColumn {
 // bad one must not become part of a statement.
 func mustColumnName(name string) string {
 	if !columnNamePattern.MatchString(name) {
-		panic(fmt.Sprintf("gormquery: invalid column name %q: must match %s", name, columnNamePattern))
+		panic(fmt.Sprintf("gormx: invalid column name %q: must match %s", name, columnNamePattern))
 	}
 	return name
 }

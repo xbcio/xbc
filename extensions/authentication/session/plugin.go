@@ -9,6 +9,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/xbcio/xbc/extensions/authentication"
+	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -24,19 +25,26 @@ const redisPluginKey plugin.Key = "redis"
 
 // Plugin owns session persistence. It is the protocol-neutral half of session
 // authentication: it exports an authentication.Authenticator for opaque
-// session IDs and the Manager that creates, rotates, and revokes them, and it
-// publishes the configured cookie carriage (Cookie, Lifetime) for the
+// session IDs, the Manager that creates, rotates, and revokes them, and the
+// AttributeManager that verifies them and maintains their attributes in place.
+// It also publishes the configured cookie carriage (Cookie, Lifetime) for the
 // transport adapter that moves the ID to and from the client. It embeds
-// *manager so it satisfies Manager directly through promoted methods, which
-// plugin.ExportAs requires of a Definition's primary type.
+// *manager so it satisfies both manager contracts directly through promoted
+// methods, which plugin.ExportAs requires of a Definition's primary type.
 type Plugin struct {
 	config normalizedConfig
 	*manager
 	owned *MemoryStore
 }
 
+var (
+	_ Manager          = (*Plugin)(nil)
+	_ AttributeManager = (*Plugin)(nil)
+)
+
 type options struct {
-	store Store
+	store     Store
+	observers []Observer
 }
 
 // Option customizes a programmatically assembled plugin.
@@ -45,6 +53,22 @@ type Option func(*options)
 // WithStore injects a Store and bypasses configured backend construction. Its
 // lifecycle remains caller-owned.
 func WithStore(store Store) Option { return func(o *options) { o.store = store } }
+
+// WithObserver registers an observer for the plugin's session events. It may
+// be supplied more than once; observers are notified in the order supplied.
+// A nil observer is ignored. Observers contributed by other plugins through
+// ObserverContributor are notified as well when the plugin is assembled
+// through its Definition.
+func WithObserver(observer Observer) Option {
+	return func(o *options) {
+		if !isNilObserver(observer) {
+			o.observers = append(o.observers, observer)
+		}
+	}
+}
+
+// observerContributors gathers observers exported by other Definitions.
+var observerContributors = plugin.Collect[ObserverContributor]()
 
 var definition = plugin.DefinePlanned(
 	Key,
@@ -58,6 +82,7 @@ var definition = plugin.DefinePlanned(
 		Exports: plugin.Contracts(
 			plugin.ExportAs[authentication.Authenticator](func(value *Plugin) authentication.Authenticator { return value }),
 			plugin.ExportAs(func(value *Plugin) Manager { return value }),
+			plugin.ExportAs(func(value *Plugin) AttributeManager { return value }),
 		),
 	},
 )
@@ -70,11 +95,11 @@ func Definition() plugin.Definition { return definition }
 // Bundle returns session's side-effect-free explicit composition bundle.
 func Bundle() plugin.Bundle { return bundle }
 
-// plan selects the Store's inputs from the prepared config: the memory
-// backend needs none, while the redis backend requires the named Redis client
-// instance the configuration selects. The planner itself acquires no resource;
-// the returned Plan's factory does that once the graph has wired the declared
-// inputs.
+// plan selects the Store's inputs from the prepared config: both backends take
+// the contributed observers, while the redis backend additionally requires the
+// named Redis client instance the configuration selects. The planner itself
+// acquires no resource; the returned Plan's factory does that once the graph
+// has wired the declared inputs.
 func plan(cfg Config) (plugin.Plan[*Plugin], error) {
 	config, err := normalizeConfig(cfg)
 	if err != nil {
@@ -82,13 +107,13 @@ func plan(cfg Config) (plugin.Plan[*Plugin], error) {
 	}
 
 	if config.backend == BackendMemory {
-		return plugin.PlanOf(plugin.Inputs(), func(plugin.BuildContext) (*Plugin, error) {
-			return newMemoryPlugin(config)
+		return plugin.PlanOf(plugin.Inputs(observerContributors), func(context plugin.BuildContext) (*Plugin, error) {
+			return newMemoryPlugin(config, collectObservers(observerContributors.Get(context)))
 		}), nil
 	}
 
 	client := plugin.RefToInstance[goredis.UniversalClient](redisPluginKey, config.redisInstance)
-	return plugin.PlanOf(plugin.Inputs(client), func(context plugin.BuildContext) (*Plugin, error) {
+	return plugin.PlanOf(plugin.Inputs(observerContributors, client), func(context plugin.BuildContext) (*Plugin, error) {
 		value := client.Get(context).Value
 		if value == nil {
 			return nil, fmt.Errorf("session: Redis client instance %q is unavailable", config.redisInstance)
@@ -97,7 +122,7 @@ func plan(cfg Config) (plugin.Plan[*Plugin], error) {
 		if err != nil {
 			return nil, err
 		}
-		return newPlugin(config, store, nil), nil
+		return newPlugin(config, store, nil, collectObservers(observerContributors.Get(context)))
 	}), nil
 }
 
@@ -116,31 +141,75 @@ func New(cfg Config, opts ...Option) (*Plugin, error) {
 		return nil, err
 	}
 	if built.store != nil {
-		return newPlugin(config, built.store, nil), nil
+		return newPlugin(config, built.store, nil, built.observers)
 	}
 	if config.backend != BackendMemory {
 		return nil, fmt.Errorf("session: backend %q requires WithStore(...) for direct construction", config.backend)
 	}
-	return newMemoryPlugin(config)
+	return newMemoryPlugin(config, built.observers)
 }
 
-func newMemoryPlugin(config normalizedConfig) (*Plugin, error) {
+func newMemoryPlugin(config normalizedConfig, observers []Observer) (*Plugin, error) {
 	owned, err := NewMemoryStore(config.cleanupInterval)
 	if err != nil {
 		return nil, err
 	}
-	return newPlugin(config, owned, owned), nil
+	return newPlugin(config, owned, owned, observers)
 }
 
-func newPlugin(config normalizedConfig, store Store, owned *MemoryStore) *Plugin {
+// newPlugin wires the store's optional capabilities. A positive max_sessions
+// needs the subject index, so construction fails when the store has none
+// instead of letting the first Create discover it: an application that asked
+// for a session bound must not start without one. A MemoryStore also receives
+// the observer list so its expiry sweeper can report EventExpired.
+func newPlugin(config normalizedConfig, store Store, owned *MemoryStore, observers []Observer) (*Plugin, error) {
+	if config.maxSessions > 0 {
+		if _, ok := store.(IndexedStore); !ok {
+			return nil, fmt.Errorf("session: max_sessions requires a Store that implements IndexedStore")
+		}
+	}
+	if memory, ok := store.(*MemoryStore); ok {
+		memory.setObservers(observers)
+	}
 	return &Plugin{
 		config:  config,
-		manager: &manager{store: store, cfg: config},
+		manager: &manager{store: store, cfg: config, observers: append([]Observer(nil), observers...)},
 		owned:   owned,
-	}
+	}, nil
 }
 
-// Manager returns this plugin's handler-facing session API.
+// collectObservers flattens the contributed observers in graph order. A
+// contributor is best-effort telemetry: a nil contributor, a nil observer, and
+// a panicking Observers callback are recorded through the log facade and
+// skipped instead of failing application construction.
+func collectObservers(contributors []plugin.Entry[ObserverContributor]) []Observer {
+	var observers []Observer
+	for _, entry := range contributors {
+		for _, observer := range contributorObservers(entry) {
+			if !isNilObserver(observer) {
+				observers = append(observers, observer)
+			}
+		}
+	}
+	return observers
+}
+
+func contributorObservers(entry plugin.Entry[ObserverContributor]) (observers []Observer) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.L().Error("session: session observer contributor panicked", "plugin", entry.Identity.String())
+			observers = nil
+		}
+	}()
+	if isNilObserver(entry.Value) {
+		return nil
+	}
+	return entry.Value.Observers()
+}
+
+// Manager returns this plugin's handler-facing session API. The Definition
+// exports the same value as AttributeManager for consumers that need
+// verification or in-place attribute updates.
 func (p *Plugin) Manager() Manager { return p.manager }
 
 // CookieSettings is the normalized cookie carriage from plugins.session. The

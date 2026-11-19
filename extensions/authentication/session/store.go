@@ -9,15 +9,16 @@ import (
 	"time"
 )
 
-// Store is the persistence contract used by Manager. Implementations receive
-// the opaque ID but must not use it directly as an external storage key. Touch
-// returns the current session and atomically renews its idle lease only when
-// minInterval has elapsed. Rotate installs replacement and retires oldID: a nil
-// return guarantees the old ID no longer resolves, ErrNotFound reports an old
-// ID that is gone or past its lifetime, and ErrAlreadyExists reports a
-// replacement ID another session holds. A store over a distributed backend may
-// run the rotation as a sequence of single-key steps rather than one atomic
-// operation, so a rotation in flight leaves both IDs briefly valid, and two
+// Store is the persistence contract used by Manager and AttributeManager.
+// Implementations receive the opaque ID but must not use it directly as an
+// external storage key. Touch returns the current session and atomically renews
+// its idle lease only when minInterval has elapsed. Rotate installs replacement
+// and retires oldID: a nil return guarantees the old ID no longer resolves,
+// ErrNotFound reports an old ID that is gone or past its lifetime, and
+// ErrAlreadyExists reports a replacement ID another session holds. A store over
+// a distributed backend may run the rotation as a sequence of single-key steps
+// rather than one atomic operation, so a rotation in flight leaves both IDs
+// briefly valid, and two
 // concurrent rotations with different replacements may both report success,
 // each receiving only the replacement it passed in.
 type Store interface {
@@ -75,6 +76,43 @@ type IndexedStore interface {
 	ListBySubject(ctx context.Context, subject string) ([]SessionInfo, error)
 	RevokeBySubject(ctx context.Context, subject string) (int, error)
 	RevokeByDigest(ctx context.Context, subject, digest string) (bool, error)
+}
+
+// AttributeStore is the optional capability of a Store that can replace the
+// attributes of a live session in place. MemoryStore and RedisStore implement
+// it; a custom Store injected with WithStore need not, and AttributeManager
+// then reports ErrNotSupported from UpdateAttributes.
+//
+// UpdateAttributes replaces the session's attributes wholesale, validates them
+// as Create does (JSON-safe), and preserves the session's Subject, IssuedAt,
+// ExpiresAt, and idle lease: it neither extends the absolute lifetime nor
+// resets any deadline, and it never revives an expired, revoked, or unknown
+// session, reporting found=false for each. It changes no index entry, so the
+// subject index keeps exactly the members it held. A found=true result carries
+// the updated session under requested ID.
+type AttributeStore interface {
+	Store
+	UpdateAttributes(ctx context.Context, id string, attributes map[string]any) (Session, bool, error)
+}
+
+// PatchStore is the optional capability of a Store that applies an attribute
+// delta to a live session in place. MemoryStore and RedisStore implement it; a
+// custom Store injected with WithStore need not, and AttributeManager then
+// reports ErrNotSupported from PatchAttributes.
+//
+// PatchAttributes removes every key in unset first and assigns every key in set
+// second, validates the merged whole as Create validates attributes (JSON-safe),
+// and preserves the session's Subject, IssuedAt, ExpiresAt, and idle lease
+// exactly as UpdateAttributes does: it neither extends the absolute lifetime
+// nor resets any deadline, it never revives an expired, revoked, or unknown
+// session (found=false), and it changes no index entry. A key that appears in
+// both set and unset is a parameter error. An empty patch is a lookup: it
+// returns the current session when it is live. The built-in MemoryStore applies
+// the delta under its lock; RedisStore documents its optimistic merge and the
+// ErrConflict outcome.
+type PatchStore interface {
+	Store
+	PatchAttributes(ctx context.Context, id string, set map[string]any, unset []string) (Session, bool, error)
 }
 
 // IDDigest returns the fixed-width SHA-256 digest built-in stores use as their

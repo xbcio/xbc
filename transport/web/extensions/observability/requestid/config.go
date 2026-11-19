@@ -24,12 +24,20 @@ type Config struct {
 	// generated server-side.
 	TrustIncoming bool `yaml:"trust_incoming" default:"true"`
 
+	// BindLogger publishes the request ID on the request context's logger, so
+	// business code reaching it through log.Ctx(ctx) records the same
+	// request_id as the response header and the access log. When a trace is
+	// already on the context, the bound logger carries its trace fields as
+	// well. Disable it for applications that publish request IDs through their
+	// own logging arrangement.
+	BindLogger bool `yaml:"bind_logger" default:"true"`
+
 	MaxLength int `yaml:"max_length" default:"128" validate:"min=16,max=1024"`
 }
 
 // DefaultConfig returns the same defaults applied by XBC's config binder.
 func DefaultConfig() Config {
-	return Config{Header: defaultHeader, TrustIncoming: true, MaxLength: defaultMaxLength}
+	return Config{Header: defaultHeader, TrustIncoming: true, BindLogger: true, MaxLength: defaultMaxLength}
 }
 
 // Validate checks limits and prevents response-header injection.
@@ -41,6 +49,7 @@ func (c Config) Validate() error {
 type normalizedConfig struct {
 	header        string
 	trustIncoming bool
+	bindLogger    bool
 	maxLength     int
 }
 
@@ -58,6 +67,7 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 	return normalizedConfig{
 		header:        http.CanonicalHeaderKey(header),
 		trustIncoming: c.TrustIncoming,
+		bindLogger:    c.BindLogger,
 		maxLength:     c.MaxLength,
 	}, nil
 }

@@ -14,16 +14,16 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )
 
 require (
-	github.com/xbcio/xbc v0.1.0
+	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/authentication v0.1.0
 	github.com/xbcio/xbc/extensions/authentication/jwt v0.1.0
-	github.com/xbcio/xbc/transport/web v0.1.0
+	github.com/xbcio/xbc/transport/web v0.4.0
 )
 
 require (

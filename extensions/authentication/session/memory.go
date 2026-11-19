@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,16 +19,18 @@ type memoryRecord struct {
 // of its sessions. Every mutation runs under one lock, so the subject index
 // never holds a member whose record is gone and the sequencing the IndexedStore
 // contract asks of a distributed store is trivially satisfied. A cleanup loop
-// bounds retention of expired records.
+// bounds retention of expired records and, when observers are installed,
+// reports each swept session as an EventExpired.
 type MemoryStore struct {
-	mu      sync.Mutex
-	records map[string]memoryRecord
-	index   map[string]map[string]struct{}
-	now     func() time.Time
-	stop    chan struct{}
-	done    chan struct{}
-	once    sync.Once
-	stopped bool
+	mu        sync.Mutex
+	records   map[string]memoryRecord
+	index     map[string]map[string]struct{}
+	now       func() time.Time
+	observers atomic.Pointer[[]Observer]
+	stop      chan struct{}
+	done      chan struct{}
+	once      sync.Once
+	stopped   bool
 }
 
 // NewMemoryStore starts an in-process store cleanup loop.
@@ -53,6 +56,18 @@ func (s *MemoryStore) clock() time.Time {
 	return s.now().UTC()
 }
 
+// setObservers installs the observer list the expiry sweeper reports to. The
+// plugin calls it once during construction, before the store is shared; the
+// atomic pointer keeps a later reinstall race-free with the sweeper goroutine.
+func (s *MemoryStore) setObservers(observers []Observer) {
+	if len(observers) == 0 {
+		s.observers.Store(nil)
+		return
+	}
+	snapshot := append([]Observer(nil), observers...)
+	s.observers.Store(&snapshot)
+}
+
 func (s *MemoryStore) cleanupLoop(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer func() {
@@ -69,16 +84,43 @@ func (s *MemoryStore) cleanupLoop(interval time.Duration) {
 	}
 }
 
+// cleanup removes every record past its absolute lifetime or its idle lease
+// and reports each removal as an EventExpired. Events are collected under the
+// lock that guarantees the record was still live and delivered after it is
+// released, so an observer may call back into the store. A stopped store
+// reports nothing. Lazy pruning on the read paths does not emit this event;
+// only this sweep does.
 func (s *MemoryStore) cleanup(now time.Time) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.stopped {
+		s.mu.Unlock()
 		return
 	}
+	var expired []Event
 	for key, record := range s.records {
 		if !record.live(now) {
+			expired = append(expired, Event{
+				Kind:    EventExpired,
+				Subject: record.value.Subject,
+				Digest:  key,
+				Verdict: VerdictValid,
+				Count:   1,
+			})
 			s.dropLocked(key)
 		}
+	}
+	s.mu.Unlock()
+
+	if len(expired) == 0 {
+		return
+	}
+	snapshot := s.observers.Load()
+	if snapshot == nil {
+		return
+	}
+	ctx := context.Background()
+	for _, event := range expired {
+		notifyObservers(ctx, *snapshot, event)
 	}
 }
 
@@ -276,7 +318,90 @@ func (s *MemoryStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// UpdateAttributes replaces the attributes of a live record in place. It
+// leaves the absolute expiry, the idle lease, the last-touch time, and the
+// subject index untouched, and prunes a dead record instead of reviving it.
+func (s *MemoryStore) UpdateAttributes(ctx context.Context, id string, attributes map[string]any) (Session, bool, error) {
+	if err := contextError(ctx); err != nil {
+		return Session{}, false, err
+	}
+	if id == "" {
+		return Session{}, false, errors.New("session: ID cannot be empty")
+	}
+	normalized, err := normalizeAttributes(attributes)
+	if err != nil {
+		return Session{}, false, err
+	}
+	now := s.clock()
+	key := IDDigest(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return Session{}, false, ErrStopped
+	}
+	record, ok := s.records[key]
+	if !ok {
+		return Session{}, false, nil
+	}
+	if !record.live(now) {
+		s.dropLocked(key)
+		return Session{}, false, nil
+	}
+	record.value.Attributes = normalized
+	s.records[key] = record
+	value := cloneSession(record.value)
+	value.ID = id
+	return value, true, nil
+}
+
+// PatchAttributes applies an attribute delta to a live record under the store's
+// lock, so concurrent patches of different attributes are all retained. It
+// leaves the absolute expiry, the idle lease, the last-touch time, and the
+// subject index untouched, validates the merged map exactly as Create validates
+// attributes, and prunes a dead record instead of reviving it.
+func (s *MemoryStore) PatchAttributes(ctx context.Context, id string, set map[string]any, unset []string) (Session, bool, error) {
+	if err := contextError(ctx); err != nil {
+		return Session{}, false, err
+	}
+	if id == "" {
+		return Session{}, false, errors.New("session: ID cannot be empty")
+	}
+	if err := validatePatchArguments(set, unset); err != nil {
+		return Session{}, false, err
+	}
+	normalized, err := normalizeAttributes(set)
+	if err != nil {
+		return Session{}, false, err
+	}
+	now := s.clock()
+	key := IDDigest(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopped {
+		return Session{}, false, ErrStopped
+	}
+	record, ok := s.records[key]
+	if !ok {
+		return Session{}, false, nil
+	}
+	if !record.live(now) {
+		s.dropLocked(key)
+		return Session{}, false, nil
+	}
+	merged, err := normalizeAttributes(patchedAttributes(record.value.Attributes, normalized, unset))
+	if err != nil {
+		return Session{}, false, err
+	}
+	record.value.Attributes = merged
+	s.records[key] = record
+	value := cloneSession(record.value)
+	value.ID = id
+	return value, true, nil
+}
+
 var _ IndexedStore = (*MemoryStore)(nil)
+var _ AttributeStore = (*MemoryStore)(nil)
+var _ PatchStore = (*MemoryStore)(nil)
 
 // ListBySubject returns the live sessions of subject. A member whose record is
 // gone, dead, or owned by another subject is pruned instead of reported.

@@ -21,11 +21,11 @@ func TestModuleManifestIsPublishableAndPinsReleasedTags(t *testing.T) {
 		"go 1.26.0",
 		"github.com/alicebob/miniredis/v2 v2.38.0",
 		"github.com/redis/go-redis/v9 v9.21.0",
-		"github.com/xbcio/xbc v0.1.0",
+		"github.com/xbcio/xbc v0.4.0",
 		"github.com/xbcio/xbc/extensions/authentication v0.3.0",
 		"github.com/xbcio/xbc/extensions/authentication/oauth2 v0.2.0",
-		"github.com/xbcio/xbc/extensions/authentication/session v0.2.0",
-		"github.com/xbcio/xbc/transport/web v0.2.0",
+		"github.com/xbcio/xbc/extensions/authentication/session v0.4.0",
+		"github.com/xbcio/xbc/transport/web v0.4.0",
 		"github.com/xbcio/xbc/transport/web/extensions/authentication/federation v0.1.0",
 	} {
 		if !strings.Contains(manifest, expected) {

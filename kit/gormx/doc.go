@@ -1,4 +1,4 @@
-// Package gormquery provides protocol-neutral query helpers for services that
+// Package gormx provides protocol-neutral query helpers for services that
 // build GORM queries: pagination, sorting, time ranges, and "update only when
 // non-empty" assignment clauses.
 //
@@ -15,12 +15,16 @@
 // their own: a nil field, a nil receiver, or a non-positive value falls back to
 // DefaultCurrent and DefaultPageSize, so a value built in code behaves like one
 // bound from a request. PageSize is capped at MaxPageSize so one request cannot
-// ask for an unbounded page. The offset is never negative, including when
-// Current is absurdly large.
+// ask for an unbounded page. A call site that legitimately needs a different
+// cap -- an export or batch endpoint handing back a large result set, for
+// example -- uses OffsetAndLimitMax or ToOffsetAndLimitMax, which take the cap
+// as an argument. A non-positive cap removes the cap for that call; the caller
+// is then responsible for the query size it permits. The offset is never
+// negative, including when Current is absurdly large.
 //
-// ToOffsetAndLimit clears Current and PageSize after converting them;
-// OffsetAndLimit, Offset, and Limit leave the receiver untouched. See
-// "Mutating and pure variants" below.
+// ToOffsetAndLimit and ToOffsetAndLimitMax clear Current and PageSize after
+// converting them; OffsetAndLimit, Offset, Limit, and OffsetAndLimitMax leave
+// the receiver untouched. See "Mutating and pure variants" below.
 //
 // # Sorting
 //
@@ -61,11 +65,12 @@
 //
 // # Mutating and pure variants
 //
-// ToOffsetAndLimit, ToOrderExpr, and ToExpr clear the receiver after a
-// successful conversion. That is not decoration: request value objects embed
-// these structs and are sometimes handed to GORM as a query condition
-// afterwards, so leaving bound parameters behind would turn "current=1" into a
-// predicate on a column that does not exist. The same behavior keeps existing
-// call sites working unchanged. New code that does not need the side effect can
-// use OffsetAndLimit, OrderExpr, and Expr, which never modify their inputs.
-package gormquery
+// ToOffsetAndLimit, ToOffsetAndLimitMax, ToOrderExpr, and ToExpr clear the
+// receiver after a successful conversion. That is not decoration: request value
+// objects embed these structs and are sometimes handed to GORM as a query
+// condition afterwards, so leaving bound parameters behind would turn
+// "current=1" into a predicate on a column that does not exist. The same
+// behavior keeps existing call sites working unchanged. New code that does not
+// need the side effect can use OffsetAndLimit, OffsetAndLimitMax, OrderExpr,
+// and Expr, which never modify their inputs.
+package gormx

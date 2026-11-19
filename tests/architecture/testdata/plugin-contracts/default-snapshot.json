@@ -19,6 +19,7 @@
         "AllowBearer": true,
         "BearerScheme": "Bearer",
         "RequireAppID": false,
+        "IgnoreAppID": false,
         "MinKeyBytes": 32,
         "Static": null
       }
@@ -104,6 +105,15 @@
         "MinBytes": 0,
         "Fallback": "none",
         "RefreshInterval": 0
+      }
+    },
+    {
+      "key": "banner",
+      "config_type": "github.com/xbcio/xbc/extensions/observability/banner.Config",
+      "defaults": {
+        "Text": "",
+        "Font": "standard",
+        "Style": "ascii"
       }
     },
     {
@@ -733,6 +743,7 @@
       "defaults": {
         "Header": "X-Request-ID",
         "TrustIncoming": true,
+        "BindLogger": true,
         "MaxLength": 128
       }
     },
@@ -780,7 +791,22 @@
         "TouchInterval": 300000000000,
         "CleanupInterval": 60000000000,
         "OperationTimeout": 2000000000,
-        "IDBytes": 32
+        "IDBytes": 32,
+        "MaxSessions": 0,
+        "OnExceed": "revoke_oldest"
+      }
+    },
+    {
+      "key": "session-http",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authentication/session.Config",
+      "defaults": {
+        "Carriers": [
+          "cookie"
+        ],
+        "Header": {
+          "Name": "Authorization",
+          "Scheme": "Session"
+        }
       }
     },
     {

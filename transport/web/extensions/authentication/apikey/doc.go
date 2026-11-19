@@ -27,4 +27,20 @@
 //		return nil
 //	}
 //	c.JSON(http.StatusOK, map[string]any{"subject": principal.Subject})
+//
+// # Customized variants
+//
+// The extractor takes its scheme, headers, and app-ID handling from the core
+// Plugin it pairs with, so a host can run a variant beside the default:
+//
+//	core, err := apikeycore.New(cfg, apikeycore.WithScheme("mcp-token"))
+//	extractor, err := apikey.New(core)
+//
+// Define the pair as two host Definitions under the host's own keys (the
+// core exporting authentication.Authenticator, the extractor exporting
+// web.CredentialExtractor) and declare both schemes in web.security.schemes.
+// The configuration keys (header, allow_bearer: false, ignore_app_id: true,
+// min_key_bytes with a floor of 16, static sha256 and subject) are described
+// in the core package documentation. With ignore_app_id the X-App-ID header
+// is never read, so a repeated or blank value cannot affect the variant.
 package apikey

@@ -2,6 +2,7 @@ package lease_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/parser"
 	"go/token"
@@ -13,9 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"github.com/xbcio/xbc/extensions/coordination/lease"
 )
 
@@ -23,12 +21,29 @@ import (
 // below must recognise it as self rather than as a third-party package.
 const modulePath = "github.com/xbcio/xbc/extensions/coordination/lease"
 
+// mustNoError stops the test when err is not nil.
+func mustNoError(t *testing.T, err error, format string, args ...any) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("%s: %v", fmt.Sprintf(format, args...), err)
+	}
+}
+
+// mustTrue stops the test when condition is false. Together with mustNoError it
+// is the whole assertion vocabulary the suite needs to stay dependency-free.
+func mustTrue(t *testing.T, condition bool, format string, args ...any) {
+	t.Helper()
+	if !condition {
+		t.Fatalf(format, args...)
+	}
+}
+
 // productionGoFiles returns this module's production file names. The test
 // binary runs in the module directory, so "." is the module root.
 func productionGoFiles(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(".")
-	require.NoError(t, err, "reading the contract module directory failed")
+	mustNoError(t, err, "reading the contract module directory failed")
 
 	var files []string
 	for _, entry := range entries {
@@ -47,22 +62,23 @@ func productionGoFiles(t *testing.T) []string {
 // attributes a violation to the exact file and import that caused it.
 func TestContractModuleImportsOnlyTheStandardLibrary(t *testing.T) {
 	files := productionGoFiles(t)
-	require.NotEmpty(t, files, "the contract module contains no production Go file, the guard below would prove nothing")
+	mustTrue(t, len(files) > 0, "the contract module contains no production Go file, the guard below would prove nothing")
 
 	checked := 0
 	for _, name := range files {
 		file, err := parser.ParseFile(token.NewFileSet(), name, nil, parser.ImportsOnly|parser.SkipObjectResolution)
-		require.NoError(t, err, "parsing %s failed", name)
+		mustNoError(t, err, "parsing %s failed", name)
 		for _, specification := range file.Imports {
 			importPath, err := strconv.Unquote(specification.Path.Value)
-			require.NoError(t, err, "parsing the import path in %s failed", name)
+			mustNoError(t, err, "parsing the import path in %s failed", name)
 			checked++
-			assert.Truef(t, isStdlib(importPath),
-				"%s imports %s; a contract module must be built from the standard library alone so that any consumer can depend on it without inheriting a dependency closure",
-				name, importPath)
+			if !isStdlib(importPath) {
+				t.Errorf("%s imports %s; a contract module must be built from the standard library alone so that any consumer can depend on it without inheriting a dependency closure",
+					name, importPath)
+			}
 		}
 	}
-	require.NotZero(t, checked,
+	mustTrue(t, checked > 0,
 		"no import was inspected, so this guard cannot distinguish a stdlib-only module from one that imports nothing")
 }
 
@@ -75,7 +91,7 @@ func TestContractModuleClosureIsStandardLibraryOnly(t *testing.T) {
 		t.Skip("go command is unavailable, skipping dependency closure check")
 	}
 	out, err := exec.Command("go", "list", "-deps", "./...").Output()
-	require.NoError(t, err, "go list -deps ./... failed in the contract module")
+	mustNoError(t, err, "go list -deps ./... failed in the contract module")
 
 	listed := 0
 	for _, line := range strings.Split(string(out), "\n") {
@@ -84,10 +100,11 @@ func TestContractModuleClosureIsStandardLibraryOnly(t *testing.T) {
 			continue
 		}
 		listed++
-		assert.Truef(t, isStdlib(dependency),
-			"the contract module's dependency closure contains %s; it must contain the standard library alone", dependency)
+		if !isStdlib(dependency) {
+			t.Errorf("the contract module's dependency closure contains %s; it must contain the standard library alone", dependency)
+		}
 	}
-	require.NotZero(t, listed,
+	mustTrue(t, listed > 0,
 		"go list -deps returned no dependency at all, so this guard actually did not take effect")
 }
 
@@ -96,15 +113,16 @@ func TestContractModuleClosureIsStandardLibraryOnly(t *testing.T) {
 // "zero dependency" module quietly acquires one.
 func TestContractModuleManifestDeclaresNoRequirement(t *testing.T) {
 	source, err := os.ReadFile("go.mod")
-	require.NoError(t, err, "reading the contract module manifest failed")
+	mustNoError(t, err, "reading the contract module manifest failed")
 
 	for _, line := range strings.Split(string(source), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "//") {
 			continue
 		}
-		assert.Falsef(t, strings.HasPrefix(trimmed, "require"),
-			"the contract module manifest declares %q; it must require nothing", trimmed)
+		if strings.HasPrefix(trimmed, "require") {
+			t.Errorf("the contract module manifest declares %q; it must require nothing", trimmed)
+		}
 	}
 }
 
@@ -135,8 +153,9 @@ type memoryLease struct {
 }
 
 var (
-	_ lease.Locker = (*memoryLocker)(nil)
-	_ lease.Lease  = (*memoryLease)(nil)
+	_ lease.Locker      = (*memoryLocker)(nil)
+	_ lease.Lease       = (*memoryLease)(nil)
+	_ lease.StrictLease = (*memoryLease)(nil)
 )
 
 func (l *memoryLocker) TryAcquire(_ context.Context, key, claimant string, ttl time.Duration) (lease.Lease, bool, error) {
@@ -182,6 +201,18 @@ func (l *memoryLease) Release(_ context.Context) (bool, error) {
 	return true, nil
 }
 
+// RenewStrict is the opt-in half of the contract: it confirms only a claim the
+// store still holds and reports ErrLeaseLost otherwise. The memory locker has
+// no ttl, so a released claim and a superseded one are the two losses it can
+// express; both must fail rather than reconstruct.
+func (l *memoryLease) RenewStrict(_ context.Context, _ time.Duration) (bool, error) {
+	held, exists := l.locker.held[l.key]
+	if !exists || held.owner != l.owner {
+		return false, lease.ErrLeaseLost
+	}
+	return true, nil
+}
+
 // TestContractIsImplementableWithoutABackend pins the shape a consumer relies
 // on: contention is reported as (nil, false, nil), and a superseded lease
 // reports false without an error rather than failing.
@@ -189,23 +220,35 @@ func TestContractIsImplementableWithoutABackend(t *testing.T) {
 	ctx := context.Background()
 	var locker lease.Locker = &memoryLocker{}
 
-	first, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
-	require.NoError(t, err)
-	require.True(t, acquired)
-	require.NotNil(t, first)
+	first, acquired, err := locker.TryAcquire(ctx, "placement:slot:0", "scanner-1", time.Second)
+	mustNoError(t, err, "the first acquisition failed")
+	mustTrue(t, acquired, "the first acquisition must win the free key")
+	mustTrue(t, first != nil, "a granted acquisition must return a lease")
 
-	second, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
-	assert.NoError(t, err, "contention is expected control flow, not an error")
-	assert.False(t, acquired)
-	assert.Nil(t, second)
+	second, acquired, err := locker.TryAcquire(ctx, "placement:slot:0", "scanner-1", time.Second)
+	if err != nil {
+		t.Errorf("contention is expected control flow, not an error: %v", err)
+	}
+	if acquired {
+		t.Error("a second acquisition of a held key must be refused")
+	}
+	if second != nil {
+		t.Errorf("a contended attempt must return no lease, got %v", second)
+	}
 
 	released, err := first.Release(ctx)
-	require.NoError(t, err)
-	assert.True(t, released)
+	mustNoError(t, err, "releasing the held lease failed")
+	if !released {
+		t.Error("the owner must release its own key")
+	}
 
 	released, err = first.Release(ctx)
-	assert.NoError(t, err, "a lease that no longer owns its key is not an operational failure")
-	assert.False(t, released)
+	if err != nil {
+		t.Errorf("a lease that no longer owns its key is not an operational failure: %v", err)
+	}
+	if released {
+		t.Error("a second release must report that nothing was released")
+	}
 }
 
 // TestAClaimantIsPublishedWithoutBecomingTheToken pins the rule that makes a
@@ -224,32 +267,94 @@ func TestAClaimantIsPublishedWithoutBecomingTheToken(t *testing.T) {
 	ctx := context.Background()
 	var locker lease.Locker = &memoryLocker{}
 
-	first, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
-	require.NoError(t, err)
-	require.True(t, acquired)
-	assert.True(t, strings.HasPrefix(first.Owner(), "scanner-1/"),
-		"the token names the claimant, so reading the store answers which process holds the key: %q", first.Owner())
+	first, acquired, err := locker.TryAcquire(ctx, "placement:slot:0", "scanner-1", time.Second)
+	mustNoError(t, err, "the first acquisition failed")
+	mustTrue(t, acquired, "the first acquisition must win the free key")
+	if !strings.HasPrefix(first.Owner(), "scanner-1/") {
+		t.Errorf("the token names the claimant, so reading the store answers which process holds the key: %q", first.Owner())
+	}
 
 	released, err := first.Release(ctx)
-	require.NoError(t, err)
-	require.True(t, released)
+	mustNoError(t, err, "releasing the held lease failed")
+	mustTrue(t, released, "the owner must release its own key")
 
 	// The same process, having restarted, claims the same key under the same
 	// name. This is the case the unique half exists for.
-	second, acquired, err := locker.TryAcquire(ctx, "placement:sast:0", "scanner-1", time.Second)
-	require.NoError(t, err)
-	require.True(t, acquired)
-	assert.NotEqual(t, first.Owner(), second.Owner(),
-		"two acquisitions under one claimant must not share a token, or the earlier lease could renew the later one's lock")
+	second, acquired, err := locker.TryAcquire(ctx, "placement:slot:0", "scanner-1", time.Second)
+	mustNoError(t, err, "the replacement acquisition failed")
+	mustTrue(t, acquired, "the replacement must win the released key")
+	if first.Owner() == second.Owner() {
+		t.Error("two acquisitions under one claimant must not share a token, or the earlier lease could renew the later one's lock")
+	}
 
 	owned, err := first.Renew(ctx, time.Second)
-	require.NoError(t, err)
-	assert.False(t, owned, "the superseded lease must not renew its successor's lock")
+	mustNoError(t, err, "renewing the superseded lease failed")
+	if owned {
+		t.Error("the superseded lease must not renew its successor's lock")
+	}
 
 	// An anonymous caller is still served; it gives up only readability.
-	anonymous, acquired, err := locker.TryAcquire(ctx, "placement:sast:1", "", time.Second)
-	require.NoError(t, err)
-	require.True(t, acquired)
-	assert.NotEmpty(t, anonymous.Owner(), "a token is still minted when no claimant was named")
-	assert.NotContains(t, anonymous.Owner(), "/", "with no claimant there is no prefix to separate")
+	anonymous, acquired, err := locker.TryAcquire(ctx, "placement:slot:1", "", time.Second)
+	mustNoError(t, err, "the anonymous acquisition failed")
+	mustTrue(t, acquired, "an anonymous caller must still be served")
+	if anonymous.Owner() == "" {
+		t.Error("a token is still minted when no claimant was named")
+	}
+	if strings.Contains(anonymous.Owner(), "/") {
+		t.Errorf("with no claimant there is no prefix to separate: %q", anonymous.Owner())
+	}
+}
+
+// TestStrictRenewalIsOptInAndReportsALostClaim pins the second renewal rule a
+// consumer can select. Renew keeps the default (and is covered above); a lease
+// that implements StrictLease confirms only a claim the store still holds, and
+// reports ErrLeaseLost when it does not instead of reconstructing it.
+func TestStrictRenewalIsOptInAndReportsALostClaim(t *testing.T) {
+	ctx := context.Background()
+	var locker lease.Locker = &memoryLocker{}
+
+	held, acquired, err := locker.TryAcquire(ctx, "locks:workload:0", "scanner-1", time.Second)
+	mustNoError(t, err, "the acquisition failed")
+	mustTrue(t, acquired, "the first acquisition must win the free key")
+
+	strict, ok := held.(lease.StrictLease)
+	if !ok {
+		t.Fatal("a lease.Locker may return a lease.Lease; strict renewal is an explicit assertion the backend opts into")
+	}
+
+	owned, err := strict.RenewStrict(ctx, time.Second)
+	mustNoError(t, err, "strict renewal of the held claim failed")
+	if !owned {
+		t.Error("a held claim must renew")
+	}
+
+	released, err := held.Release(ctx)
+	mustNoError(t, err, "releasing the held lease failed")
+	mustTrue(t, released, "the owner must release its own key")
+
+	owned, err = strict.RenewStrict(ctx, time.Second)
+	if owned {
+		t.Error("a lapsed claim must not renew")
+	}
+	if !errors.Is(err, lease.ErrLeaseLost) {
+		t.Errorf("a lapsed claim must be reported, not re-established: %v", err)
+	}
+
+	successor, acquired, err := locker.TryAcquire(ctx, "locks:workload:0", "scanner-1", time.Second)
+	mustNoError(t, err, "the successor acquisition failed")
+	mustTrue(t, acquired, "the successor must win the released key")
+
+	owned, err = strict.RenewStrict(ctx, time.Second)
+	if owned {
+		t.Error("a superseded claim must not renew")
+	}
+	if !errors.Is(err, lease.ErrLeaseLost) {
+		t.Errorf("a superseded claim must not renew its successor's lock: %v", err)
+	}
+
+	owned, err = successor.(lease.StrictLease).RenewStrict(ctx, time.Second)
+	mustNoError(t, err, "strict renewal of the successor failed")
+	if !owned {
+		t.Error("the successor's held claim must renew")
+	}
 }

@@ -2,6 +2,7 @@ package apikey
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 
 	"github.com/xbcio/xbc/extensions/authentication"
@@ -13,6 +14,7 @@ import (
 const Key plugin.Key = "apikey"
 
 type runtimeState struct {
+	scheme authentication.Scheme
 	config normalizedConfig
 	repo   Repository
 	static *StaticRepository
@@ -31,6 +33,8 @@ type Plugin struct {
 type constructorOptions struct {
 	repository    Repository
 	repositorySet bool
+	scheme        authentication.Scheme
+	schemeSet     bool
 }
 
 // Option customizes direct Plugin construction.
@@ -42,6 +46,18 @@ func WithRepository(repository Repository) Option {
 	return func(options *constructorOptions) {
 		options.repository = repository
 		options.repositorySet = true
+	}
+}
+
+// WithScheme names the authentication scheme this instance reports, so a host
+// can run a customized variant (a different header, a fixed identity) beside
+// the default "apikey" instance. The scheme must satisfy
+// authentication.Scheme.Validate; an empty or illegal value makes New fail.
+// Without this option the scheme is Scheme ("apikey").
+func WithScheme(scheme authentication.Scheme) Option {
+	return func(options *constructorOptions) {
+		options.scheme = scheme
+		options.schemeSet = true
 	}
 }
 
@@ -87,6 +103,14 @@ func New(cfg Config, options ...Option) (*Plugin, error) {
 		}
 	}
 
+	scheme := Scheme
+	if settings.schemeSet {
+		if err := settings.scheme.Validate(); err != nil {
+			return nil, fmt.Errorf("apikey: WithScheme: %w", err)
+		}
+		scheme = settings.scheme
+	}
+
 	var repository Repository
 	var static *StaticRepository
 	if settings.repositorySet {
@@ -106,6 +130,7 @@ func New(cfg Config, options ...Option) (*Plugin, error) {
 	}
 
 	return &Plugin{state: &runtimeState{
+		scheme: scheme,
 		config: normalized,
 		repo:   repository,
 		static: static,
@@ -143,6 +168,10 @@ func (p *Plugin) AppIDHeader() string { return p.state.config.appIDHeader }
 // AllowBearer reports whether the Authorization field is also a key source,
 // as "<BearerScheme> <key>".
 func (p *Plugin) AllowBearer() bool { return p.state.config.allowBearer }
+
+// IgnoreAppID reports whether transport adapters must not read the app-ID
+// header at all, so an unrelated or repeated header cannot affect a request.
+func (p *Plugin) IgnoreAppID() bool { return p.state.config.ignoreAppID }
 
 // BearerScheme returns the normalized authorization scheme that prefixes the
 // key inside Authorization ("Bearer" by default). It is also the challenge

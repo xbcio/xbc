@@ -40,6 +40,37 @@
 // Implementations must honor context cancellation and compare secret material
 // in constant time.
 //
+// # Customized variants (shared secret, internal service token)
+//
+// A host that needs a fixed-header shared secret defines its own variant
+// instead of a new module: construct a second Plugin with WithScheme and its
+// own plugin key and configuration path, and pair it with the Web adapter's
+// New. The variant reuses this package's digest, constant-time comparison, and
+// uniform rejection; only the scheme name, header, and credentials differ.
+//
+//	core, err := apikey.New(cfg, apikey.WithScheme("mcp-token"))
+//
+// WithScheme requires a legal authentication.Scheme (lowercase letters,
+// digits, "_" and "-"). The default instance keeps the scheme "apikey"; two
+// instances registered in one application must not share a scheme, and
+// web.security.schemes must list every registered scheme. The variant's
+// configuration:
+//
+//	plugins:
+//	  mcp-token:
+//	    header: X-MCP-Token
+//	    allow_bearer: false      # Authorization is not a credential source
+//	    bearer_scheme: mcp-token # WWW-Authenticate challenge of every rejection
+//	    ignore_app_id: true      # never read an app ID header
+//	    min_key_bytes: 16        # validated as 16..4096; 16 is the floor
+//	    static:
+//	      - id: mcp
+//	        subject: service:mcp # fixed identity of every holder
+//	        sha256: <digest>     # printf %s "$TOKEN" | shasum -a 256
+//
+// min_key_bytes cannot be lowered below 16 bytes. ignore_app_id and
+// require_app_id are mutually exclusive.
+//
 // Importing this package has no registration side effects. Applications that
 // use XBC's process-wide catalog opt in with a blank import of
 // github.com/xbcio/xbc/extensions/authentication/apikey/autoload; applications

@@ -1,4 +1,4 @@
-package gormquery
+package gormx
 
 import (
 	"errors"

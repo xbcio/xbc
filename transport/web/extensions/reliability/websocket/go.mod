@@ -11,9 +11,9 @@ require (
 // their published release tags; repository development resolves the same
 // source through go.work.
 require (
-	github.com/xbcio/xbc v0.1.0
+	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/authentication v0.1.0
-	github.com/xbcio/xbc/transport/web v0.2.0
+	github.com/xbcio/xbc/transport/web v0.4.0
 )
 
 require (
@@ -39,8 +39,8 @@ require (
 	go.uber.org/multierr v1.10.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 )

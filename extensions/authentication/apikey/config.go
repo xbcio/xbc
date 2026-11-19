@@ -21,6 +21,7 @@ type Config struct {
 	AllowBearer  bool               `yaml:"allow_bearer"  default:"true"`
 	BearerScheme string             `yaml:"bearer_scheme" default:"Bearer"`
 	RequireAppID bool               `yaml:"require_app_id"`
+	IgnoreAppID  bool               `yaml:"ignore_app_id"`
 	MinKeyBytes  int                `yaml:"min_key_bytes"  default:"32" validate:"min=16,max=4096"`
 	Static       []StaticCredential `yaml:"static"`
 }
@@ -43,6 +44,7 @@ type normalizedConfig struct {
 	allowBearer  bool
 	bearerScheme string
 	requireAppID bool
+	ignoreAppID  bool
 	minKeyBytes  int
 }
 
@@ -96,12 +98,16 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 	if minKeyBytes < 16 || minKeyBytes > 4096 {
 		return normalizedConfig{}, fmt.Errorf("apikey: min_key_bytes must be between 16 and 4096")
 	}
+	if c.IgnoreAppID && c.RequireAppID {
+		return normalizedConfig{}, fmt.Errorf("apikey: ignore_app_id and require_app_id are mutually exclusive")
+	}
 	return normalizedConfig{
 		header:       header,
 		appIDHeader:  appIDHeader,
 		allowBearer:  c.AllowBearer,
 		bearerScheme: scheme,
 		requireAppID: c.RequireAppID,
+		ignoreAppID:  c.IgnoreAppID,
 		minKeyBytes:  minKeyBytes,
 	}, nil
 }

@@ -16,7 +16,7 @@ require (
 
 require (
 	github.com/stretchr/testify v1.12.1
-	github.com/xbcio/xbc v0.1.0
+	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/authentication/apikey v0.1.0
 	github.com/xbcio/xbc/extensions/authentication/jwt v0.1.0
 	github.com/xbcio/xbc/extensions/authorization/casbin v0.1.0
@@ -28,11 +28,11 @@ require (
 	github.com/xbcio/xbc/extensions/jobs/cron v0.1.0
 	github.com/xbcio/xbc/extensions/messaging/outbox v0.2.0
 	github.com/xbcio/xbc/extensions/reliability/health v0.1.0
-	github.com/xbcio/xbc/extensions/storage/gorm v0.1.0
+	github.com/xbcio/xbc/extensions/storage/gorm v0.4.0
 	github.com/xbcio/xbc/extensions/tasks v0.1.0
 	github.com/xbcio/xbc/transport/grpc v0.1.0
 	github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics v0.1.0
-	github.com/xbcio/xbc/transport/web v0.1.0
+	github.com/xbcio/xbc/transport/web v0.4.0
 	github.com/xbcio/xbc/transport/web/engines/gin v0.1.0
 	github.com/xbcio/xbc/transport/web/extensions/authentication/jwt v0.1.0
 	github.com/xbcio/xbc/transport/web/extensions/authorization/casbin v0.1.0
@@ -97,7 +97,7 @@ require (
 	github.com/knadh/koanf/providers/file v1.2.1 // indirect
 	github.com/knadh/koanf/v2 v2.3.6 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
-	github.com/mailru/easyjson v0.7.6 // indirect
+	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/microsoft/go-mssqldb v1.6.0 // indirect
@@ -125,7 +125,7 @@ require (
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/vearutop/statigz v1.4.0 // indirect
 	github.com/xbcio/xbc/extensions/authentication v0.1.0 // indirect
-	github.com/xbcio/xbc/extensions/coordination/lease v0.1.0 // indirect
+	github.com/xbcio/xbc/extensions/coordination/lease v0.4.0 // indirect
 	github.com/xbcio/xbc/extensions/observability/metrics v0.1.0 // indirect
 	github.com/xbcio/xbc/extensions/observability/tracing v0.1.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
@@ -145,14 +145,14 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.22.0 // indirect
-	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	golang.org/x/tools v0.44.0 // indirect
+	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect

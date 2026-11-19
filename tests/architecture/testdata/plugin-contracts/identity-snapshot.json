@@ -74,6 +74,12 @@
       "contracts": []
     },
     {
+      "key": "banner",
+      "config_path": "plugins.banner",
+      "cardinality": "single",
+      "contracts": []
+    },
+    {
       "key": "biz",
       "config_path": "plugins.biz",
       "cardinality": "single",
@@ -466,6 +472,7 @@
       "cardinality": "single",
       "contracts": [
         "github.com/xbcio/xbc/extensions/authentication.Authenticator",
+        "github.com/xbcio/xbc/extensions/authentication/session.AttributeManager",
         "github.com/xbcio/xbc/extensions/authentication/session.Manager"
       ]
     },

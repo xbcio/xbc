@@ -96,6 +96,18 @@
 // OTel SDK, so spans opened through this package do not appear in a tracing
 // backend and never call span.End().
 //
+// # Request IDs
+//
+// WithRequestID binds a Logger that fixes the request_id field to an ID chosen
+// by an entry layer -- an HTTP request-ID middleware, for example -- and
+// rewrites ctx's trace RequestID to match, so Span, Inject, and Ctx's slow
+// path all carry that value. request_id and trace_id stay separate fields:
+// request_id identifies the exchange and joins access logs to business logs,
+// while trace_id reaches spans in a tracing backend; WithRequestID never
+// forces the two values to be equal, and a trace-derived request_id is
+// replaced rather than logged beside the bound one. Calling it again with the
+// same ID on the returned context does not add a second field.
+//
 // # Masking
 //
 // Sensitive fields are intercepted and replaced with "***" at the

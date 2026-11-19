@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,114 @@ func TestARenewalReestablishesALapsedKey(t *testing.T) {
 	}
 	if server.Exists("placement:sast:0") {
 		t.Fatal("the re-established key survived its own release")
+	}
+}
+
+// TestStrictRenewalExtendsWhileTheClaimStands is the ordinary half of
+// lease.StrictLease: the key still carries this lease's token, so the renewal
+// extends it and the claim remains releasable.
+func TestStrictRenewalExtendsWhileTheClaimStands(t *testing.T) {
+	server, client, locker := newLockerTest(t)
+	ctx := context.Background()
+
+	held, acquired, err := locker.TryAcquire(ctx, "locks:strict-hold", "scanner-1", 100*time.Millisecond)
+	if err != nil || !acquired {
+		t.Fatalf("TryAcquire() acquired = %v, error = %v", acquired, err)
+	}
+	strict, ok := held.(lease.StrictLease)
+	if !ok {
+		t.Fatalf("the Redis lease %T must implement lease.StrictLease", held)
+	}
+
+	server.FastForward(70 * time.Millisecond)
+	owned, err := strict.RenewStrict(ctx, 200*time.Millisecond)
+	if err != nil || !owned {
+		t.Fatalf("RenewStrict() owned = %v, error = %v", owned, err)
+	}
+	if ttl := server.TTL("locks:strict-hold"); ttl < 190*time.Millisecond {
+		t.Fatalf("TTL after strict renewal = %s, want approximately 200ms", ttl)
+	}
+	if stored, err := client.Get(ctx, "locks:strict-hold").Result(); err != nil || stored != held.Owner() {
+		t.Fatalf("stored value = %q, error = %v; strict renewal changed the owner token", stored, err)
+	}
+
+	if released, err := held.Release(ctx); err != nil || !released {
+		t.Fatalf("Release() released = %v, error = %v", released, err)
+	}
+}
+
+// TestStrictRenewalDoesNotRecreateAnExpiredKey is the behaviour that separates
+// the strict rule from the default one. A key that lapsed is reported as lost
+// and must stay absent: re-establishing it would let a caller that stops on a
+// failed renewal keep running after the store had already freed its claim.
+func TestStrictRenewalDoesNotRecreateAnExpiredKey(t *testing.T) {
+	server, _, locker := newLockerTest(t)
+	ctx := context.Background()
+
+	held, acquired, err := locker.TryAcquire(ctx, "locks:strict-lapsed", "scanner-1", 100*time.Millisecond)
+	if err != nil || !acquired {
+		t.Fatalf("TryAcquire() acquired = %v, error = %v", acquired, err)
+	}
+	strict, ok := held.(lease.StrictLease)
+	if !ok {
+		t.Fatalf("the Redis lease %T must implement lease.StrictLease", held)
+	}
+
+	server.FastForward(150 * time.Millisecond)
+	if server.Exists("locks:strict-lapsed") {
+		t.Fatal("the lease did not lapse")
+	}
+
+	owned, err := strict.RenewStrict(ctx, time.Second)
+	if owned {
+		t.Fatal("strict renewal reported a lapsed key as owned")
+	}
+	if !errors.Is(err, lease.ErrLeaseLost) {
+		t.Fatalf("RenewStrict() error = %v, want lease.ErrLeaseLost", err)
+	}
+	if server.Exists("locks:strict-lapsed") {
+		t.Fatal("strict renewal re-created a key that had expired")
+	}
+}
+
+// TestStrictRenewalReportsAKeyHeldByAnotherOwner pins the takeover half: the
+// strict renewal must not extend, delete, or reconstruct the successor's key,
+// and it reports the loss rather than silence.
+func TestStrictRenewalReportsAKeyHeldByAnotherOwner(t *testing.T) {
+	server, client, locker := newLockerTest(t)
+	ctx := context.Background()
+
+	first, acquired, err := locker.TryAcquire(ctx, "locks:strict-takeover", "scanner-1", 100*time.Millisecond)
+	if err != nil || !acquired {
+		t.Fatalf("first TryAcquire() acquired = %v, error = %v", acquired, err)
+	}
+	strict, ok := first.(lease.StrictLease)
+	if !ok {
+		t.Fatalf("the Redis lease %T must implement lease.StrictLease", first)
+	}
+
+	server.FastForward(150 * time.Millisecond)
+	second, acquired, err := locker.TryAcquire(ctx, "locks:strict-takeover", "scanner-2", time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("takeover TryAcquire() acquired = %v, error = %v", acquired, err)
+	}
+
+	owned, err := strict.RenewStrict(ctx, 5*time.Second)
+	if owned {
+		t.Fatal("strict renewal extended a key owned by another lease")
+	}
+	if !errors.Is(err, lease.ErrLeaseLost) {
+		t.Fatalf("RenewStrict() error = %v, want lease.ErrLeaseLost", err)
+	}
+	if stored, err := client.Get(ctx, "locks:strict-takeover").Result(); err != nil || stored != second.Owner() {
+		t.Fatalf("stored value = %q, error = %v; the stale strict renewal modified the successor's key", stored, err)
+	}
+	if ttl := server.TTL("locks:strict-takeover"); ttl > time.Second {
+		t.Fatalf("TTL = %s, want the successor's one-second ttl rather than the stale renewal's five", ttl)
+	}
+
+	if released, err := second.Release(ctx); err != nil || !released {
+		t.Fatalf("successor Release() released = %v, error = %v", released, err)
 	}
 }
 

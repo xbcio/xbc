@@ -3,6 +3,7 @@ package apikey
 import (
 	"errors"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	apikeycore "github.com/xbcio/xbc/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
@@ -22,6 +23,8 @@ type Extractor struct {
 	appIDHeader  string
 	allowBearer  bool
 	bearerScheme string
+	ignoreAppID  bool
+	scheme       authentication.Scheme
 }
 
 var _ web.CredentialExtractor = (*Extractor)(nil)
@@ -60,6 +63,8 @@ func New(authenticator *apikeycore.Plugin) (*Extractor, error) {
 		appIDHeader:  authenticator.AppIDHeader(),
 		allowBearer:  authenticator.AllowBearer(),
 		bearerScheme: authenticator.BearerScheme(),
+		ignoreAppID:  authenticator.IgnoreAppID(),
+		scheme:       authenticator.Scheme(),
 	}, nil
 }
 

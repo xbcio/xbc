@@ -22,8 +22,11 @@ func TestDefinitionAndOrderingContract(t *testing.T) {
 
 	middleware := New()
 	order := middleware.Order()
-	if order.Phase != web.PhaseObserve || len(order.Before) != 1 || len(order.After) != 0 || middleware.Handler() == nil {
+	if order.Phase != web.PhaseObserve || len(order.Before) != 1 || len(order.After) != 1 || middleware.Handler() == nil {
 		t.Fatalf("unexpected middleware order: %#v", order)
+	}
+	if ref := order.After[0]; ref.Key() != tracingKey || ref.InstanceName() != "" || ref.Required() {
+		t.Fatalf("tracing order reference = %#v, want optional tracing key", ref)
 	}
 	if ref := order.Before[0]; ref.Key() != accesslog.Key || ref.InstanceName() != "" || ref.Required() {
 		t.Fatalf("accesslog order reference = %#v, want optional accesslog key", ref)
@@ -127,5 +130,19 @@ func TestConfigValidation(t *testing.T) {
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("Validate(%#v) succeeded", cfg)
 		}
+	}
+}
+
+func TestDefaultConfigBindsLogger(t *testing.T) {
+	cfg := DefaultConfig()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("DefaultConfig().Validate() error = %v", err)
+	}
+	state, err := normalizeConfig(cfg)
+	if err != nil {
+		t.Fatalf("normalizeConfig() error = %v", err)
+	}
+	if !state.bindLogger {
+		t.Fatal("bind_logger must default to true")
 	}
 }

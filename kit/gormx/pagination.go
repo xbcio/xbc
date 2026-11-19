@@ -1,4 +1,4 @@
-package gormquery
+package gormx
 
 import "math"
 
@@ -27,8 +27,9 @@ type Pagination struct {
 
 // bounds resolves the effective page number and page size without modifying
 // the receiver. A nil receiver, a nil field, or a non-positive value falls back
-// to the corresponding default, and the page size is capped at MaxPageSize.
-func (p *Pagination) bounds() (current, pageSize int) {
+// to the corresponding default. A positive maxPageSize caps the page size; a
+// non-positive maxPageSize leaves it uncapped.
+func (p *Pagination) bounds(maxPageSize int) (current, pageSize int) {
 	current, pageSize = DefaultCurrent, DefaultPageSize
 	if p == nil {
 		return current, pageSize
@@ -39,8 +40,8 @@ func (p *Pagination) bounds() (current, pageSize int) {
 	if p.PageSize != nil && *p.PageSize > 0 {
 		pageSize = *p.PageSize
 	}
-	if pageSize > MaxPageSize {
-		pageSize = MaxPageSize
+	if maxPageSize > 0 && pageSize > maxPageSize {
+		pageSize = maxPageSize
 	}
 	// Prevent (current-1)*pageSize from overflowing int, which could otherwise
 	// wrap the offset negative. pageSize is at least 1 here.
@@ -51,9 +52,20 @@ func (p *Pagination) bounds() (current, pageSize int) {
 }
 
 // OffsetAndLimit converts the page number and page size to an offset and a
-// limit without changing the receiver.
+// limit without changing the receiver. The page size is capped at MaxPageSize.
 func (p *Pagination) OffsetAndLimit() (offset, limit int) {
-	current, pageSize := p.bounds()
+	return p.OffsetAndLimitMax(MaxPageSize)
+}
+
+// OffsetAndLimitMax converts the page number and page size to an offset and a
+// limit without changing the receiver, like OffsetAndLimit, but caps the page
+// size at maxPageSize instead of MaxPageSize. An export or batch endpoint that
+// legitimately needs more rows uses this to raise the cap at its own call site
+// without changing the package default. A non-positive maxPageSize removes the
+// cap entirely; the caller then accepts responsibility for the query size,
+// since the database is asked for as many rows as the request allows.
+func (p *Pagination) OffsetAndLimitMax(maxPageSize int) (offset, limit int) {
+	current, pageSize := p.bounds(maxPageSize)
 	return (current - 1) * pageSize, pageSize
 }
 
@@ -72,9 +84,17 @@ func (p *Pagination) Limit() int {
 // ToOffsetAndLimit converts the page number and page size to an offset and a
 // limit, then clears both fields. Callers that embed Pagination in a request
 // value object and later pass that object to GORM as a condition rely on the
-// clearing so the pagination fields are not mistaken for columns.
+// clearing so the pagination fields are not mistaken for columns. The page size
+// is capped at MaxPageSize.
 func (p *Pagination) ToOffsetAndLimit() (offset, limit int) {
-	offset, limit = p.OffsetAndLimit()
+	return p.ToOffsetAndLimitMax(MaxPageSize)
+}
+
+// ToOffsetAndLimitMax behaves like ToOffsetAndLimit, but caps the page size at
+// maxPageSize instead of MaxPageSize and clears both fields afterwards. A
+// non-positive maxPageSize removes the cap; see OffsetAndLimitMax.
+func (p *Pagination) ToOffsetAndLimitMax(maxPageSize int) (offset, limit int) {
+	offset, limit = p.OffsetAndLimitMax(maxPageSize)
 	if p != nil {
 		p.Current = nil
 		p.PageSize = nil

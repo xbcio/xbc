@@ -41,9 +41,9 @@
       "imports": []
     },
     {
-      "path": "github.com/xbcio/xbc/kit/gormquery",
-      "directory": "kit/gormquery",
-      "tag_prefix": "kit/gormquery/",
+      "path": "github.com/xbcio/xbc/kit/gormx",
+      "directory": "kit/gormx",
+      "tag_prefix": "kit/gormx/",
       "wave": 0,
       "release": true,
       "imports": []
@@ -175,6 +175,16 @@
       "path": "github.com/xbcio/xbc/extensions/messaging/webhook",
       "directory": "extensions/messaging/webhook",
       "tag_prefix": "extensions/messaging/webhook/",
+      "wave": 1,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc"
+      ]
+    },
+    {
+      "path": "github.com/xbcio/xbc/extensions/observability/banner",
+      "directory": "extensions/observability/banner",
+      "tag_prefix": "extensions/observability/banner/",
       "wave": 1,
       "release": true,
       "imports": [
@@ -619,6 +629,7 @@
       "release": true,
       "imports": [
         "github.com/xbcio/xbc",
+        "github.com/xbcio/xbc/extensions/authentication",
         "github.com/xbcio/xbc/extensions/authentication/apikey",
         "github.com/xbcio/xbc/extensions/authentication/jwt",
         "github.com/xbcio/xbc/extensions/httpclient",
@@ -740,6 +751,7 @@
         "github.com/xbcio/xbc/extensions/messaging/mail",
         "github.com/xbcio/xbc/extensions/messaging/outbox",
         "github.com/xbcio/xbc/extensions/messaging/webhook",
+        "github.com/xbcio/xbc/extensions/observability/banner",
         "github.com/xbcio/xbc/extensions/observability/metrics",
         "github.com/xbcio/xbc/extensions/observability/tracing",
         "github.com/xbcio/xbc/extensions/reliability/automemlimit",

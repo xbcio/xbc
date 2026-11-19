@@ -27,10 +27,13 @@ func (*Plugin) Scheme() authentication.Scheme { return Scheme }
 // Authenticate performs every semantic check a transport adapter's extractor
 // deliberately does not: session-ID shape (validID), store lookup, idle-TTL
 // renewal, and expiry. The credential value is the raw session ID string the
-// adapter extracted. A rejection never carries a challenge: cookie sessions
-// have no authentication-scheme token to advertise, and the client's recovery
-// path for a missing or dead session is the login flow, not a credential
-// retry.
+// adapter extracted. It delegates the check to AttributeManager.Verify and
+// collapses every non-valid verdict -- malformed, unknown, expired, revoked,
+// evicted, and store failure -- into one rejection reason, so no caller can
+// probe whether a specific session ID exists or ever existed. A rejection never
+// carries a challenge: cookie sessions have no authentication-scheme token to
+// advertise, and the client's recovery path for a missing or dead session is
+// the login flow, not a credential retry.
 func (p *Plugin) Authenticate(
 	ctx context.Context,
 	credential authentication.Credential,
@@ -39,13 +42,8 @@ func (p *Plugin) Authenticate(
 	if !ok {
 		return authentication.Rejected(reasonInvalidCredential), nil
 	}
-	if p.manager.closed.Load() || !validID(id, p.config.idBytes) {
-		return authentication.Rejected(reasonInvalidCredential), nil
-	}
-	touchCtx, cancel := context.WithTimeout(ctx, p.config.operationTimeout)
-	value, found, err := p.manager.store.Touch(touchCtx, id, p.config.idleTTL, p.config.touchInterval)
-	cancel()
-	if err != nil || !found {
+	value, verdict, err := p.manager.Verify(ctx, id)
+	if err != nil || verdict != VerdictValid {
 		return authentication.Rejected(reasonInvalidCredential), nil
 	}
 

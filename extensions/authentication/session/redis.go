@@ -56,6 +56,79 @@ end
 return {value}
 `)
 
+// The attributes update is one script over the session key, so the existence
+// check, the absolute-lifetime check, and the write are atomic across every
+// application replica: a key that is gone or past its lifetime is never
+// written. The write touches only the value field, so the idle lease
+// ("touched" plus the key TTL) and the absolute lifetime are preserved
+// exactly, and no index command is involved, so the subject index keeps
+// exactly the members it held. Returns 1 when written and 0 when the key is
+// gone or its lifetime has passed. The source is a constant so a test can
+// assert it addresses exactly one key.
+//
+// The replacement payload is built from the stored value read immediately
+// before the script, which carries the immutable Subject, IssuedAt, and
+// ExpiresAt fields that no operation rewrites while the key exists. The one
+// interleaving this cannot distinguish is a session deleted and recreated
+// under the same ID between the read and the script; a 32-byte random ID makes
+// that unreachable without writing to the store directly. Concurrent updates
+// of one session are last-write-wins, which is what replacing the whole
+// attribute map means.
+const redisUpdateAttributesSource = `
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+local absolute = tonumber(redis.call('HGET', KEYS[1], 'absolute'))
+local now = tonumber(ARGV[1])
+if not absolute or absolute <= now then
+  redis.call('DEL', KEYS[1])
+  return 0
+end
+redis.call('HSET', KEYS[1], 'value', ARGV[2])
+return 1
+`
+
+var redisUpdateAttributesScript = goredis.NewScript(redisUpdateAttributesSource)
+
+// redisPatchAttempts bounds the optimistic merge PatchAttributes runs. Each
+// failed compare-and-swap means another writer committed, so a patch can lose
+// at most one attempt per concurrent writer and the bound only has to exceed
+// the number of writers a session realistically has at once. A caller that
+// exhausts it receives ErrConflict and may retry the whole patch.
+const redisPatchAttempts = 16
+
+// PatchAttributes merges in the application, not inside Lua, and commits with
+// an optimistic compare-and-swap on one key. The alternative -- decoding the
+// stored attributes with cjson, merging, and re-encoding inside a script -- is
+// not lossless: Redis's cjson renders Lua numbers with 14 significant digits
+// (a JSON integer such as 1234567890123456 comes back in scientific notation
+// with its last digits rounded), and it encodes an empty Lua table as {} (an
+// empty JSON array inside the attributes would turn into an object). Any
+// attribute value a caller may store must survive the round trip unchanged, so
+// the stored value bytes themselves are the version token: the script writes
+// only when the payload it read is still the payload in Redis, which no
+// separate counter can match for strictness because it invalidates on every
+// writer that changed the value. The cost is a retry instead of one round trip
+// under write contention, with ErrConflict as the documented terminal outcome.
+//
+// The script is one Lua over one key, so it works on any topology a cluster
+// client reaches. It writes only the value field: the absolute deadline, the
+// touched field, the key TTL, and the subject index are all left exactly as
+// they were. 1 means written, 0 means another writer changed the value (retry),
+// and -1 means the key is gone or past its absolute lifetime (not found).
+const redisPatchAttributesSource = `
+if redis.call('EXISTS', KEYS[1]) == 0 then return -1 end
+local absolute = tonumber(redis.call('HGET', KEYS[1], 'absolute'))
+local now = tonumber(ARGV[1])
+if not absolute or absolute <= now then
+  redis.call('DEL', KEYS[1])
+  return -1
+end
+if redis.call('HGET', KEYS[1], 'value') ~= ARGV[2] then return 0 end
+redis.call('HSET', KEYS[1], 'value', ARGV[3])
+return 1
+`
+
+var redisPatchAttributesScript = goredis.NewScript(redisPatchAttributesSource)
+
 // Rotation runs as three steps that each address exactly one key, rather than
 // one script over both the old and the replacement key. A Redis cluster
 // refuses a multi-key script whose keys hash to different slots (CROSSSLOT),
@@ -460,6 +533,118 @@ func (s *RedisStore) Delete(ctx context.Context, id string) error {
 }
 
 var _ IndexedStore = (*RedisStore)(nil)
+var _ AttributeStore = (*RedisStore)(nil)
+var _ PatchStore = (*RedisStore)(nil)
+
+// UpdateAttributes replaces the attributes of a live session with one
+// single-key script: the key must exist and its absolute lifetime must not
+// have passed, or nothing is written. The key's TTL and its touched field are
+// left alone, so neither the idle lease nor the absolute lifetime moves, and
+// the subject index is not touched either: an existing member stays and no
+// member is added or removed.
+func (s *RedisStore) UpdateAttributes(ctx context.Context, id string, attributes map[string]any) (Session, bool, error) {
+	if err := contextError(ctx); err != nil {
+		return Session{}, false, err
+	}
+	if id == "" {
+		return Session{}, false, errors.New("session: ID cannot be empty")
+	}
+	normalized, err := normalizeAttributes(attributes)
+	if err != nil {
+		return Session{}, false, err
+	}
+	key := s.key(id)
+	payload, err := s.client.HGet(ctx, key, "value").Result()
+	if errors.Is(err, goredis.Nil) {
+		return Session{}, false, nil
+	}
+	if err != nil {
+		return Session{}, false, fmt.Errorf("session: Redis update attributes: %w", err)
+	}
+	value, err := decodeStored(payload, id)
+	if err != nil {
+		return Session{}, false, fmt.Errorf("session: Redis stored value is invalid: %w", err)
+	}
+	value.Attributes = normalized
+	encoded, err := encodeStored(value)
+	if err != nil {
+		return Session{}, false, err
+	}
+	written, err := redisUpdateAttributesScript.Run(ctx, s.client, []string{key}, s.clock().UnixMilli(), encoded).Int64()
+	if err != nil {
+		return Session{}, false, fmt.Errorf("session: Redis update attributes: %w", err)
+	}
+	switch written {
+	case 0:
+		return Session{}, false, nil
+	case 1:
+		return value, true, nil
+	default:
+		return Session{}, false, errors.New("session: Redis update attributes returned an invalid result")
+	}
+}
+
+// PatchAttributes applies an attribute delta with the optimistic merge the
+// script above documents: read the stored value, merge the delta in Go, and let
+// one single-key script write the result only when the payload is unchanged.
+// A concurrent writer makes the compare fail, the merge is recomputed from the
+// fresh payload, and the retry therefore keeps both writers' changes instead of
+// losing one. The key's TTL, its touched field, its absolute deadline, and the
+// subject index are untouched; a dead key is deleted by the script and reported
+// as not found. Exhausting redisPatchAttempts reports ErrConflict.
+func (s *RedisStore) PatchAttributes(ctx context.Context, id string, set map[string]any, unset []string) (Session, bool, error) {
+	if err := contextError(ctx); err != nil {
+		return Session{}, false, err
+	}
+	if id == "" {
+		return Session{}, false, errors.New("session: ID cannot be empty")
+	}
+	if err := validatePatchArguments(set, unset); err != nil {
+		return Session{}, false, err
+	}
+	normalized, err := normalizeAttributes(set)
+	if err != nil {
+		return Session{}, false, err
+	}
+	key := s.key(id)
+	for range redisPatchAttempts {
+		payload, err := s.client.HGet(ctx, key, "value").Result()
+		if errors.Is(err, goredis.Nil) {
+			return Session{}, false, nil
+		}
+		if err != nil {
+			return Session{}, false, fmt.Errorf("session: Redis patch attributes: %w", err)
+		}
+		value, err := decodeStored(payload, id)
+		if err != nil {
+			return Session{}, false, fmt.Errorf("session: Redis stored value is invalid: %w", err)
+		}
+		merged, err := normalizeAttributes(patchedAttributes(value.Attributes, normalized, unset))
+		if err != nil {
+			return Session{}, false, err
+		}
+		value.Attributes = merged
+		encoded, err := encodeStored(value)
+		if err != nil {
+			return Session{}, false, err
+		}
+		written, err := redisPatchAttributesScript.Run(ctx, s.client, []string{key}, s.clock().UnixMilli(), payload, encoded).Int64()
+		if err != nil {
+			return Session{}, false, fmt.Errorf("session: Redis patch attributes: %w", err)
+		}
+		switch written {
+		case 0:
+			continue
+		case 1:
+			return value, true, nil
+		case -1:
+			return Session{}, false, nil
+		default:
+			return Session{}, false, errors.New("session: Redis patch attributes returned an invalid result")
+		}
+	}
+	return Session{}, false, ErrConflict
+}
 
 // ListBySubject returns the live sessions of subject. A member whose key is
 // gone, whose session expired, or whose stored subject differs is pruned

@@ -1,4 +1,4 @@
-module github.com/xbcio/xbc/kit/gormquery
+module github.com/xbcio/xbc/kit/gormx
 
 go 1.26.0
 
@@ -15,5 +15,5 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/text v0.20.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 )

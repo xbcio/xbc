@@ -353,3 +353,54 @@ func TestExtractorPairsWithTheNeutralScheme(t *testing.T) {
 		t.Fatalf("Scheme() = %q, want %q", got, apikeycore.Scheme)
 	}
 }
+
+func TestExtractorHonorsCustomSchemeAndIgnoreAppID(t *testing.T) {
+	cfg := apikeycore.DefaultConfig()
+	cfg.Header = "X-MCP-Token"
+	cfg.AllowBearer = false
+	cfg.IgnoreAppID = true
+	cfg.Static = []apikeycore.StaticCredential{{
+		ID:      "mcp",
+		Subject: "service:mcp",
+		SHA256:  apikeycore.HashKey("0123456789abcdef0123456789abcdef").String(),
+	}}
+	authenticator, err := apikeycore.New(cfg, apikeycore.WithScheme("mcp-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := New(authenticator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Scheme(); got != "mcp-token" {
+		t.Fatalf("Scheme() = %q, want mcp-token", got)
+	}
+
+	got, err := e.ExtractCredential(newTestContextWithHeaders(t, map[string][]string{
+		"X-MCP-Token":   {"0123456789abcdef0123456789abcdef"},
+		"X-App-ID":      {"a", "b"},
+		"Authorization": {"Basic abc"},
+	}))
+	if err != nil {
+		t.Fatalf("ExtractCredential() error = %v", err)
+	}
+	credential, ok := got.Credential()
+	if !ok {
+		t.Fatal("Credential() ok = false")
+	}
+	value, ok := credential.Value().(apikeycore.PresentedKey)
+	if !ok || value.AppID != "" {
+		t.Fatalf("PresentedKey = %#v, want empty AppID", credential.Value())
+	}
+
+	for _, header := range []string{"Authorization", "X-API-Key"} {
+		got, err := e.ExtractCredential(newTestContextWithHeaders(t, map[string][]string{
+			header: {"Bearer 0123456789abcdef0123456789abcdef"},
+		}))
+		if err == nil {
+			if _, ok := got.Credential(); ok {
+				t.Fatalf("%s must not be a credential source for the variant", header)
+			}
+		}
+	}
+}

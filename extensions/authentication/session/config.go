@@ -13,6 +13,14 @@ const (
 	BackendMemory = "memory"
 	BackendRedis  = "redis"
 
+	// OnExceedRevokeOldest is the default max_sessions policy: creating a new
+	// session past the limit revokes the subject's earliest-issued live session
+	// first.
+	OnExceedRevokeOldest = "revoke_oldest"
+	// OnExceedRejectNew refuses the new session with ErrTooManySessions once the
+	// subject already holds max_sessions live sessions.
+	OnExceedRejectNew = "reject_new"
+
 	defaultCookieName = "xbc_session"
 	defaultRedisKey   = "xbc:session:"
 )
@@ -34,6 +42,15 @@ type Config struct {
 	CleanupInterval  time.Duration `yaml:"cleanup_interval"  default:"1m" validate:"gt=0"`
 	OperationTimeout time.Duration `yaml:"operation_timeout" default:"2s" validate:"gt=0"`
 	IDBytes          int           `yaml:"id_bytes"          default:"32" validate:"min=32,max=128"`
+	// MaxSessions caps the number of live sessions one subject may hold. Zero,
+	// the default, means no limit. A positive value needs a Store that
+	// implements IndexedStore; construction fails otherwise, and Manager.Create
+	// reports ErrNotSupported rather than silently allowing the session.
+	MaxSessions int `yaml:"max_sessions" default:"0" validate:"gte=0"`
+	// OnExceed selects what Manager.Create does at the limit: OnExceedRevokeOldest
+	// (the default) revokes the subject's earliest-issued live session, and
+	// OnExceedRejectNew reports ErrTooManySessions.
+	OnExceed string `yaml:"on_exceed" default:"revoke_oldest"`
 }
 
 type normalizedConfig struct {
@@ -52,6 +69,8 @@ type normalizedConfig struct {
 	cleanupInterval  time.Duration
 	operationTimeout time.Duration
 	idBytes          int
+	maxSessions      int
+	onExceed         string
 }
 
 // DefaultConfig returns the bounded defaults applied when a field is unset.
@@ -71,6 +90,8 @@ func DefaultConfig() Config {
 		CleanupInterval:  time.Minute,
 		OperationTimeout: 2 * time.Second,
 		IDBytes:          32,
+		MaxSessions:      0,
+		OnExceed:         OnExceedRevokeOldest,
 	}
 }
 
@@ -128,6 +149,9 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 	if c.IDBytes == 0 {
 		c.IDBytes = d.IDBytes
 	}
+	if strings.TrimSpace(c.OnExceed) == "" {
+		c.OnExceed = d.OnExceed
+	}
 
 	backend := strings.ToLower(strings.TrimSpace(c.Backend))
 	if backend != BackendMemory && backend != BackendRedis {
@@ -170,6 +194,13 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 	if c.IDBytes < 32 || c.IDBytes > 128 {
 		return normalizedConfig{}, fmt.Errorf("session: id_bytes must be between 32 and 128")
 	}
+	if c.MaxSessions < 0 {
+		return normalizedConfig{}, fmt.Errorf("session: max_sessions must be non-negative")
+	}
+	onExceed := strings.ToLower(strings.TrimSpace(c.OnExceed))
+	if onExceed != OnExceedRevokeOldest && onExceed != OnExceedRejectNew {
+		return normalizedConfig{}, fmt.Errorf("session: on_exceed must be %s or %s", OnExceedRevokeOldest, OnExceedRejectNew)
+	}
 	redisInstance := plugin.NormalizeInstance(strings.TrimSpace(c.RedisInstance))
 	if err := plugin.ValidateInstanceName(redisInstance); err != nil {
 		return normalizedConfig{}, fmt.Errorf("session: invalid redis_instance: %w", err)
@@ -193,6 +224,8 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 		cleanupInterval:  c.CleanupInterval,
 		operationTimeout: c.OperationTimeout,
 		idBytes:          c.IDBytes,
+		maxSessions:      c.MaxSessions,
+		onExceed:         onExceed,
 	}, nil
 }
 

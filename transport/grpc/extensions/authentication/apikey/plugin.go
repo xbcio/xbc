@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/xbcio/xbc/extensions/authentication"
 	apikeycore "github.com/xbcio/xbc/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/plugin"
 	grpctransport "github.com/xbcio/xbc/transport/grpc"
@@ -23,6 +24,8 @@ type Extractor struct {
 	appIDKey     string
 	allowBearer  bool
 	bearerScheme string
+	ignoreAppID  bool
+	scheme       authentication.Scheme
 }
 
 var _ grpctransport.CredentialExtractor = (*Extractor)(nil)
@@ -61,6 +64,8 @@ func New(authenticator *apikeycore.Plugin) (*Extractor, error) {
 		appIDKey:     strings.ToLower(authenticator.AppIDHeader()),
 		allowBearer:  authenticator.AllowBearer(),
 		bearerScheme: authenticator.BearerScheme(),
+		ignoreAppID:  authenticator.IgnoreAppID(),
+		scheme:       authenticator.Scheme(),
 	}, nil
 }
 

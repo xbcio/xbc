@@ -2,6 +2,7 @@ package lease
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -60,6 +61,12 @@ type Locker interface {
 // under a new token would make the lease unable to release itself -- a value
 // that is nobody's successor and that the process can no longer prove it owns.
 //
+// Renew's re-establishment rule is what placement needs. A caller whose work
+// must stop the moment it can no longer prove ownership -- mutual exclusion,
+// where a second copy of the work running is worse than no copy -- takes the
+// opposite rule explicitly by asserting StrictLease, rather than by changing
+// what Renew does for everyone else.
+//
 // Owner is that token rather than the claimant the lease was acquired for. The
 // token is unique to one acquisition, which is what makes the comparison safe;
 // an implementation that prefixes it with the claimant makes the stored value
@@ -70,3 +77,30 @@ type Lease interface {
 	Renew(ctx context.Context, ttl time.Duration) (owned bool, err error)
 	Release(ctx context.Context) (released bool, err error)
 }
+
+// StrictLease is a Lease whose renewal can be held to the stricter rule that a
+// claim is extended only while the store still holds it. It is the option a
+// caller takes when a failed renewal means stop: a key that is absent or
+// carries another owner's token reports ErrLeaseLost instead of being
+// re-established, so a store outage longer than one ttl cannot leave the caller
+// running without the mutual exclusion it believes it has.
+//
+// The strict rule does not add a fencing token or any ordering between
+// successive owners; see the package documentation. It only removes the
+// re-establishment behaviour that Lease.Renew documents, which stays the
+// default so a placement caller keeps it.
+//
+// A backend implements StrictLease beside Lease; a consumer that needs the
+// strict rule declares it, and a consumer that works under the ordinary rule
+// declares only Lease. An implementation that cannot tell an absent key from a
+// taken-over one must not implement StrictLease.
+type StrictLease interface {
+	Lease
+	RenewStrict(ctx context.Context, ttl time.Duration) (owned bool, err error)
+}
+
+// ErrLeaseLost is what StrictLease.RenewStrict returns, wrapped, when the key
+// is absent or carries a different owner token: the lease can no longer prove
+// it holds the claim. It is a sentinel so a caller can tell that outcome from a
+// backend failure and stop deliberately.
+var ErrLeaseLost = errors.New("lease: ownership lost")

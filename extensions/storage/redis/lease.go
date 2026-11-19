@@ -36,6 +36,12 @@ const LeaseKey plugin.Key = "redis-lease"
 // persistence -- and not that another owner holds it; reading the key first is
 // what tells the two apart, and one script is what keeps the read and the write
 // from interleaving with another client's acquisition of the freed key.
+//
+// leaseStrictRenewScript is the opt-in half of that rule, used by
+// lease.StrictLease.RenewStrict. It extends the key only while the stored token
+// still matches and deliberately does not re-establish an absent one, so a
+// caller that treats a lost renewal as a reason to stop observes the lapse
+// instead of silently keeping a claim the store no longer holds.
 var (
 	leaseRenewScript = goredis.NewScript(`
 local current = redis.call("get", KEYS[1])
@@ -45,6 +51,11 @@ end
 if current == false then
   redis.call("set", KEYS[1], ARGV[1], "PX", ARGV[2])
   return 1
+end
+return 0`)
+	leaseStrictRenewScript = goredis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("pexpire", KEYS[1], ARGV[2])
 end
 return 0`)
 	leaseReleaseScript = goredis.NewScript(`
@@ -193,11 +204,18 @@ type redisLease struct {
 	owner  string
 }
 
-var _ lease.Lease = (*redisLease)(nil)
+var (
+	_ lease.Lease       = (*redisLease)(nil)
+	_ lease.StrictLease = (*redisLease)(nil)
+)
 
 func (l *redisLease) Key() string   { return l.key }
 func (l *redisLease) Owner() string { return l.owner }
 
+// Renew extends the key while it holds this lease's token and re-establishes it
+// under the same token when it finds the key absent, which is the ordinary
+// lease.Lease rule. A key held by another token renews nothing. Callers that
+// must stop instead of re-establishing use RenewStrict.
 func (l *redisLease) Renew(ctx context.Context, ttl time.Duration) (bool, error) {
 	if ttl < time.Millisecond {
 		return false, fmt.Errorf("redis: lease TTL must be at least 1ms, got %s", ttl)
@@ -209,6 +227,26 @@ func (l *redisLease) Renew(ctx context.Context, ttl time.Duration) (bool, error)
 		return false, fmt.Errorf("redis: renew lease %q: %w", l.key, err)
 	}
 	return result == 1, nil
+}
+
+// RenewStrict extends the key only while it still holds this lease's token. An
+// absent key and a key held by another token both report lease.ErrLeaseLost,
+// and neither is re-established: the caller asked for the rule under which a
+// renewal it cannot confirm is a reason to stop.
+func (l *redisLease) RenewStrict(ctx context.Context, ttl time.Duration) (bool, error) {
+	if ttl < time.Millisecond {
+		return false, fmt.Errorf("redis: lease TTL must be at least 1ms, got %s", ttl)
+	}
+	result, err := leaseStrictRenewScript.Run(
+		ctx, l.client, []string{l.key}, l.owner, ttl.Milliseconds(),
+	).Int64()
+	if err != nil {
+		return false, fmt.Errorf("redis: renew lease %q strictly: %w", l.key, err)
+	}
+	if result != 1 {
+		return false, fmt.Errorf("redis: renew lease %q strictly: %w", l.key, lease.ErrLeaseLost)
+	}
+	return true, nil
 }
 
 func (l *redisLease) Release(ctx context.Context) (bool, error) {

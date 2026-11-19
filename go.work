@@ -43,6 +43,7 @@ use (
 	./extensions/messaging/mail
 	./extensions/messaging/outbox
 	./extensions/messaging/webhook
+	./extensions/observability/banner
 	./extensions/observability/metrics
 	./extensions/observability/tracing
 	./extensions/reliability/automemlimit
@@ -54,7 +55,7 @@ use (
 	./extensions/storage/redis
 	./extensions/tasks
 	./kit/distributed
-	./kit/gormquery
+	./kit/gormx
 	./kit/oncetoken
 	./scripts/plugin-snapshots
 	./tests/composition

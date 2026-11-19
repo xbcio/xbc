@@ -9,7 +9,7 @@ import (
 )
 
 // Scheme pairs the extractor with the neutral authenticator it feeds.
-func (*Extractor) Scheme() authentication.Scheme { return apikeycore.Scheme }
+func (e *Extractor) Scheme() authentication.Scheme { return e.scheme }
 
 // headerState classifies why singleHeader could not return one clean value:
 // missing entirely, one usable value, duplicated across multiple header
@@ -66,7 +66,10 @@ func (e *Extractor) ExtractCredential(c *web.Ctx) (authentication.CredentialResu
 
 	headerKey, keyPresent, keyState := singleHeader(c, e.header)
 	authorization, authorizationPresent, authState := singleHeader(c, "Authorization")
-	appIDValue, _, appIDState := singleHeader(c, e.appIDHeader)
+	appIDValue, appIDState := "", headerAbsent
+	if !e.ignoreAppID {
+		appIDValue, _, appIDState = singleHeader(c, e.appIDHeader)
+	}
 
 	// Phase A: does this request name apikey's scheme? The key header does so
 	// in any form, valid or not: a duplicated X-API-Key still unambiguously

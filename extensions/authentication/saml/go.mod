@@ -10,4 +10,7 @@ require (
 	github.com/xbcio/xbc/extensions/authentication v0.3.0
 )
 
-require github.com/jonboulle/clockwork v0.5.0 // indirect
+require (
+	github.com/jonboulle/clockwork v0.5.0 // indirect
+	github.com/stretchr/testify v1.12.1 // indirect
+)

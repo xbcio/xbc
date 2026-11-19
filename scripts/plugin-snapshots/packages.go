@@ -20,6 +20,7 @@ import (
 	"github.com/xbcio/xbc/extensions/messaging/mail"
 	"github.com/xbcio/xbc/extensions/messaging/outbox"
 	"github.com/xbcio/xbc/extensions/messaging/webhook"
+	"github.com/xbcio/xbc/extensions/observability/banner"
 	metricscore "github.com/xbcio/xbc/extensions/observability/metrics"
 	tracingcore "github.com/xbcio/xbc/extensions/observability/tracing"
 	"github.com/xbcio/xbc/extensions/reliability/automemlimit"
@@ -97,6 +98,7 @@ var bundleProviders = []func() plugin.Bundle{
 	async.Bundle,
 	asynq.Bundle,
 	automemlimit.Bundle,
+	banner.Bundle,
 	casbincore.Bundle,
 	casbingorm.Bundle,
 	casbinredis.Bundle,
