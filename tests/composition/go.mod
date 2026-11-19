@@ -13,7 +13,7 @@ require (
 
 require (
 	github.com/xbcio/xbc v0.4.0
-	github.com/xbcio/xbc/extensions/authentication/apikey v0.1.0
+	github.com/xbcio/xbc/extensions/authentication/apikey v0.4.0
 	github.com/xbcio/xbc/extensions/authentication/jwt v0.1.0
 	github.com/xbcio/xbc/extensions/httpclient v0.1.0
 	github.com/xbcio/xbc/transport/grpc v0.1.0

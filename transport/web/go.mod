@@ -26,7 +26,7 @@ require (
 require (
 	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/authentication v0.1.0
-	github.com/xbcio/xbc/extensions/authentication/apikey v0.1.0
+	github.com/xbcio/xbc/extensions/authentication/apikey v0.4.0
 	github.com/xbcio/xbc/extensions/reliability/health v0.1.0
 )
 

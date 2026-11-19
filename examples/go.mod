@@ -17,7 +17,7 @@ require (
 require (
 	github.com/stretchr/testify v1.12.1
 	github.com/xbcio/xbc v0.4.0
-	github.com/xbcio/xbc/extensions/authentication/apikey v0.1.0
+	github.com/xbcio/xbc/extensions/authentication/apikey v0.4.0
 	github.com/xbcio/xbc/extensions/authentication/jwt v0.1.0
 	github.com/xbcio/xbc/extensions/authorization/casbin v0.1.0
 	github.com/xbcio/xbc/extensions/authorization/casbin-gorm v0.1.0

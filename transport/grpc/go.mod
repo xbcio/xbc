@@ -15,7 +15,7 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/authentication v0.1.0
-	github.com/xbcio/xbc/extensions/authentication/apikey v0.1.0
+	github.com/xbcio/xbc/extensions/authentication/apikey v0.4.0
 	github.com/xbcio/xbc/extensions/observability/metrics v0.1.0
 	github.com/xbcio/xbc/extensions/reliability/health v0.1.0
 	google.golang.org/protobuf v1.36.11
