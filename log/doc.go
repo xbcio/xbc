@@ -170,4 +170,56 @@
 // derivation fields, which is what keeps With's capture-at-derivation
 // semantics intact for a caller that reuses and mutates a slice it passed,
 // and the boxed record carrying that copy.
+//
+// # Application JSON cores
+//
+// NewJSONCore builds a JSON core an application owns -- shipping records to a
+// log collector through a message queue, for example -- when the built-in
+// console and file sinks cannot express the destination's layout. It starts
+// from jsonEncoderConfig, the same baseline the built-in JSON sinks use, so
+// keys, time format, level case, caller style, and duration units default to
+// exactly the built-in output; the options override only what the destination
+// requires:
+//
+//	core, err := log.NewJSONCore(log.JSONCoreOptions{
+//		Writer:     queueWriter,
+//		Level:      zapcore.InfoLevel,
+//		Exact:      true, // this destination takes info records only
+//		Keys:       log.JSONKeys{Time: "timestamp", Message: "message"},
+//		TimeLayout: "2006-01-02T15:04:05.000Z0700",
+//		UpperLevel: true,
+//		FullCaller: true,
+//		Fields: func() []zap.Field {
+//			return []zap.Field{zap.String("app", "orders")}
+//		},
+//	})
+//	if err != nil {
+//		return err
+//	}
+//	detach := log.Attach(core)
+//	defer detach()
+//
+// JSONKeys renames the five keys the encoder itself writes -- time, level,
+// message, caller, and stack -- and an empty name keeps the package default.
+// Config.Trace remains the only authority for the names carrying trace
+// context: trace_id, span_id, span_name, and request_id are stamped into a
+// logger as ordinary KV pairs by Extract, Span, and Ctx, so they are record
+// fields rather than encoder keys, and JSONKeys cannot rename them.
+// NewJSONCore rejects a JSONKeys name that collides with the trace layout
+// active at construction; a later Init that renames a trace field onto a
+// JSONKeys name is the caller's responsibility, because the constructor cannot
+// see a future configuration.
+//
+// Attach is the intended wiring. The core is a plain zapcore.Core: on its own
+// it writes the fields exactly as it receives them, and attached it inherits
+// this package's masking (a password field is redacted before the core sees
+// it) and the global level, including a later SetLevel -- the same guarantee
+// the built-in sinks carry. The static Fields a caller configures are fixed
+// into the core at construction, before any attached masking layer sees it,
+// so NewJSONCore runs them through the built-in blacklist itself.
+//
+// Exact exists for level-based routing: two Exact cores, one at Info and one
+// at Error, each receive only their own level, where a Level-and-above core
+// at Info would also receive every error record. Fields is evaluated exactly
+// once at construction and its fields are added to every record.
 package log
