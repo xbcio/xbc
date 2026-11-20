@@ -18,7 +18,7 @@
 //	))
 //
 // Web's Bundle contains the server, but no engine: exactly one engine Bundle
-// must be selected alongside it, and transport/web/engines/gin is the one this
+// must be selected alongside it, and transport/web/engines/ginx is the one this
 // repository ships. The prelude contributes the lightweight production
 // baseline: request IDs, access logging, security headers, gzip, cooperative
 // request timeouts, and health probes. Contributing is not enabling: the server

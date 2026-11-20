@@ -59,7 +59,7 @@ func main() {
         ginengine.Bundle(),
         biz.Bundle(),
         cors.Bundle(),
-        swag.Bundle(),
+        swagx.Bundle(),
         greeter.Bundle(),
         async.Bundle(),
     ))
@@ -70,7 +70,7 @@ func main() {
 
 Use `xbc.New` and `App.Execute` instead when the process is not XBC's to own -- when the application must supply its own parent context, or when XBC is embedded in a larger process that already handles signals and decides the exit code. That pair touches none of the facilities listed above, which then belong to the caller.
 
-`prelude.Bundle()` contributes the production Web baseline: the Web server, request IDs, access logging, security headers, compression, cooperative timeouts, and health probes. Contributing is not enabling. The server and the health probes are active as soon as the Bundle is selected; access logging, request IDs, security headers, compression, and the cooperative timeout each stay dormant until their `plugins.<key>` section exists in the merged configuration -- a YAML section or a single environment variable both count, and `application.yml` below configures all five. The Web runtime is engine-neutral, so the HTTP engine is a separate choice: `ginengine.Bundle()` from `github.com/xbcio/xbc/transport/web/engines/gin` supplies it, and exactly one engine Bundle must be selected. The response envelope, CORS policy, generated Swagger UI, and application-owned Greeter remain explicit choices.
+`prelude.Bundle()` contributes the production Web baseline: the Web server, request IDs, access logging, security headers, compression, cooperative timeouts, and health probes. Contributing is not enabling. The server and the health probes are active as soon as the Bundle is selected; access logging, request IDs, security headers, compression, and the cooperative timeout each stay dormant until their `plugins.<key>` section exists in the merged configuration -- a YAML section or a single environment variable both count, and `application.yml` below configures all five. The Web runtime is engine-neutral, so the HTTP engine is a separate choice: `ginengine.Bundle()` from `github.com/xbcio/xbc/transport/web/engines/ginx` supplies it, and exactly one engine Bundle must be selected. The response envelope, CORS policy, generated Swagger UI, and application-owned Greeter remain explicit choices.
 
 The panic boundary is not part of this list because it is no longer a plugin: the Server assembles it unconditionally for every `web.Bundle()` composition, alongside the process-level in-flight gate, the request body ceiling, and the error resolver. It sits outermost among the ordered middleware -- outside even `prelude`'s own entries -- but still inside those three framework-owned stages, so its guarantee covers middleware and routing, not `net/http` itself or the gate ahead of it. See `web.recovery` under [Configuration](#configuration) below.
 
@@ -102,7 +102,7 @@ Regenerate the committed document after changing an annotation or API model:
 go generate ./examples/quickstart
 ```
 
-The `go:generate` directive pins `github.com/swaggo/swag/cmd/swag` to `v1.16.6`. The generated `examples/quickstart/docs` package registers the named document through its normal Go `init`; the composition root blank-imports that package and selects `swag.Bundle()`. Normal builds and startup therefore neither scan source comments nor run an offline generator.
+The `go:generate` directive pins `github.com/swaggo/swag/cmd/swag` to `v1.16.6`. The generated `examples/quickstart/docs` package registers the named document through its normal Go `init`; the composition root blank-imports that package and selects `swagx.Bundle()`. Normal builds and startup therefore neither scan source comments nor run an offline generator.
 
 ## Configuration
 
@@ -266,10 +266,10 @@ xbc.Run(xbc.WithBundles(
     ginengine.Bundle(),
     biz.Bundle(),
     cors.Bundle(),
-    swag.Bundle(),
+    swagx.Bundle(),
     greeter.Bundle(),
     async.Bundle(),
-    redis.Bundle(),
+    redisx.Bundle(),
 ))
 ```
 

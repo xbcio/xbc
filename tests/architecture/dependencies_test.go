@@ -178,7 +178,7 @@ func TestArchCoreGoModDoesNotRequireOptionalStacks(t *testing.T) {
 
 // TestArchCorePackagesDoNotImportTransportStacks is the package-layout design
 // §9 rule 1 guard for every optional transport stack: transports depend on
-// core, never the reverse. Guarding the parent namespace covers transport/grpc
+// core, never the reverse. Guarding the parent namespace covers transport/grpcx
 // and any later sibling transport without extending an implementation-name
 // allowlist here.
 //
@@ -368,7 +368,7 @@ const (
 	// archTransportNamespace is the parent namespace every transport --
 	// including the Web transport and its engine adapters -- lives under.
 	// Guarding the parent rather than one implementation name covers
-	// transport/grpc and any later sibling transport as soon as it appears.
+	// transport/grpcx and any later sibling transport as soon as it appears.
 	archTransportNamespace = archRootPackage + "/transport"
 	// archWebModulePath is the Web transport module itself. A module is
 	// treated as composing the Web stack only by importing this (or a package
@@ -376,7 +376,7 @@ const (
 	archWebModulePath = archRootPackage + "/transport/web"
 	// archGRPCModulePath is the gRPC transport module. It is a sibling of the
 	// Web transport, never a layer on top of it.
-	archGRPCModulePath = archRootPackage + "/transport/grpc"
+	archGRPCModulePath = archRootPackage + "/transport/grpcx"
 	// archGinModulePath is the HTTP engine the Web stack is built on. It is
 	// named separately from archTransportNamespace because it is third-party:
 	// a module can pull Gin in through an intermediate dependency without ever
@@ -593,7 +593,7 @@ func TestArchModulesOutsideTheWebZonesNeverComposeTheWebStack(t *testing.T) {
 	// Web stack either, and TestArchTransportStacksNeverDependOnEachOther
 	// says so independently. It is only the zone where compiling the gRPC
 	// transport in is deliberate, so that one namespace is all it is excused.
-	const grpcZone = "transport/grpc"
+	const grpcZone = "transport/grpcx"
 
 	covered, grpcCovered := 0, 0
 	zoneHits := make(map[string]int, len(webZones))
@@ -638,7 +638,7 @@ func TestArchModulesOutsideTheWebZonesNeverComposeTheWebStack(t *testing.T) {
 // TestArchTransportStacksNeverDependOnEachOther keeps every transport stack
 // selectable without any other. The zone guard above already keeps transports
 // out of protocol-neutral modules, but it exempts transport/web wholesale and
-// reads transport/grpc only for foreign transport packages; this guard states
+// reads transport/grpcx only for foreign transport packages; this guard states
 // the sibling rule directly: no module beneath one stack may compile in another
 // stack, and the gRPC stack never compiles in the HTTP engine the Web stack is
 // built on. A capability both stacks share must live in a neutral module under

@@ -14,7 +14,7 @@ import (
 
 	greeterv1 "github.com/xbcio/xbc/examples/grpcquickstart/internal/gen/greeter/v1"
 	"github.com/xbcio/xbc/plugin"
-	xbcgrpc "github.com/xbcio/xbc/transport/grpc"
+	xbcgrpc "github.com/xbcio/xbc/transport/grpcx"
 )
 
 // Key is greeter's stable configuration and runtime identity.

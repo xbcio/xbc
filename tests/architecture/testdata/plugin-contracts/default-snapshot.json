@@ -45,7 +45,7 @@
     },
     {
       "key": "asynq",
-      "config_type": "github.com/xbcio/xbc/extensions/jobs/asynq.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/jobs/asynqx.Config",
       "defaults": {
         "Redis": {
           "Addr": "127.0.0.1:6379",
@@ -125,7 +125,7 @@
     },
     {
       "key": "casbin",
-      "config_type": "github.com/xbcio/xbc/extensions/authorization/casbin.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/authorization/casbinx.Config",
       "defaults": {
         "Model": "",
         "ModelFile": "",
@@ -155,14 +155,14 @@
     },
     {
       "key": "casbin-grpc",
-      "config_type": "github.com/xbcio/xbc/transport/grpc/extensions/authorization/casbin.Config",
+      "config_type": "github.com/xbcio/xbc/transport/grpcx/extensions/authorization/casbinx.Config",
       "defaults": {
         "MissingPermission": "deny"
       }
     },
     {
       "key": "casbin-http",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/authorization/casbinx.Config",
       "defaults": {
         "MissingPermission": "deny"
       }
@@ -222,7 +222,7 @@
     },
     {
       "key": "cron",
-      "config_type": "github.com/xbcio/xbc/extensions/jobs/cron.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/jobs/cronx.Config",
       "defaults": {
         "Seconds": false,
         "Timezone": "Local",
@@ -269,7 +269,7 @@
     },
     {
       "key": "elasticsearch",
-      "config_type": "github.com/xbcio/xbc/extensions/storage/elasticsearch.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/storage/elasticx.Config",
       "defaults": {
         "Addresses": null,
         "CloudID": "",
@@ -310,7 +310,7 @@
     },
     {
       "key": "gorm",
-      "config_type": "github.com/xbcio/xbc/extensions/storage/gorm.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/storage/gormx.Config",
       "defaults": {
         "Driver": "mysql",
         "DSN": "",
@@ -325,7 +325,7 @@
     },
     {
       "key": "grpc",
-      "config_type": "github.com/xbcio/xbc/transport/grpc.Config",
+      "config_type": "github.com/xbcio/xbc/transport/grpcx.Config",
       "defaults": {
         "Addr": ":9090",
         "MaxRecvMsgBytes": 4194304,
@@ -358,7 +358,7 @@
     },
     {
       "key": "grpc-accesslog",
-      "config_type": "github.com/xbcio/xbc/transport/grpc/extensions/observability/accesslog.Config",
+      "config_type": "github.com/xbcio/xbc/transport/grpcx/extensions/observability/accesslog.Config",
       "defaults": {
         "SkipMethods": null,
         "SlowCall": 0
@@ -366,7 +366,7 @@
     },
     {
       "key": "grpc-management",
-      "config_type": "github.com/xbcio/xbc/transport/grpc/extensions/management.Config",
+      "config_type": "github.com/xbcio/xbc/transport/grpcx/extensions/management.Config",
       "defaults": {
         "Addr": "",
         "AllowRemote": false,
@@ -460,7 +460,7 @@
     },
     {
       "key": "jwt",
-      "config_type": "github.com/xbcio/xbc/extensions/authentication/jwt.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/authentication/jwtx.Config",
       "defaults": {
         "Secret": "",
         "Algorithm": "HS256",
@@ -479,7 +479,7 @@
     },
     {
       "key": "kafka",
-      "config_type": "github.com/xbcio/xbc/extensions/messaging/kafka.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/messaging/kafkax.Config",
       "defaults": {
         "Brokers": null,
         "ClientID": "xbc",
@@ -514,7 +514,7 @@
     },
     {
       "key": "mail",
-      "config_type": "github.com/xbcio/xbc/extensions/messaging/mail.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/messaging/mailx.Config",
       "defaults": {
         "Host": "",
         "Port": 0,
@@ -646,7 +646,7 @@
     },
     {
       "key": "raft",
-      "config_type": "github.com/xbcio/xbc/extensions/coordination/raft.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/coordination/raftx.Config",
       "defaults": {
         "NodeID": "",
         "BindAddr": "127.0.0.1:7000",
@@ -693,7 +693,7 @@
     },
     {
       "key": "redis",
-      "config_type": "github.com/xbcio/xbc/extensions/storage/redis.Config",
+      "config_type": "github.com/xbcio/xbc/extensions/storage/redisx.Config",
       "defaults": {
         "Mode": "",
         "Addr": "",
@@ -732,7 +732,7 @@
     },
     {
       "key": "redis-lease",
-      "config_type": "github.com/xbcio/xbc/extensions/storage/redis.LeaseConfig",
+      "config_type": "github.com/xbcio/xbc/extensions/storage/redisx.LeaseConfig",
       "defaults": {
         "Instance": "default"
       }
@@ -811,7 +811,7 @@
     },
     {
       "key": "swag",
-      "config_type": "github.com/xbcio/xbc/transport/web/extensions/openapi/swag.Config",
+      "config_type": "github.com/xbcio/xbc/transport/web/extensions/openapi/swagx.Config",
       "defaults": {
         "InstanceName": "swagger",
         "JSONPath": "/swagger.json",

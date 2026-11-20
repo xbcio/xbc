@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	gormadapter "github.com/casbin/gorm-adapter/v3"
-	casbinplugin "github.com/xbcio/xbc/extensions/authorization/casbin"
+	casbinplugin "github.com/xbcio/xbc/extensions/authorization/casbinx"
 	"github.com/xbcio/xbc/plugin"
 	"gorm.io/gorm"
 )

@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xbcio/xbc/extensions/jobs/asynq"
+	"github.com/xbcio/xbc/extensions/jobs/asynqx"
 	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
@@ -91,7 +91,7 @@ var definition = plugin.DefineConfigured(
 			// contributor: this Plugin declares no worker of its own, and the
 			// handler it exports is run by the ingest workload's worker. See
 			// queue.go.
-			plugin.ExportAs[asynq.HandlerContributor](func(value *Plugin) asynq.HandlerContributor { return value }),
+			plugin.ExportAs[asynqx.HandlerContributor](func(value *Plugin) asynqx.HandlerContributor { return value }),
 		),
 	},
 )

@@ -66,7 +66,7 @@ var (
 	// dependencies (gin, or whatever the adapter wraps) would be pulled back
 	// into web's own dependency closure -- exactly what keeping engines as
 	// separate modules is meant to prevent. A composition root selects
-	// exactly one engine Bundle (transport/web/engines/gin, or another
+	// exactly one engine Bundle (transport/web/engines/ginx, or another
 	// Engine adapter) alongside web.Bundle() to satisfy this input.
 	engineInput = plugin.RequireOne[EngineFactory]()
 

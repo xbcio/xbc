@@ -1,6 +1,6 @@
 // Package casbinredis provides an XBC Casbin WatcherFactory backed by Redis
 // Pub/Sub. Each Factory.Open call creates a private publisher/subscriber pair;
-// it neither consumes nor closes clients exported by extensions/storage/redis.
+// it neither consumes nor closes clients exported by extensions/storage/redisx.
 // Importing this package has no registration side effects.
 //
 // # Usage

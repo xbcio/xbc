@@ -1,7 +1,7 @@
 package casbinredis
 
 import (
-	xbccasbin "github.com/xbcio/xbc/extensions/authorization/casbin"
+	xbccasbin "github.com/xbcio/xbc/extensions/authorization/casbinx"
 	"github.com/xbcio/xbc/plugin"
 )
 

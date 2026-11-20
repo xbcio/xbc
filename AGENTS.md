@@ -22,6 +22,11 @@ Local design artifacts stay outside version control: specifications and architec
 ## Where Things Live
 The root module `github.com/xbcio/xbc` holds the facade and framework core: `xbc.go` is the recommended entry point; `plugin/` is the public plugin framework and lifecycle SPI (`assembly/` plans and binds, `model/` is the type-erased layer, `ordering/` is a stable string-keyed ordering primitive used by the Web transport, while core's assembly carries its own identity-keyed graph so a cycle can be attributed to a contract); `runtime/` owns execution and process lifecycle; `config/` and `log/` are facades. Transports and optional capabilities are separate publishable modules under `transport/web/` and `extensions/`; framework-free libraries are separate publishable modules under `kit/`, one per direct child, and never import the framework; runnable consumers live in `examples/`. `tests/architecture/` and `tests/integration/` are the design guards. The full directory and module map, including why each module is separate, is in `README.md` under "Directories and boundaries".
 
+## Package naming
+- A package with a lifecycle or plugin form that wraps a third-party component lives under `extensions/` and is named component+x (`redisx`, `kafkax`, `gormx`), so it is not confused with the third-party package.
+- A stateless, framework-free utility library under `kit/` that serves one component is named component+kit (`gormkit`), keeping the component name so ownership is visible; a general one is named after its capability (`oncetoken`, `distributed`).
+- Names are short: one English word or a compact compound, never `helper`, `util`, or `common`, which do not name a capability.
+
 ## Decision Rules
 Define a change by the outcome it must achieve and the behavior it must not violate, not by the current implementation. Prescribe a specific implementation only when that implementation is itself a deliberate project constraint.
 

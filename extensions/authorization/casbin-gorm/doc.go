@@ -31,7 +31,8 @@
 // The pinned upstream gorm-adapter v3.39.0 legacy Adapter.Transaction method
 // recreates its transaction adapter with the default table name. It is safe for
 // casbin_rule, but applications using a custom table must use a corrected
-// upstream/fork (SAS currently supplies one with a module replacement) or the
-// adapter's transaction-context API that retains table metadata. XBC does not
-// hide this upstream behavior behind a fork or local replacement.
+// upstream/fork (the adopting service currently supplies one with a module
+// replacement) or the adapter's transaction-context API that retains table
+// metadata. XBC does not hide this upstream behavior behind a fork or local
+// replacement.
 package casbingorm

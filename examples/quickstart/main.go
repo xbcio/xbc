@@ -41,8 +41,8 @@ import (
 	_ "github.com/xbcio/xbc/examples/quickstart/docs"
 	"github.com/xbcio/xbc/examples/quickstart/internal/greeter"
 	"github.com/xbcio/xbc/extensions/concurrency/async"
-	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
-	"github.com/xbcio/xbc/transport/web/extensions/openapi/swag"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
+	"github.com/xbcio/xbc/transport/web/extensions/openapi/swagx"
 	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
 	"github.com/xbcio/xbc/transport/web/prelude"
@@ -56,7 +56,7 @@ func main() {
 			ginengine.Bundle(),
 			biz.Bundle(),
 			cors.Bundle(),
-			swag.Bundle(),
+			swagx.Bundle(),
 			greeter.Bundle(),
 			async.Bundle(),
 		),

@@ -281,7 +281,7 @@
 // Definitions, or no Definitions at all.
 //
 // A package that owns several runtime units composes them with BundleOf. For
-// example, extensions/storage/gorm exposes its database Definition as its
+// example, extensions/storage/gormx exposes its database Definition as its
 // primary Definition while its Bundle also selects an independently ordered
 // health readiness probe, so each keeps its own Key, configuration,
 // contracts, dependencies, and lifecycle behavior:

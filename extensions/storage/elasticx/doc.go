@@ -1,0 +1,72 @@
+// Package elasticx provides named timeout-aware Elasticsearch clients with
+// bounded asynchronous bulk indexing. This module pins
+// github.com/elastic/go-elasticsearch/v8 at v8.19.1. Importing this package is
+// side-effect free. Prefer explicit composition with elasticx.Bundle();
+// executables that intentionally use process-wide autoload may blank-import
+// the autoload subpackage.
+//
+// # Usage
+//
+// Each named section below plugins.elasticsearch constructs one primary
+// *elasticx.Client. Its concrete type and BulkIndexer contract resolve to
+// the same plugin identity and lifecycle owner. A consumer declares exact typed
+// inputs and reads them only during construction:
+//
+//	var searchClient = plugin.RefToInstance[*elasticx.Client](
+//		elasticx.Key,
+//		"search",
+//	)
+//	var searchBulk = plugin.RefToInstance[elasticx.BulkIndexer](
+//		elasticx.Key,
+//		"search",
+//	)
+//
+//	type searchIndex struct {
+//		client *elasticx.Client
+//		bulk   elasticx.BulkIndexer
+//	}
+//
+//	var searchDefinition = plugin.Define(
+//		"search-index",
+//		func(ctx plugin.BuildContext) (*searchIndex, error) {
+//			return &searchIndex{
+//				client: searchClient.Get(ctx).Value,
+//				bulk:   searchBulk.Get(ctx).Value,
+//			}, nil
+//		},
+//		plugin.Options[*searchIndex]{
+//			Inputs: plugin.Inputs(searchClient, searchBulk),
+//		},
+//	)
+//
+//	func Bundle() plugin.Bundle {
+//		return plugin.BundleOf(searchDefinition)
+//	}
+//
+// The composition root includes both elasticx.Bundle() and the consumer's
+// Bundle. Client.Do applies the configured timeout, and callers must close every
+// successful response body. Client.Raw is an explicit escape hatch that does
+// not apply that timeout. Bulk admission is bounded and uses the configured
+// block or reject policy; Flush is a barrier for previously admitted items.
+// Drain stops bulk admission and waits for every admitted item to be flushed,
+// leaving the transport open; Stop finishes that flush if Drain did not, then
+// closes the transport.
+//
+// Supply API keys, passwords, and private certificate authorities through
+// secret-backed configuration. Credentials in node URLs are rejected, and this
+// package does not include configured credentials in its own errors or logs.
+//
+// # Readiness
+//
+// The primary *Client exports health.Contributor and contributes its cluster's
+// reachability as a readiness check. No separate Definition is needed: the
+// primary is this package's own type, so it carries the contract itself and each
+// configured instance appears in the aggregate report under its own identity --
+// "elasticsearch" for the default instance and "elasticsearch[<instance>]" for a
+// named one. The contribution is inert unless the application also selects the
+// health capability Bundle.
+//
+// An instance configured with health_probe: false contributes nothing. That flag
+// already suppresses the Init-time probe, and giving it a second, narrower
+// meaning for readiness would make it unpredictable.
+package elasticx

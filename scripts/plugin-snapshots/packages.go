@@ -5,19 +5,19 @@ import (
 	"github.com/xbcio/xbc/plugin"
 
 	apikeycore "github.com/xbcio/xbc/extensions/authentication/apikey"
-	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwtx"
 	sessioncore "github.com/xbcio/xbc/extensions/authentication/session"
-	casbincore "github.com/xbcio/xbc/extensions/authorization/casbin"
 	casbingorm "github.com/xbcio/xbc/extensions/authorization/casbin-gorm"
 	casbinredis "github.com/xbcio/xbc/extensions/authorization/casbin-redis"
+	casbincore "github.com/xbcio/xbc/extensions/authorization/casbinx"
 	"github.com/xbcio/xbc/extensions/concurrency/async"
 	"github.com/xbcio/xbc/extensions/coordination/placement"
-	"github.com/xbcio/xbc/extensions/coordination/raft"
+	"github.com/xbcio/xbc/extensions/coordination/raftx"
 	"github.com/xbcio/xbc/extensions/httpclient"
-	"github.com/xbcio/xbc/extensions/jobs/asynq"
-	"github.com/xbcio/xbc/extensions/jobs/cron"
-	"github.com/xbcio/xbc/extensions/messaging/kafka"
-	"github.com/xbcio/xbc/extensions/messaging/mail"
+	"github.com/xbcio/xbc/extensions/jobs/asynqx"
+	"github.com/xbcio/xbc/extensions/jobs/cronx"
+	"github.com/xbcio/xbc/extensions/messaging/kafkax"
+	"github.com/xbcio/xbc/extensions/messaging/mailx"
 	"github.com/xbcio/xbc/extensions/messaging/outbox"
 	"github.com/xbcio/xbc/extensions/messaging/webhook"
 	"github.com/xbcio/xbc/extensions/observability/banner"
@@ -26,20 +26,20 @@ import (
 	"github.com/xbcio/xbc/extensions/reliability/automemlimit"
 	"github.com/xbcio/xbc/extensions/reliability/gracefulshutdown"
 	corehealth "github.com/xbcio/xbc/extensions/reliability/health"
-	"github.com/xbcio/xbc/extensions/storage/elasticsearch"
-	"github.com/xbcio/xbc/extensions/storage/gorm"
+	"github.com/xbcio/xbc/extensions/storage/elasticx"
+	"github.com/xbcio/xbc/extensions/storage/gormx"
 	"github.com/xbcio/xbc/extensions/storage/objectstorage"
-	"github.com/xbcio/xbc/extensions/storage/redis"
+	"github.com/xbcio/xbc/extensions/storage/redisx"
 
-	grpctransport "github.com/xbcio/xbc/transport/grpc"
-	grpcapikey "github.com/xbcio/xbc/transport/grpc/extensions/authentication/apikey"
-	grpcjwt "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt"
-	grpccasbin "github.com/xbcio/xbc/transport/grpc/extensions/authorization/casbin"
-	grpcmanagement "github.com/xbcio/xbc/transport/grpc/extensions/management"
-	grpcaccesslog "github.com/xbcio/xbc/transport/grpc/extensions/observability/accesslog"
-	grpcmetrics "github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics"
-	grpctracing "github.com/xbcio/xbc/transport/grpc/extensions/observability/tracing"
-	grpchealth "github.com/xbcio/xbc/transport/grpc/extensions/reliability/health"
+	grpctransport "github.com/xbcio/xbc/transport/grpcx"
+	grpcapikey "github.com/xbcio/xbc/transport/grpcx/extensions/authentication/apikey"
+	grpcjwt "github.com/xbcio/xbc/transport/grpcx/extensions/authentication/jwt"
+	grpccasbin "github.com/xbcio/xbc/transport/grpcx/extensions/authorization/casbinx"
+	grpcmanagement "github.com/xbcio/xbc/transport/grpcx/extensions/management"
+	grpcaccesslog "github.com/xbcio/xbc/transport/grpcx/extensions/observability/accesslog"
+	grpcmetrics "github.com/xbcio/xbc/transport/grpcx/extensions/observability/metrics"
+	grpctracing "github.com/xbcio/xbc/transport/grpcx/extensions/observability/tracing"
+	grpchealth "github.com/xbcio/xbc/transport/grpcx/extensions/reliability/health"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/federation"
@@ -48,7 +48,7 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/oidc"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/saml"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/session"
-	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
+	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbinx"
 	"github.com/xbcio/xbc/transport/web/extensions/authorization/tenant"
 	"github.com/xbcio/xbc/transport/web/extensions/interop/ginmount"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/accesslog"
@@ -57,12 +57,12 @@ import (
 	"github.com/xbcio/xbc/transport/web/extensions/observability/pprof"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/requestid"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/tracing"
-	"github.com/xbcio/xbc/transport/web/extensions/openapi/swag"
+	"github.com/xbcio/xbc/transport/web/extensions/openapi/swagx"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/health"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/idempotency"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/ratelimit"
 	"github.com/xbcio/xbc/transport/web/extensions/reliability/timeout"
-	"github.com/xbcio/xbc/transport/web/extensions/reliability/websocket"
+	"github.com/xbcio/xbc/transport/web/extensions/reliability/websocketx"
 	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
 	"github.com/xbcio/xbc/transport/web/extensions/response/gzip"
 	"github.com/xbcio/xbc/transport/web/extensions/security/cors"
@@ -78,7 +78,7 @@ import (
 //
 // run from the repository root after excluding three categories:
 //
-//   - aggregate Bundles (transport/web/prelude and transport/grpc/prelude,
+//   - aggregate Bundles (transport/web/prelude and transport/grpcx/prelude,
 //     whose entries belong to the implementation packages below);
 //   - the demo plugins under examples/ (quickstart's and grpcquickstart's
 //     greeters, worker's sweeper and healthlog, and the workloads example's
@@ -96,16 +96,16 @@ import (
 // added or removed.
 var bundleProviders = []func() plugin.Bundle{
 	async.Bundle,
-	asynq.Bundle,
+	asynqx.Bundle,
 	automemlimit.Bundle,
 	banner.Bundle,
 	casbincore.Bundle,
 	casbingorm.Bundle,
 	casbinredis.Bundle,
 	corehealth.Bundle,
-	cron.Bundle,
-	elasticsearch.Bundle,
-	gorm.Bundle,
+	cronx.Bundle,
+	elasticx.Bundle,
+	gormx.Bundle,
 	gracefulshutdown.Bundle,
 	httpclient.Bundle,
 	apikeycore.Bundle,
@@ -113,13 +113,13 @@ var bundleProviders = []func() plugin.Bundle{
 	sessioncore.Bundle,
 	metricscore.Bundle,
 	tracingcore.Bundle,
-	kafka.Bundle,
-	mail.Bundle,
+	kafkax.Bundle,
+	mailx.Bundle,
 	objectstorage.Bundle,
 	outbox.Bundle,
 	placement.Bundle,
-	raft.Bundle,
-	redis.Bundle,
+	raftx.Bundle,
+	redisx.Bundle,
 	webhook.Bundle,
 
 	grpctransport.Bundle,
@@ -152,7 +152,7 @@ var bundleProviders = []func() plugin.Bundle{
 	oidc.Bundle,
 	saml.Bundle,
 	session.Bundle,
-	swag.Bundle,
+	swagx.Bundle,
 	tracing.Bundle,
 	pprof.Bundle,
 	ratelimit.Bundle,
@@ -161,7 +161,7 @@ var bundleProviders = []func() plugin.Bundle{
 	securityheaders.Bundle,
 	tenant.Bundle,
 	timeout.Bundle,
-	websocket.Bundle,
+	websocketx.Bundle,
 }
 
 // reservedKeyProviders lists every accessor for plugin keys a transport

@@ -143,11 +143,11 @@ var _ xbcplugin.Definition
 		"a deeper framework package under an alias": {
 			source: `package fixture
 
-import storage "github.com/xbcio/xbc/extensions/storage/redis"
+import storage "github.com/xbcio/xbc/extensions/storage/redisx"
 
 var _ = storage.NewClient
 `,
-			violations: []string{"imports github.com/xbcio/xbc/extensions/storage/redis"},
+			violations: []string{"imports github.com/xbcio/xbc/extensions/storage/redisx"},
 		},
 		"a dot import cannot hide the path": {
 			source: `package fixture

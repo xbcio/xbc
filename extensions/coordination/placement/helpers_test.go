@@ -13,7 +13,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 
 	"github.com/xbcio/xbc/extensions/coordination/lease"
-	redisstore "github.com/xbcio/xbc/extensions/storage/redis"
+	redisstore "github.com/xbcio/xbc/extensions/storage/redisx"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )

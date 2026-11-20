@@ -349,7 +349,7 @@ plugins:
   #
   # A gRPC-only process has no HTTP outlet, so its metrics registry and the
   # profiling handlers need a listener of their own. Selecting
-  # grpcmanagement.Bundle() (transport/grpc/extensions/management) beside the
+  # grpcmanagement.Bundle() (transport/grpcx/extensions/management) beside the
   # gRPC transport enables the section below; this Web example does not select
   # it, so the block is shown commented. /metrics appears only once a
   # plugins.metrics section is configured, and the pprof subtree only under

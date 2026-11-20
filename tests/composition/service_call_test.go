@@ -31,7 +31,7 @@ import (
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
-	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
 	webtracing "github.com/xbcio/xbc/transport/web/extensions/observability/tracing"
 	webhealth "github.com/xbcio/xbc/transport/web/extensions/reliability/health"
 )

@@ -18,7 +18,7 @@
 //	app, err := xbc.New(xbc.WithBundles(
 //		health.Bundle(),
 //		gorm.Bundle(),
-//		redis.Bundle(),
+//		redisx.Bundle(),
 //	))
 //
 // A dependency contributes one or more checks by exporting Contributor from its
@@ -55,16 +55,16 @@
 //
 // A contribution with an empty Name is reported under the producing Identity
 // alone, which is what distinguishes the instances of a multi-instance plugin
-// from each other. extensions/storage/elasticsearch,
-// extensions/storage/objectstorage, extensions/messaging/kafka,
-// extensions/jobs/asynq, and extensions/coordination/raft own their primary type
+// from each other. extensions/storage/elasticx,
+// extensions/storage/objectstorage, extensions/messaging/kafkax,
+// extensions/jobs/asynqx, and extensions/coordination/raftx own their primary type
 // and use this direct shape.
 //
 // A plugin whose primary value cannot implement Contributor contributes
 // through a second Definition in the same Bundle whose primary is its own type
-// and which collects the values it should probe. extensions/storage/gorm is in
+// and which collects the values it should probe. extensions/storage/gormx is in
 // that position because its primary is the third-party *gorm.DB, which a
-// Definition cannot give a method; extensions/storage/redis is in it because it
+// Definition cannot give a method; extensions/storage/redisx is in it because it
 // aggregates -- its client Definition is selected once per configured instance,
 // so a contributor that Definition carried would answer only for one instance:
 //
@@ -86,7 +86,7 @@
 //		},
 //	)
 //
-// extensions/storage/redis and extensions/storage/gorm use this shape, so every
+// extensions/storage/redisx and extensions/storage/gormx use this shape, so every
 // configured instance is probed without any change at the composition root.
 //
 // Once XBC begins graceful shutdown, readiness immediately reports Down without

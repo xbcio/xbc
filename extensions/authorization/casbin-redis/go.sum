@@ -66,8 +66,6 @@ github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWD
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 github.com/xbcio/xbc v0.1.0 h1:i4Eyy0xfX6rCZZmn3JUUyf7vSzp4lbXmMJwuSTENqPI=
 github.com/xbcio/xbc v0.1.0/go.mod h1:mISBzd4c6nGJuXdJ0/EUuTxy5nJSUPL5wvM3HQh25lM=
-github.com/xbcio/xbc/extensions/authorization/casbin v0.1.0 h1:AOMjSoiHrWRI31He0jmO+SOcpccb92YhN+eezZHIIeg=
-github.com/xbcio/xbc/extensions/authorization/casbin v0.1.0/go.mod h1:XTQZIl1QAuRrzHuaKZ5gjAZnGlBchJxgTJDg2ct736E=
 github.com/xbcio/xbc/extensions/authorization/rbac v0.1.0 h1:c5f9OssendzW5cvihRJtL/iYfZbM3Cme5rMWJ0vyCSc=
 github.com/xbcio/xbc/extensions/authorization/rbac v0.1.0/go.mod h1:3C4bZSl1aDJ8sVOrhN0HPIiyqNgOt/EAWjUSrtqNuqE=
 github.com/yuin/gopher-lua v1.1.1 h1:kYKnWBjvbNP4XLT3+bPEwAXJx262OhaHDWDVOPjL46M=

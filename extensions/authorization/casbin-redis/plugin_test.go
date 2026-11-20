@@ -6,7 +6,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
-	xbccasbin "github.com/xbcio/xbc/extensions/authorization/casbin"
+	xbccasbin "github.com/xbcio/xbc/extensions/authorization/casbinx"
 	pluginmodel "github.com/xbcio/xbc/plugin/model"
 )
 

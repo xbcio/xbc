@@ -75,7 +75,7 @@ var archGRPCExtensionGroups = []string{
 }
 
 // archGRPCPackageExtensionPaths are the gRPC extensions that are packages of
-// the transport/grpc module rather than modules of their own.
+// the transport/grpcx module rather than modules of their own.
 var archGRPCPackageExtensionPaths = []string{
 	"authentication/apikey",
 	"observability/accesslog",
@@ -83,8 +83,8 @@ var archGRPCPackageExtensionPaths = []string{
 }
 
 // archGRPCOwnedPackageLeaves is the intentional set of gRPC plugin packages
-// that sit directly beneath transport/grpc/extensions while remaining packages
-// of the transport/grpc module. A capability group exists to own a family of
+// that sit directly beneath transport/grpcx/extensions while remaining packages
+// of the transport/grpcx module. A capability group exists to own a family of
 // leaves that share a vocabulary; the management plane is one plugin with one
 // identity -- there is no second gRPC management plugin to group it with -- so
 // the namespace's direct level names it, the way the gRPC prelude and starter
@@ -174,13 +174,13 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		"plugin/model",
 		"extensions",
 		"transport",
-		"transport/grpc",
-		"transport/grpc/prelude",
+		"transport/grpcx",
+		"transport/grpcx/prelude",
 		"transport/web",
 		"transport/web/prelude",
 		"transport/web/extensions",
 		"transport/web/engines",
-		"transport/web/engines/gin",
+		"transport/web/engines/ginx",
 	} {
 		info, err := os.Stat(filepath.Join(root, filepath.FromSlash(canonical)))
 		require.NoError(t, err, "canonical path %s must exist", canonical)
@@ -251,7 +251,7 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 
 	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "extensions"), archProtocolNeutralExtensionGroups, nil, archProtocolNeutralContractModules, archProtocolNeutralModuleLeaves, nil)
 	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "web", "extensions"), archWebExtensionGroups, archWebPackageExtensionPaths, nil, nil, nil)
-	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "grpc", "extensions"), archGRPCExtensionGroups, archGRPCPackageExtensionPaths, nil, nil, archGRPCOwnedPackageLeaves)
+	archAssertGroupedExtensionNamespace(t, filepath.Join(root, "transport", "grpcx", "extensions"), archGRPCExtensionGroups, archGRPCPackageExtensionPaths, nil, nil, archGRPCOwnedPackageLeaves)
 
 	webRoot := filepath.Join(root, "transport", "web")
 	preludeRoot := filepath.Join(webRoot, "prelude")
@@ -273,12 +273,12 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 	// of the transport module, so the baseline never reaches past the
 	// transport's own dependency closure -- the telemetry interceptors that
 	// would are modules of their own, selected beside it.
-	grpcRoot := filepath.Join(root, "transport", "grpc")
+	grpcRoot := filepath.Join(root, "transport", "grpcx")
 	for _, name := range []string{"prelude", "starter"} {
 		packageRoot := filepath.Join(grpcRoot, name)
 		require.NotEmpty(t, archProductionGoFilesInDir(t, packageRoot), "gRPC %s must be a production package", name)
 		_, err = os.Stat(filepath.Join(packageRoot, "go.mod"))
-		require.ErrorIs(t, err, os.ErrNotExist, "gRPC %s must belong to the transport/grpc module", name)
+		require.ErrorIs(t, err, os.ErrNotExist, "gRPC %s must belong to the transport/grpcx module", name)
 	}
 	grpcEntries, err := os.ReadDir(grpcRoot)
 	require.NoError(t, err, "reading gRPC module root failed")
@@ -291,7 +291,7 @@ func TestArchRetiredPathsStayRetired(t *testing.T) {
 		if !entry.IsDir() || archIgnoresDirectoryEntry(entry.Name()) {
 			continue
 		}
-		assert.Truef(t, allowedGRPCDirectories[entry.Name()], "unexpected direct package directory transport/grpc/%s; gRPC plugins belong beneath transport/grpc/extensions", entry.Name())
+		assert.Truef(t, allowedGRPCDirectories[entry.Name()], "unexpected direct package directory transport/grpcx/%s; gRPC plugins belong beneath transport/grpcx/extensions", entry.Name())
 	}
 
 	entries, err := os.ReadDir(webRoot)

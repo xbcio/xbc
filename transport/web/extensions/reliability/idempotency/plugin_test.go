@@ -73,7 +73,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 
 // TestPlannedDefinitionResolvesNamedRedisClientFromGraph exercises plan(cfg)
 // through the real dependency graph: a stub "redis" producer stands in for
-// the sibling extensions/storage/redis plugin, proving the redis backend wires
+// the sibling extensions/storage/redisx plugin, proving the redis backend wires
 // the exact named client instance the configuration selects. The stub
 // declares the same goredis.UniversalClient contract the real plugin exports,
 // because idempotency resolves the client through that topology-neutral

@@ -9,7 +9,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/transport/web v0.4.0
-	github.com/xbcio/xbc/transport/web/engines/gin v0.1.1
+	github.com/xbcio/xbc/transport/web/engines/ginx v0.5.0
 )
 
 require github.com/xbcio/xbc/transport/web/extensions/testing/apptest v0.1.0

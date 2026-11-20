@@ -2,7 +2,7 @@
 // authentication.
 //
 // Verification, signing, and configuration live in the protocol-neutral
-// github.com/xbcio/xbc/extensions/authentication/jwt. This package only reads
+// github.com/xbcio/xbc/extensions/authentication/jwtx. This package only reads
 // the bearer token from the HTTP header that authenticator is configured with
 // and hands it to the Web transport's built-in authentication middleware,
 // which is the only place the live request is available. It has no

@@ -21,7 +21,7 @@ import (
 const Key plugin.Key = "federation-http"
 
 // redisPluginKey mirrors the stable plugin.Key identity owned by the optional
-// extensions/storage/redis plugin. This module must not import that sibling
+// extensions/storage/redisx plugin. This module must not import that sibling
 // integration module (each optional integration is independently versioned),
 // so the identity is duplicated here as a typed constant.
 const redisPluginKey plugin.Key = "redis"

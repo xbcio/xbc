@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/xbcio/xbc/extensions/authentication"
-	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwtx"
 	"github.com/xbcio/xbc/transport/web"
 	"github.com/xbcio/xbc/transport/web/enginetest"
 )

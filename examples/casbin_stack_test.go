@@ -16,11 +16,11 @@ import (
 	gormlib "gorm.io/gorm"
 
 	"github.com/xbcio/xbc"
-	casbincore "github.com/xbcio/xbc/extensions/authorization/casbin"
 	casbingorm "github.com/xbcio/xbc/extensions/authorization/casbin-gorm"
 	casbinredis "github.com/xbcio/xbc/extensions/authorization/casbin-redis"
+	casbincore "github.com/xbcio/xbc/extensions/authorization/casbinx"
 	"github.com/xbcio/xbc/extensions/authorization/rbac"
-	gormplugin "github.com/xbcio/xbc/extensions/storage/gorm"
+	gormplugin "github.com/xbcio/xbc/extensions/storage/gormx"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -190,7 +190,7 @@ func TestGORMCasbinRedisRBACComposition(t *testing.T) {
 	})
 
 	// Both old and new permission sets are non-empty, so the Casbin bridge uses
-	// filtered policy update. An empty action is normalized to SAS's wildcard.
+	// filtered policy update. An empty action is normalized to the application's wildcard.
 	changed, err = first.handles.manager.ReplaceRolePermissions(ctx, "r8", []rbac.Permission{{Object: "settings.role.manage"}})
 	if err != nil || !changed {
 		t.Fatalf("ReplaceRolePermissions(update) = (%v, %v)", changed, err)

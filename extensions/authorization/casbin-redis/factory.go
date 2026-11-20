@@ -15,7 +15,7 @@ import (
 	rediswatcher "github.com/casbin/redis-watcher/v2"
 	goredis "github.com/redis/go-redis/v9"
 
-	xbccasbin "github.com/xbcio/xbc/extensions/authorization/casbin"
+	xbccasbin "github.com/xbcio/xbc/extensions/authorization/casbinx"
 )
 
 // Factory opens one independently owned Redis watcher for each live Casbin

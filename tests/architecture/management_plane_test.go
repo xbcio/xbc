@@ -125,7 +125,7 @@ func TestArchManagementPlaneIsConfinedToOperatorEndpoints(t *testing.T) {
 // literal is a route declaration and nothing else this package does.
 func archGRPCManagementRoutes(t *testing.T, root string) map[string]bool {
 	t.Helper()
-	packageRoot := filepath.Join(root, "transport", "grpc", "extensions", "management")
+	packageRoot := filepath.Join(root, "transport", "grpcx", "extensions", "management")
 	files := archParseProductionGoFiles(t, packageRoot)
 	require.NotEmpty(t, files, "%s must contain production Go files", packageRoot)
 

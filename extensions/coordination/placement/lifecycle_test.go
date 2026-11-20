@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	redisstore "github.com/xbcio/xbc/extensions/storage/redis"
+	redisstore "github.com/xbcio/xbc/extensions/storage/redisx"
 	"github.com/xbcio/xbc/plugin"
 )
 

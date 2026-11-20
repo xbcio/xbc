@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/xbcio/xbc/config"
-	casbinplugin "github.com/xbcio/xbc/extensions/authorization/casbin"
+	casbinplugin "github.com/xbcio/xbc/extensions/authorization/casbinx"
 	corelog "github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/assembly"

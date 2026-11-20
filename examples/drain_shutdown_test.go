@@ -14,10 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/xbcio/xbc"
-	"github.com/xbcio/xbc/extensions/jobs/cron"
+	"github.com/xbcio/xbc/extensions/jobs/cronx"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
-	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
 )
 
 // drainProbeJob is one cron job that reports when it starts and then holds its
@@ -57,13 +57,13 @@ func (job *drainProbeJob) Run(ctx context.Context) error {
 	return err
 }
 
-func (job *drainProbeJob) Jobs() []cron.Job { return []cron.Job{job} }
+func (job *drainProbeJob) Jobs() []cronx.Job { return []cronx.Job{job} }
 
 func drainProbeBundle(job *drainProbeJob) plugin.Bundle {
 	return plugin.BundleOf(plugin.Define("drain-probe-jobs",
 		func(plugin.BuildContext) (*drainProbeJob, error) { return job, nil },
 		plugin.Options[*drainProbeJob]{Exports: plugin.Contracts(
-			plugin.ExportAs[cron.JobContributor](func(job *drainProbeJob) cron.JobContributor { return job }),
+			plugin.ExportAs[cronx.JobContributor](func(job *drainProbeJob) cronx.JobContributor { return job }),
 		)},
 	))
 }
@@ -101,7 +101,7 @@ plugins:
 `, shutdown, drain, addr)
 	require.NoError(t, os.WriteFile(configPath, []byte(config), 0o600))
 
-	app, err := xbc.New(xbc.WithBundles(web.Bundle(), ginengine.Bundle(), cron.Bundle(), drainProbeBundle(job)))
+	app, err := xbc.New(xbc.WithBundles(web.Bundle(), ginengine.Bundle(), cronx.Bundle(), drainProbeBundle(job)))
 	require.NoError(t, err)
 
 	parent, cancel := context.WithCancel(context.Background())

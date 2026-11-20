@@ -502,16 +502,16 @@ func TestArchAutomemlimitSetterDetection(t *testing.T) {
 		want   []string
 	}{
 		"the call this guard exists for": {
-			file: "extensions/jobs/cron/plugin.go",
-			source: `package cron
+			file: "extensions/jobs/cronx/plugin.go",
+			source: `package cronx
 import "github.com/KimMachineGun/automemlimit/memlimit"
 func configure() { _, _ = memlimit.Set() }
 `,
 			want: []string{archSelectorMemlimitSet},
 		},
 		"an aliased import cannot hide it": {
-			file: "extensions/jobs/cron/plugin.go",
-			source: `package cron
+			file: "extensions/jobs/cronx/plugin.go",
+			source: `package cronx
 import limits "github.com/KimMachineGun/automemlimit/memlimit"
 func configure() { _, _ = limits.Set() }
 `,
@@ -533,8 +533,8 @@ func apply() { _, _ = Set() }
 			want: []string{archAutomemlimitImportPath},
 		},
 		"other selectors on the same package are not setters": {
-			file: "extensions/jobs/cron/plugin.go",
-			source: `package cron
+			file: "extensions/jobs/cronx/plugin.go",
+			source: `package cronx
 import "github.com/KimMachineGun/automemlimit/memlimit"
 var ratio = memlimit.WithRatio(0.5)
 `,

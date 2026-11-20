@@ -16,7 +16,7 @@ import (
 
 	"github.com/xbcio/xbc"
 	"github.com/xbcio/xbc/transport/web"
-	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
 	"github.com/xbcio/xbc/transport/web/extensions/response/biz"
 	"github.com/xbcio/xbc/transport/web/prelude"
 )

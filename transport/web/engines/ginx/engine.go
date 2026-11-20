@@ -1,0 +1,245 @@
+// Package ginx is the gin-backed web.Engine adapter.
+//
+// gin registers exactly the methods it is given, while the Engine port implies
+// HEAD from GET. The adapter supplies that half itself: every GET registration
+// (a route or a mount) records the chain it would need under HEAD, an explicit
+// HEAD registration marks its pattern as its own, and Serve materializes the
+// remaining HEAD patterns once, after registration is complete and before the
+// first request can arrive. Deferring is required rather than stylistic: gin
+// cannot replace a registered handler, so registering HEAD eagerly would panic
+// when a caller registers Any -- whose method set includes HEAD -- or an
+// explicit HEAD route after the GET route for the same pattern.
+//
+// The rest of the port's matching rules are configured on the engine:
+// HandleMethodNotAllowed keeps 405 distinct from 404, and RedirectTrailingSlash
+// is off so a trailing-slash mismatch reaches NoRoute like any other unmatched
+// path.
+package ginx
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"sync"
+
+	ginlib "github.com/gin-gonic/gin"
+
+	"github.com/xbcio/xbc/transport/web"
+)
+
+// Factory constructs the gin-backed Engine. It is the only exported
+// constructor: web.Server calls Factory{}.NewEngine from assemblePipeline --
+// during Start on the way to serving, and during Preflight for the validate
+// command -- and no other package needs to reach the concrete *engine type.
+type Factory struct{}
+
+type engine struct {
+	e   *ginlib.Engine
+	srv *http.Server
+
+	// maxMultipartMemory is Options.MaxMultipartMemory. gin's own binders
+	// ignore Engine.MaxMultipartMemory and parse multipart bodies with a
+	// package constant, so the request context has to receive the configured
+	// value and parse first; see requestContext.parseMultipartForm.
+	maxMultipartMemory int64
+
+	// mu guards the implied-HEAD registration state below. Registration and
+	// Serve normally run on one goroutine; the mutex makes interleaving them a
+	// decided order rather than a data race, and it is also what makes
+	// materializeImpliedHEAD idempotent under repeated calls.
+	mu sync.Mutex
+	// impliedHead maps a gin pattern to the handler chain registered for GET
+	// there. Each is the HEAD half of that registration, pending until Serve
+	// registers it.
+	impliedHead map[string][]ginlib.HandlerFunc
+	// explicitHead names the patterns a caller registered HEAD for. An explicit
+	// registration replaces the implied one, so materialization skips them.
+	explicitHead map[string]struct{}
+	// materialized records that Serve already turned the pending implied HEADs
+	// into registrations. It is what makes materialization idempotent: a second
+	// registration of the same HEAD pattern panics inside gin.
+	materialized bool
+}
+
+// NewEngine builds a gin engine from neutral Options. It absorbs every
+// gin-native registration (*ginlib.Engine, SetTrustedProxies,
+// HandleMethodNotAllowed, MaxMultipartMemory) and the *http.Server this
+// engine serves through, both previously constructed directly in
+// (*web.Server).Start.
+func (f Factory) NewEngine(opts web.Options) (web.Engine, error) {
+	// Before ginlib.New: gin decides at construction time whether to print its
+	// debug banner, and it prints it to DefaultWriter.
+	applyProcessGlobals(opts.Logger)
+	e := ginlib.New()
+	if err := e.SetTrustedProxies(opts.TrustedProxies); err != nil {
+		return nil, fmt.Errorf("xbc: web trusted_proxies: %w", err)
+	}
+	// gin folds a method mismatch into its NoRoute handler unless this is set,
+	// and the Engine port requires the two to stay distinct so 405 keeps its
+	// own Problem Detail and its Allow header.
+	e.HandleMethodNotAllowed = true
+	// gin's default trailing-slash behavior answers 301/307 straight from the
+	// matcher, outside every xbc stage -- the admission gate, the error
+	// boundary, the contributed middleware chain, request id, access log, CORS
+	// and security headers -- and it composes the redirect target from the
+	// client-supplied X-Forwarded-Prefix header. The Engine port requires an
+	// adapter not to answer requests itself, and a trailing-slash mismatch to
+	// fall through to NoRoute like any other unmatched path, so the redirect is
+	// disabled here rather than left at gin's default.
+	e.RedirectTrailingSlash = false
+	e.MaxMultipartMemory = opts.MaxMultipartMemory
+	// ContextWithFallback is no longer needed: the neutral Ctx has a single
+	// Set/Get store and a single context.Context (the Handler's first
+	// parameter), so gin's two disconnected stores never both apply.
+	return &engine{
+		e: e,
+		srv: &http.Server{
+			Handler:           e,
+			ReadTimeout:       opts.ReadTimeout,
+			ReadHeaderTimeout: opts.ReadHeaderTimeout,
+			WriteTimeout:      opts.WriteTimeout,
+			IdleTimeout:       opts.IdleTimeout,
+			MaxHeaderBytes:    opts.MaxHeaderBytes,
+		},
+		maxMultipartMemory: opts.MaxMultipartMemory,
+		impliedHead:        make(map[string][]ginlib.HandlerFunc),
+		explicitHead:       make(map[string]struct{}),
+	}, nil
+}
+
+func (g *engine) Handle(method, path string, chain []web.Handler) {
+	converted := g.toGinChain(chain)
+	g.e.Handle(method, path, converted...)
+	g.recordHead(method, path, converted)
+}
+
+// Mount registers chain for the subtree rooted at prefix on one method. gin
+// needs two registrations to cover it: the bare prefix answers exactly that
+// path, and the prefix with a catch-all segment answers everything under it,
+// including the trailing-slash form. gin's radix tree stops the catch-all at
+// a path-segment boundary, so "/flow/*rest" never matches "/flowx" -- that is
+// where the port's segment-boundary rule comes from. The tree is also why an
+// overlapping mount has to be refused before it gets here: gin panics on the
+// conflicting registration itself, without naming what it conflicts with, and
+// the Router's own check runs first so the diagnostic names both sides.
+func (g *engine) Mount(method, prefix string, chain []web.Handler) {
+	converted := g.toGinChain(chain)
+	g.e.Handle(method, prefix, converted...)
+	g.e.Handle(method, prefix+"/*rest", converted...)
+	g.recordHead(method, prefix, converted)
+	g.recordHead(method, prefix+"/*rest", converted)
+}
+
+func (g *engine) NoRoute(chain []web.Handler)  { g.e.NoRoute(g.toGinChain(chain)...) }
+func (g *engine) NoMethod(chain []web.Handler) { g.e.NoMethod(g.toGinChain(chain)...) }
+
+// Serve materializes the implied HEAD registrations and then serves on ln.
+// Materializing here is both the earliest point at which registration is
+// complete and the latest before a request can arrive; the port puts
+// registration after Serve outside the contract.
+func (g *engine) Serve(ln net.Listener) error {
+	g.materializeImpliedHEAD()
+	return g.srv.Serve(ln)
+}
+
+// recordHead keeps the implied-HEAD bookkeeping in step with one registration.
+// A GET registration implies HEAD on the same pattern; an explicit HEAD
+// registration owns its pattern and replaces the implication. Other methods
+// matter to neither. A GET registered after Serve has been reached is outside
+// the port's contract and is not recorded: materialization has already run, so
+// it could never be served as HEAD.
+func (g *engine) recordHead(method, pattern string, chain []ginlib.HandlerFunc) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	switch method {
+	case http.MethodGet:
+		if !g.materialized {
+			g.impliedHead[pattern] = chain
+		}
+	case http.MethodHead:
+		g.explicitHead[pattern] = struct{}{}
+	}
+}
+
+// materializeImpliedHEAD registers the HEAD half of every GET registration
+// that no explicit HEAD registration replaced. It runs once, from Serve:
+// registering HEAD eagerly would make a later Route.Any -- which includes
+// HEAD -- or an explicit HEAD route panic, because gin cannot replace a
+// registered handler.
+func (g *engine) materializeImpliedHEAD() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.materialized {
+		return
+	}
+	g.materialized = true
+	for pattern, chain := range g.impliedHead {
+		if _, explicit := g.explicitHead[pattern]; explicit {
+			continue
+		}
+		g.e.Handle(http.MethodHead, pattern, chain...)
+	}
+}
+
+// Shutdown drains in-flight requests until ctx is done, then force-closes
+// whatever refused to drain. The forced close is what makes the web.Engine
+// contract hold: returning the drain error on its own would leave established
+// connections serving past the deadline the caller asked to stop within. The
+// drain error is still reported, so a caller can tell a clean drain from a
+// deadline it had to be rescued from.
+func (g *engine) Shutdown(ctx context.Context) error {
+	err := g.srv.Shutdown(ctx)
+	if err == nil {
+		return nil
+	}
+	if closeErr := g.srv.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+		return fmt.Errorf("xbc: graceful shutdown failed (%v) and forced close failed: %w", err, closeErr)
+	}
+	return err
+}
+
+// toGinChain converts a neutral chain into the gin chain actually registered.
+// It is the adapter-side twin of the conversion transport/web/router.go used
+// to do itself before the Engine port existed: the router now hands this
+// package one already-flattened []web.Handler per route, and this is the
+// only place left that crosses back into gin.HandlerFunc.
+func (g *engine) toGinChain(chain []web.Handler) []ginlib.HandlerFunc {
+	converted := make([]ginlib.HandlerFunc, len(chain))
+	for i, handler := range chain {
+		run := web.Handle(handler)
+		converted[i] = func(c *ginlib.Context) { run(g.ctxFor(c)) }
+	}
+	return converted
+}
+
+// ctxKey is where the request's single *web.Ctx is parked. gin's own key/value
+// store is the natural home: it already has exactly the lifetime wanted, one
+// request.
+const ctxKey = "xbc/web.ctx"
+
+// ctxFor returns the one *web.Ctx this request runs through, creating it on
+// first use. Every handler in the chain must receive the same instance: Ctx
+// owns the request-scoped value store, so a second Ctx would start empty and
+// lose the matched route, the active error resolver, and the principal that
+// earlier handlers published.
+//
+// It is a method rather than a package function because gin.Context does not
+// expose its engine, and the Ctx it builds carries the engine's multipart
+// memory allowance.
+func (g *engine) ctxFor(c *ginlib.Context) *web.Ctx {
+	if value, ok := c.Get(ctxKey); ok {
+		if ctx, valid := value.(*web.Ctx); valid && ctx != nil {
+			return ctx
+		}
+	}
+	ctx := web.NewCtx(newRequestContext(c, g.maxMultipartMemory))
+	c.Set(ctxKey, ctx)
+	return ctx
+}
+
+var (
+	_ web.EngineFactory = Factory{}
+	_ web.Engine        = (*engine)(nil)
+)

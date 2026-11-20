@@ -62,7 +62,7 @@
 //	import (
 //		"github.com/xbcio/xbc"
 //		webprelude "github.com/xbcio/xbc/transport/web/prelude"
-//		ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
+//		ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
 //		csrf "github.com/xbcio/xbc/transport/web/extensions/security/csrf"
 //	)
 //

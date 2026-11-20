@@ -72,7 +72,7 @@ func testEngineOf(t *testing.T, s *web.Server) *enginetest.Engine {
 // have no counterpart in enginetest at all, and the timeouts it does honour
 // land on an unexported *http.Server. Reaching into a concrete engine to read
 // them back would only re-test that engine's own constructor, which
-// engines/gin covers for the engine applications actually run.
+// engines/ginx covers for the engine applications actually run.
 type recordingFactory struct{ options *web.Options }
 
 func (f recordingFactory) NewEngine(options web.Options) (web.Engine, error) {
@@ -112,7 +112,7 @@ func TestStartMapsEveryConfiguredEngineSettingOntoOptions(t *testing.T) {
 // for it, and what it asked for reaches the engine verbatim. What an engine
 // then does with that list -- consult X-Forwarded-For or ignore it -- is the
 // engine's own behaviour, pinned by TestClientIPHonoursTrustedProxies in
-// engines/gin against the engine applications actually run. enginetest cannot
+// engines/ginx against the engine applications actually run. enginetest cannot
 // stand in for that: it reports the host part of RemoteAddr unconditionally,
 // so both cases below would look identical through it.
 func TestTrustedProxiesAreOptIn(t *testing.T) {

@@ -253,7 +253,7 @@ func TestArchAutoloadMutationIsConfined(t *testing.T) {
 // composition content. Merely importing one must not register or activate
 // anything.
 func TestArchPreludesAreSideEffectFree(t *testing.T) {
-	for _, transport := range []string{"web", "grpc"} {
+	for _, transport := range []string{"web", "grpcx"} {
 		t.Run(transport, func(t *testing.T) {
 			archAssertPreludeIsSideEffectFree(t, filepath.Join(archRepositoryRoot(t), "transport", transport, "prelude"))
 		})
@@ -663,7 +663,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	// gRPC extensions follow the Web split: a light extractor stays a package
 	// of the transport module, and one that would drag a heavy library into
 	// the transport's closure is a module of its own.
-	grpcExtensions := filepath.Join(repositoryRoot, "transport", "grpc", "extensions")
+	grpcExtensions := filepath.Join(repositoryRoot, "transport", "grpcx", "extensions")
 	for _, extensionPath := range archGRPCPackageExtensionPaths {
 		roots = append(roots, filepath.Join(grpcExtensions, filepath.FromSlash(extensionPath)))
 	}

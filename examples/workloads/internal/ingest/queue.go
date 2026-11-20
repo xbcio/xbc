@@ -3,7 +3,7 @@ package ingest
 import (
 	"context"
 
-	"github.com/xbcio/xbc/extensions/jobs/asynq"
+	"github.com/xbcio/xbc/extensions/jobs/asynqx"
 )
 
 // BatchTaskType is the task the ingest workload's worker handles. The constant
@@ -11,7 +11,7 @@ import (
 // registers, rather than a literal two sides keep in step by hand.
 const BatchTaskType = "ingest.batch"
 
-var _ asynq.HandlerContributor = (*Plugin)(nil)
+var _ asynqx.HandlerContributor = (*Plugin)(nil)
 
 // TaskHandlers implements asynq.HandlerContributor.
 //
@@ -39,10 +39,10 @@ var _ asynq.HandlerContributor = (*Plugin)(nil)
 // carries this workload and configures the queue integration must name that
 // set: which queue a workload's tasks arrive on is not derivable from the task
 // types its handlers register.
-func (p *Plugin) TaskHandlers() []asynq.HandlerRegistration {
-	return []asynq.HandlerRegistration{{
+func (p *Plugin) TaskHandlers() []asynqx.HandlerRegistration {
+	return []asynqx.HandlerRegistration{{
 		Type: BatchTaskType,
-		Handler: asynq.HandlerFunc(func(context.Context, asynq.Task) error {
+		Handler: asynqx.HandlerFunc(func(context.Context, asynqx.Task) error {
 			p.batch()
 			return nil
 		}),

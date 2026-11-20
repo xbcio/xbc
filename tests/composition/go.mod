@@ -14,14 +14,14 @@ require (
 require (
 	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/authentication/apikey v0.4.0
-	github.com/xbcio/xbc/extensions/authentication/jwt v0.1.0
+	github.com/xbcio/xbc/extensions/authentication/jwtx v0.5.0
 	github.com/xbcio/xbc/extensions/httpclient v0.1.0
-	github.com/xbcio/xbc/transport/grpc v0.1.0
-	github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt v0.1.0
+	github.com/xbcio/xbc/transport/grpcx v0.5.0
+	github.com/xbcio/xbc/transport/grpcx/extensions/authentication/jwt v0.5.0
 	github.com/xbcio/xbc/transport/web v0.4.0
-	github.com/xbcio/xbc/transport/web/engines/gin v0.1.0
+	github.com/xbcio/xbc/transport/web/engines/ginx v0.5.0
 	github.com/xbcio/xbc/transport/web/extensions/authentication/jwt v0.1.0
-	github.com/xbcio/xbc/transport/web/extensions/authorization/casbin v0.1.0
+	github.com/xbcio/xbc/transport/web/extensions/authorization/casbinx v0.5.0
 	github.com/xbcio/xbc/transport/web/extensions/observability/tracing v0.1.0
 )
 
@@ -76,7 +76,7 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/xbcio/xbc/extensions/authentication v0.1.0 // indirect
-	github.com/xbcio/xbc/extensions/authorization/casbin v0.1.0 // indirect
+	github.com/xbcio/xbc/extensions/authorization/casbinx v0.5.0 // indirect
 	github.com/xbcio/xbc/extensions/authorization/rbac v0.1.0 // indirect
 	github.com/xbcio/xbc/extensions/observability/metrics v0.1.0 // indirect
 	github.com/xbcio/xbc/extensions/observability/tracing v0.1.0 // indirect

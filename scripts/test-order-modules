@@ -10,7 +10,7 @@
 # go.work: it was built by running
 #   go test ./... -list 'Shutdown|Unwind|Order|Drain'
 # from each workspace module and keeping only the ones that printed a match.
-# A module with no matching test (for example extensions/coordination/raft,
+# A module with no matching test (for example extensions/coordination/raftx,
 # or extensions/coordination/placement, whose shutdown tests are named after
 # lease renewal and handover rather than ordering or drain budgets) still
 # exits 0 under `go test -run` -- it only prints "no tests to run" -- so the
@@ -41,22 +41,22 @@ examples
 extensions/authentication
 extensions/concurrency/async
 extensions/reliability/health
-extensions/storage/elasticsearch
-extensions/jobs/asynq
-extensions/jobs/cron
-extensions/messaging/kafka
+extensions/storage/elasticx
+extensions/jobs/asynqx
+extensions/jobs/cronx
+extensions/messaging/kafkax
 extensions/messaging/outbox
 extensions/messaging/webhook
 extensions/observability/tracing
-transport/grpc
-transport/grpc/extensions/authorization/casbin
-transport/grpc/extensions/observability/metrics
-transport/grpc/extensions/observability/tracing
+transport/grpcx
+transport/grpcx/extensions/authorization/casbinx
+transport/grpcx/extensions/observability/metrics
+transport/grpcx/extensions/observability/tracing
 transport/web
-transport/web/engines/gin
-transport/web/extensions/authorization/casbin
+transport/web/engines/ginx
+transport/web/extensions/authorization/casbinx
 transport/web/extensions/observability/tracing
-transport/web/extensions/reliability/websocket
+transport/web/extensions/reliability/websocketx
 "
 
 count=0

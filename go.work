@@ -22,25 +22,25 @@ use (
 	./examples
 	./extensions/authentication
 	./extensions/authentication/apikey
-	./extensions/authentication/jwt
-	./extensions/authentication/ldap
+	./extensions/authentication/jwtx
+	./extensions/authentication/ldapx
 	./extensions/authentication/oauth2
 	./extensions/authentication/oidc
 	./extensions/authentication/saml
 	./extensions/authentication/session
-	./extensions/authorization/casbin
+	./extensions/authorization/casbinx
 	./extensions/authorization/casbin-gorm
 	./extensions/authorization/casbin-redis
 	./extensions/authorization/rbac
 	./extensions/concurrency/async
 	./extensions/coordination/lease
 	./extensions/coordination/placement
-	./extensions/coordination/raft
+	./extensions/coordination/raftx
 	./extensions/httpclient
-	./extensions/jobs/asynq
-	./extensions/jobs/cron
-	./extensions/messaging/kafka
-	./extensions/messaging/mail
+	./extensions/jobs/asynqx
+	./extensions/jobs/cronx
+	./extensions/messaging/kafkax
+	./extensions/messaging/mailx
 	./extensions/messaging/outbox
 	./extensions/messaging/webhook
 	./extensions/observability/banner
@@ -49,36 +49,36 @@ use (
 	./extensions/reliability/automemlimit
 	./extensions/reliability/gracefulshutdown
 	./extensions/reliability/health
-	./extensions/storage/elasticsearch
-	./extensions/storage/gorm
+	./extensions/storage/elasticx
+	./extensions/storage/gormx
 	./extensions/storage/objectstorage
-	./extensions/storage/redis
+	./extensions/storage/redisx
 	./extensions/tasks
 	./kit/distributed
-	./kit/gormx
+	./kit/gormkit
 	./kit/oncetoken
 	./scripts/plugin-snapshots
 	./tests/composition
-	./transport/grpc
-	./transport/grpc/extensions/authentication/jwt
-	./transport/grpc/extensions/authorization/casbin
-	./transport/grpc/extensions/observability/metrics
-	./transport/grpc/extensions/observability/tracing
+	./transport/grpcx
+	./transport/grpcx/extensions/authentication/jwt
+	./transport/grpcx/extensions/authorization/casbinx
+	./transport/grpcx/extensions/observability/metrics
+	./transport/grpcx/extensions/observability/tracing
 	./transport/web
-	./transport/web/engines/gin
+	./transport/web/engines/ginx
 	./transport/web/extensions/authentication/federation
 	./transport/web/extensions/authentication/jwt
 	./transport/web/extensions/authentication/oauth2
 	./transport/web/extensions/authentication/oidc
 	./transport/web/extensions/authentication/saml
 	./transport/web/extensions/authentication/session
-	./transport/web/extensions/authorization/casbin
+	./transport/web/extensions/authorization/casbinx
 	./transport/web/extensions/authorization/rbac
 	./transport/web/extensions/interop/ginmount
 	./transport/web/extensions/observability/metrics
 	./transport/web/extensions/observability/tracing
-	./transport/web/extensions/openapi/swag
+	./transport/web/extensions/openapi/swagx
 	./transport/web/extensions/reliability/idempotency
-	./transport/web/extensions/reliability/websocket
+	./transport/web/extensions/reliability/websocketx
 	./transport/web/extensions/testing/apptest
 )

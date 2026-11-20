@@ -202,7 +202,7 @@ plugins:
     max_response_bytes: 1048576
 ```
 
-A multi-replica deployment must use shared Redis and select `redis.Bundle()` at the composition root:
+A multi-replica deployment must use shared Redis and select `redisx.Bundle()` at the composition root:
 
 ```yaml
 plugins:
@@ -231,14 +231,14 @@ The in-memory backend retains at most 10000 records; when full it reclaims expir
 
 ## Persistent Casbin policy with multi-replica synchronization
 
-The Casbin integration is two independently selectable products. `github.com/xbcio/xbc/extensions/authorization/casbin` (key `casbin`) is the protocol-neutral engine: it reads static policy from inline content or a file, owns the adapter and watcher providers, and exports `rbac.Backend` and `EnforcerProvider` for callers with no HTTP surface at all. `github.com/xbcio/xbc/transport/web/extensions/authorization/casbin` (key `casbin-http`) is the Web middleware that enforces the engine on matched routes, and its `Bundle()` includes the engine. A service that must manage roles and permissions at runtime should explicitly compose `gorm.Bundle()`, `casbin-gorm.Bundle()`, `casbin-redis.Bundle()`, `casbinhttp.Bundle()`, and the protocol-neutral `rbac.Bundle()` from `github.com/xbcio/xbc/extensions/authorization/rbac`. Connect capabilities by exact plugin key and instance:
+The Casbin integration is two independently selectable products. `github.com/xbcio/xbc/extensions/authorization/casbinx` (key `casbin`) is the protocol-neutral engine: it reads static policy from inline content or a file, owns the adapter and watcher providers, and exports `rbac.Backend` and `EnforcerProvider` for callers with no HTTP surface at all. `github.com/xbcio/xbc/transport/web/extensions/authorization/casbinx` (key `casbin-http`) is the Web middleware that enforces the engine on matched routes, and its `Bundle()` includes the engine. A service that must manage roles and permissions at runtime should explicitly compose `gorm.Bundle()`, `casbin-gorm.Bundle()`, `casbin-redis.Bundle()`, `casbinhttp.Bundle()`, and the protocol-neutral `rbac.Bundle()` from `github.com/xbcio/xbc/extensions/authorization/rbac`. Connect capabilities by exact plugin key and instance:
 
 ```yaml
 plugins:
   gorm:
     primary:
       driver: postgres
-      dsn: "host=db.internal user=app dbname=sas sslmode=require"
+      dsn: "host=db.internal user=app dbname=appdb sslmode=require"
 
   casbin-gorm:
     policy:
@@ -295,7 +295,7 @@ plugins:
 
 `Route.Perm` records an authorization declaration; the framework does not enforce it by itself. At startup the server checks whether any middleware in the ordered chain implements `web.RouteAuthorizer`, the marker a middleware uses to declare that it enforces the permissions routes carry. When serving routes declare `.Perm` and no entry implements the marker, startup logs one warning with the route count and up to three sample routes. `casbin-http` implements the marker in both request conventions, so composing it -- with a `plugins.casbin-http` section, because contributing is not enabling -- silences the warning; an application's own middleware can implement the same marker. Setting `web.security.require_route_authorizer: true` turns the warning into a startup failure instead, which is the right setting when every permission declaration must be enforced. Removing declarations that nothing enforces is the other fix. The handler-scoped `RequireAll` and `RequireAny` helpers of the Web rbac adapter do not implement the marker, because they never read `Route.Perm`.
 
-`github.com/xbcio/xbc/extensions/authorization/rbac` is a protocol-neutral application plugin with its own Definition, Config, Manager, Backend, Permission model, and autoload adapter. Application code should depend on `rbac.Manager` for administrator checks, AND/OR authorization, role and permission queries, and replacement or deletion of direct relations. The Casbin engine supplies its Backend. Depend directly on the engine's `casbin.EnforcerProvider` only for migrations or Casbin-specific advanced operations.
+`github.com/xbcio/xbc/extensions/authorization/rbac` is a protocol-neutral application plugin with its own Definition, Config, Manager, Backend, Permission model, and autoload adapter. Application code should depend on `rbac.Manager` for administrator checks, AND/OR authorization, role and permission queries, and replacement or deletion of direct relations. The Casbin engine supplies its Backend. Depend directly on the engine's `casbinx.EnforcerProvider` only for migrations or Casbin-specific advanced operations.
 
 `github.com/xbcio/xbc/transport/web/extensions/authorization/rbac` is not a plugin. It is a thin adapter from `web.CurrentPrincipal` to `rbac.Manager` and supplies only `RequireAll` and `RequireAny`. Apply those functions explicitly to routes or groups. It owns no Definition, Config, Backend, or autoload registration and contributes no global authorization chain. If a concrete ABAC requirement emerges, it should be designed as a separate business plugin parallel to RBAC with its own transport adapters; XBC does not reserve placeholder ABAC directories or APIs.
 
@@ -303,7 +303,7 @@ Replacing a user's roles uses serialized remove/add operations because Casbin ca
 
 XBC intentionally provides no generic RBAC administration HTTP API. User, role, and permission models; subject naming; administrative authentication; auditing; and transactions spanning policy and application tables belong to the application. A service-specific scheme such as `u<ID>`, `r<ID>`, `object#action`, and `sys_*` CRUD remains in that service. Do not place the Manager or Enforcer in a process-global variable.
 
-Upstream `gorm-adapter/v3 v3.39.0` has a legacy `Adapter.Transaction` limitation: it rebuilds the adapter with `NewAdapterByDB` and resets a custom policy table to `casbin_rule`. A default-table transaction smoke test is covered. SAS currently fixes this in its main module with `replace github.com/casbin/gorm-adapter/v3 => ./internal/gorm-adapter`, so that replacement continues to apply when SAS migrates to XBC. Other consumers that rely on a custom table must use an upstream release containing the fix, carry an appropriate patch, or use a transaction-context API that preserves table metadata. XBC does not put local replacements or hidden forks in publishable modules.
+Upstream `gorm-adapter/v3 v3.39.0` has a legacy `Adapter.Transaction` limitation: it rebuilds the adapter with `NewAdapterByDB` and resets a custom policy table to `casbin_rule`. A default-table transaction smoke test is covered. The adopting service currently fixes this in its main module with `replace github.com/casbin/gorm-adapter/v3 => ./internal/gorm-adapter`, so that replacement continues to apply when it migrates to XBC. Other consumers that rely on a custom table must use an upstream release containing the fix, carry an appropriate patch, or use a transaction-context API that preserves table metadata. XBC does not put local replacements or hidden forks in publishable modules.
 
 ## Server-side sessions and tenant selection
 
@@ -509,7 +509,7 @@ The example below is an application plugin that ships the process's logs to a na
 // logCenter points at the named Kafka instance this plugin ships logs to.
 // Depending on the Kafka client through this typed input is what makes the
 // plugin stop before Kafka's own Stop releases the connection.
-var logCenter = plugin.RefToInstance[kafka.Producer](kafka.Key, "log_center")
+var logCenter = plugin.RefToInstance[kafkax.Producer](kafkax.Key, "log_center")
 
 var definition = plugin.Define(
 	"kafka-log-shipping",
@@ -639,7 +639,7 @@ go run ./examples/worker validate --config examples/worker/application.yml
 
 ## gRPC service
 
-The gRPC stack composes the same way the Web stack does, and the two are independent choices: a process may select either, both, or neither. The transport ships its own baseline pair beside the Web one. `transport/grpc/prelude` is a side-effect-free Bundle combining the gRPC server -- whose panic recovery, status mapping, authentication and authorization stages, and optional reflection service the server assembles itself -- the standard `grpc.health.v1` service, and structured access logging. `transport/grpc/starter` selects that prelude and adds the lowest configuration layer that switches the access log on:
+The gRPC stack composes the same way the Web stack does, and the two are independent choices: a process may select either, both, or neither. The transport ships its own baseline pair beside the Web one. `transport/grpcx/prelude` is a side-effect-free Bundle combining the gRPC server -- whose panic recovery, status mapping, authentication and authorization stages, and optional reflection service the server assembles itself -- the standard `grpc.health.v1` service, and structured access logging. `transport/grpcx/starter` selects that prelude and adds the lowest configuration layer that switches the access log on:
 
 ```go
 func main() {
@@ -650,9 +650,9 @@ func main() {
 }
 ```
 
-A business service registers through `grpctransport.ServiceRegistrar` and declares each method's authentication policy at registration time -- `grpctransport.Public()` or `grpctransport.Accepts("jwt")` -- while `grpc.security` in the configuration stays the application's final arbiter: an explicit rule there overrides the registration-time declaration, and `default` covers only methods no rule and no declaration mentions. The panic boundary is assembled for every gRPC server rather than contributed, so there is no switch to disable it (`grpc.recovery.stack` only controls whether the log entry includes a stack). `grpc.reflection` is off by default, because it publishes the schema; `grpc.tls.*`, `grpc.max_recv_msg_bytes`, and the rest of the section are documented with the defaults in [Package `grpc`](https://pkg.go.dev/github.com/xbcio/xbc/transport/grpc).
+A business service registers through `grpctransport.ServiceRegistrar` and declares each method's authentication policy at registration time -- `grpctransport.Public()` or `grpctransport.Accepts("jwt")` -- while `grpc.security` in the configuration stays the application's final arbiter: an explicit rule there overrides the registration-time declaration, and `default` covers only methods no rule and no declaration mentions. The panic boundary is assembled for every gRPC server rather than contributed, so there is no switch to disable it (`grpc.recovery.stack` only controls whether the log entry includes a stack). `grpc.reflection` is off by default, because it publishes the schema; `grpc.tls.*`, `grpc.max_recv_msg_bytes`, and the rest of the section are documented with the defaults in [Package `grpcx`](https://pkg.go.dev/github.com/xbcio/xbc/transport/grpcx).
 
-Telemetry is deliberately not part of the baseline. `transport/grpc/extensions/observability/metrics` (plugin key `grpc-metrics`) and `.../observability/tracing` (`tracing-grpc`) are independently versioned modules, because each brings Prometheus or OpenTelemetry into the closure; a composition root that wants them selects their Bundles beside the prelude and configures `plugins.metrics` or `plugins.tracing`, the same sections the Web interceptors read. Neither has to be selected for the other side or for the server to work.
+Telemetry is deliberately not part of the baseline. `transport/grpcx/extensions/observability/metrics` (plugin key `grpc-metrics`) and `.../observability/tracing` (`tracing-grpc`) are independently versioned modules, because each brings Prometheus or OpenTelemetry into the closure; a composition root that wants them selects their Bundles beside the prelude and configures `plugins.metrics` or `plugins.tracing`, the same sections the Web interceptors read. Neither has to be selected for the other side or for the server to work.
 
 The access log writes one structured record per call with service, method, kind (unary or the stream shape), the gRPC status code the client receives, latency, the transport peer address, and whether a panic was recovered; it never writes metadata, message payloads, status messages, error text, or panic values. Two settings under `plugins.grpc-accesslog` tune it: `slow_call` moves calls at or over the threshold to a warning, and `skip_methods` suppresses records for exact full method names or a `Service/*` prefix -- health and reflection probes are the usual entries.
 
@@ -984,10 +984,10 @@ To work out a deployment, take every declared workload with its `exclusive` flag
 Roles claimed by lease are what make takeover possible. The composition root builds the locker itself, because placement is decided before the plugin graph exists and therefore cannot be provided by a plugin:
 
 ```go
-// github.com/redis/go-redis/v9, github.com/xbcio/xbc/extensions/storage/redis
+// github.com/redis/go-redis/v9, github.com/xbcio/xbc/extensions/storage/redisx
 // and github.com/xbcio/xbc/extensions/coordination/placement
 client := goredis.NewClient(&goredis.Options{Addr: "redis.internal:6379", DB: 1})
-locker, err := redis.NewLocker(client)
+locker, err := redisx.NewLocker(client)
 if err != nil {
 	return err
 }
@@ -1427,7 +1427,7 @@ With the default static placement each job hosts exactly the workloads its file 
 // placement hosts exactly what the job's own file enables.
 options := []xbc.Option{xbc.WithBundles(prelude.Bundle(), sast.Bundle(), webscan.Bundle())}
 if os.Getenv("ORDERS_PLACEMENT") != "static" {
-	locker, err := redis.NewLocker(client)
+	locker, err := redisx.NewLocker(client)
 	if err != nil {
 		return err
 	}
@@ -1615,21 +1615,21 @@ deadlines with it.
 
 A WebSocket route upgrades an ordinary HTTP request, and from then on the connection belongs to neither the request/response cycle nor `http.Server`'s connection tracking. The `websocket` extension owns the upgrade and the registry of live connections; the application owns the conversation on each one. The protocol implementation (`github.com/coder/websocket`) lives behind this module rather than in `transport/web` so a service that never serves a socket does not carry it in its dependency closure, and so the lifecycle that drains sockets belongs to the framework rather than to a third-party library.
 
-Select the Bundle at the composition root, then depend on the exported `websocket.Upgrader` as a typed input:
+Select the Bundle at the composition root, then depend on the exported `websocketx.Upgrader` as a typed input:
 
 ```go
 app, err := xbc.New(xbc.WithBundles(
 	prelude.Bundle(),
 	ginengine.Bundle(),
-	websocket.Bundle(),
+	websocketx.Bundle(),
 ))
 ```
 
 ```go
-var upgraderInput = plugin.RequireOne[websocket.Upgrader]()
+var upgraderInput = plugin.RequireOne[websocketx.Upgrader]()
 
 type chat struct {
-	upgrader websocket.Upgrader
+	upgrader websocketx.Upgrader
 }
 
 var definition = plugin.Define(
@@ -1646,14 +1646,14 @@ var definition = plugin.Define(
 )
 
 func (h *chat) RegisterRoutes(router *web.Router) {
-	router.GET("/chat", h.upgrader.Handler(websocket.Options{
+	router.GET("/chat", h.upgrader.Handler(websocketx.Options{
 		OriginPatterns: []string{"app.example.com"},
 		Subprotocols:   []string{"chat.v1"},
 		ReadLimit:      32 << 10,
 	}, h.serve)).Name("chat").Auth(web.Public())
 }
 
-func (h *chat) serve(ctx context.Context, conn *websocket.Conn) error {
+func (h *chat) serve(ctx context.Context, conn *websocketx.Conn) error {
 	for {
 		kind, data, err := conn.Read(ctx)
 		if err != nil {
@@ -1734,7 +1734,7 @@ web:
 
 Both probes are registered public and unmetered: they answer before authentication and outside the process-level in-flight gate. The second exemption matters as much as the first. `web.max_in_flight` refuses work when the process is saturated, and a probe is not work; a busy process whose own liveness endpoint returned `503` would be restarted at exactly the moment it is carrying its full traffic ceiling, moving that traffic onto replicas that then fail their probes in turn. An orchestrator cannot tell "saturated" from "dead" unless the probe answers, and the two call for opposite responses. The price is that an unmetered probe is bounded by nothing but its own checks, which is why each check declares a timeout and the aggregator runs them concurrently. A probe that reaches a dependency is still a probe that spends that dependency's budget, so a saturated process answering them quickly is the design, not a gap in it.
 
-Readiness only reports what contributes to it: selecting the health capability alone yields an empty `checks` array. `redis.Bundle()` and `gorm.Bundle()` each select a readiness probe next to their client Definition, so every configured instance is probed once the health Bundle is also selected -- reported as `redis-health` and `gorm-health` for the default instance, or `redis-health/<instance>` for a named one. They need that second Definition because their primary value is a third-party type. `elasticsearch`, `objectstorage`, `kafka`, `asynq`, and `raft` own their primary type, so it carries the contract directly and each check is named after the producing identity: `elasticsearch[search]`, `objectstorage`, `kafka[events]`, `asynq`, `raft`. An application component contributes the same way, by exporting `health.Contributor` from its own Definition. Checks inherit `plugins.health.timeout` unless the contributor sets a per-check timeout, and the neutral `plugins.health` section is separate from the HTTP-facing `plugins.health-http` section below.
+Readiness only reports what contributes to it: selecting the health capability alone yields an empty `checks` array. `redisx.Bundle()` and `gorm.Bundle()` each select a readiness probe next to their client Definition, so every configured instance is probed once the health Bundle is also selected -- reported as `redis-health` and `gorm-health` for the default instance, or `redis-health/<instance>` for a named one. They need that second Definition because their primary value is a third-party type. `elasticsearch`, `objectstorage`, `kafka`, `asynq`, and `raft` own their primary type, so it carries the contract directly and each check is named after the producing identity: `elasticsearch[search]`, `objectstorage`, `kafka[events]`, `asynq`, `raft`. An application component contributes the same way, by exporting `health.Contributor` from its own Definition. Checks inherit `plugins.health.timeout` unless the contributor sets a per-check timeout, and the neutral `plugins.health` section is separate from the HTTP-facing `plugins.health-http` section below.
 
 What each check actually asks matters when reading a 503. `elasticsearch` and `asynq` probe their own connection; `plugins.elasticsearch.<instance>.health_probe: false` removes that cluster from readiness entirely, matching what it already does to the startup probe. `objectstorage` sends one `HeadObject` for a key expected to be absent -- a definitive "no such object" already proves the endpoint, credentials, and bucket are good, and nothing is written. Only an `s3` instance contributes; a `local` one has no peer to probe. S3 answers that request with 403 instead of 404 when the caller lacks `s3:ListBucket`, so such a deployment either grants the permission or sets `s3.health_probe: false`; a 403 is not accepted as reachable because that would also accept a revoked credential. `kafka` asks one broker for cluster metadata through the producer's own dialer, so the probe traverses the configured TLS and SASL path; reaching one broker is enough, which keeps a rolling restart from reporting the instance as unable to serve. `raft` asks whether the cluster has a leader, not whether this node is the leader, so a follower stays ready while a node that never bootstrapped and has no peers reports down.
 
@@ -1819,7 +1819,7 @@ INFO web: policy decisions (7)
 
 Each policy row names the outcome and, in parentheses, the tier that decided it: `route` is the route's own `.Auth()` declaration, `application-rule` a rule from `web.security.policies` (`rule N` is that rule's index there), `default` the `web.security.default` fallback. The outcome is `permit`, `deny`, the scheme names the route authenticates with, or `authenticate(default: ...)` when the route resolves through the authenticator manager's own default selection rather than an explicit list. `public endpoints` lists every route that resolved to `permit` -- that is, every route served without authentication -- and warns there when `web.security.default` is `permit`, because a fail-open fallback makes every uncovered route public. `authentication arbitration order` appears when authenticators are registered, and prints the order actually in effect rather than the configured list.
 
-This report is the only place route-level policy is visible, and the reason is structural: a route is contributed by its plugin during `Start`, and its decision needs the registered authenticators, so both exist only after construction. The start and `validate` are therefore the two commands that print it, and they print the same one: `validate` runs the identical assembly and stops before the listener. Constructing runs every plugin's factory, so `validate` also performs whatever side effects an application defines for construction: a Kafka instance with `resolve_connection: true` really calls its `kafka.ConnectionResolver` there, which is how a deployment whose brokers come from an ACL control plane validates that lookup, whereas `doctor` never reaches it. `doctor` deliberately constructs nothing, so it validates the configuration's shape -- `web.security.default` must be `deny` or `permit`, and every rule must be well-formed -- and reports the graph without ever printing a route table. Every check that needs the registered authenticators runs in that startup path instead, before the gate opens or the `validate` report is printed: a declared `web.security.schemes` order with no authenticator registered is refused, and so is a route that requires authentication with none available. Both fail the command rather than appearing as rows in the table above, which is the point -- a policy mistake fails the process instead of being served. The authenticator/extractor cross-check runs in the same path: a registered scheme with no credential extractor fails startup, while a scheme named only by a route-level `.Auth(Accepts(...))` declaration counts as reachable under the `permit` default instead of being reported as unreferenced.
+This report is the only place route-level policy is visible, and the reason is structural: a route is contributed by its plugin during `Start`, and its decision needs the registered authenticators, so both exist only after construction. The start and `validate` are therefore the two commands that print it, and they print the same one: `validate` runs the identical assembly and stops before the listener. Constructing runs every plugin's factory, so `validate` also performs whatever side effects an application defines for construction: a Kafka instance with `resolve_connection: true` really calls its `kafkax.ConnectionResolver` there, which is how a deployment whose brokers come from an ACL control plane validates that lookup, whereas `doctor` never reaches it. `doctor` deliberately constructs nothing, so it validates the configuration's shape -- `web.security.default` must be `deny` or `permit`, and every rule must be well-formed -- and reports the graph without ever printing a route table. Every check that needs the registered authenticators runs in that startup path instead, before the gate opens or the `validate` report is printed: a declared `web.security.schemes` order with no authenticator registered is refused, and so is a route that requires authentication with none available. Both fail the command rather than appearing as rows in the table above, which is the point -- a policy mistake fails the process instead of being served. The authenticator/extractor cross-check runs in the same path: a registered scheme with no credential extractor fails startup, while a scheme named only by a route-level `.Auth(Accepts(...))` declaration counts as reachable under the `permit` default instead of being reported as unreferenced.
 
 
 ## Diagnosing a slow boot or a slow shutdown
@@ -1873,7 +1873,7 @@ unowned             plugins=14
     selected at /Users/dev/xbc/transport/web/extensions/reliability/health/plugin.go:56
     requires ref       *health.Plugin                         from health
   web-engine-gin
-    selected at /Users/dev/xbc/transport/web/engines/gin/bundle.go:30
+    selected at /Users/dev/xbc/transport/web/engines/ginx/bundle.go:30
     no declared inputs
   web
     selected at /Users/dev/xbc/transport/web/plugin.go:95
@@ -1886,7 +1886,7 @@ unowned             plugins=14
     requires many      web.CredentialExtractor                unsatisfied: no enabled plugin exports it
 ```
 
-`unsatisfied` is the line to look for. `ref` and `one` inputs cannot appear that way -- a missing or ambiguous producer fails planning with an error naming the consumer -- but `optional` and `many` inputs binding nothing is legal by design, which is what makes it dangerous: the application starts, nothing is logged, and the capability you selected a Bundle for is simply absent. The output above is the quickstart's own, and it is correct there: no authenticator or credential extractor Bundle is selected, which is exactly why its `web.security` rules may only `permit` and not `authenticate`, and no plugin contributes an error mapper, so errors fall back to Web's built-in problem mapping. The same three lines in a deployment that does select `jwt.Bundle()` mean the Bundle never reached the composition root, or its section is disabled -- and in that deployment the first authenticating rule would fail startup instead of silently letting a request through.
+`unsatisfied` is the line to look for. `ref` and `one` inputs cannot appear that way -- a missing or ambiguous producer fails planning with an error naming the consumer -- but `optional` and `many` inputs binding nothing is legal by design, which is what makes it dangerous: the application starts, nothing is logged, and the capability you selected a Bundle for is simply absent. The output above is the quickstart's own, and it is correct there: no authenticator or credential extractor Bundle is selected, which is exactly why its `web.security` rules may only `permit` and not `authenticate`, and no plugin contributes an error mapper, so errors fall back to Web's built-in problem mapping. The same three lines in a deployment that does select `jwtx.Bundle()` mean the Bundle never reached the composition root, or its section is disabled -- and in that deployment the first authenticating rule would fail startup instead of silently letting a request through.
 
 `selected at` is the `BundleOf` call that first introduced the Definition, as an absolute `file:line`. For a plugin selected through an aggregate such as `prelude.Bundle()`, that site is the owning package's own `Bundle()` rather than the aggregate, because that is where the Definition entered a Bundle; for an application plugin it is the application's own file. Selecting the same Definition twice -- an aggregate plus an explicit selection -- stays legal and is not reported as a conflict; the first selection wins and is the one printed. Selections that disagree on workload ownership are the exception: a Definition tagged by a workload at one selection and left plain at another fails planning with `conflicting workload ownership`, naming both selection points, rather than letting Bundle order decide the membership. Two *different* Definitions claiming one key is the real conflict, and that fails planning with both declaration and selection sites named.
 

@@ -101,7 +101,7 @@ import (
 // Adding a member here is an architecture decision, and a one-line one.
 var archExtensionSharedVocabularyModules = []string{
 	"extensions/authentication",
-	"extensions/authorization/casbin",
+	"extensions/authorization/casbinx",
 	"extensions/authorization/rbac",
 	"extensions/coordination/lease",
 	"extensions/tasks",
@@ -238,9 +238,9 @@ func TestArchExtensionEdgeDetection(t *testing.T) {
 	t.Parallel()
 	moduleRoots := []string{
 		"extensions/coordination/lease",
-		"extensions/jobs/cron",
+		"extensions/jobs/cronx",
 		"extensions/reliability/health",
-		"extensions/storage/redis",
+		"extensions/storage/redisx",
 	}
 
 	for name, testCase := range map[string]struct {
@@ -249,45 +249,45 @@ func TestArchExtensionEdgeDetection(t *testing.T) {
 		want   []string
 	}{
 		"the regression this guard exists for": {
-			file: "extensions/jobs/cron/plugin.go",
-			source: `package cron
-import redislocker "github.com/xbcio/xbc/extensions/storage/redis"
+			file: "extensions/jobs/cronx/plugin.go",
+			source: `package cronx
+import redislocker "github.com/xbcio/xbc/extensions/storage/redisx"
 var _ = redislocker.NewLocker
 `,
-			want: []string{"extensions/storage/redis"},
+			want: []string{"extensions/storage/redisx"},
 		},
 		"a subpackage of a sibling counts as the sibling": {
-			file: "extensions/jobs/cron/plugin.go",
-			source: `package cron
-import _ "github.com/xbcio/xbc/extensions/storage/redis/autoload"
+			file: "extensions/jobs/cronx/plugin.go",
+			source: `package cronx
+import _ "github.com/xbcio/xbc/extensions/storage/redisx/autoload"
 `,
-			want: []string{"extensions/storage/redis"},
+			want: []string{"extensions/storage/redisx"},
 		},
 		"a dot import cannot hide the path": {
-			file: "extensions/jobs/cron/plugin.go",
-			source: `package cron
-import . "github.com/xbcio/xbc/extensions/storage/redis"
+			file: "extensions/jobs/cronx/plugin.go",
+			source: `package cronx
+import . "github.com/xbcio/xbc/extensions/storage/redisx"
 `,
-			want: []string{"extensions/storage/redis"},
+			want: []string{"extensions/storage/redisx"},
 		},
 		"an autoload adapter importing its own module is not an edge": {
-			file: "extensions/jobs/cron/autoload/register.go",
+			file: "extensions/jobs/cronx/autoload/register.go",
 			source: `package autoload
-import "github.com/xbcio/xbc/extensions/jobs/cron"
-var _ = cron.Bundle
+import "github.com/xbcio/xbc/extensions/jobs/cronx"
+var _ = cronx.Bundle
 `,
 		},
 		"the lease contract is reported so the allowlist can accept it": {
-			file: "extensions/jobs/cron/plugin.go",
-			source: `package cron
+			file: "extensions/jobs/cronx/plugin.go",
+			source: `package cronx
 import "github.com/xbcio/xbc/extensions/coordination/lease"
 var _ lease.Locker
 `,
 			want: []string{"extensions/coordination/lease"},
 		},
 		"core and third-party imports are not this guard's business": {
-			file: "extensions/jobs/cron/plugin.go",
-			source: `package cron
+			file: "extensions/jobs/cronx/plugin.go",
+			source: `package cronx
 import (
 	redis "github.com/redis/go-redis/v9"
 	"github.com/xbcio/xbc/plugin"
@@ -302,8 +302,8 @@ var (
 `,
 		},
 		"a path merely prefixed by the namespace is not an extension module": {
-			file: "extensions/jobs/cron/plugin.go",
-			source: `package cron
+			file: "extensions/jobs/cronx/plugin.go",
+			source: `package cronx
 import _ "github.com/xbcio/xbc/extensionsx/storage/redis"
 `,
 		},
@@ -330,20 +330,20 @@ func TestArchExtensionModuleOwnership(t *testing.T) {
 	moduleRoots := []string{
 		"extensions/coordination/lease",
 		"extensions/coordination/placement",
-		"extensions/jobs/cron",
+		"extensions/jobs/cronx",
 	}
 
 	for _, testCase := range []struct {
 		path string
 		want string
 	}{
-		{path: "extensions/jobs/cron", want: "extensions/jobs/cron"},
-		{path: "extensions/jobs/cron/autoload", want: "extensions/jobs/cron"},
+		{path: "extensions/jobs/cronx", want: "extensions/jobs/cronx"},
+		{path: "extensions/jobs/cronx/autoload", want: "extensions/jobs/cronx"},
 		{path: "extensions/coordination/lease", want: "extensions/coordination/lease"},
 		{path: "extensions/coordination/placement/autoload", want: "extensions/coordination/placement"},
 		{path: "extensions/coordination", want: ""},
 		{path: "extensions", want: ""},
-		{path: "extensions/jobs/cronx", want: ""},
+		{path: "extensions/jobs/cronxx", want: ""},
 	} {
 		assert.Equalf(t, testCase.want, archExtensionOwningModule(moduleRoots, testCase.path),
 			"owning module of %s", testCase.path)

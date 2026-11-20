@@ -25,7 +25,7 @@ import (
 	"github.com/xbcio/xbc"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
-	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
 )
 
 // TestPublicCompositionNegotiatesHTTP2 pins the implicit contract between

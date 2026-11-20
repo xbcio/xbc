@@ -19,7 +19,7 @@
 // Definition requires exactly one web.EngineFactory input, and prelude
 // contributes none. Prelude cannot make that choice itself -- it lives inside
 // the transport/web module, and importing any engine adapter (for example
-// transport/web/engines/gin) would pull that engine's own dependencies back
+// transport/web/engines/ginx) would pull that engine's own dependencies back
 // into transport/web's dependency closure, defeating the reason engines are
 // kept as separate modules. A composition root must therefore also select
 // exactly one engine Bundle alongside prelude.Bundle().

@@ -30,7 +30,7 @@ import (
 
 	"github.com/xbcio/xbc/extensions/messaging/outbox"
 	"github.com/xbcio/xbc/extensions/reliability/health"
-	gormplugin "github.com/xbcio/xbc/extensions/storage/gorm"
+	gormplugin "github.com/xbcio/xbc/extensions/storage/gormx"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )

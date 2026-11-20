@@ -186,7 +186,7 @@
 // receives SIGKILL, hits an OOM kill, or crashes loses every task still
 // running or queued, drain or no drain. Work that must survive that -- an
 // email that must eventually send, a billing event that must eventually post
-// -- belongs in extensions/messaging/outbox or extensions/jobs/asynq, not
+// -- belongs in extensions/messaging/outbox or extensions/jobs/asynqx, not
 // here. This Pool is for work whose loss on a hard crash is an acceptable
 // cost for not persisting it: a cache warm, a best-effort notification, a
 // metrics flush.

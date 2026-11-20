@@ -1,0 +1,93 @@
+// Package kafkax provides XBC-managed Kafka producers and consumers behind
+// protocol-neutral Message, Producer, and Handler contracts. Importing this
+// package is side-effect free. Applications compose Bundle explicitly;
+// executables may instead import the autoload subpackage when they intentionally
+// want process-wide default composition.
+//
+// # Usage
+//
+// Each named section below plugins.kafka constructs one concrete *kafkax.Client
+// and exports kafkax.Producer. A definition that owns consumer behavior declares
+// an exact typed input and registers its handler during construction, before
+// lifecycle Start:
+//
+//	var cluster = plugin.RefToInstance[*kafkax.Client](kafkax.Key, "events")
+//
+//	type ordersConsumer struct{}
+//
+//	func (*ordersConsumer) handle(context.Context, kafkax.Message) error { return nil }
+//
+//	var ordersDefinition = plugin.Define(
+//		"orders-consumer",
+//		func(ctx plugin.BuildContext) (*ordersConsumer, error) {
+//			consumer := &ordersConsumer{}
+//			if err := cluster.Get(ctx).Value.RegisterHandler(
+//				"orders",
+//				kafkax.HandlerFunc(consumer.handle),
+//			); err != nil {
+//				return nil, err
+//			}
+//			return consumer, nil
+//		},
+//		plugin.Options[*ordersConsumer]{
+//			Inputs: plugin.Inputs(cluster),
+//		},
+//	)
+//
+//	func Definition() plugin.Definition { return ordersDefinition }
+//
+//	func Bundle() plugin.Bundle { return plugin.BundleOf(ordersDefinition) }
+//
+//	func applicationBundle() plugin.Bundle {
+//		return plugin.CombineBundles(kafkax.Bundle(), Bundle())
+//	}
+//
+// Start freezes registrations, constructs configured readers, and submits each
+// consumer as a critical managed task. Those tasks wait for XBC's global traffic
+// gate before fetching. A consumer commits only after its handler succeeds (or
+// after the configured skip policy). Commits are synchronous so broker errors
+// stay observable. Drain stops each consumer fetching another message and waits
+// for the message it holds to be handled and committed, while production stays
+// open. Stop rejects production, cancels and joins consumers, then closes
+// readers and the producer. One cleanup runs for all callers, in the
+// background once it is started, so every Stop caller returns at its own
+// context deadline even when a handler has not yet returned.
+//
+// TLS supports private CAs and client certificates. SASL PLAIN is accepted
+// only with TLS because it sends the password itself; SCRAM proves the
+// password without sending it and is also accepted on a plaintext listener,
+// where the messages that follow remain unencrypted. Keep credentials in
+// secret-backed configuration and make handlers idempotent because broker
+// redelivery is possible.
+//
+// # Connection resolution
+//
+// A deployment whose brokers and credentials come from a control plane sets
+// plugins.kafka.<instance>.resolve_connection: true. The instance's configured
+// brokers value is then an opaque application-defined reference -- an HTTP
+// access-interface URL, say -- and construction passes it, together with the
+// configured SASL block, to a kafkax.ConnectionResolver the application exports
+// and selects as this package's optional input. The resolver returns the
+// effective brokers and SASL once; the returned values replace the configured
+// ones and run through the same validation as configuration, while TLS always
+// comes from configuration. The single call is bounded by resolve_timeout,
+// which defaults to the effective dial_timeout, and a resolver error or a
+// rejected result fails construction without rendering credentials. An
+// instance that does not enable the flag never consults a resolver, and an
+// enabled instance without a selected resolver fails construction. Because
+// validate constructs plugins, it really reaches the resolver; doctor only
+// prepares configuration and never does.
+//
+// # Readiness
+//
+// The primary Client exports health.Contributor and contributes broker
+// reachability as a readiness check named after the producing identity, "kafka"
+// or "kafka[<instance>]". Nothing else here observes the cluster -- the writer
+// batches lazily and consumer loops only log -- so an unreachable or
+// unauthenticated cluster is invisible until a Produce call fails. The check asks
+// one broker for cluster metadata through the writer's own Dialer, so it
+// traverses the configured TLS and SASL path and writes nothing. Reaching a
+// single broker is enough: requiring all of them would report the instance as
+// unable to serve during an ordinary rolling restart. The contribution is inert
+// unless the application also selects the health capability Bundle.
+package kafkax

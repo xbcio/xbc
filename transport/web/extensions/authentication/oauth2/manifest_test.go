@@ -51,7 +51,7 @@ func TestModuleImportsOnlyItsOwnProtocol(t *testing.T) {
 	forbidden := []string{
 		"github.com/xbcio/xbc/extensions/authentication/oidc",
 		"github.com/xbcio/xbc/extensions/authentication/saml",
-		"github.com/xbcio/xbc/extensions/authentication/ldap",
+		"github.com/xbcio/xbc/extensions/authentication/ldapx",
 		"github.com/xbcio/xbc/transport/web/extensions/authentication/oidc",
 		"github.com/xbcio/xbc/transport/web/extensions/authentication/saml",
 	}

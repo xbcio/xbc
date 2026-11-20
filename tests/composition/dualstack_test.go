@@ -36,13 +36,13 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/xbcio/xbc"
-	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwtx"
 	"github.com/xbcio/xbc/plugin"
-	grpctransport "github.com/xbcio/xbc/transport/grpc"
-	grpcjwt "github.com/xbcio/xbc/transport/grpc/extensions/authentication/jwt"
-	grpchealth "github.com/xbcio/xbc/transport/grpc/extensions/reliability/health"
+	grpctransport "github.com/xbcio/xbc/transport/grpcx"
+	grpcjwt "github.com/xbcio/xbc/transport/grpcx/extensions/authentication/jwt"
+	grpchealth "github.com/xbcio/xbc/transport/grpcx/extensions/reliability/health"
 	"github.com/xbcio/xbc/transport/web"
-	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
 	webjwt "github.com/xbcio/xbc/transport/web/extensions/authentication/jwt"
 	webhealth "github.com/xbcio/xbc/transport/web/extensions/reliability/health"
 )

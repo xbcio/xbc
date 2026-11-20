@@ -3,7 +3,7 @@ module github.com/xbcio/xbc/transport/web/extensions/authentication/jwt
 go 1.26.0
 
 // github.com/xbcio/xbc, github.com/xbcio/xbc/transport/web, and the neutral
-// authenticator github.com/xbcio/xbc/extensions/authentication/jwt resolve
+// authenticator github.com/xbcio/xbc/extensions/authentication/jwtx resolve
 // through their published release tags; repository development resolves the
 // same source through go.work.
 require (
@@ -22,7 +22,7 @@ require (
 require (
 	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/authentication v0.1.0
-	github.com/xbcio/xbc/extensions/authentication/jwt v0.1.0
+	github.com/xbcio/xbc/extensions/authentication/jwtx v0.5.0
 	github.com/xbcio/xbc/transport/web v0.4.0
 )
 

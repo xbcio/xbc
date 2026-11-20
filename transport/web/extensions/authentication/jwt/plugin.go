@@ -3,7 +3,7 @@ package jwt
 import (
 	"errors"
 
-	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwtx"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
 )

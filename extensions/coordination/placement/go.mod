@@ -24,7 +24,7 @@ require (
 	github.com/xbcio/xbc/extensions/coordination/lease v0.4.0
 	github.com/xbcio/xbc/extensions/observability/metrics v0.1.0
 	github.com/xbcio/xbc/extensions/reliability/health v0.1.0
-	github.com/xbcio/xbc/extensions/storage/redis v0.4.0
+	github.com/xbcio/xbc/extensions/storage/redisx v0.5.0
 )
 
 require (

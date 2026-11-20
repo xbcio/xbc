@@ -53,8 +53,8 @@ import (
 	"github.com/xbcio/xbc/examples/workloads/internal/heartbeat"
 	"github.com/xbcio/xbc/examples/workloads/internal/ingest"
 	"github.com/xbcio/xbc/examples/workloads/internal/transcode"
-	"github.com/xbcio/xbc/extensions/jobs/asynq"
-	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
+	"github.com/xbcio/xbc/extensions/jobs/asynqx"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
 	"github.com/xbcio/xbc/transport/web/prelude"
 )
 
@@ -87,7 +87,7 @@ func main() {
 			// contributions of whichever workloads this process carries -- so
 			// the worker consuming ingest's queue is placed by placement, not
 			// by this line.
-			asynq.Bundle(),
+			asynqx.Bundle(),
 		),
 	)
 }

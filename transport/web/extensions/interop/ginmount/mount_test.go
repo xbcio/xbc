@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/transport/web"
-	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
 	"github.com/xbcio/xbc/transport/web/extensions/interop/ginmount"
 	"github.com/xbcio/xbc/transport/web/extensions/testing/apptest"
 )

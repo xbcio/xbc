@@ -13,15 +13,15 @@ import (
 
 	"github.com/xbcio/xbc/config"
 	apikeycore "github.com/xbcio/xbc/extensions/authentication/apikey"
-	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwtx"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 	"github.com/xbcio/xbc/plugin/assembly"
 	"github.com/xbcio/xbc/transport/web"
-	ginengine "github.com/xbcio/xbc/transport/web/engines/gin"
+	ginengine "github.com/xbcio/xbc/transport/web/engines/ginx"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/apikey"
 	"github.com/xbcio/xbc/transport/web/extensions/authentication/jwt"
-	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbin"
+	casbinhttp "github.com/xbcio/xbc/transport/web/extensions/authorization/casbinx"
 	"github.com/xbcio/xbc/transport/web/extensions/authorization/tenant"
 	"github.com/xbcio/xbc/transport/web/extensions/observability/auditlog"
 )

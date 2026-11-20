@@ -34,7 +34,7 @@ package main
 import (
 	"github.com/xbcio/xbc"
 	"github.com/xbcio/xbc/examples/grpcquickstart/internal/greeter"
-	grpcstarter "github.com/xbcio/xbc/transport/grpc/starter"
+	grpcstarter "github.com/xbcio/xbc/transport/grpcx/starter"
 )
 
 func main() {

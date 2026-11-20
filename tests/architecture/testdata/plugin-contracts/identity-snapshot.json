@@ -21,7 +21,7 @@
       "config_path": "plugins.apikey-grpc",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/grpc.CredentialExtractor"
+        "github.com/xbcio/xbc/transport/grpcx.CredentialExtractor"
       ]
     },
     {
@@ -53,9 +53,9 @@
       "config_path": "plugins.asynq",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/jobs/asynq.Controller",
-        "github.com/xbcio/xbc/extensions/jobs/asynq.Enqueuer",
-        "github.com/xbcio/xbc/extensions/jobs/asynq.Inspector",
+        "github.com/xbcio/xbc/extensions/jobs/asynqx.Controller",
+        "github.com/xbcio/xbc/extensions/jobs/asynqx.Enqueuer",
+        "github.com/xbcio/xbc/extensions/jobs/asynqx.Inspector",
         "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
       ]
     },
@@ -93,7 +93,7 @@
       "config_path": "plugins.casbin",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/authorization/casbin.EnforcerProvider",
+        "github.com/xbcio/xbc/extensions/authorization/casbinx.EnforcerProvider",
         "github.com/xbcio/xbc/extensions/authorization/rbac.Backend"
       ]
     },
@@ -102,7 +102,7 @@
       "config_path": "plugins.casbin-gorm",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/authorization/casbin.AdapterProvider"
+        "github.com/xbcio/xbc/extensions/authorization/casbinx.AdapterProvider"
       ]
     },
     {
@@ -110,8 +110,8 @@
       "config_path": "plugins.casbin-grpc",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/grpc.StreamInterceptor",
-        "github.com/xbcio/xbc/transport/grpc.UnaryInterceptor"
+        "github.com/xbcio/xbc/transport/grpcx.StreamInterceptor",
+        "github.com/xbcio/xbc/transport/grpcx.UnaryInterceptor"
       ]
     },
     {
@@ -127,7 +127,7 @@
       "config_path": "plugins.casbin-redis",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/authorization/casbin.WatcherFactory"
+        "github.com/xbcio/xbc/extensions/authorization/casbinx.WatcherFactory"
       ]
     },
     {
@@ -158,7 +158,7 @@
       "cardinality": "multiple",
       "contracts": [
         "github.com/xbcio/xbc/extensions/reliability/health.Contributor",
-        "github.com/xbcio/xbc/extensions/storage/elasticsearch.BulkIndexer"
+        "github.com/xbcio/xbc/extensions/storage/elasticx.BulkIndexer"
       ]
     },
     {
@@ -208,8 +208,8 @@
       "config_path": "plugins.grpc-accesslog",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/grpc.StreamInterceptor",
-        "github.com/xbcio/xbc/transport/grpc.UnaryInterceptor"
+        "github.com/xbcio/xbc/transport/grpcx.StreamInterceptor",
+        "github.com/xbcio/xbc/transport/grpcx.UnaryInterceptor"
       ]
     },
     {
@@ -223,8 +223,8 @@
       "config_path": "plugins.grpc-metrics",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/grpc.StreamInterceptor",
-        "github.com/xbcio/xbc/transport/grpc.UnaryInterceptor"
+        "github.com/xbcio/xbc/transport/grpcx.StreamInterceptor",
+        "github.com/xbcio/xbc/transport/grpcx.UnaryInterceptor"
       ]
     },
     {
@@ -246,7 +246,7 @@
       "config_path": "plugins.health-grpc",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/grpc.ServiceRegistrar"
+        "github.com/xbcio/xbc/transport/grpcx.ServiceRegistrar"
       ]
     },
     {
@@ -299,7 +299,7 @@
       "config_path": "plugins.jwt-grpc",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/grpc.CredentialExtractor"
+        "github.com/xbcio/xbc/transport/grpcx.CredentialExtractor"
       ]
     },
     {
@@ -315,7 +315,7 @@
       "config_path": "plugins.kafka",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/messaging/kafka.Producer",
+        "github.com/xbcio/xbc/extensions/messaging/kafkax.Producer",
         "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
       ]
     },
@@ -324,7 +324,7 @@
       "config_path": "plugins.mail",
       "cardinality": "multiple",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/messaging/mail.Sender",
+        "github.com/xbcio/xbc/extensions/messaging/mailx.Sender",
         "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
       ]
     },
@@ -398,7 +398,7 @@
       "config_path": "plugins.raft",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/extensions/coordination/raft.Node",
+        "github.com/xbcio/xbc/extensions/coordination/raftx.Node",
         "github.com/xbcio/xbc/extensions/reliability/health.Contributor"
       ]
     },
@@ -523,8 +523,8 @@
       "config_path": "plugins.tracing-grpc",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/grpc.StreamInterceptor",
-        "github.com/xbcio/xbc/transport/grpc.UnaryInterceptor"
+        "github.com/xbcio/xbc/transport/grpcx.StreamInterceptor",
+        "github.com/xbcio/xbc/transport/grpcx.UnaryInterceptor"
       ]
     },
     {
@@ -556,7 +556,7 @@
       "config_path": "plugins.websocket",
       "cardinality": "single",
       "contracts": [
-        "github.com/xbcio/xbc/transport/web/extensions/reliability/websocket.Upgrader"
+        "github.com/xbcio/xbc/transport/web/extensions/reliability/websocketx.Upgrader"
       ]
     }
   ],

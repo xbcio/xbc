@@ -125,7 +125,7 @@ func (c *Ctx) DefaultQuery(key, defaultValue string) string {
 //
 // url.URL.Query allocates a fresh url.Values on every call, so a handler or a
 // middleware reading several parameters -- or one parameter in a loop -- paid
-// a full re-parse each time. Measured on the benchmark in engines/gin, one
+// a full re-parse each time. Measured on the benchmark in engines/ginx, one
 // lookup cost 413ns and three allocations without this cache, and 14ns with no
 // allocation at all once it is in place.
 //

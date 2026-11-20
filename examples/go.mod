@@ -18,27 +18,27 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/authentication/apikey v0.4.0
-	github.com/xbcio/xbc/extensions/authentication/jwt v0.1.0
-	github.com/xbcio/xbc/extensions/authorization/casbin v0.1.0
+	github.com/xbcio/xbc/extensions/authentication/jwtx v0.5.0
+	github.com/xbcio/xbc/extensions/authorization/casbinx v0.5.0
 	github.com/xbcio/xbc/extensions/authorization/casbin-gorm v0.1.0
 	github.com/xbcio/xbc/extensions/authorization/casbin-redis v0.1.0
 	github.com/xbcio/xbc/extensions/authorization/rbac v0.1.0
 	github.com/xbcio/xbc/extensions/concurrency/async v0.1.0
-	github.com/xbcio/xbc/extensions/jobs/asynq v0.1.0
-	github.com/xbcio/xbc/extensions/jobs/cron v0.1.0
+	github.com/xbcio/xbc/extensions/jobs/asynqx v0.5.0
+	github.com/xbcio/xbc/extensions/jobs/cronx v0.5.0
 	github.com/xbcio/xbc/extensions/messaging/outbox v0.2.0
 	github.com/xbcio/xbc/extensions/reliability/health v0.1.0
-	github.com/xbcio/xbc/extensions/storage/gorm v0.4.0
+	github.com/xbcio/xbc/extensions/storage/gormx v0.5.0
 	github.com/xbcio/xbc/extensions/tasks v0.1.0
-	github.com/xbcio/xbc/transport/grpc v0.1.0
-	github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics v0.1.0
+	github.com/xbcio/xbc/transport/grpcx v0.5.0
+	github.com/xbcio/xbc/transport/grpcx/extensions/observability/metrics v0.5.0
 	github.com/xbcio/xbc/transport/web v0.4.0
-	github.com/xbcio/xbc/transport/web/engines/gin v0.1.0
+	github.com/xbcio/xbc/transport/web/engines/ginx v0.5.0
 	github.com/xbcio/xbc/transport/web/extensions/authentication/jwt v0.1.0
-	github.com/xbcio/xbc/transport/web/extensions/authorization/casbin v0.1.0
+	github.com/xbcio/xbc/transport/web/extensions/authorization/casbinx v0.5.0
 	github.com/xbcio/xbc/transport/web/extensions/observability/metrics v0.1.0
 	github.com/xbcio/xbc/transport/web/extensions/observability/tracing v0.1.0
-	github.com/xbcio/xbc/transport/web/extensions/openapi/swag v0.1.0
+	github.com/xbcio/xbc/transport/web/extensions/openapi/swagx v0.5.0
 )
 
 require (

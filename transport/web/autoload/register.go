@@ -10,7 +10,7 @@
 // engine's dependencies back into transport/web's dependency closure. The
 // executable's composition root must still separately import and declare (or
 // select via xbc.WithBundles) exactly one engine Bundle, such as
-// transport/web/engines/gin.
+// transport/web/engines/ginx.
 package autoload
 
 import (

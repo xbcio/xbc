@@ -15,7 +15,7 @@ import (
 
 	"github.com/xbcio/xbc"
 	"github.com/xbcio/xbc/extensions/authentication/apikey"
-	jwtplugin "github.com/xbcio/xbc/extensions/authentication/jwt"
+	jwtplugin "github.com/xbcio/xbc/extensions/authentication/jwtx"
 )
 
 // startWait bounds every wait in this file. It is generous on purpose: the

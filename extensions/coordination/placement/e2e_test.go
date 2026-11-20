@@ -19,7 +19,7 @@ import (
 	"github.com/xbcio/xbc"
 	"github.com/xbcio/xbc/extensions/coordination/lease"
 	"github.com/xbcio/xbc/extensions/coordination/placement"
-	redisstore "github.com/xbcio/xbc/extensions/storage/redis"
+	redisstore "github.com/xbcio/xbc/extensions/storage/redisx"
 	"github.com/xbcio/xbc/plugin"
 )
 

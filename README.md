@@ -2,7 +2,7 @@
 
 xbc is a transport-protocol-agnostic Go plugin application runtime. A Definition is one runtime unit, with its Key and applicable configuration, contracts, dependencies, factory, and lifecycle; a Bundle is an explicit, side-effect-free static composition of zero or more Definitions. A package's Definition() accessor, when present, identifies its primary unit, while its Bundle() may select additional independent units or purely aggregate other Bundles. Core is responsible only for explicit composition, strict configuration binding, dependency planning, resource construction, lifecycle, managed tasks, and reverse-order shutdown; transport stacks and optional extensions are isolated by owner and dependency weight, and do not enter core's dependency closure.
 
-Releases travel as tag waves, and the first one is out: every module was tagged `v0.1.0` in dependency-topology order, recorded wave by wave in the checked-in `tests/architecture/testdata/release-manifest.json`; a stable tag is still ahead. The root `go.work` links the root module and 57 independently versioned modules: 56 product modules (examples, `transport/web`, `transport/grpc`, `kit/distributed`, 33 protocol-neutral extensions, 14 Web engine, extension, or adapter modules, 4 gRPC extension modules, and the `tests/composition` end-to-end module) and 1 tooling module (`scripts/plugin-snapshots`). Architecture tests guarantee that every `go.mod` in the repository is covered by the workspace, the Makefile, and CI. Publishable submodules must not use local `replace`, `v0.0.0`, or pseudo-versions; their XBC requirements name released tags.
+Releases travel as tag waves, and the first one is out: every module was tagged `v0.1.0` in dependency-topology order, recorded wave by wave in the checked-in `tests/architecture/testdata/release-manifest.json`; a stable tag is still ahead. The root `go.work` links the root module and 57 independently versioned modules: 56 product modules (examples, `transport/web`, `transport/grpcx`, `kit/distributed`, 33 protocol-neutral extensions, 14 Web engine, extension, or adapter modules, 4 gRPC extension modules, and the `tests/composition` end-to-end module) and 1 tooling module (`scripts/plugin-snapshots`). Architecture tests guarantee that every `go.mod` in the repository is covered by the workspace, the Makefile, and CI. Publishable submodules must not use local `replace`, `v0.0.0`, or pseudo-versions; their XBC requirements name released tags.
 
 ## Directories and boundaries
 
@@ -19,27 +19,27 @@ xbc/
 │   ├── authentication/                  # Protocol-neutral authentication contracts; zero-dependency module
 │   │   ├── apikey/                      # API-key authenticator and digest repository; nested module, Web half reads the headers
 │   │   ├── federation/                  # Protocol-neutral external-identity contract; package of this module, no plugin
-│   │   ├── jwt/                         # HMAC JWT authenticator and signer; nested module, Web half extracts the token
-│   │   ├── ldap/                        # LDAP password verification: search-then-bind, TLS-only, RFC 4515 escaping; nested module, no plugin
+│   │   ├── jwtx/                        # HMAC JWT authenticator and signer; nested module, Web half extracts the token
+│   │   ├── ldapx/                       # LDAP password verification: search-then-bind, TLS-only, RFC 4515 escaping; nested module, no plugin
 │   │   ├── oauth2/                      # OAuth 2.0 authorization-code client: PKCE, token exchange, userinfo mapping; nested module, no plugin
 │   │   ├── oidc/                        # OpenID Connect authorization-code client: discovery, JWKS, ID token verification; nested module, no plugin
 │   │   ├── saml/                        # SAML 2.0 service provider: AuthnRequest, response verification, metadata; nested module, no plugin
 │   │   └── session/                     # Opaque server-side sessions, stores, and Manager; nested module, Web half owns the cookie
-│   ├── authorization/{casbin,casbin-gorm,
+│   ├── authorization/{casbinx,casbin-gorm,
 │   │   casbin-redis,rbac}/              # Casbin engine, its adapter and watcher providers, and RBAC
 │   ├── concurrency/async/               # Drained background task pool plugin; process-global Spawner
 │   ├── coordination/                    # Coordination capabilities
 │   │   ├── lease/                       # Lease contract module; zero-dependency vocabulary
 │   │   ├── placement/                   # Lease-backed plugin.PlacementSource
-│   │   └── raft/                        # Raft coordination extension module
+│   │   └── raftx/                       # Raft coordination extension module
 │   ├── httpclient/                      # One configured outbound HTTP client per downstream; timeout, retry, TLS, propagation
 │   ├── tasks/                           # Protocol-neutral task facade; local via async, remote via asynq
 │   ├── reliability/{automemlimit,
 │   │   gracefulshutdown,health}/        # Protocol-neutral reliability capability modules
-│   ├── storage/{elasticsearch,gorm,
-│   │   objectstorage,redis}/             # Storage extension modules
-│   ├── jobs/{asynq,cron}/                # Background-job extension modules
-│   ├── messaging/{kafka,outbox,webhook}/ # Messaging extension modules
+│   ├── storage/{elasticx,gormx,
+│   │   objectstorage,redisx}/            # Storage extension modules
+│   ├── jobs/{asynqx,cronx}/              # Background-job extension modules
+│   ├── messaging/{kafkax,outbox,webhook}/ # Messaging extension modules
 │   └── observability/{banner,metrics,
 │       tracing}/                         # Startup banner; protocol-neutral metrics registry and OpenTelemetry pipeline modules
 ├── kit/                                 # Framework-free libraries; one independently versioned module per child
@@ -60,10 +60,10 @@ xbc/
 │   ├── composition/                     # Real-plugin end-to-end composition tests
 │   └── integration/                     # End-to-end public-contract tests
 ├── transport/
-│   ├── grpc/                            # Independent gRPC server runtime module; never imports the Web stack
+│   ├── grpcx/                           # Independent gRPC server runtime module; never imports the Web stack
 │   │   ├── extensions/                  # All gRPC plugins, grouped by capability
 │   │   │   ├── authentication/{apikey,jwt}/ # Metadata credential extractors; jwt is its own module
-│   │   │   ├── authorization/casbin/    # Casbin policy adapters; own module
+│   │   │   ├── authorization/casbinx/   # Casbin policy adapters; own module
 │   │   │   ├── management/              # Operator listener: /metrics, opt-in pprof; package of the gRPC module
 │   │   │   ├── observability/{accesslog,
 │   │   │   │   metrics,tracing}/        # Access log; metrics and tracing are modules of their own
@@ -72,16 +72,16 @@ xbc/
 │   │   └── starter/                     # Product gRPC baseline: selects those Bundles, adds the layer that enables them
 │   └── web/                             # Independent engine-neutral Web runtime module
 │       ├── autoload/                    # Optional Web runtime autoload adapter
-│       ├── engines/gin/                 # Gin engine adapter module
+│       ├── engines/ginx/                # Gin engine adapter module
 │       ├── extensions/                  # All Web plugins, grouped by capability
 │       │   ├── authentication/{apikey,federation,jwt,oauth2,oidc,saml,session}/
-│       │   ├── authorization/{casbin,rbac,tenant}/
+│       │   ├── authorization/{casbinx,rbac,tenant}/
 │       │   ├── interop/ginmount/
-│       │   ├── openapi/swag/
+│       │   ├── openapi/swagx/
 │       │   ├── observability/{accesslog,auditlog,metrics,pprof,requestid,tracing}/
 │       │   ├── response/{biz,gzip}/
 │       │   ├── reliability/{health,idempotency,
-│       │   │   ratelimit,timeout,websocket}/
+│       │   │   ratelimit,timeout,websocketx}/
 │       │   └── security/{cors,csrf,securityheaders}/
 │       ├── prelude/                     # Side-effect-free Web baseline: composes, never activates
 │       └── starter/                     # Product Web baseline: selects those Bundles, adds the layer that enables them
@@ -91,11 +91,11 @@ xbc/
 └── xbc.go                               # Thin application facade and recommended entry point
 ```
 
-This layout follows four rules: the root-level `runtime` owns low-level process execution and private command parsing; the Plugin model, assembly, and optional collection mechanism stay under `plugin`; protocol-neutral authentication contracts live in `extensions/authentication`, while selectable RBAC policy belongs to the authorization extension group; and optional capabilities are grouped by purpose beneath `extensions` rather than collected under the narrower name `integrations`. Group directories are namespaces rather than packages. Protocol-neutral extension leaves are independently versioned modules. Under Web, lightweight leaves remain packages of `transport/web`, while dependency-heavy leaves, the engine adapter, and the RBAC adapter are independent modules in the same capability hierarchy. The Web RBAC leaf is deliberately a thin transport adapter rather than a plugin; the protocol-neutral RBAC leaf owns the Definition and lifecycle. Authenticators split the same way: `extensions/authentication/jwt` verifies and signs tokens, `extensions/authentication/apikey` checks keys against a digest repository, and `extensions/authentication/session` owns session storage and lifecycle, each exporting the neutral `Authenticator`, while their Web halves under `transport/web/extensions/authentication` only move the credential between the request and the authenticator (session's Web half also installs and clears the cookie), and each Web Bundle includes its neutral half. Tracing splits likewise: `extensions/observability/tracing` owns the private TracerProvider, the OTLP exporter, the propagator, and the `Handle` contract, while `transport/web/extensions/observability/tracing` is only the HTTP server middleware that records into it. Metrics splits the same way: `extensions/observability/metrics` owns the private registry and the `Registerer` contract plugins publish their collectors through, while `transport/web/extensions/observability/metrics` is only the HTTP server instruments and the scrape route that serves it. Health follows the same split for the same reason: `extensions/reliability/health` owns the Contributor contract, the aggregation and the probe policy so a dependency plugin can contribute a check without inheriting a transport's dependency closure, while `transport/web/extensions/reliability/health` only serves the HTTP endpoints.
+This layout follows four rules: the root-level `runtime` owns low-level process execution and private command parsing; the Plugin model, assembly, and optional collection mechanism stay under `plugin`; protocol-neutral authentication contracts live in `extensions/authentication`, while selectable RBAC policy belongs to the authorization extension group; and optional capabilities are grouped by purpose beneath `extensions` rather than collected under the narrower name `integrations`. Group directories are namespaces rather than packages. Protocol-neutral extension leaves are independently versioned modules. Under Web, lightweight leaves remain packages of `transport/web`, while dependency-heavy leaves, the engine adapter, and the RBAC adapter are independent modules in the same capability hierarchy. The Web RBAC leaf is deliberately a thin transport adapter rather than a plugin; the protocol-neutral RBAC leaf owns the Definition and lifecycle. Authenticators split the same way: `extensions/authentication/jwtx` verifies and signs tokens, `extensions/authentication/apikey` checks keys against a digest repository, and `extensions/authentication/session` owns session storage and lifecycle, each exporting the neutral `Authenticator`, while their Web halves under `transport/web/extensions/authentication` only move the credential between the request and the authenticator (session's Web half also installs and clears the cookie), and each Web Bundle includes its neutral half. Tracing splits likewise: `extensions/observability/tracing` owns the private TracerProvider, the OTLP exporter, the propagator, and the `Handle` contract, while `transport/web/extensions/observability/tracing` is only the HTTP server middleware that records into it. Metrics splits the same way: `extensions/observability/metrics` owns the private registry and the `Registerer` contract plugins publish their collectors through, while `transport/web/extensions/observability/metrics` is only the HTTP server instruments and the scrape route that serves it. Health follows the same split for the same reason: `extensions/reliability/health` owns the Contributor contract, the aggregation and the probe policy so a dependency plugin can contribute a check without inheriting a transport's dependency closure, while `transport/web/extensions/reliability/health` only serves the HTTP endpoints.
 
 One process hosts one App, and the three owners of that constraint are named where each one lives: the log facade's global logger (`log`), the selected engine adapter's process-global diagnostics (`transport/web`), and the `xbc.runtime` processor and memory knobs (`runtime`). Everything else -- plugin values, lifecycle contexts, servers -- is per-App.
 
-The root `xbc` package therefore stays a stable, thin facade. All Web plugins have one discoverable home under `transport/web/extensions`, and all gRPC plugins under `transport/grpc/extensions`; lightweight plugins are released with their runtime module while optional dependency-heavy modules remain isolated. One plugin is deliberately the other shape: the gRPC management plane (`transport/grpc/extensions/management`) is a package of the transport module, because it is a transport's own operator surface -- the gRPC counterpart of the Web management listener -- and it takes the Prometheus client into the transport's closure the same way `transport/web` takes the validator. Recorders stay modules; the port that renders a registry is part of the transport that owns it. Each transport also publishes its own baseline the same way: a side-effect-free prelude Bundle beside its extensions, and a starter that selects the prelude's Bundles and adds the lowest configuration layer switching them on -- the Web pair lives under `transport/web`, the gRPC pair under `transport/grpc`, and neither starter selects telemetry, which stays with the independently versioned metrics and tracing modules a composition root selects explicitly. Do not add vague `common`, `utils`, or `pkg` packages, and do not create empty directories or placeholder APIs for unimplemented capabilities. Framework-free libraries take the opposite dependency direction: they live under `kit`, one independently versioned module per direct child, and never import anything beneath the framework, so a service, an extension, or an application can adopt one without adopting XBC. A new `transport/<stack>` should be created only once a new protocol runtime stack is genuinely implemented. `transport/grpc` is such a sibling stack: it owns gRPC's native service registration and interceptor chains and shares only protocol-neutral capabilities with `transport/web`, never the Web module itself. The full constraints are defined jointly by `AGENTS.md` and the guards in `tests/architecture/`.
+The root `xbc` package therefore stays a stable, thin facade. All Web plugins have one discoverable home under `transport/web/extensions`, and all gRPC plugins under `transport/grpcx/extensions`; lightweight plugins are released with their runtime module while optional dependency-heavy modules remain isolated. One plugin is deliberately the other shape: the gRPC management plane (`transport/grpcx/extensions/management`) is a package of the transport module, because it is a transport's own operator surface -- the gRPC counterpart of the Web management listener -- and it takes the Prometheus client into the transport's closure the same way `transport/web` takes the validator. Recorders stay modules; the port that renders a registry is part of the transport that owns it. Each transport also publishes its own baseline the same way: a side-effect-free prelude Bundle beside its extensions, and a starter that selects the prelude's Bundles and adds the lowest configuration layer switching them on -- the Web pair lives under `transport/web`, the gRPC pair under `transport/grpcx`, and neither starter selects telemetry, which stays with the independently versioned metrics and tracing modules a composition root selects explicitly. Do not add vague `common`, `utils`, or `pkg` packages, and do not create empty directories or placeholder APIs for unimplemented capabilities. Framework-free libraries take the opposite dependency direction: they live under `kit`, one independently versioned module per direct child, and never import anything beneath the framework, so a service, an extension, or an application can adopt one without adopting XBC. A new `transport/<stack>` should be created only once a new protocol runtime stack is genuinely implemented. `transport/grpcx` is such a sibling stack: it owns gRPC's native service registration and interceptor chains and shares only protocol-neutral capabilities with `transport/web`, never the Web module itself. The full constraints are defined jointly by `AGENTS.md` and the guards in `tests/architecture/`.
 
 ## Quickstart
 

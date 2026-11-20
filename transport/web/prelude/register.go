@@ -26,5 +26,5 @@ var bundle = plugin.CombineBundles(
 // activation policies. It is not, by itself, startable: web.Bundle()'s server
 // Definition requires exactly one web.EngineFactory input, which no prelude
 // member contributes. A composition root must also select exactly one engine
-// Bundle (transport/web/engines/gin, or another) alongside this one.
+// Bundle (transport/web/engines/ginx, or another) alongside this one.
 func Bundle() plugin.Bundle { return bundle }

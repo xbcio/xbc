@@ -14,7 +14,7 @@ require (
 
 require (
 	github.com/xbcio/xbc v0.4.0
-	github.com/xbcio/xbc/extensions/authorization/casbin v0.1.0
+	github.com/xbcio/xbc/extensions/authorization/casbinx v0.5.0
 )
 
 require (

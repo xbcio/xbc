@@ -9,7 +9,7 @@ package examples_test
 // the Web management listener already publishes, restated here because the two
 // planes share the policy rather than the code.
 //
-// The package tests under transport/grpc/extensions/management cover the
+// The package tests under transport/grpcx/extensions/management cover the
 // pieces: the configuration rules, the routes, the drain of an in-flight
 // scrape. What none of them can build is a real composition whose serving
 // transport is mid-drain, which is what the last test arranges -- twice over,
@@ -37,10 +37,10 @@ import (
 
 	"github.com/xbcio/xbc"
 	"github.com/xbcio/xbc/plugin"
-	grpctransport "github.com/xbcio/xbc/transport/grpc"
-	grpcmanagement "github.com/xbcio/xbc/transport/grpc/extensions/management"
-	grpcmetrics "github.com/xbcio/xbc/transport/grpc/extensions/observability/metrics"
-	grpchealth "github.com/xbcio/xbc/transport/grpc/extensions/reliability/health"
+	grpctransport "github.com/xbcio/xbc/transport/grpcx"
+	grpcmanagement "github.com/xbcio/xbc/transport/grpcx/extensions/management"
+	grpcmetrics "github.com/xbcio/xbc/transport/grpcx/extensions/observability/metrics"
+	grpchealth "github.com/xbcio/xbc/transport/grpcx/extensions/reliability/health"
 )
 
 // heldCallService is one unary method that reports its arrival and then holds

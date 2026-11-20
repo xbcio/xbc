@@ -45,7 +45,7 @@
 //
 // # Per-route migration
 //
-// transport/web/engines/gin.Handler adapts one gin.HandlerFunc to a web.Handler,
+// transport/web/engines/ginx.Handler adapts one gin.HandlerFunc to a web.Handler,
 // for a route that should live in the XBC route table while its body is still
 // Gin-shaped. It is the counterpart of this package: Handler moves one route at
 // a time and keeps XBC's route metadata, authentication policy, and error

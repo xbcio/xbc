@@ -79,8 +79,6 @@ github.com/xbcio/xbc/extensions/observability/metrics v0.1.0 h1:+2EO3Xf5m9sEMyOW
 github.com/xbcio/xbc/extensions/observability/metrics v0.1.0/go.mod h1:wrnWr/FCbdDvz2in/Kh0N+Xvc8AuB8ECxY5I443dG8E=
 github.com/xbcio/xbc/extensions/reliability/health v0.1.0 h1:8S7Cal4YIj6B1K32wfBPrXG9U2lucySu85PsZeDa5cI=
 github.com/xbcio/xbc/extensions/reliability/health v0.1.0/go.mod h1:KI0IIvnclmr51r5vaGPlq9rGQHeuZel6TZ/Yfp4OZvU=
-github.com/xbcio/xbc/extensions/storage/redis v0.1.0 h1:OqFZmGJcMuZIIz53eTvY9csfNxMaRPyQJMkBZS0OZeE=
-github.com/xbcio/xbc/extensions/storage/redis v0.1.0/go.mod h1:P3pnWR9L+hT+eFaTwemxCkVRsZ3fnlri2CvVMXrJBH4=
 github.com/yuin/gopher-lua v1.1.1 h1:kYKnWBjvbNP4XLT3+bPEwAXJx262OhaHDWDVOPjL46M=
 github.com/yuin/gopher-lua v1.1.1/go.mod h1:GBR0iDaNXjAgGg9zfCvksxSRnQx76gclCIb7kdAd1Pw=
 github.com/zeebo/xxh3 v1.1.0 h1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=

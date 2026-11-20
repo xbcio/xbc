@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwt"
+	jwtcore "github.com/xbcio/xbc/extensions/authentication/jwtx"
 	"github.com/xbcio/xbc/plugin"
 	pluginmodel "github.com/xbcio/xbc/plugin/model"
 	"github.com/xbcio/xbc/transport/web"
