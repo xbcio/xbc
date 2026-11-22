@@ -32,7 +32,8 @@ var ErrStopped = errors.New("cron: scheduler is stopped")
 //
 // It needs no XBC application, plugin context, or runtime: New interprets
 // specs with the configured parser, evaluates them in the configured
-// location, and reports diagnostics through the log facade.
+// location, and reports diagnostics through the configured logger, the log
+// facade's process logger by default.
 //
 // A Scheduler is safe for concurrent use.
 type Scheduler struct {
@@ -51,17 +52,28 @@ type Scheduler struct {
 type Option func(*options) error
 
 type options struct {
-	location *time.Location
-	parser   robfigcron.ScheduleParser
-	logger   log.Logger
+	location   *time.Location
+	parser     robfigcron.ScheduleParser
+	cronLogger robfigcron.Logger
 }
 
 func defaultOptions() options {
 	return options{
-		location: time.Local,
-		parser:   Parser(false),
-		logger:   nil,
+		location:   time.Local,
+		parser:     Parser(false),
+		cronLogger: nil,
 	}
+}
+
+// resolvedCronLogger returns the logger the underlying robfig/cron instance
+// reports through. An unset logger selects the zero LogAdapter, whose zero
+// value resolves the facade's process logger at each call, which is the default
+// WithLogger(nil) selects as well.
+func (config options) resolvedCronLogger() robfigcron.Logger {
+	if isNilInterface(config.cronLogger) {
+		return LogAdapter{}
+	}
+	return config.cronLogger
 }
 
 // WithLocation sets the time zone schedules are evaluated in. A nil location
@@ -105,9 +117,32 @@ func WithParser(parser robfigcron.ScheduleParser) Option {
 // A nil logger restores the default, which is the facade's process logger
 // resolved at each log call, so a scheduler built before log.Init still follows
 // the initialized backend.
+//
+// WithLogger adapts the facade logger with LogAdapter and hands the result to
+// robfig/cron. WithCronLogger sets the same slot with a robfig/cron logger
+// directly, so supplying both is not layering: the option supplied last wins.
 func WithLogger(logger log.Logger) Option {
 	return func(config *options) error {
-		config.logger = logger
+		config.cronLogger = LogAdapter{Logger: logger}
+		return nil
+	}
+}
+
+// WithCronLogger sets the robfig/cron logger scheduler diagnostics are written
+// to, without going through the facade. It is the narrow injection point for a
+// host whose logging system is not the facade: robfig/cron calls only Info and
+// Error, so such a host implements those two methods instead of the facade's
+// seven.
+//
+// WithLogger and WithCronLogger set the same slot, so the option supplied last
+// wins. A nil logger, including a nil implementation behind the interface,
+// restores the default, which is the facade's process logger resolved at each
+// log call, exactly as WithLogger(nil). A caller already logging through the
+// facade keeps using WithLogger; LogAdapter stays exported for a host that
+// wraps a facade logger itself.
+func WithCronLogger(logger robfigcron.Logger) Option {
+	return func(config *options) error {
+		config.cronLogger = logger
 		return nil
 	}
 }
@@ -135,8 +170,10 @@ func Parser(secondsOptional bool) robfigcron.Parser {
 // runtime; the caller owns the scheduler and releases it with Stop.
 //
 // The defaults are time.Local, the standard five-field parser with descriptors
-// (Parser(false)), and the log facade's process logger. Callers that need the
-// legacy five-or-six-field form use WithSecondsOptional(true).
+// (Parser(false)), and the log facade's process logger. Use WithLogger or
+// WithCronLogger to select another logger; the option supplied last wins.
+// Callers that need the legacy five-or-six-field form use
+// WithSecondsOptional(true).
 //
 // Add may be called before or after Start. Start is idempotent and a no-op
 // after Stop. Add after Stop returns ErrStopped. Stop stops scheduling and
@@ -168,7 +205,7 @@ func New(opts ...Option) (*Scheduler, error) {
 		cron: robfigcron.New(
 			robfigcron.WithLocation(config.location),
 			robfigcron.WithParser(config.parser),
-			robfigcron.WithLogger(LogAdapter{Logger: config.logger}),
+			robfigcron.WithLogger(config.resolvedCronLogger()),
 		),
 	}, nil
 }

@@ -384,3 +384,181 @@ func TestSchedulerWritesThroughTheConfiguredLogger(t *testing.T) {
 		t.Fatal("the scheduler wrote no records through the configured logger")
 	}
 }
+
+// recordingCronLogger is a robfig/cron Logger double. It records both methods
+// and signals the first "run" record, so a test can wait for the scheduler to
+// invoke an entry rather than sleeping.
+type recordingCronLogger struct {
+	mu    sync.Mutex
+	infos []cronLogRecord
+	errs  []cronLogRecord
+	run   chan struct{}
+	once  sync.Once
+}
+
+type cronLogRecord struct {
+	msg string
+	kv  []any
+}
+
+func newRecordingCronLogger() *recordingCronLogger {
+	return &recordingCronLogger{run: make(chan struct{})}
+}
+
+func (l *recordingCronLogger) Info(msg string, kv ...any) {
+	l.mu.Lock()
+	l.infos = append(l.infos, cronLogRecord{msg: msg, kv: append([]any(nil), kv...)})
+	l.mu.Unlock()
+	if msg == "run" {
+		l.once.Do(func() { close(l.run) })
+	}
+}
+
+func (l *recordingCronLogger) Error(err error, msg string, kv ...any) {
+	record := cronLogRecord{msg: msg, kv: append([]any{"error", err}, kv...)}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.errs = append(l.errs, record)
+}
+
+func (l *recordingCronLogger) infoMessages() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	messages := make([]string, 0, len(l.infos))
+	for _, record := range l.infos {
+		messages = append(messages, record.msg)
+	}
+	return messages
+}
+
+func (l *recordingCronLogger) errors() []cronLogRecord {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]cronLogRecord(nil), l.errs...)
+}
+
+var _ robfigcron.Logger = (*recordingCronLogger)(nil)
+
+// TestSchedulerWritesThroughTheConfiguredCronLogger proves WithCronLogger
+// reaches robfig/cron verbatim: the two-method logger sees the start, schedule,
+// and run records of a real scheduling cycle without implementing the facade
+// interface.
+func TestSchedulerWritesThroughTheConfiguredCronLogger(t *testing.T) {
+	logger := newRecordingCronLogger()
+	scheduler, err := New(WithSecondsOptional(true), WithCronLogger(logger))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = scheduler.Stop(context.Background()) })
+	if _, err := scheduler.Add("* * * * * *", func() {}); err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	scheduler.Start()
+	awaitSignal(t, logger.run, "the cron run record")
+	if err := scheduler.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	seen := make(map[string]bool)
+	for _, message := range logger.infoMessages() {
+		seen[message] = true
+	}
+	for _, want := range []string{"start", "schedule", "run"} {
+		if !seen[want] {
+			t.Fatalf("cron info records = %v, want a %q record", logger.infoMessages(), want)
+		}
+	}
+}
+
+// TestCronLoggerAndLoggerShareOneSlot pins the override rule: WithLogger and
+// WithCronLogger configure the same injection point, so only the option
+// supplied last receives the scheduler's records.
+func TestCronLoggerAndLoggerShareOneSlot(t *testing.T) {
+	for name, test := range map[string]struct {
+		options    func(*recordingLogger, *recordingCronLogger) []Option
+		wantFacade bool
+		wantCron   bool
+	}{
+		"cron logger supplied last": {
+			options: func(facade *recordingLogger, cronLogger *recordingCronLogger) []Option {
+				return []Option{WithLogger(facade), WithCronLogger(cronLogger)}
+			},
+			wantCron: true,
+		},
+		"facade logger supplied last": {
+			options: func(facade *recordingLogger, cronLogger *recordingCronLogger) []Option {
+				return []Option{WithCronLogger(cronLogger), WithLogger(facade)}
+			},
+			wantFacade: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			facade := &recordingLogger{}
+			cronLogger := newRecordingCronLogger()
+			scheduler, err := New(test.options(facade, cronLogger)...)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			scheduler.Start()
+			if err := scheduler.Stop(context.Background()); err != nil {
+				t.Fatalf("Stop() error = %v", err)
+			}
+			if got := len(facade.recorded()) > 0; got != test.wantFacade {
+				t.Fatalf("facade logger received records = %v, want %v", got, test.wantFacade)
+			}
+			if got := len(cronLogger.infoMessages()) > 0; got != test.wantCron {
+				t.Fatalf("cron logger received records = %v, want %v", got, test.wantCron)
+			}
+		})
+	}
+}
+
+// TestCronLoggerResolution pins nil semantics and the exact object handed to
+// robfig/cron. A nil selection resolves the facade's process logger at each
+// call through the zero LogAdapter, exactly as WithLogger(nil), and a supplied
+// robfig/cron Logger is passed through unchanged, so its Error method is the
+// one robfig/cron reports job failures through.
+func TestCronLoggerResolution(t *testing.T) {
+	facade := &recordingLogger{}
+	cronLogger := newRecordingCronLogger()
+	var nilCronLogger *recordingCronLogger
+
+	for name, test := range map[string]struct {
+		options []Option
+		want    robfigcron.Logger
+	}{
+		"default":                             {want: LogAdapter{}},
+		"nil cron logger":                     {options: []Option{WithCronLogger(nil)}, want: LogAdapter{}},
+		"typed nil cron logger":               {options: []Option{WithCronLogger(nilCronLogger)}, want: LogAdapter{}},
+		"nil facade logger":                   {options: []Option{WithLogger(nil)}, want: LogAdapter{}},
+		"facade logger":                       {options: []Option{WithLogger(facade)}, want: LogAdapter{Logger: facade}},
+		"cron logger":                         {options: []Option{WithCronLogger(cronLogger)}, want: cronLogger},
+		"cron logger after the facade logger": {options: []Option{WithLogger(facade), WithCronLogger(cronLogger)}, want: cronLogger},
+		"facade logger after the cron logger": {options: []Option{WithCronLogger(cronLogger), WithLogger(facade)}, want: LogAdapter{Logger: facade}},
+		"nil cron logger after a cron logger": {options: []Option{WithCronLogger(cronLogger), WithCronLogger(nil)}, want: LogAdapter{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := defaultOptions()
+			for index, option := range test.options {
+				if err := option(&config); err != nil {
+					t.Fatalf("option %d error = %v", index, err)
+				}
+			}
+			if got := config.resolvedCronLogger(); got != test.want {
+				t.Fatalf("resolved logger = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+
+	config := defaultOptions()
+	if err := WithCronLogger(cronLogger)(&config); err != nil {
+		t.Fatalf("WithCronLogger() error = %v", err)
+	}
+	failure := errors.New("boom")
+	config.resolvedCronLogger().Error(failure, "job failed", "job", "cleanup")
+	records := cronLogger.errors()
+	wantError := []any{"error", failure, "job", "cleanup"}
+	if len(records) != 1 || records[0].msg != "job failed" || !reflect.DeepEqual(records[0].kv, wantError) {
+		t.Fatalf("cron logger errors = %#v, want the job failure record", records)
+	}
+}

@@ -115,7 +115,8 @@
 // A host that owns its scheduling lifecycle without an XBC application builds
 // a Scheduler directly. New needs no plugin context and depends on no runtime:
 // it parses specs with the configured parser, evaluates them in the configured
-// location, and reports diagnostics through the log facade.
+// location, and reports diagnostics through the configured logger, the log
+// facade's process logger by default.
 //
 //	scheduler, err := cronx.New(
 //		cronx.WithSecondsOptional(true), // five or six fields, like the legacy facade
@@ -154,9 +155,16 @@
 // wall clock. A spec that already carries CRON_TZ= or TZ= keeps its declared
 // zone. A nil location, or no WithLocation at all, selects time.Local.
 //
-// LogAdapter adapts any log.Logger to robfig/cron's Logger. Its zero value is
-// usable and resolves the facade's process logger at each call, so a scheduler
-// built before log.Init still follows the initialized backend.
+// Two options configure diagnostics, and they set one slot: the option
+// supplied last wins. WithLogger takes a log.Logger and adapts it with
+// LogAdapter; it is the form for a host already logging through the facade.
+// WithCronLogger takes a robfig/cron Logger directly and is the narrower form
+// for a host with its own logging system: robfig/cron calls only Info and
+// Error, so that host implements two methods instead of the facade's seven. A
+// nil logger from either option selects the default, the facade's process
+// logger resolved at each call, so a scheduler built before log.Init still
+// follows the initialized backend. LogAdapter remains exported for a host that
+// wraps a facade logger itself.
 //
 // The standalone form is not a substitute for every plugin capability: it has
 // no Job/JobContributor snapshot, distributed lease, workload quota, traffic
