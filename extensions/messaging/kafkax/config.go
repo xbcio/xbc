@@ -204,26 +204,11 @@ func normalize(c Config, opaqueBrokers bool) (normalizedConfig, error) {
 	}
 	applyProducerDefaults(&c.Producer)
 
-	if len(c.Brokers) == 0 {
-		return normalizedConfig{}, errors.New("kafka: at least one broker is required")
+	brokers, err := normalizeBrokers(c.Brokers, opaqueBrokers)
+	if err != nil {
+		return normalizedConfig{}, err
 	}
-	seen := make(map[string]struct{}, len(c.Brokers))
-	for i, raw := range c.Brokers {
-		broker := strings.TrimSpace(raw)
-		if broker == "" {
-			return normalizedConfig{}, fmt.Errorf("kafka: broker %d is empty", i)
-		}
-		if !opaqueBrokers {
-			if _, _, err := net.SplitHostPort(broker); err != nil {
-				return normalizedConfig{}, fmt.Errorf("kafka: broker %q must be host:port: %w", broker, err)
-			}
-			if _, ok := seen[broker]; ok {
-				return normalizedConfig{}, fmt.Errorf("kafka: broker %q is duplicated", broker)
-			}
-			seen[broker] = struct{}{}
-		}
-		c.Brokers[i] = broker
-	}
+	c.Brokers = brokers
 	if c.DialTimeout <= 0 {
 		return normalizedConfig{}, errors.New("kafka: dial_timeout must be positive")
 	}
@@ -254,6 +239,34 @@ func normalize(c Config, opaqueBrokers bool) (normalizedConfig, error) {
 	}
 	c.Consumers = consumers
 	return normalizedConfig{Config: c, consumers: consumers}, nil
+}
+
+// normalizeBrokers trims and validates a broker list. opaqueBrokers is set on
+// the resolve_connection preparation path, where the value is an application
+// reference rather than a broker list, so only emptiness is checked there.
+func normalizeBrokers(brokers []string, opaqueBrokers bool) ([]string, error) {
+	if len(brokers) == 0 {
+		return nil, errors.New("kafka: at least one broker is required")
+	}
+	normalized := make([]string, len(brokers))
+	seen := make(map[string]struct{}, len(brokers))
+	for i, raw := range brokers {
+		broker := strings.TrimSpace(raw)
+		if broker == "" {
+			return nil, fmt.Errorf("kafka: broker %d is empty", i)
+		}
+		if !opaqueBrokers {
+			if _, _, err := net.SplitHostPort(broker); err != nil {
+				return nil, fmt.Errorf("kafka: broker %q must be host:port: %w", broker, err)
+			}
+			if _, ok := seen[broker]; ok {
+				return nil, fmt.Errorf("kafka: broker %q is duplicated", broker)
+			}
+			seen[broker] = struct{}{}
+		}
+		normalized[i] = broker
+	}
+	return normalized, nil
 }
 
 func applyProducerDefaults(c *ProducerConfig) {
@@ -336,6 +349,14 @@ func applyConsumerDefaults(c *ConsumerConfig) {
 }
 
 func validateTLSAndSASL(t TLSConfig, s SASLConfig) error {
+	return validateTLSAndSASLWith(t, s, false)
+}
+
+// validateTLSAndSASLWith applies the TLS/SASL rules with the PLAIN policy
+// parameterized. The plugin path always calls it with allowInsecurePlain=false;
+// only the direct constructors can opt out, explicitly, for a legacy cleartext
+// deployment.
+func validateTLSAndSASLWith(t TLSConfig, s SASLConfig, allowInsecurePlain bool) error {
 	if (t.CertFile == "") != (t.KeyFile == "") {
 		return errors.New("kafka: tls cert_file and key_file must be configured together")
 	}
@@ -349,7 +370,7 @@ func validateTLSAndSASL(t TLSConfig, s SASLConfig) error {
 	}
 	switch mechanism {
 	case SASLPlain:
-		if !t.Enabled {
+		if !t.Enabled && !allowInsecurePlain {
 			return errors.New("kafka: sasl plain requires tls.enabled=true")
 		}
 	case SASLSCRAMSHA256, SASLSCRAMSHA512:

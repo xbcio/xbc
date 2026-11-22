@@ -60,6 +60,60 @@
 // secret-backed configuration and make handlers idempotent because broker
 // redelivery is possible.
 //
+// # Direct construction
+//
+// A host that owns kafka-go readers and writers without an XBC application can
+// construct the same values directly. NewReader returns a *kafka.Reader and
+// NewWriter returns a *kafka.Writer; the caller owns the result and releases
+// it with Close, which kafka-go makes idempotent:
+//
+//	reader, err := kafkax.NewReader(kafkax.ReaderConfig{
+//		Brokers:     []string{"broker.internal:9092"},
+//		GroupID:     "workers",
+//		GroupTopics: []string{"orders", "events"},
+//		StartOffset: kafkax.OffsetLatest,
+//	})
+//	if err != nil {
+//		return err
+//	}
+//	defer func() { _ = reader.Close() }()
+//
+//	writer, err := kafkax.NewWriter(kafkax.WriterConfig{
+//		Brokers: []string{"broker.internal:9092"},
+//		Topic:   "events",
+//		Async:   true,
+//	})
+//
+// NormalizeReader and NormalizeWriter return the configuration NewReader and
+// NewWriter would use -- defaults applied and cross-field rules checked --
+// without constructing anything, so a caller mapping an existing configuration
+// can inspect the effective values first. Neither function modifies its input.
+//
+// The direct path applies kafka-go's documented defaults rather than the plugin
+// binder's. Three reader defaults therefore differ from a plugin consumer
+// section: max_bytes is 1,000,000 instead of 10 MiB, partition watching is off
+// instead of on, and an empty balance_strategy leaves kafka-go's
+// range-then-round-robin offer list instead of restricting it to range. A
+// caller that wants the plugin values sets them explicitly. Writer defaults
+// already agree with kafka-go's.
+//
+// The security rules are the same ones the plugin enforces, with one explicit
+// opt-out: SASL PLAIN without TLS is rejected unless AllowInsecurePlain is set,
+// which exists only to preserve a legacy broker that accepts cleartext
+// credentials. The plugin path never enables it. SCRAM is accepted without TLS.
+// An unknown mechanism is an error on both paths. A caller-supplied Dialer
+// replaces the one built from the connection fields and owns its own transport
+// security; configuring both a Dialer and a TLS or SASL block is rejected
+// rather than silently preferring one. Logger and ErrorLogger inject kafka-go's
+// own logging callbacks; nil keeps kafka-go's silent default.
+//
+// A direct reader commits manually: CommitInterval is 0, so ReadMessage commits
+// synchronously and FetchMessage callers control the commit point through
+// CommitMessages. Keep credentials in secret-backed configuration. Do not run
+// one broker connection through both a plugin instance and the direct
+// constructors in the same process -- two clients are difficult to attribute
+// when behavior differs.
+//
 // # Connection resolution
 //
 // A deployment whose brokers and credentials come from a control plane sets
