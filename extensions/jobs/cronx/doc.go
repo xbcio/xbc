@@ -1,4 +1,7 @@
-// Package cronx supplies XBC's managed cron scheduler.
+// Package cronx supplies XBC's managed cron scheduler in two forms: the cron
+// Plugin, which schedules the immutable job snapshot contributed by other
+// Definitions, and a standalone Scheduler for a host that owns its scheduling
+// lifecycle without an XBC application.
 //
 // # Usage
 //
@@ -106,4 +109,59 @@
 // contributor belongs to no workload charges nothing. An invocation that cannot
 // take a unit waits rather than skipping the occurrence, and a wait that ends
 // with the shutdown abandons that invocation.
+//
+// # Standalone scheduler
+//
+// A host that owns its scheduling lifecycle without an XBC application builds
+// a Scheduler directly. New needs no plugin context and depends on no runtime:
+// it parses specs with the configured parser, evaluates them in the configured
+// location, and reports diagnostics through the log facade.
+//
+//	scheduler, err := cronx.New(
+//		cronx.WithSecondsOptional(true), // five or six fields, like the legacy facade
+//		cronx.WithLocation(time.Local),
+//		cronx.WithLogger(myLogger),      // optional; nil uses the facade's process logger
+//	)
+//	if err != nil {
+//		return err
+//	}
+//	scheduler.Start()
+//	defer func() { _ = scheduler.Stop(context.Background()) }()
+//
+//	id, err := scheduler.Add("*/30 * * * * *", func() {
+//		// work
+//	})
+//	if err != nil {
+//		return err
+//	}
+//	scheduler.Remove(id)
+//
+// The defaults are time.Local, the standard five-field parser with descriptors
+// (Parser(false)), and the log facade's process logger. WithSecondsOptional(true)
+// selects the permissive Parser(true), which accepts five or six fields; the
+// plugin's Config.Seconds is deliberately different, because a configured
+// section states up front that it requires six. Parser is exported for callers
+// that need the same parse rules outside a Scheduler.
+//
+// Add and Remove are safe at runtime and before Start. Add after Stop returns
+// ErrStopped; Start is idempotent and a no-op after Stop; Stop stops scheduling,
+// waits for invocations already running within the caller's context, and is
+// idempotent. An expired Stop context leaves the running work alone, and a later
+// Stop can wait for it again.
+//
+// Time zones are applied as the instance location, never by rewriting a spec
+// with a CRON_TZ= prefix, so a bare five-field spec keeps meaning the local
+// wall clock. A spec that already carries CRON_TZ= or TZ= keeps its declared
+// zone. A nil location, or no WithLocation at all, selects time.Local.
+//
+// LogAdapter adapts any log.Logger to robfig/cron's Logger. Its zero value is
+// usable and resolves the facade's process logger at each call, so a scheduler
+// built before log.Init still follows the initialized backend.
+//
+// The standalone form is not a substitute for every plugin capability: it has
+// no Job/JobContributor snapshot, distributed lease, workload quota, traffic
+// gate, or skip/delay concurrency policy. Every occurrence runs in its own
+// goroutine, so overlapping occurrences of one entry may run concurrently, and
+// a panicking job is not recovered. Compose Bundle when those behaviors are
+// required.
 package cronx
