@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
+	"github.com/joho/godotenv"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/providers/file"
@@ -40,6 +42,15 @@ type Options struct {
 	File      string // --config; when non-empty the file MUST exist
 	Profile   string // --profile or XBC_PROFILE
 	EnvPrefix string // "XBC_"; names the environment layer and later Bind calls
+	// EnvFile names an optional dotenv file whose KEY=value entries join the
+	// environment layer below the real process environment, which always wins.
+	// The file is read, never loaded into the process environment, so nothing
+	// this process did not configure becomes visible through os.Getenv. A named
+	// file must exist. Entries resolve exactly like inherited variables -- under
+	// EnvPrefix and against Universe -- so a dotenv file can set only declared
+	// configuration leaves, and it requires a Universe because the environment
+	// layer is schema-driven.
+	EnvFile string
 	// Defaults merges below every other source, including the files. It is
 	// what a Starter contributes so that a product baseline holds for a
 	// process that was given no configuration at all, and it is the only
@@ -162,11 +173,37 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, []string, error) {
 		}
 	}
 
+	// A dotenv file resolves into the environment layer, so it is read here,
+	// after the files that layer overrides, and before the layer is merged.
+	var envFileEntries []string
+	if opts.EnvFile != "" {
+		if opts.Universe == nil {
+			return nil, nil, nil, fmt.Errorf(
+				"xbc: environment file %s requires Options.Universe: the environment layer is schema-driven",
+				opts.EnvFile)
+		}
+		entries, err := readEnvFile(opts.EnvFile)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		envFileEntries = entries
+		// Watched like the configuration files: a change is something a reload
+		// of this environment has to hear about.
+		files = append(files, opts.EnvFile)
+	}
+
 	// The environment layer comes last so that a container-injected variable
 	// wins over every file, and so that Exists sees an ENV-only section --
 	// which is what lets a WhenConfigured plugin activate from ENV alone.
 	if opts.Universe != nil {
-		values, err := opts.Universe.envOverlay(opts.EnvPrefix, os.Environ(), k)
+		environ := os.Environ()
+		if len(envFileEntries) > 0 {
+			// The real process environment is appended last, so an inherited
+			// variable overrides the same name from the file while the file
+			// still supplies everything the process did not set.
+			environ = append(envFileEntries, environ...)
+		}
+		values, err := opts.Universe.envOverlay(opts.EnvPrefix, environ, k)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -185,6 +222,29 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, []string, error) {
 	}
 
 	return k, layers, files, nil
+}
+
+// readEnvFile parses a dotenv file into NAME=value entries, sorted so the merge
+// is deterministic. It reads the file only; the process environment is never
+// mutated, so a second Load and any os.Getenv caller observe nothing the file
+// set.
+func readEnvFile(path string) ([]string, error) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("xbc: specified environment file %s does not exist", path)
+		}
+		return nil, fmt.Errorf("xbc: cannot access environment file %s: %w", path, err)
+	}
+	values, err := godotenv.Read(path)
+	if err != nil {
+		return nil, fmt.Errorf("xbc: failed to read environment file %s: %w", path, err)
+	}
+	entries := make([]string, 0, len(values))
+	for name, value := range values {
+		entries = append(entries, name+"="+value)
+	}
+	sort.Strings(entries)
+	return entries, nil
 }
 
 // defaultsLabel composes the provenance label of the defaults layer, pairing

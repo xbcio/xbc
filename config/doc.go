@@ -88,6 +88,22 @@
 // variable that names no declared section, or no field of the section it names,
 // is an error rather than a silent no-op.
 //
+// # Dotenv files
+//
+// Options.EnvFile names one optional dotenv file whose KEY=value entries are
+// resolved exactly like variables inherited from the process: under
+// Options.EnvPrefix and against the Universe, so the file can set only
+// declared leaves and an unknown name is the same error an exported variable
+// would be. A real environment variable of the same name wins over the file,
+// which is the precedence a container-injected secret needs. There is no
+// conventional .env lookup: a process reads a dotenv file only when a
+// deployment names it. The file is parsed, never loaded into the process
+// environment, so its entries cannot leak into os.Getenv or into a library
+// that reads the process environment directly; they exist only in this
+// Environment. Because the environment layer is schema-driven, EnvFile
+// requires Options.Universe, and a named file that does not exist is an error.
+// A dotenv file is part of Environment.Files, so a reload watches it.
+//
 // # Sensitive fields
 //
 // A field tagged mask:"true" is redacted in validation diagnostics. The mask
