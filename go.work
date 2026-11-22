@@ -57,6 +57,7 @@ use (
 	./kit/distributed
 	./kit/gormkit
 	./kit/oncetoken
+	./kit/validatorkit
 	./scripts/plugin-snapshots
 	./tests/composition
 	./transport/grpcx

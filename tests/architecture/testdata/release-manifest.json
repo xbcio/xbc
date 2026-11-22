@@ -57,6 +57,14 @@
       "imports": []
     },
     {
+      "path": "github.com/xbcio/xbc/kit/validatorkit",
+      "directory": "kit/validatorkit",
+      "tag_prefix": "kit/validatorkit/",
+      "wave": 0,
+      "release": true,
+      "imports": []
+    },
+    {
       "path": "github.com/xbcio/xbc/extensions/authentication/apikey",
       "directory": "extensions/authentication/apikey",
       "tag_prefix": "extensions/authentication/apikey/",
