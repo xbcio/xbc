@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	elastic "github.com/elastic/go-elasticsearch/v8"
 )
 
@@ -44,8 +45,13 @@ type Client struct {
 	probePolicy  string
 	bulkObserver BulkObserver
 	bulk         *asyncBulkIndexer
-	stopDone     chan struct{}
-	stopErr      error
+	// lazyBulk is set only by New. It lets the first bulk operation create the
+	// worker on demand, so a client used only for synchronous requests owns no
+	// worker goroutine. Definition-based construction keeps Start as the sole
+	// owner of the worker.
+	lazyBulk bool
+	stopDone chan struct{}
+	stopErr  error
 
 	// draining is set by drainClient and keeps a later Start from creating a
 	// fresh bulk worker.
@@ -264,10 +270,12 @@ type clientFactory interface {
 	New(normalizedConfig) (*Client, error)
 }
 
-type elasticFactory struct{}
+type elasticFactory struct {
+	transport transportOptions
+}
 
-func (elasticFactory) New(cfg normalizedConfig) (*Client, error) {
-	config, err := buildElasticConfig(cfg)
+func (factory elasticFactory) New(cfg normalizedConfig) (*Client, error) {
+	config, err := buildElasticConfig(cfg, factory.transport)
 	if err != nil {
 		return nil, err
 	}
@@ -285,11 +293,33 @@ func (elasticFactory) New(cfg normalizedConfig) (*Client, error) {
 	return newClient(raw, typed, cfg.Timeout), nil
 }
 
+// transportOptions carries the code-level transport hooks accepted by New.
+// Configuration files cannot express them, so Definition-based construction
+// always uses the package-built transport.
+type transportOptions struct {
+	roundTripper http.RoundTripper
+	logger       elastictransport.Logger
+	debugLogger  bool
+}
+
 // buildElasticConfig is the single mapping from XBC configuration to the
 // vendor configuration both clients use. Keeping it in one place is what makes
-// Raw and Typed share address, authentication, TLS, compression, and transport
-// behavior instead of drifting into two construction paths.
-func buildElasticConfig(cfg normalizedConfig) (elastic.Config, error) {
+// Raw and Typed share address, authentication, TLS, compression, logging, and
+// transport behavior instead of drifting into two construction paths.
+func buildElasticConfig(cfg normalizedConfig, options transportOptions) (elastic.Config, error) {
+	// A caller-supplied RoundTripper fully owns TLS and proxy behavior. Mixing
+	// it with configuration that would be silently discarded is a wiring
+	// mistake, so reject the combination instead of guessing which one wins.
+	if options.roundTripper != nil {
+		switch {
+		case cfg.TLS.CAFile != "":
+			return elastic.Config{}, errors.New("elasticsearch: a custom transport cannot be combined with tls.ca_file; the custom transport owns TLS")
+		case cfg.TLS.InsecureSkipVerify:
+			return elastic.Config{}, errors.New("elasticsearch: a custom transport cannot be combined with tls.insecure_skip_verify; the custom transport owns TLS")
+		case cfg.DisableProxy:
+			return elastic.Config{}, errors.New("elasticsearch: a custom transport cannot be combined with disable_proxy; the custom transport owns proxy behavior")
+		}
+	}
 	var ca []byte
 	if cfg.TLS.CAFile != "" {
 		contents, err := os.ReadFile(cfg.TLS.CAFile)
@@ -309,12 +339,18 @@ func buildElasticConfig(cfg normalizedConfig) (elastic.Config, error) {
 		Username:            cfg.Username,
 		Password:            cfg.Password,
 		CompressRequestBody: cfg.CompressRequestBody,
+		Logger:              options.logger,
+		EnableDebugLogger:   options.debugLogger,
 	}
-	if cfg.TLS.InsecureSkipVerify {
-		transport, err := insecureTransport(ca)
-		if err != nil {
-			return elastic.Config{}, err
-		}
+	if options.roundTripper != nil {
+		config.Transport = options.roundTripper
+		return config, nil
+	}
+	transport, err := explicitTransport(ca, cfg.TLS.InsecureSkipVerify, cfg.DisableProxy)
+	if err != nil {
+		return elastic.Config{}, err
+	}
+	if transport != nil {
 		config.Transport = transport
 	} else if ca != nil {
 		config.CACert = ca
@@ -322,30 +358,43 @@ func buildElasticConfig(cfg normalizedConfig) (elastic.Config, error) {
 	return config, nil
 }
 
-// insecureTransport builds the explicit TLS opt-in. It starts from
-// http.DefaultTransport so proxy, dial, and idle-connection behavior match the
-// default CACert path; the vendor client accepts this transport as-is. A
-// caller-supplied CA is still installed as the root pool, although
-// InsecureSkipVerify makes verification moot: loading it keeps a bad ca_file a
-// construction error rather than a silently ignored setting.
-func insecureTransport(ca []byte) (*http.Transport, error) {
+// explicitTransport builds the package-owned transport for configurations that
+// cannot use the vendor default: a disabled proxy, an explicit TLS opt-out, or
+// a custom CA alongside a disabled proxy. It starts from http.DefaultTransport
+// so dial and idle-connection behavior match the default path. Returning nil
+// means the caller keeps the vendor default, including its CACert handling. A
+// caller-supplied CA is still installed as the root pool when TLS verification
+// is disabled, although InsecureSkipVerify makes that pool moot: loading it
+// keeps a bad ca_file a construction error rather than a silently ignored
+// setting.
+func explicitTransport(ca []byte, insecureSkipVerify, disableProxy bool) (*http.Transport, error) {
+	if !insecureSkipVerify && !disableProxy {
+		return nil, nil
+	}
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return nil, errors.New("elasticsearch: default HTTP transport is not an *http.Transport")
 	}
 	transport := base.Clone()
-	if transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{}
-	} else {
-		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	if disableProxy {
+		transport.Proxy = nil
 	}
-	transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // explicit configuration opt-in for internal clusters
-	if len(ca) > 0 {
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(ca) {
-			return nil, errors.New("elasticsearch: tls ca_file contains no certificates")
+	if insecureSkipVerify || len(ca) > 0 {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		} else {
+			transport.TLSClientConfig = transport.TLSClientConfig.Clone()
 		}
-		transport.TLSClientConfig.RootCAs = pool
+		if insecureSkipVerify {
+			transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // explicit configuration opt-in for internal clusters
+		}
+		if len(ca) > 0 {
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(ca) {
+				return nil, errors.New("elasticsearch: tls ca_file contains no certificates")
+			}
+			transport.TLSClientConfig.RootCAs = pool
+		}
 	}
 	return transport, nil
 }

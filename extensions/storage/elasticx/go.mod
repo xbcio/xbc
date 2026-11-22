@@ -8,13 +8,13 @@ go 1.26.0
 require github.com/elastic/go-elasticsearch/v8 v8.19.1
 
 require (
+	github.com/elastic/elastic-transport-go/v8 v8.8.0
 	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/reliability/health v0.1.0
 )
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/elastic/elastic-transport-go/v8 v8.8.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect

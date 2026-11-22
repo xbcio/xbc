@@ -49,12 +49,14 @@
 // vendor's untyped generated API, and Client.Typed is the same escape hatch to
 // its typed API; neither applies the timeout Do applies. Both are built during
 // construction from one configuration -- addresses, authentication, TLS,
-// compression, and transport -- so the two cannot drift apart. Bulk admission
-// is bounded and uses the configured
-// block or reject policy; Flush is a barrier for previously admitted items.
-// Drain stops bulk admission and waits for every admitted item to be flushed,
-// leaving the transport open; Stop finishes that flush if Drain did not, then
-// closes the transport, including the typed client's.
+// compression, logging, and transport -- so the two cannot drift apart. Bulk
+// admission is bounded and uses the configured block or reject policy; Flush is
+// a barrier for previously admitted items. A Client built by New starts its
+// bulk worker on the first Add or Flush, so a client used only for synchronous
+// requests owns no worker goroutine; a Definition-based client starts its
+// worker at Start. Drain stops bulk admission and waits for every admitted item
+// to be flushed, leaving the transport open; Stop finishes that flush if Drain
+// did not, then closes the transport, including the typed client's.
 //
 // # Transport and TLS
 //
@@ -64,6 +66,14 @@
 // it builds a dedicated transport from http.DefaultTransport rather than
 // silently weakening the default path. compress_request_body gzips request
 // bodies and is off unless a deployment asks for it.
+//
+// The package-built transport otherwise follows http.DefaultTransport,
+// including its proxy environment variables (HTTP_PROXY, HTTPS_PROXY,
+// NO_PROXY). Set disable_proxy for an internal cluster that must be reached
+// directly. A program that needs full control can instead take ownership of the
+// transport with New's WithTransport option; TLS and proxy configuration are
+// then rejected instead of silently ignored, because the caller's
+// http.RoundTripper owns those behaviors.
 //
 // Supply API keys, passwords, and private certificate authorities through
 // secret-backed configuration. Credentials in node URLs are rejected, and this
@@ -76,6 +86,16 @@
 // go-elasticsearch sends Basic authentication only when both fields are
 // non-empty, so that exception accepts the username without using it as a
 // credential; requests stay unauthenticated.
+//
+// # Logging
+//
+// Logging is off by default and is configured only in code, through New's
+// options. WithTransportLogger installs go-elasticsearch's request/response
+// logger so a program can route round-trip records into its own logging
+// system. WithDebugLogger enables the vendor's connection-management debug
+// logger, which writes to stdout and lives in a process-wide vendor global.
+// Configuration files carry neither setting, and Definition-based construction
+// does not accept code options.
 //
 // # Readiness
 //

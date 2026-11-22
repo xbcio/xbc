@@ -53,6 +53,9 @@ func TestNormalizeConfigAppliesSecurityDefaults(t *testing.T) {
 	if normalized.TLS.InsecureSkipVerify {
 		t.Fatal("TLS.InsecureSkipVerify = true, want false by default")
 	}
+	if normalized.DisableProxy {
+		t.Fatal("DisableProxy = true, want the proxy environment to be honored by default")
+	}
 }
 
 func TestConfigValidateAcceptsUsernameWithoutPasswordOnlyWhenAllowed(t *testing.T) {

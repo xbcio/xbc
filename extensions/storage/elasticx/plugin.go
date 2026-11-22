@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
+	"github.com/elastic/elastic-transport-go/v8/elastictransport"
 	"github.com/xbcio/xbc/extensions/reliability/health"
 	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
@@ -18,13 +20,43 @@ const Key plugin.Key = "elasticsearch"
 type Option func(*clientOptions)
 
 type clientOptions struct {
-	bulkObserver BulkObserver
+	bulkObserver    BulkObserver
+	transport       http.RoundTripper
+	transportLogger elastictransport.Logger
+	debugLogger     bool
 }
 
 // WithBulkObserver installs an instance-wide observer before the bulk worker
 // starts. Per-item observers can still be supplied on BulkItem.
 func WithBulkObserver(observer BulkObserver) Option {
 	return func(options *clientOptions) { options.bulkObserver = observer }
+}
+
+// WithTransport installs a caller-supplied http.RoundTripper for every request,
+// including Raw and Typed. The transport fully owns TLS and proxy behavior, so
+// New rejects it together with tls.ca_file, tls.insecure_skip_verify, or
+// disable_proxy rather than silently ignoring settings the transport would
+// bypass. It applies only to clients created with New.
+func WithTransport(transport http.RoundTripper) Option {
+	return func(options *clientOptions) { options.transport = transport }
+}
+
+// WithTransportLogger installs go-elasticsearch's request/response logger,
+// letting a program route round-trip records into its own logging system. It is
+// code-level only and never read from configuration. Passing nil (the default)
+// disables round-trip logging. New applies it to Raw and Typed alike; the
+// vendor may call the logger concurrently from request paths.
+func WithTransportLogger(logger elastictransport.Logger) Option {
+	return func(options *clientOptions) { options.transportLogger = logger }
+}
+
+// WithDebugLogger enables go-elasticsearch's connection-management debug
+// logger, which writes to stdout. The vendor transport stores it in a
+// process-wide variable, so enabling it here affects every vendor client in the
+// process. It is off by default and code-level only, and applies only to
+// clients created with New.
+func WithDebugLogger() Option {
+	return func(options *clientOptions) { options.debugLogger = true }
 }
 
 var definition = plugin.DefineConfigured(
@@ -66,8 +98,11 @@ func prepareConfig(config Config) (Config, error) {
 }
 
 // New constructs a ready standalone Client with the same defaults, validation,
-// health probe, and bounded bulk worker as Definition-based construction. Close
-// the client when it is no longer needed.
+// and health probe as Definition-based construction. Its bounded bulk worker
+// starts on the first Add or Flush, so a client used only for synchronous
+// requests owns no worker goroutine; Close stops the worker if it started and
+// is a no-op for the worker otherwise. Close the client when it is no longer
+// needed.
 func New(config Config, options ...Option) (*Client, error) {
 	normalized, err := normalizeConfig(config)
 	if err != nil {
@@ -79,7 +114,11 @@ func New(config Config, options ...Option) (*Client, error) {
 			option(&settings)
 		}
 	}
-	client, err := newConfiguredClient(normalized, elasticFactory{}, settings.bulkObserver)
+	client, err := newConfiguredClient(normalized, elasticFactory{transport: transportOptions{
+		roundTripper: settings.transport,
+		logger:       settings.transportLogger,
+		debugLogger:  settings.debugLogger,
+	}}, settings.bulkObserver)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +126,7 @@ func New(config Config, options ...Option) (*Client, error) {
 		return nil, errors.Join(err, client.closeTransport(context.Background()))
 	}
 	client.lifecycleMu.Lock()
-	client.bulk = newAsyncBulkIndexer(client, client.bulkConfig, client.bulkObserver)
+	client.lazyBulk = true
 	client.lifecycleMu.Unlock()
 	return client, nil
 }
@@ -214,7 +253,9 @@ func stopClient(client *Client, ctx context.Context) error {
 	return client.Close(ctx)
 }
 
-// SetBulkObserver installs an instance-wide observer before Start. It is useful
+// SetBulkObserver installs an instance-wide observer before the bulk worker
+// exists. For a Definition-based client that means before Start; for a New
+// client, before the first Add or Flush lazily creates the worker. It is useful
 // when a program constructs and wires the primary value itself; per-item
 // observers remain available on BulkItem.
 func (client *Client) SetBulkObserver(observer BulkObserver) error {
@@ -230,25 +271,48 @@ func (client *Client) SetBulkObserver(observer BulkObserver) error {
 	return nil
 }
 
-// Add submits one item to this client's bounded bulk worker.
+// bulkForUse returns the bulk worker, creating it on demand for a client built
+// by New. Creation happens at most once, under lifecycleMu, and never after
+// Drain, Close, or Stop has begun. Definition-based clients keep Start as the
+// sole owner and report ErrBulkClosed until it runs.
+func (client *Client) bulkForUse() (*asyncBulkIndexer, error) {
+	if client == nil {
+		return nil, ErrBulkClosed
+	}
+	client.lifecycleMu.Lock()
+	defer client.lifecycleMu.Unlock()
+	if client.bulk != nil {
+		return client.bulk, nil
+	}
+	if !client.lazyBulk || client.draining || client.stopDone != nil || client.closed.Load() {
+		return nil, ErrBulkClosed
+	}
+	client.bulk = newAsyncBulkIndexer(client, client.bulkConfig, client.bulkObserver)
+	return client.bulk, nil
+}
+
+// Add submits one item to this client's bounded bulk worker. A client created
+// by New starts its worker on the first call.
 func (client *Client) Add(ctx context.Context, item BulkItem) error {
-	bulk := client.currentBulk()
-	if bulk == nil {
-		return ErrBulkClosed
+	bulk, err := client.bulkForUse()
+	if err != nil {
+		return err
 	}
 	return bulk.Add(ctx, item)
 }
 
-// Flush waits for every item admitted before the call to receive a result.
+// Flush waits for every item admitted before the call to receive a result. A
+// client created by New starts its worker on the first call.
 func (client *Client) Flush(ctx context.Context) error {
-	bulk := client.currentBulk()
-	if bulk == nil {
-		return ErrBulkClosed
+	bulk, err := client.bulkForUse()
+	if err != nil {
+		return err
 	}
 	return bulk.Flush(ctx)
 }
 
-// Stats returns a lock-free snapshot of this client's bulk worker counters.
+// Stats returns a lock-free snapshot of this client's bulk worker counters. It
+// reports zeros while a New client's worker has not started yet.
 func (client *Client) Stats() BulkStats {
 	bulk := client.currentBulk()
 	if bulk == nil {

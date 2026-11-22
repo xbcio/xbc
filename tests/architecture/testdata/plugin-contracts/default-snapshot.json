@@ -278,6 +278,7 @@
         "Password": "",
         "AllowEmptyPassword": false,
         "CompressRequestBody": false,
+        "DisableProxy": false,
         "TLS": {
           "CAFile": "",
           "InsecureSkipVerify": false

@@ -51,6 +51,14 @@ type Config struct {
 	// may reject a compressed body.
 	CompressRequestBody bool `yaml:"compress_request_body" default:"false"`
 
+	// DisableProxy stops the package-built HTTP transport from consulting the
+	// process proxy environment (HTTP_PROXY, HTTPS_PROXY, NO_PROXY). It exists
+	// for an internal cluster that must be reached directly, where a proxy
+	// configured for outbound traffic would otherwise intercept the
+	// connection. It has no effect on a caller-supplied transport; New rejects
+	// the combination instead of silently ignoring the setting.
+	DisableProxy bool `yaml:"disable_proxy" default:"false"`
+
 	TLS         TLSConfig     `yaml:"tls"`
 	Timeout     time.Duration `yaml:"timeout" default:"10s" validate:"gt=0"`
 	HealthProbe bool          `yaml:"health_probe" default:"true"`
