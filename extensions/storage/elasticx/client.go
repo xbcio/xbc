@@ -2,6 +2,7 @@ package elasticx
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -25,9 +26,11 @@ type clientBackend interface {
 }
 
 // Client is XBC's timeout-aware Elasticsearch client. Do is the stable primary
-// API; Raw is an explicit escape hatch to go-elasticsearch's full generated API.
+// API; Raw is an explicit escape hatch to go-elasticsearch's full untyped
+// generated API, and Typed is the same escape hatch to its typed API.
 type Client struct {
 	raw     *elastic.Client
+	typed   *elastic.TypedClient
 	backend clientBackend
 	timeout time.Duration
 
@@ -38,6 +41,7 @@ type Client struct {
 	lifecycleMu  sync.Mutex
 	bulkConfig   BulkConfig
 	healthProbe  bool
+	probePolicy  string
 	bulkObserver BulkObserver
 	bulk         *asyncBulkIndexer
 	stopDone     chan struct{}
@@ -85,17 +89,30 @@ type Request struct {
 	Header http.Header
 }
 
-func newClient(raw *elastic.Client, timeout time.Duration) *Client {
-	return &Client{raw: raw, backend: raw, timeout: timeout}
+func newClient(raw *elastic.Client, typed *elastic.TypedClient, timeout time.Duration) *Client {
+	return &Client{raw: raw, typed: typed, backend: raw, timeout: timeout}
 }
 
 func newClientWithBackend(backend clientBackend, timeout time.Duration) *Client {
 	return &Client{backend: backend, timeout: timeout}
 }
 
-// Raw returns the vendor client. Calls made through Raw do not receive the
-// timeout applied by Do, so callers must provide bounded contexts themselves.
+// Raw returns the vendor untyped client. Calls made through Raw do not receive
+// the timeout applied by Do, so callers must provide bounded contexts
+// themselves.
 func (c *Client) Raw() *elastic.Client { return c.raw }
+
+// Typed returns the vendor typed client. It is built during construction from
+// the same addresses, authentication, TLS, and transport configuration as Raw,
+// so its configuration errors surface there and closing the Client closes it.
+// Typed returns nil when the Client was built over a caller-supplied backend,
+// which only tests do.
+func (c *Client) Typed() *elastic.TypedClient {
+	if c == nil {
+		return nil
+	}
+	return c.typed
+}
 
 // Do performs a request against the configured cluster. Callers own and must
 // close a successful response body.
@@ -187,9 +204,14 @@ func (c *Client) closeTransport(ctx context.Context) error {
 	}
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
+		var errs []error
 		if c.backend != nil {
-			c.closeErr = c.backend.Close(ctx)
+			errs = append(errs, c.backend.Close(ctx))
 		}
+		if c.typed != nil {
+			errs = append(errs, c.typed.Close(ctx))
+		}
+		c.closeErr = errors.Join(errs...)
 	})
 	return c.closeErr
 }
@@ -245,28 +267,85 @@ type clientFactory interface {
 type elasticFactory struct{}
 
 func (elasticFactory) New(cfg normalizedConfig) (*Client, error) {
+	config, err := buildElasticConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := elastic.NewClient(config)
+	if err != nil {
+		return nil, fmt.Errorf("elasticsearch: create client: %w", err)
+	}
+	typed, err := elastic.NewTypedClient(config)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("elasticsearch: create typed client: %w", err),
+			raw.Close(context.Background()),
+		)
+	}
+	return newClient(raw, typed, cfg.Timeout), nil
+}
+
+// buildElasticConfig is the single mapping from XBC configuration to the
+// vendor configuration both clients use. Keeping it in one place is what makes
+// Raw and Typed share address, authentication, TLS, compression, and transport
+// behavior instead of drifting into two construction paths.
+func buildElasticConfig(cfg normalizedConfig) (elastic.Config, error) {
 	var ca []byte
 	if cfg.TLS.CAFile != "" {
 		contents, err := os.ReadFile(cfg.TLS.CAFile)
 		if err != nil {
-			return nil, fmt.Errorf("elasticsearch: read tls ca_file: %w", err)
+			return elastic.Config{}, fmt.Errorf("elasticsearch: read tls ca_file: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(contents) {
-			return nil, errors.New("elasticsearch: tls ca_file contains no certificates")
+			return elastic.Config{}, errors.New("elasticsearch: tls ca_file contains no certificates")
 		}
 		ca = contents
 	}
-	raw, err := elastic.NewClient(elastic.Config{
-		Addresses: cfg.Addresses,
-		CloudID:   cfg.CloudID,
-		APIKey:    cfg.APIKey,
-		Username:  cfg.Username,
-		Password:  cfg.Password,
-		CACert:    ca,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("elasticsearch: create client: %w", err)
+	config := elastic.Config{
+		Addresses:           cfg.Addresses,
+		CloudID:             cfg.CloudID,
+		APIKey:              cfg.APIKey,
+		Username:            cfg.Username,
+		Password:            cfg.Password,
+		CompressRequestBody: cfg.CompressRequestBody,
 	}
-	return newClient(raw, cfg.Timeout), nil
+	if cfg.TLS.InsecureSkipVerify {
+		transport, err := insecureTransport(ca)
+		if err != nil {
+			return elastic.Config{}, err
+		}
+		config.Transport = transport
+	} else if ca != nil {
+		config.CACert = ca
+	}
+	return config, nil
+}
+
+// insecureTransport builds the explicit TLS opt-in. It starts from
+// http.DefaultTransport so proxy, dial, and idle-connection behavior match the
+// default CACert path; the vendor client accepts this transport as-is. A
+// caller-supplied CA is still installed as the root pool, although
+// InsecureSkipVerify makes verification moot: loading it keeps a bad ca_file a
+// construction error rather than a silently ignored setting.
+func insecureTransport(ca []byte) (*http.Transport, error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("elasticsearch: default HTTP transport is not an *http.Transport")
+	}
+	transport := base.Clone()
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	} else {
+		transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+	}
+	transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // explicit configuration opt-in for internal clusters
+	if len(ca) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(ca) {
+			return nil, errors.New("elasticsearch: tls ca_file contains no certificates")
+		}
+		transport.TLSClientConfig.RootCAs = pool
+	}
+	return transport, nil
 }

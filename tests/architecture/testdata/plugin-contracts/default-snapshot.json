@@ -276,11 +276,15 @@
         "APIKey": "",
         "Username": "",
         "Password": "",
+        "AllowEmptyPassword": false,
+        "CompressRequestBody": false,
         "TLS": {
-          "CAFile": ""
+          "CAFile": "",
+          "InsecureSkipVerify": false
         },
         "Timeout": 10000000000,
         "HealthProbe": true,
+        "ProbePolicy": "fail",
         "Bulk": {
           "QueueCapacity": 1000,
           "Backpressure": "block",

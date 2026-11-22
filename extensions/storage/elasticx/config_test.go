@@ -36,6 +36,42 @@ func TestConfigValidateAcceptsCloudIDAndSupportedBackpressure(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigAppliesSecurityDefaults(t *testing.T) {
+	normalized, err := normalizeConfig(Config{Addresses: []string{"http://localhost:9200"}})
+	if err != nil {
+		t.Fatalf("normalizeConfig() error = %v", err)
+	}
+	if normalized.ProbePolicy != ProbePolicyFail {
+		t.Fatalf("ProbePolicy = %q, want %q", normalized.ProbePolicy, ProbePolicyFail)
+	}
+	if normalized.AllowEmptyPassword {
+		t.Fatal("AllowEmptyPassword = true, want false by default")
+	}
+	if normalized.CompressRequestBody {
+		t.Fatal("CompressRequestBody = true, want false by default")
+	}
+	if normalized.TLS.InsecureSkipVerify {
+		t.Fatal("TLS.InsecureSkipVerify = true, want false by default")
+	}
+}
+
+func TestConfigValidateAcceptsUsernameWithoutPasswordOnlyWhenAllowed(t *testing.T) {
+	config := Config{Addresses: []string{"http://localhost:9200"}, Username: "service"}
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "configured together") {
+		t.Fatalf("Validate() error = %v, want the pair rule to reject a username alone", err)
+	}
+
+	config.AllowEmptyPassword = true
+	if err := config.Validate(); err != nil {
+		t.Fatalf("Validate() with allow_empty_password error = %v", err)
+	}
+
+	passwordOnly := Config{Addresses: []string{"http://localhost:9200"}, Password: "secret", AllowEmptyPassword: true}
+	if err := passwordOnly.Validate(); err == nil || !strings.Contains(err.Error(), "configured together") {
+		t.Fatalf("Validate() error = %v, want allow_empty_password not to accept a password alone", err)
+	}
+}
+
 func TestConfigValidationRejectsInvalidRelationships(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -51,10 +87,12 @@ func TestConfigValidationRejectsInvalidRelationships(t *testing.T) {
 		{name: "username only", config: Config{Addresses: []string{"http://localhost:9200"}, Username: "service"}, want: "configured together"},
 		{name: "password only", config: Config{Addresses: []string{"http://localhost:9200"}, Password: "secret"}, want: "configured together"},
 		{name: "authentication conflict", config: Config{Addresses: []string{"http://localhost:9200"}, APIKey: "api-secret", Username: "service", Password: "basic-secret"}, want: "mutually exclusive"},
+		{name: "empty password authentication conflict", config: Config{Addresses: []string{"http://localhost:9200"}, APIKey: "api-secret", Username: "service", AllowEmptyPassword: true}, want: "mutually exclusive"},
 		{name: "timeout", config: Config{Addresses: []string{"http://localhost:9200"}, Timeout: -time.Second}, want: "timeout must be positive"},
 		{name: "queue", config: Config{Addresses: []string{"http://localhost:9200"}, Bulk: BulkConfig{QueueCapacity: -1}}, want: "limits must be positive"},
 		{name: "flush interval", config: Config{Addresses: []string{"http://localhost:9200"}, Bulk: BulkConfig{FlushInterval: -time.Second}}, want: "limits must be positive"},
 		{name: "backpressure", config: Config{Addresses: []string{"http://localhost:9200"}, Bulk: BulkConfig{Backpressure: "drop"}}, want: "unsupported bulk backpressure"},
+		{name: "probe policy", config: Config{Addresses: []string{"http://localhost:9200"}, ProbePolicy: "ignore"}, want: "unsupported probe policy"},
 	}
 
 	for _, test := range tests {

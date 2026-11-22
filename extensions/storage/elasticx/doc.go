@@ -45,16 +45,37 @@
 //
 // The composition root includes both elasticx.Bundle() and the consumer's
 // Bundle. Client.Do applies the configured timeout, and callers must close every
-// successful response body. Client.Raw is an explicit escape hatch that does
-// not apply that timeout. Bulk admission is bounded and uses the configured
+// successful response body. Client.Raw is an explicit escape hatch to the
+// vendor's untyped generated API, and Client.Typed is the same escape hatch to
+// its typed API; neither applies the timeout Do applies. Both are built during
+// construction from one configuration -- addresses, authentication, TLS,
+// compression, and transport -- so the two cannot drift apart. Bulk admission
+// is bounded and uses the configured
 // block or reject policy; Flush is a barrier for previously admitted items.
 // Drain stops bulk admission and waits for every admitted item to be flushed,
 // leaving the transport open; Stop finishes that flush if Drain did not, then
-// closes the transport.
+// closes the transport, including the typed client's.
+//
+// # Transport and TLS
+//
+// tls.ca_file supplies the PEM bundle HTTPS nodes are verified against. TLS
+// verification is on by default; tls.insecure_skip_verify is the explicit
+// opt-in for an internal cluster with a self-signed certificate, and enabling
+// it builds a dedicated transport from http.DefaultTransport rather than
+// silently weakening the default path. compress_request_body gzips request
+// bodies and is off unless a deployment asks for it.
 //
 // Supply API keys, passwords, and private certificate authorities through
 // secret-backed configuration. Credentials in node URLs are rejected, and this
 // package does not include configured credentials in its own errors or logs.
+// Username and password must be configured together: a password-only section
+// cannot authenticate, and a username-only one is usually a secret-injection
+// failure. The one explicit exception is allow_empty_password, which accepts a
+// username without a password for clusters that need no authentication but
+// whose shared configuration still carries a service username. Note that
+// go-elasticsearch sends Basic authentication only when both fields are
+// non-empty, so that exception accepts the username without using it as a
+// credential; requests stay unauthenticated.
 //
 // # Readiness
 //
@@ -69,4 +90,11 @@
 // An instance configured with health_probe: false contributes nothing. That flag
 // already suppresses the Init-time probe, and giving it a second, narrower
 // meaning for readiness would make it unpredictable.
+//
+// probe_policy decides what a failed Init-time probe means. The default "fail"
+// aborts construction, which surfaces a wrong address or credential before the
+// process serves traffic. "warn" logs the failure and lets the instance start,
+// for a cluster whose unavailability must not stop the process; readiness then
+// keeps reporting the outage. The policy affects only the startup probe and has
+// no effect when health_probe is false.
 package elasticx

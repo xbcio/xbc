@@ -209,3 +209,51 @@ func TestElasticFactoryUsesConfiguredCertificateAuthority(t *testing.T) {
 		t.Fatal("New() with missing CA file unexpectedly succeeded")
 	}
 }
+
+// TestElasticFactoryTLSVerificationDefaultAndExplicitOptOut pins the security
+// default: a self-signed cluster is rejected unless insecure_skip_verify is
+// explicitly enabled, and the opt-out covers both vendor clients because they
+// share one transport configuration.
+func TestElasticFactoryTLSVerificationDefaultAndExplicitOptOut(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("X-Elastic-Product", "Elasticsearch")
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{}`)
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := validConfig(server.URL)
+	normalized, err := normalizeConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := (elasticFactory{}).New(normalized)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := client.Health(context.Background()); err == nil {
+		t.Fatal("Health() against a self-signed server succeeded without insecure_skip_verify")
+	}
+	_ = client.Close(context.Background())
+
+	cfg.TLS.InsecureSkipVerify = true
+	normalized, err = normalizeConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err = (elasticFactory{}).New(normalized)
+	if err != nil {
+		t.Fatalf("New() with insecure_skip_verify error = %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+
+	if err := client.Health(context.Background()); err != nil {
+		t.Fatalf("Health() with insecure_skip_verify error = %v", err)
+	}
+	if client.Typed() == nil {
+		t.Fatal("Typed() = nil, want the typed client to share the insecure transport")
+	}
+	if _, err := client.Typed().Core.Info().Do(context.Background()); err != nil {
+		t.Fatalf("typed Info() with insecure_skip_verify error = %v", err)
+	}
+}

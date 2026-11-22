@@ -97,6 +97,47 @@ func TestConfiguredClientCanDisableHealthProbe(t *testing.T) {
 	host.waitTasks(t)
 }
 
+func TestNewSkipsStartupProbeWhenHealthProbeDisabled(t *testing.T) {
+	client, err := New(Config{
+		Addresses:   []string{"http://127.0.0.1:1"},
+		HealthProbe: false,
+		ProbePolicy: ProbePolicyFail,
+	})
+	if err != nil {
+		t.Fatalf("New() with health_probe disabled error = %v", err)
+	}
+	if err := client.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestProbePolicyControlsWhetherStartupFailureBlocks(t *testing.T) {
+	tests := []struct {
+		policy  string
+		wantErr bool
+	}{
+		{policy: ProbePolicyFail, wantErr: true},
+		{policy: ProbePolicyWarn, wantErr: false},
+	}
+	for _, test := range tests {
+		t.Run(test.policy, func(t *testing.T) {
+			client, err := New(Config{
+				Addresses:   []string{"http://127.0.0.1:1"},
+				HealthProbe: true,
+				ProbePolicy: test.policy,
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("New() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if client != nil {
+				if closeErr := client.Close(context.Background()); closeErr != nil {
+					t.Fatalf("Close() error = %v", closeErr)
+				}
+			}
+		})
+	}
+}
+
 func TestConstructionAndInitFailuresCleanUpOwnedTransport(t *testing.T) {
 	factoryFailure := errors.New("factory failed")
 	backend := &stubBackend{}

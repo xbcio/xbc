@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/xbcio/xbc/extensions/reliability/health"
+	"github.com/xbcio/xbc/log"
 	"github.com/xbcio/xbc/plugin"
 )
 
@@ -112,6 +113,7 @@ func newConfiguredClient(config normalizedConfig, factory clientFactory, observe
 	client.bulkConfig = config.Bulk
 	client.bulkObserver = observer
 	client.healthProbe = config.HealthProbe
+	client.probePolicy = config.ProbePolicy
 	client.lifecycleMu.Unlock()
 	return client, nil
 }
@@ -132,10 +134,14 @@ func initializeClient(client *Client, ctx context.Context) error {
 	}
 	client.lifecycleMu.Lock()
 	healthProbe := client.healthProbe
+	probePolicy := client.probePolicy
 	client.lifecycleMu.Unlock()
 	if healthProbe {
 		if err := client.Health(ctx); err != nil {
-			return err
+			if probePolicy != ProbePolicyWarn {
+				return err
+			}
+			log.TWarn(ctx, "elasticsearch: startup health probe failed", "error", err)
 		}
 	}
 	return ctx.Err()
