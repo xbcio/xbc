@@ -46,24 +46,76 @@ m = (r.sub == p.sub || g(r.sub, p.sub)) && keyMatch2(r.obj, p.obj) && regexMatch
 
 var errReadOnlyPolicySource = errors.New("casbin: configured policy source is read-only; mutate in memory with autosave disabled or update the source and call LoadPolicy")
 
-func buildSourceEnforcer(cfg normalizedConfig) (*casbinlib.SyncedEnforcer, error) {
+// buildSourceEnforcer builds an enforcer over an inline or file policy source.
+// The enforcer is constructed without the adapter, so matching functions can
+// be registered before the first policy load builds the role links they must
+// govern.
+func buildSourceEnforcer(cfg normalizedConfig, matching []namedMatchingFunc) (*casbinlib.SyncedEnforcer, error) {
 	m, err := loadAndValidateModel(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	enforcer, err := casbinlib.NewSyncedEnforcer(m, &sourceAdapter{
+	enforcer, err := casbinlib.NewSyncedEnforcer(m)
+	if err != nil {
+		return nil, fmt.Errorf("casbin: build enforcer: %w", err)
+	}
+	// AddNamedMatchingFunc is promoted from the embedded Enforcer and takes no
+	// SyncedEnforcer lock, which is sound only here: the enforcer is still
+	// owned by this goroutine and is not published before construction ends.
+	if err := addMatchingFuncs(enforcer, matching); err != nil {
+		return nil, err
+	}
+	enforcer.SetAdapter(&sourceAdapter{
 		inline: cfg.policy,
 		file:   cfg.policyFile,
 	})
-	if err != nil {
-		return nil, fmt.Errorf("casbin: load policy: %w", err)
-	}
 	// Configuration sources are deliberately read-only. Business code may
 	// still use the SyncedEnforcer mutation API for in-memory policy changes;
 	// explicit LoadPolicy atomically restores the configured source.
 	enforcer.EnableAutoSave(false)
+	if err := enforcer.LoadPolicy(); err != nil {
+		return nil, fmt.Errorf("casbin: load policy: %w", err)
+	}
 	return enforcer, nil
+}
+
+// buildInjectedEnforcer attaches an externally owned adapter supplied through
+// WithAdapter and performs the initial load before returning. Direct
+// construction has no XBC Migrate stage to wait for and no mandatory Start, so
+// deferring the load would leave Enforce answering from an empty policy.
+// Matching functions are registered before that load for the same reason as in
+// buildSourceEnforcer.
+func buildInjectedEnforcer(cfg normalizedConfig, adapter persist.Adapter, autoSave bool, matching []namedMatchingFunc) (*casbinlib.SyncedEnforcer, error) {
+	m, err := loadAndValidateModel(cfg)
+	if err != nil {
+		return nil, err
+	}
+	enforcer, err := casbinlib.NewSyncedEnforcer(m)
+	if err != nil {
+		return nil, fmt.Errorf("casbin: build enforcer: %w", err)
+	}
+	if err := addMatchingFuncs(enforcer, matching); err != nil {
+		return nil, err
+	}
+	enforcer.SetAdapter(adapter)
+	enforcer.EnableAutoSave(autoSave)
+	if err := enforcer.LoadPolicy(); err != nil {
+		return nil, fmt.Errorf("casbin: initial adapter policy load: %w", err)
+	}
+	return enforcer, nil
+}
+
+// addMatchingFuncs registers role matching functions on the enforcer's role
+// managers. Casbin reports false when the model defines no role manager for
+// ptype; that is a configuration error, not a silent no-op.
+func addMatchingFuncs(enforcer *casbinlib.SyncedEnforcer, matching []namedMatchingFunc) error {
+	for _, entry := range matching {
+		if !enforcer.AddNamedMatchingFunc(entry.ptype, entry.name, entry.fn) {
+			return fmt.Errorf("casbin: role matching function %q: model has no role definition %q", entry.name, entry.ptype)
+		}
+	}
+	return nil
 }
 
 // buildProviderEnforcer deliberately constructs the enforcer without passing

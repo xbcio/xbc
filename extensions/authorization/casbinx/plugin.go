@@ -52,8 +52,11 @@ type runtimeState struct {
 // Plugin owns a synchronized Casbin enforcer: the model, the policy source or
 // external adapter, the optional watcher, periodic reload, and the
 // protocol-neutral rbac.Backend and EnforcerProvider exports. Inline and file
-// policies are loaded during construction. External adapters are attached
-// during construction but first loaded in Start, after XBC's migration stage.
+// policies are loaded during construction. External adapters attached through
+// a configured provider are attached during construction but first loaded in
+// Start, after XBC's migration stage; an adapter supplied to New through
+// WithAdapter is loaded before New returns because direct construction has no
+// migration stage.
 type Plugin struct {
 	state *runtimeState
 
@@ -97,7 +100,7 @@ func plan(cfg Config) (plugin.Plan[*Plugin], error) {
 	}
 	if !normalized.adapter.enabled() {
 		return plugin.PlanOf(plugin.Inputs(), func(plugin.BuildContext) (*Plugin, error) {
-			return newSourcePlugin(normalized)
+			return newSourcePlugin(normalized, nil)
 		}), nil
 	}
 
@@ -117,22 +120,53 @@ func plan(cfg Config) (plugin.Plan[*Plugin], error) {
 	}), nil
 }
 
-// New constructs a directly usable Plugin from cfg. Inline/file models and
-// policies are loaded immediately. Configured providers require graph-backed
-// Definition/Bundle composition and are intentionally unavailable here.
-func New(cfg Config) (*Plugin, error) {
-	normalized, err := normalizeConfig(cfg)
+// New constructs a directly usable Plugin from cfg and optional
+// construction-time settings. Inline/file models and policies are loaded
+// immediately. An adapter supplied through WithAdapter is attached and loaded
+// immediately as well, and role matching functions registered through
+// WithRoleMatchingFunc are in force for that first load. Configured providers
+// require graph-backed Definition/Bundle composition and are intentionally
+// unavailable here.
+func New(cfg Config, opts ...Option) (*Plugin, error) {
+	settings := options{}
+	for _, option := range opts {
+		if option != nil {
+			option(&settings)
+		}
+	}
+	if err := settings.validate(); err != nil {
+		return nil, err
+	}
+
+	normalized, err := normalizeConfigWithAdapter(cfg, settings.adapterSet)
 	if err != nil {
 		return nil, err
+	}
+	if settings.adapterSet && normalized.adapter.enabled() {
+		return nil, fmt.Errorf("casbin: WithAdapter is mutually exclusive with the configured adapter provider %s", providerIdentity(normalized.adapter))
 	}
 	if normalized.adapter.enabled() {
 		return nil, fmt.Errorf("casbin: adapter provider %s requires Definition/Bundle composition; New cannot resolve configured providers", providerIdentity(normalized.adapter))
 	}
-	return newSourcePlugin(normalized)
+	if settings.adapterSet {
+		return newInjectedPlugin(normalized, settings)
+	}
+	return newSourcePlugin(normalized, settings.matching)
 }
 
-func newSourcePlugin(cfg normalizedConfig) (*Plugin, error) {
-	enforcer, err := buildSourceEnforcer(cfg)
+func newSourcePlugin(cfg normalizedConfig, matching []namedMatchingFunc) (*Plugin, error) {
+	enforcer, err := buildSourceEnforcer(cfg, matching)
+	if err != nil {
+		return nil, err
+	}
+	return newPlugin(cfg, enforcer, nil), nil
+}
+
+// newInjectedPlugin builds the direct-construction variant backed by an
+// adapter supplied as a value. The plugin owns no adapter, so it records no
+// provider reference and Start neither reopens it nor reloads it.
+func newInjectedPlugin(cfg normalizedConfig, settings options) (*Plugin, error) {
+	enforcer, err := buildInjectedEnforcer(cfg, settings.adapter, settings.autoSaveEnabled(), settings.matching)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +197,7 @@ func newPlugin(cfg normalizedConfig, enforcer *casbinlib.SyncedEnforcer, watcher
 			cfg:            cfg,
 			enforcer:       enforcer,
 			watcherFactory: watcherFactory,
-			capabilities:   describeCapabilities(cfg, enforcer),
+			capabilities:   describeCapabilities(enforcer),
 			logger:         corelog.Nop(),
 		},
 		stopDone: make(chan struct{}),
@@ -195,9 +229,11 @@ func Definition() plugin.Definition { return definition }
 // bundle.
 func Bundle() plugin.Bundle { return bundle }
 
-// start attaches the optional watcher, performs the first external-adapter
-// load, and begins managed periodic reload when configured. It stores only
-// values derived from ctx and never retains the *plugin.Context itself.
+// start attaches the optional watcher, performs the first configured-provider
+// adapter load, and begins managed periodic reload when configured. A
+// WithAdapter adapter was already loaded by New, so Start does not load it
+// again. It stores only values derived from ctx and never retains the
+// *plugin.Context itself.
 func (p *Plugin) start(ctx *plugin.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("casbin: Start requires a non-nil plugin context")

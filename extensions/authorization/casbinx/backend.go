@@ -43,7 +43,12 @@ func (p *Plugin) Capabilities() rbac.Capabilities {
 // describeCapabilities derives the snapshot Capabilities reports. It runs
 // during construction, while the enforcer is still owned by exactly one
 // goroutine, and must never be called from a request path.
-func describeCapabilities(cfg normalizedConfig, enforcer *casbinlib.SyncedEnforcer) rbac.Capabilities {
+//
+// The mutation flags describe the adapter actually attached, not the path that
+// attached it: the built-in source adapter is read-only, while a configured
+// provider adapter and one injected through WithAdapter are both external and
+// are reported by the capability interfaces they implement.
+func describeCapabilities(enforcer *casbinlib.SyncedEnforcer) rbac.Capabilities {
 	if enforcer == nil {
 		return rbac.Capabilities{}
 	}
@@ -54,10 +59,14 @@ func describeCapabilities(cfg normalizedConfig, enforcer *casbinlib.SyncedEnforc
 		GroupingFields: assertionFields(m, "g", "g"),
 	}
 	adapter := enforcer.GetAdapter()
-	if cfg.adapter.enabled() && !isNil(adapter) {
-		_, capabilities.Mutable = adapter.(persist.BatchAdapter)
-		_, capabilities.FilteredPolicyReplace = adapter.(persist.UpdatableAdapter)
+	if isNil(adapter) {
+		return capabilities
 	}
+	if _, builtin := adapter.(*sourceAdapter); builtin {
+		return capabilities
+	}
+	_, capabilities.Mutable = adapter.(persist.BatchAdapter)
+	_, capabilities.FilteredPolicyReplace = adapter.(persist.UpdatableAdapter)
 	return capabilities
 }
 

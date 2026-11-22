@@ -32,6 +32,10 @@ const (
 // and neither means an empty, deny-all policy. Watcher requires Adapter.
 // ReloadInterval periodically reloads PolicyFile or an external Adapter.
 // LoadPolicy remains available for synchronous programmatic reloads.
+//
+// Direct construction through New additionally accepts an external adapter as
+// a value (WithAdapter), which replaces both Adapter and Policy/PolicyFile for
+// that instance; Config itself carries no adapter value.
 type Config struct {
 	Model             string            `yaml:"model"`
 	ModelFile         string            `yaml:"model_file"`
@@ -87,6 +91,17 @@ type normalizedProviderRef struct {
 func (r normalizedProviderRef) enabled() bool { return r.key != "" }
 
 func normalizeConfig(c Config) (normalizedConfig, error) {
+	return normalizeConfigWithAdapter(c, false)
+}
+
+// normalizeConfigWithAdapter applies the shared configuration rules.
+// injectedAdapter reports that direct construction will attach an external
+// adapter through WithAdapter. Such an adapter is a policy source exactly like
+// a configured adapter provider: it satisfies reload_interval's source
+// requirement and conflicts with Policy and PolicyFile. It cannot, however,
+// satisfy a configured watcher, which only Definition/Bundle composition can
+// resolve.
+func normalizeConfigWithAdapter(c Config, injectedAdapter bool) (normalizedConfig, error) {
 	convention := c.RequestConvention
 	if convention == "" {
 		convention = ConventionRoutePermission
@@ -116,16 +131,20 @@ func normalizeConfig(c Config) (normalizedConfig, error) {
 	if policySet && policyFile != "" {
 		return normalizedConfig{}, fmt.Errorf("casbin: policy and policy_file are mutually exclusive")
 	}
-	if adapter.enabled() && (policySet || policyFile != "") {
+	externalAdapter := adapter.enabled() || injectedAdapter
+	if externalAdapter && (policySet || policyFile != "") {
 		return normalizedConfig{}, fmt.Errorf("casbin: adapter is mutually exclusive with policy and policy_file")
 	}
 	if watcher.enabled() && !adapter.enabled() {
+		if injectedAdapter {
+			return normalizedConfig{}, fmt.Errorf("casbin: watcher requires an adapter provider resolved through Definition/Bundle composition; a WithAdapter adapter cannot open a configured watcher")
+		}
 		return normalizedConfig{}, fmt.Errorf("casbin: watcher requires adapter")
 	}
 	if c.ReloadInterval < 0 {
 		return normalizedConfig{}, fmt.Errorf("casbin: reload_interval cannot be negative")
 	}
-	if c.ReloadInterval > 0 && policyFile == "" && !adapter.enabled() {
+	if c.ReloadInterval > 0 && policyFile == "" && !externalAdapter {
 		return normalizedConfig{}, fmt.Errorf("casbin: reload_interval requires policy_file or adapter")
 	}
 
