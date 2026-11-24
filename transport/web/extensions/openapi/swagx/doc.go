@@ -39,6 +39,37 @@
 //	    ui_path: /docs
 //	    ui_enabled: true
 //
+// # Standalone handler
+//
+// An application that does not serve its documentation through the Web
+// transport can mount the same UI and JSON document on any net/http compatible
+// stack with NewHandler:
+//
+//	handler, err := swagx.NewHandler(docs.SwaggerInfo, swagx.WithBasePath("/swagger"))
+//	if err != nil {
+//		return err
+//	}
+//	mux.Handle("/swagger/", http.StripPrefix("/swagger", handler))
+//
+// A handler mounted at /swagger serves the UI at /swagger/ and
+// /swagger/index.html, the JSON document at /swagger/doc.json, and the
+// embedded UI assets beneath the same prefix; every other path is not found.
+// Only GET and HEAD are served, and the handler reads nothing from disk or the
+// network beyond its embedded assets. WithBasePath names the prefix a browser
+// uses; it is used to build the document URL embedded in the UI and to
+// recognise requests that arrive with the prefix still attached, so the same
+// handler also works when a mux mounts it at /swagger/ without
+// http.StripPrefix. WithDocumentName changes the document file name (default
+// "doc.json"), WithTitle overrides the title derived from the document, and
+// WithPersistAuthorization keeps Swagger UI authorization entries across page
+// reloads.
+//
+// The Plugin form and NewHandler share one document snapshot, validation, and
+// embedded UI construction. The Plugin form adds only route registration on
+// the Web transport, transport-prefix resolution, and the configurable UI and
+// JSON paths; it remains the right choice when the application uses that
+// transport.
+//
 // Business handlers use swaggo/swag annotations:
 //
 //	// createOrder creates an order.

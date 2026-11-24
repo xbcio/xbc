@@ -2,12 +2,10 @@ package swagx
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync/atomic"
 
-	"github.com/swaggest/swgui/v5emb"
 	swaggo "github.com/swaggo/swag"
 
 	"github.com/xbcio/xbc/plugin"
@@ -16,14 +14,6 @@ import (
 
 // Key is Swag's stable Definition and configuration identity.
 const Key plugin.Key = "swag"
-
-type documentMetadata struct {
-	Swagger string `json:"swagger"`
-	OpenAPI string `json:"openapi"`
-	Info    struct {
-		Title string `json:"title"`
-	} `json:"info"`
-}
 
 type handlerSnapshot struct {
 	handler http.Handler
@@ -88,22 +78,14 @@ func newPlugin(cfg Config, readDocument func(string) (string, error)) (*Plugin, 
 	if err != nil {
 		return nil, fmt.Errorf("swag: read generated document %q: %w", normalized.instanceName, err)
 	}
-	document := []byte(raw)
-	var metadata documentMetadata
-	if err := json.Unmarshal(document, &metadata); err != nil {
-		return nil, fmt.Errorf("swag: generated document %q is not valid JSON: %w", normalized.instanceName, err)
-	}
-	if metadata.Swagger == "" && metadata.OpenAPI == "" {
-		return nil, fmt.Errorf("swag: generated document %q declares neither swagger nor openapi version", normalized.instanceName)
-	}
-	title := metadata.Info.Title
-	if title == "" {
-		title = "Swagger UI"
+	document, title, err := snapshotDocument(raw, normalized.instanceName)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Plugin{
 		settings: normalized,
-		document: append([]byte(nil), document...),
+		document: document,
 		title:    title,
 	}, nil
 }
@@ -147,7 +129,7 @@ func (p *Plugin) RoutesReady(routes web.RouteCatalog, _ web.PolicyResolver) erro
 		return nil
 	}
 	jsonPath, uiPath := documentationPaths(routes.All(), p.settings.jsonPath, p.settings.uiPath)
-	p.ui.Store(&handlerSnapshot{handler: v5emb.New(p.title, jsonPath, uiPath+"/")})
+	p.ui.Store(&handlerSnapshot{handler: buildUIHandler(p.title, jsonPath, uiPath+"/", false)})
 	return nil
 }
 
@@ -188,6 +170,6 @@ func (p *Plugin) serveUI(_ context.Context, c *web.Ctx) error {
 }
 
 func (p *Plugin) serveDocument(_ context.Context, c *web.Ctx) error {
-	c.Data(http.StatusOK, "application/json; charset=utf-8", p.document)
+	writeDocument(c.Writer(), p.document)
 	return nil
 }
