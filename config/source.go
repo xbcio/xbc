@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/knadh/koanf/parsers/yaml"
@@ -62,6 +63,17 @@ type Options struct {
 	// must already have the type of the field it lands in: a string assembled
 	// from text does not coerce into an int, nor a scalar into a list.
 	Overrides map[string]any
+	// EnvKeys maps one environment variable name to the configuration path it
+	// addresses; ok=false skips the variable. It gives an embedding caller that
+	// has no Universe -- and so no schema-driven environment layer -- an
+	// environment layer of its own: every inherited variable (and every EnvFile
+	// entry) the function accepts is merged as a string at the returned path, a
+	// dotted path nesting like any other source. It is ignored when Universe is
+	// set, because the Universe's schema already decides what the environment
+	// may address, and EnvPrefix does not apply to it: the function sees the
+	// complete variable name. A string value does not coerce under strict
+	// binding, so this layer suits callers that read values through Get.
+	EnvKeys func(name string) (path string, ok bool)
 	// Universe declares who owns which configuration path. When it is nil no
 	// environment layer is merged and no ownership check runs, which is what
 	// an embedding caller that assembles its own tree wants. The runtime
@@ -177,9 +189,9 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, []string, error) {
 	// after the files that layer overrides, and before the layer is merged.
 	var envFileEntries []string
 	if opts.EnvFile != "" {
-		if opts.Universe == nil {
+		if opts.Universe == nil && opts.EnvKeys == nil {
 			return nil, nil, nil, fmt.Errorf(
-				"xbc: environment file %s requires Options.Universe: the environment layer is schema-driven",
+				"xbc: environment file %s requires Options.Universe or Options.EnvKeys: the environment layer needs a rule for names",
 				opts.EnvFile)
 		}
 		entries, err := readEnvFile(opts.EnvFile)
@@ -195,6 +207,31 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, []string, error) {
 	// The environment layer comes last so that a container-injected variable
 	// wins over every file, and so that Exists sees an ENV-only section --
 	// which is what lets a WhenConfigured plugin activate from ENV alone.
+	if opts.Universe == nil && opts.EnvKeys != nil {
+		environ := os.Environ()
+		if len(envFileEntries) > 0 {
+			environ = append(envFileEntries, environ...)
+		}
+		values := make(map[string]any)
+		for _, entry := range environ {
+			name, value, found := strings.Cut(entry, "=")
+			if !found {
+				continue
+			}
+			if path, ok := opts.EnvKeys(name); ok && path != "" {
+				values[path] = value
+			}
+		}
+		if len(values) > 0 {
+			environment := koanf.New(".")
+			if err := environment.Load(confmap.Provider(values, "."), nil); err != nil {
+				return nil, nil, nil, fmt.Errorf("xbc: failed to apply environment configuration: %w", err)
+			}
+			if err := merge("env", environment); err != nil {
+				return nil, nil, nil, err
+			}
+		}
+	}
 	if opts.Universe != nil {
 		environ := os.Environ()
 		if len(envFileEntries) > 0 {
