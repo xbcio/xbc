@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -136,4 +138,37 @@ func TestWithStarterRejectsANilStarter(t *testing.T) {
 	_, err := New(WithStarter(nil))
 	assert.EqualError(t, err,
 		"xbc: WithStarter requires a non-nil Starter; omit the option to compose Bundles explicitly")
+}
+
+// TestWithoutConfigFileIgnoresTheHostsApplicationYml pins that a host which
+// hands every value over through a starter's defaults never has a file in its
+// working directory read as XBC configuration, and that --config still names
+// a file only when the option is absent.
+func TestWithoutConfigFileIgnoresTheHostsApplicationYml(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "application.yml"),
+		[]byte("plugins:\n  starter-activated:\n    enabled: false\n"), 0o600))
+
+	starter := runtimeTestStarter{
+		bundles: []plugin.Bundle{plugin.BundleOf(dormantDefinition("starter-activated"))},
+		defaults: config.Defaults{
+			Label:  "host baseline",
+			Values: map[string]any{"plugins.starter-activated.enabled": true},
+		},
+	}
+
+	t.Run("the working directory file wins by default", func(t *testing.T) {
+		app, err := New(WithStarter(starter))
+		require.NoError(t, err)
+		out := runDoctor(t, app)
+		assert.Contains(t, out, "planned 1, enabled instances 0, disabled 1")
+	})
+
+	t.Run("WithoutConfigFile leaves only the defaults", func(t *testing.T) {
+		app, err := New(WithStarter(starter), WithoutConfigFile())
+		require.NoError(t, err)
+		out := runDoctor(t, app)
+		assert.Contains(t, out, "planned 1, enabled instances 1, disabled 0")
+	})
 }

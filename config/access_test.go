@@ -77,3 +77,17 @@ func TestNewMatchesLoad(t *testing.T) {
 	assert.Equal(t, 1, env.Int("k.v"))
 	assert.Equal(t, 2, env.Int("k.w"))
 }
+
+func TestNoFileIgnoresApplicationYml(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeYAML(t, filepath.Join(dir, "application.yml"), "host:\n  value: from-file\n")
+
+	env, err := New(WithoutFile(), WithOverrides(map[string]any{"own.value": "from-override"}))
+	require.NoError(t, err)
+	assert.False(t, env.Exists("host.value"), "the working directory's file must not be read")
+	assert.Equal(t, "from-override", env.String("own.value"))
+
+	_, err = New(WithoutFile(), WithFile(filepath.Join(dir, "application.yml")))
+	require.Error(t, err, "a file and NoFile contradict each other")
+}

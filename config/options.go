@@ -51,3 +51,7 @@ func WithOverrides(values map[string]any) Option { return func(o *Options) { o.O
 
 // WithUniverse declares who owns which configuration path.
 func WithUniverse(universe *Universe) Option { return func(o *Options) { o.Universe = universe } }
+
+// WithoutFile disables the lookup of application.yml, so the tree is built only
+// from the defaults, overrides and environment layers.
+func WithoutFile() Option { return func(o *Options) { o.NoFile = true } }

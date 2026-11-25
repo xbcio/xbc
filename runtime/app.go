@@ -26,6 +26,10 @@ type App struct {
 	// its lowest-precedence source.
 	defaults config.Defaults
 
+	// noConfigFile is set by WithoutConfigFile: the boot builds its
+	// configuration without looking for application.yml.
+	noConfigFile bool
+
 	// placementSource is the source WithPlacement selected, or nil for
 	// StaticPlacement. It is consulted once per run, before the plan exists; the
 	// decision it returns is carried by the plan, which every later reader asks.
@@ -106,6 +110,19 @@ type appOptions struct {
 	placement    PlacementSource
 	hasPlacement bool
 	commands     []customCommand
+	noConfigFile bool
+}
+
+// WithoutConfigFile makes the App build its configuration without looking for
+// application.yml in the working directory or configs/. An embedding host that
+// hands every value over through a Starter's Defaults, or through the
+// environment, uses it so that a file belonging to the host is never read as
+// XBC configuration. Passing --config together with it is an error.
+func WithoutConfigFile() Option {
+	return func(options *appOptions) error {
+		options.noConfigFile = true
+		return nil
+	}
 }
 
 // WithBundles composes an App explicitly from side-effect-free Bundles.
@@ -158,6 +175,7 @@ func New(options ...Option) (*App, error) {
 	}
 	app := newApp(bundles)
 	app.commands = resolved.commands
+	app.noConfigFile = resolved.noConfigFile
 	if resolved.hasStarter {
 		app.defaults = resolved.starter.Defaults()
 	}

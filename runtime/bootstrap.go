@@ -26,6 +26,7 @@ func (a *App) bootstrap(cmd command) error {
 	}
 	env, err := config.Load(config.Options{
 		File:      cmd.config,
+		NoFile:    a.noConfigFile,
 		Profile:   cmd.profile,
 		EnvPrefix: config.DefaultEnvPrefix,
 		// The starter's layer is merged below the file, so an application that

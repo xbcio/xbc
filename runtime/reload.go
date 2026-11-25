@@ -109,6 +109,7 @@ func (a *App) reloadOnce() {
 
 	next, err := config.Load(config.Options{
 		File:      a.reload.file,
+		NoFile:    a.noConfigFile,
 		Profile:   a.reload.profile,
 		EnvPrefix: config.DefaultEnvPrefix,
 		Defaults:  a.defaults,

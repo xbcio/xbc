@@ -40,7 +40,12 @@ type Defaults struct {
 // Options carries every knob Load needs to locate and assemble the
 // configuration tree.
 type Options struct {
-	File      string // --config; when non-empty the file MUST exist
+	File string // --config; when non-empty the file MUST exist
+	// NoFile skips the lookup of application.yml in the working directory and
+	// configs/, for an embedding host that supplies every value through
+	// Defaults, Overrides or the environment and must not pick up a file that
+	// belongs to something else. It cannot be combined with File.
+	NoFile    bool
 	Profile   string // --profile or XBC_PROFILE
 	EnvPrefix string // "XBC_"; names the environment layer and later Bind calls
 	// EnvFile names an optional dotenv file whose KEY=value entries join the
@@ -126,9 +131,16 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, []string, error) {
 		return nil
 	}
 
-	basePath, err := locateBaseFile(opts.File)
-	if err != nil {
-		return nil, nil, nil, err
+	if opts.NoFile && opts.File != "" {
+		return nil, nil, nil, fmt.Errorf("xbc: configuration file %s cannot be combined with an option that disables file lookup", opts.File)
+	}
+	basePath := ""
+	if !opts.NoFile {
+		located, err := locateBaseFile(opts.File)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		basePath = located
 	}
 	var files []string
 	if basePath != "" {
