@@ -69,10 +69,27 @@
 // canonicalized and the same cross-field rules apply, but it does not apply the
 // binder's field defaults: a directly constructed Config must name its port,
 // where a plugin section defaults it to 25, and verify stays false unless set,
-// where a plugin section defaults it to true. Close is idempotent and safe on a
-// nil client, and a closed sender rejects sends with ErrClosed. Do not run one
-// SMTP identity through both a plugin instance and New in the same process --
-// two clients are difficult to attribute when delivery behavior differs.
+// where a plugin section defaults it to true.
+//
+// Functional options build the same value without a Config literal. They apply
+// to a copy of the configuration in order, and a nil Option is ignored.
+// NewFromOptions starts from DefaultConfig, the field defaults the binder gives
+// a plugins.mail section (port 25, SSL disabled, TLS policy mandatory, verify
+// enabled), so only the host must be supplied; New(cfg, opts...) applies the
+// same options on top of an explicit Config without introducing those defaults:
+//
+//	sender, err := mailx.NewFromOptions(
+//		mailx.WithHost("smtp.example.com"),
+//		mailx.WithPort(587),
+//		mailx.WithCredentials("svc-alerts", password),
+//		mailx.WithTLSPolicy(mailx.TLSPolicyMandatory),
+//		mailx.WithVerify(false),
+//	)
+//
+// Close is idempotent and safe on a nil client, and a closed sender rejects
+// sends with ErrClosed. Do not run one SMTP identity through both a plugin
+// instance and New in the same process -- two clients are difficult to
+// attribute when delivery behavior differs.
 //
 // # Configuration
 //

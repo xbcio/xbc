@@ -47,6 +47,8 @@ github.com/wneessen/go-mail v0.7.2 h1:xxPnhZ6IZLSgxShebmZ6DPKh1b6OJcoHfzy7UjOkzS
 github.com/wneessen/go-mail v0.7.2/go.mod h1:+TkW6QP3EVkgTEqHtVmnAE/1MRhmzb8Y9/W3pweuS+k=
 github.com/xbcio/xbc v0.1.0 h1:i4Eyy0xfX6rCZZmn3JUUyf7vSzp4lbXmMJwuSTENqPI=
 github.com/xbcio/xbc v0.1.0/go.mod h1:mISBzd4c6nGJuXdJ0/EUuTxy5nJSUPL5wvM3HQh25lM=
+github.com/xbcio/xbc v0.4.0 h1:om4XU721qeCFc4swJy3zTeyW9y3Uj3QiGYMMfSJXn5I=
+github.com/xbcio/xbc v0.4.0/go.mod h1:O9inyfoKsAgvwVM+WSuqTDLg6oA/bNGfkA6H94jUk3I=
 github.com/xbcio/xbc/extensions/reliability/health v0.1.0 h1:8S7Cal4YIj6B1K32wfBPrXG9U2lucySu85PsZeDa5cI=
 github.com/xbcio/xbc/extensions/reliability/health v0.1.0/go.mod h1:KI0IIvnclmr51r5vaGPlq9rGQHeuZel6TZ/Yfp4OZvU=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=

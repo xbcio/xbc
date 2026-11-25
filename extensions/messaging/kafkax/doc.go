@@ -65,24 +65,31 @@
 // A host that owns kafka-go readers and writers without an XBC application can
 // construct the same values directly. NewReader returns a *kafka.Reader and
 // NewWriter returns a *kafka.Writer; the caller owns the result and releases
-// it with Close, which kafka-go makes idempotent:
+// it with Close, which kafka-go makes idempotent. Options keep the call sites
+// short, and a ConnectionOption applies to either constructor:
 //
-//	reader, err := kafkax.NewReader(kafkax.ReaderConfig{
-//		Brokers:     []string{"broker.internal:9092"},
-//		GroupID:     "workers",
-//		GroupTopics: []string{"orders", "events"},
-//		StartOffset: kafkax.OffsetLatest,
-//	})
+//	reader, err := kafkax.NewReader(kafkax.ReaderConfig{},
+//		kafkax.WithBrokers("broker.internal:9092"),
+//		kafkax.WithGroup("workers", "orders", "events"),
+//		kafkax.WithStartOffset(kafkax.OffsetLatest),
+//	)
 //	if err != nil {
 //		return err
 //	}
 //	defer func() { _ = reader.Close() }()
 //
-//	writer, err := kafkax.NewWriter(kafkax.WriterConfig{
-//		Brokers: []string{"broker.internal:9092"},
-//		Topic:   "events",
-//		Async:   true,
-//	})
+//	writer, err := kafkax.NewWriter(kafkax.WriterConfig{},
+//		kafkax.WithBrokers("broker.internal:9092"),
+//		kafkax.WithTopic("events"),
+//		kafkax.WithRequiredAcks(kafkax.AckAll),
+//	)
+//
+// ReaderOption and WriterOption are separate types; ConnectionOption -- brokers,
+// client id, dial timeout, TLS, SASL, dialer, loggers, and topic -- satisfies
+// both, so one value can be passed to either constructor. Options are applied in
+// order to a private copy of the configuration, so they override configured
+// values, and a nil option is ignored. The struct-literal form remains valid:
+// NewReader(cfg) and NewWriter(cfg) behave exactly as before.
 //
 // NormalizeReader and NormalizeWriter return the configuration NewReader and
 // NewWriter would use -- defaults applied and cross-field rules checked --

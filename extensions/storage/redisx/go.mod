@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/stretchr/testify v1.12.1
 	github.com/xbcio/xbc v0.4.0
 	github.com/xbcio/xbc/extensions/coordination/lease v0.4.0
 	github.com/xbcio/xbc/extensions/reliability/health v0.1.0

@@ -52,6 +52,11 @@ type Options struct {
 	// configuration leaves, and it requires a Universe because the environment
 	// layer is schema-driven.
 	EnvFile string
+	// Files are further configuration files merged, in order, after the base
+	// file and its profile overlay. A later file overrides an earlier one, and
+	// a file that does not exist is skipped, so a caller can list every
+	// location a deployment may use. Each is read as YAML.
+	Files []string
 	// Defaults merges below every other source, including the files. It is
 	// what a Starter contributes so that a product baseline holds for a
 	// process that was given no configuration at all, and it is the only
@@ -173,6 +178,23 @@ func loadKoanf(opts Options) (*koanf.Koanf, []layer, []string, error) {
 			// A missing profile file is silently skipped: it is an optional
 			// overlay, not an explicit promise like --config.
 		}
+	}
+
+	for _, extra := range opts.Files {
+		if _, statErr := os.Stat(extra); statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			return nil, nil, nil, fmt.Errorf("xbc: cannot access configuration file %s: %w", extra, statErr)
+		}
+		extraK := koanf.New(".")
+		if err := extraK.Load(file.Provider(extra), yaml.Parser()); err != nil {
+			return nil, nil, nil, fmt.Errorf("xbc: failed to read configuration file %s: %w", extra, err)
+		}
+		if err := merge("file "+extra, extraK); err != nil {
+			return nil, nil, nil, err
+		}
+		files = append(files, extra)
 	}
 
 	if len(opts.Overrides) > 0 {

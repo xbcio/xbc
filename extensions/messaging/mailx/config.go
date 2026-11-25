@@ -76,6 +76,23 @@ type TLSConfig struct {
 	Policy string `yaml:"policy" default:"mandatory" validate:"oneof=mandatory opportunistic none"`
 }
 
+// defaultPort is the SMTP port XBC's configuration binder applies when a
+// section omits port; it matches go-mail's library default.
+const defaultPort = 25
+
+// DefaultConfig returns the same field defaults XBC's configuration binder
+// applies to a plugins.mail section: port 25, SSL disabled, TLS policy
+// mandatory, and construction-time verification enabled. Host has no default,
+// so a caller must set it before construction; NewFromOptions starts here.
+func DefaultConfig() Config {
+	return Config{
+		Port:   defaultPort,
+		SSL:    SSLConfig{Enable: false},
+		TLS:    TLSConfig{Policy: TLSPolicyMandatory},
+		Verify: true,
+	}
+}
+
 // String renders the configuration with its secret redacted. fmt uses it for
 // %v and %+v; GoString covers %#v.
 func (c Config) String() string {

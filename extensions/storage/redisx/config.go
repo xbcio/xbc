@@ -90,6 +90,37 @@ type Config struct {
 	TLS TLSConfig `yaml:"tls"`
 }
 
+// DefaultConfig returns the configuration the plugin's binder produces for an
+// otherwise empty section: the values the default tags on Config and TLSConfig
+// declare. A caller embedding the client directly can start from these values
+// and override only what the deployment sets; New does exactly that.
+//
+// The returned value is a static copy of the tags rather than a binding pass,
+// so the tests compare it field by field with those tags to keep the two from
+// drifting.
+func DefaultConfig() Config {
+	return Config{
+		Mode:            ModeStandalone,
+		Addr:            "127.0.0.1:6379",
+		DB:              0,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     3 * time.Second,
+		WriteTimeout:    3 * time.Second,
+		PoolTimeout:     4 * time.Second,
+		PoolSize:        10,
+		MinIdleConns:    0,
+		MaxIdleConns:    0,
+		MaxActiveConns:  0,
+		ConnMaxIdleTime: 30 * time.Minute,
+		ConnMaxLifetime: 0,
+		MaxRetries:      3,
+		Ping:            true,
+		TLS: TLSConfig{
+			MinVersion: defaultTLSMinVersion,
+		},
+	}
+}
+
 // prepareConfig implements plugin.ConfigSpec.Prepare. It enforces the
 // cross-field invariants that per-field validate tags cannot express: which
 // fields each topology accepts. Every rule is decidable from the bound

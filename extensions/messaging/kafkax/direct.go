@@ -256,16 +256,50 @@ func NormalizeWriter(cfg WriterConfig) (WriterConfig, error) {
 	return out, nil
 }
 
-// NewReader constructs a kafka-go reader from cfg with the same connection
-// security, validation, and defaults NormalizeReader reports. It exists for
-// hosts that own a reader without an XBC application: the caller owns the
-// returned value and releases it with Close, which kafka-go makes idempotent.
+// applyReaderOptions returns a private copy of cfg with opts applied in order.
+// Slice fields are copied so an option cannot observe or mutate the caller's
+// value; nil options are ignored.
+func applyReaderOptions(cfg ReaderConfig, opts []ReaderOption) ReaderConfig {
+	out := cfg
+	out.Brokers = append([]string(nil), cfg.Brokers...)
+	out.GroupTopics = append([]string(nil), cfg.GroupTopics...)
+	for _, option := range opts {
+		if option != nil {
+			option.applyReader(&out)
+		}
+	}
+	return out
+}
+
+// applyWriterOptions returns a private copy of cfg with opts applied in order.
+// The broker slice is copied so an option cannot observe or mutate the caller's
+// value; nil options are ignored.
+func applyWriterOptions(cfg WriterConfig, opts []WriterOption) WriterConfig {
+	out := cfg
+	out.Brokers = append([]string(nil), cfg.Brokers...)
+	for _, option := range opts {
+		if option != nil {
+			option.applyWriter(&out)
+		}
+	}
+	return out
+}
+
+// NewReader constructs a kafka-go reader from cfg and options with the same
+// connection security, validation, and defaults NormalizeReader reports. It
+// exists for hosts that own a reader without an XBC application: the caller
+// owns the returned value and releases it with Close, which kafka-go makes
+// idempotent.
+//
+// Options are applied in order to a private copy of cfg, so an option overrides
+// a configured value and a nil option is ignored. A ConnectionOption applies to
+// NewWriter as well. Calling without options keeps NewReader(cfg) behavior.
 //
 // The returned reader performs no commit by itself -- CommitInterval is 0, so
 // ReadMessage commits synchronously and FetchMessage callers own the commit
 // point through CommitMessages, matching the plugin's manual-commit model.
-func NewReader(cfg ReaderConfig) (*kafkago.Reader, error) {
-	prepared, err := NormalizeReader(cfg)
+func NewReader(cfg ReaderConfig, opts ...ReaderOption) (*kafkago.Reader, error) {
+	prepared, err := NormalizeReader(applyReaderOptions(cfg, opts))
 	if err != nil {
 		return nil, err
 	}
@@ -301,12 +335,17 @@ func NewReader(cfg ReaderConfig) (*kafkago.Reader, error) {
 	return kafkago.NewReader(readerConfig), nil
 }
 
-// NewWriter constructs a kafka-go writer from cfg with the same connection
-// security, validation, and defaults NormalizeWriter reports. It exists for
-// hosts that own a writer without an XBC application: the caller owns the
-// returned value and releases it with Close, which kafka-go makes idempotent.
-func NewWriter(cfg WriterConfig) (*kafkago.Writer, error) {
-	prepared, err := NormalizeWriter(cfg)
+// NewWriter constructs a kafka-go writer from cfg and options with the same
+// connection security, validation, and defaults NormalizeWriter reports. It
+// exists for hosts that own a writer without an XBC application: the caller
+// owns the returned value and releases it with Close, which kafka-go makes
+// idempotent.
+//
+// Options are applied in order to a private copy of cfg, so an option overrides
+// a configured value and a nil option is ignored. A ConnectionOption applies to
+// NewReader as well. Calling without options keeps NewWriter(cfg) behavior.
+func NewWriter(cfg WriterConfig, opts ...WriterOption) (*kafkago.Writer, error) {
+	prepared, err := NormalizeWriter(applyWriterOptions(cfg, opts))
 	if err != nil {
 		return nil, err
 	}

@@ -65,13 +65,19 @@ func prepareConfig(cfg Config) (Config, error) {
 // plugin path where the binder fills every unset field from DefaultConfig. A
 // caller starting from a zero Config therefore gets a validation error (dsn is
 // required, max_open_conn must be at least 1) rather than a silently unbounded
-// pool. Start from DefaultConfig and override only what the deployment sets.
-// A non-nil cfg.Logger is installed as GORM's logger; nil keeps GORM's default.
+// pool. Start from DefaultConfig and override only what the deployment sets, or
+// use New to start from those defaults. A non-nil cfg.Logger is installed as
+// GORM's logger; nil keeps GORM's default.
+//
+// Options are applied to a copy of cfg in the order supplied, so they override
+// the corresponding fields without mutating the caller's value; a nil Option is
+// ignored. Validation and construction then run on the result.
 //
 // The caller owns the returned database and must release it with Close. Open
 // exists for callers embedding the database directly; an application assembled
 // through Bundle acquires the same value from the plugin lifecycle instead.
-func Open(cfg Config) (db *gormlib.DB, err error) {
+func Open(cfg Config, opts ...Option) (db *gormlib.DB, err error) {
+	cfg = applyOptions(cfg, opts)
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -115,6 +121,18 @@ func Open(cfg Config) (db *gormlib.DB, err error) {
 
 	transferred = true
 	return db, nil
+}
+
+// New constructs a database from DefaultConfig plus the supplied options. It
+// applies opts to those defaults and then follows the same validation and
+// construction path as Open, so a zero-argument New reports the required DSN
+// instead of opening an unconfigured pool. A nil Option is ignored.
+//
+// Use New when every setting is expressed in code; use Open when a Config
+// already exists. The caller owns the returned database and must release it
+// with Close.
+func New(opts ...Option) (*gormlib.DB, error) {
+	return Open(DefaultConfig(), opts...)
 }
 
 // Close releases a database opened by Open: the prepared-statement store when

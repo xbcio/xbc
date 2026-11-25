@@ -52,10 +52,43 @@
 //
 // Open applies no configuration defaults or field-tag validation, unlike the
 // plugin path where the binder fills every unset field, so start from complete
-// values. It is not part of an XBC application's exports: a process that
-// assembles Bundle takes its clients from the plugin instead. Do not address
-// one deployment through both paths in one process -- two pools are difficult
-// to attribute when connection behavior differs.
+// values or from DefaultConfig. It is not part of an XBC application's exports:
+// a process that assembles Bundle takes its clients from the plugin instead. Do
+// not address one deployment through both paths in one process -- two pools are
+// difficult to attribute when connection behavior differs.
+//
+// # Options
+//
+// Open and New accept functional options that override individual fields.
+// Options are applied in the order supplied to a copy of the configuration, so
+// the caller's value is never mutated, and a nil option is ignored:
+//
+//	client, err := redisx.Open(
+//		redisx.DefaultConfig(),
+//		redisx.WithAddr("redis.internal:6379"),
+//		redisx.WithPoolSize(32),
+//		redisx.WithDialTimeout(2*time.Second),
+//	)
+//	if err != nil {
+//		return err
+//	}
+//	defer func() { _ = client.Close() }()
+//
+// New is the option-only form: it starts from DefaultConfig -- the values the
+// plugin's default tags declare -- applies the options, and constructs through
+// the same path. It is the shortest route for a client whose settings are
+// expressed entirely in code:
+//
+//	client, err := redisx.New(
+//		redisx.WithAddr("redis.internal:6379"),
+//		redisx.WithPassword(os.Getenv("REDIS_PASSWORD")),
+//	)
+//
+// New pings the deployment during construction unless WithPing(false) disables
+// the check, exactly as the plugin does. The options describe a field each, so
+// the mode rules still decide whether the combination is valid: for example,
+// WithAddrs is rejected in standalone mode, and sentinel and cluster modes
+// reject an address list left empty.
 //
 // # TLS
 //

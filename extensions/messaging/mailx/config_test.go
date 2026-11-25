@@ -2,6 +2,8 @@ package mailx
 
 import (
 	"fmt"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +39,95 @@ func TestConfigDefaults(t *testing.T) {
 	}
 	if !config.Verify {
 		t.Fatal("Verify = false, want true by default")
+	}
+}
+
+// TestDefaultConfigMatchesDefaultTags keeps DefaultConfig in lockstep with the
+// configuration binder's default tags: every tagged field must carry the tagged
+// value, and every untagged field must stay zero.
+func TestDefaultConfigMatchesDefaultTags(t *testing.T) {
+	defaults := DefaultConfig()
+	if defaults.Port != 25 || defaults.SSL.Enable || defaults.TLS.Policy != TLSPolicyMandatory || !defaults.Verify {
+		t.Fatalf("DefaultConfig() = %+v, want port 25, SSL disabled, mandatory TLS, and verification enabled", defaults)
+	}
+	checkDefaultTags(t, reflect.ValueOf(defaults), "Config")
+}
+
+// checkDefaultTags walks the exported scalar fields of a configuration value,
+// descending into nested configuration structs.
+func checkDefaultTags(t *testing.T, value reflect.Value, path string) {
+	t.Helper()
+	typ := value.Type()
+	for index := 0; index < typ.NumField(); index++ {
+		field := typ.Field(index)
+		fieldValue := value.Field(index)
+		fieldPath := path + "." + field.Name
+		if field.Type.Kind() == reflect.Struct {
+			checkDefaultTags(t, fieldValue, fieldPath)
+			continue
+		}
+		tag, tagged := field.Tag.Lookup("default")
+		if !tagged {
+			if !fieldValue.IsZero() {
+				t.Errorf("%s = %v in DefaultConfig, but the field carries no default tag", fieldPath, fieldValue)
+			}
+			continue
+		}
+		want, err := parseDefaultTag(tag, field.Type)
+		if err != nil {
+			t.Fatalf("%s default tag %q: %v", fieldPath, tag, err)
+		}
+		if fieldValue.Interface() != want.Interface() {
+			t.Errorf("%s = %v in DefaultConfig, want %v from default tag %q", fieldPath, fieldValue, want, tag)
+		}
+	}
+}
+
+// parseDefaultTag converts one default tag to the value it stands for, using
+// the same scalar interpretations the binder applies.
+func parseDefaultTag(tag string, typ reflect.Type) (reflect.Value, error) {
+	if typ == reflect.TypeOf(time.Duration(0)) {
+		parsed, err := time.ParseDuration(tag)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		return reflect.ValueOf(parsed), nil
+	}
+	switch typ.Kind() {
+	case reflect.String:
+		return reflect.ValueOf(tag).Convert(typ), nil
+	case reflect.Bool:
+		parsed, err := strconv.ParseBool(tag)
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		return reflect.ValueOf(parsed).Convert(typ), nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		parsed, err := strconv.ParseInt(tag, 10, typ.Bits())
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		value := reflect.New(typ).Elem()
+		value.SetInt(parsed)
+		return value, nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		parsed, err := strconv.ParseUint(tag, 10, typ.Bits())
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		value := reflect.New(typ).Elem()
+		value.SetUint(parsed)
+		return value, nil
+	case reflect.Float32, reflect.Float64:
+		parsed, err := strconv.ParseFloat(tag, typ.Bits())
+		if err != nil {
+			return reflect.Value{}, err
+		}
+		value := reflect.New(typ).Elem()
+		value.SetFloat(parsed)
+		return value, nil
+	default:
+		return reflect.Value{}, fmt.Errorf("unsupported default tag type %s", typ)
 	}
 }
 

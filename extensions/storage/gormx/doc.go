@@ -90,19 +90,40 @@
 //	}
 //	defer gormplugin.Close(db)
 //
-// Open is the path for a host that owns its own lifecycle. It is not part of
-// an XBC application's exports: a process that assembles Bundle takes its
-// instance from the plugin instead. Do not reach the same data source through
-// both paths in one process -- two pools against one database are difficult to
-// attribute when connection or transaction behavior differs.
+// Open also accepts options that override fields of the supplied Config. New
+// starts from DefaultConfig instead, applies the same options, and then follows
+// the identical validation and construction path, which suits a caller that
+// expresses every setting in code:
+//
+//	db, err := gormplugin.New(
+//		gormplugin.WithDriver("postgres"),
+//		gormplugin.WithDSN(dsn),
+//		gormplugin.WithMaxOpenConn(50),
+//		gormplugin.WithLogger(logger),
+//	)
+//	if err != nil {
+//		return err
+//	}
+//	defer gormplugin.Close(db)
+//
+// Both forms copy the configuration, apply the options in order, and ignore a
+// nil Option; neither mutates what the caller passed.
+//
+// Open and New are the paths for a host that owns its own lifecycle. They are
+// not part of an XBC application's exports: a process that assembles Bundle
+// takes its instance from the plugin instead. Do not reach the same data source
+// through both paths in one process -- two pools against one database are
+// difficult to attribute when connection or transaction behavior differs.
 //
 // # Logging
 //
 // Config.Logger accepts a gorm.io/gorm/logger.Interface for a caller that
-// embeds the database through Open. The field is deliberately excluded from
+// embeds the database through Open or New, and WithLogger is the equivalent
+// option for the option form. The field is deliberately excluded from
 // configuration binding: it is not decoded from YAML, overlaid from the
 // environment, or filled by a default tag, and a section that names it is
-// rejected as unknown. A logger is code, so Open is the only way to supply one.
+// rejected as unknown. A logger is code, so Open and New are the only ways to
+// supply one.
 // A nil Logger keeps GORM's default logger, which is also what every
 // plugin-managed instance uses because the binder leaves the field nil.
 //

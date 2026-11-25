@@ -123,9 +123,16 @@ func (f clientFactory) build(cfg Config, tlsConfig *tls.Config) goredis.Universa
 // plugin's construction stage, applies no configuration defaults or field-tag
 // validation. Start from complete values rather than a zero Config: an unknown
 // mode is an error, and timeouts or pool bounds left at zero keep go-redis's
-// own defaults instead of this plugin's documented ones.
-func Open(cfg Config) (goredis.UniversalClient, error) {
-	prepared, err := prepareConfig(cfg)
+// own defaults instead of this plugin's documented ones. Use DefaultConfig as
+// the base when the plugin's documented defaults are wanted, or New when every
+// setting is expressed as an option.
+//
+// Options are applied to a copy of cfg in the order supplied, so they override
+// the corresponding fields without mutating the caller's value; a nil Option is
+// ignored. The copy owns its Addrs slice. The mode rules then run on the
+// result.
+func Open(cfg Config, opts ...Option) (goredis.UniversalClient, error) {
+	prepared, err := prepareConfig(applyOptions(cfg, opts))
 	if err != nil {
 		return nil, err
 	}
@@ -134,6 +141,18 @@ func Open(cfg Config) (goredis.UniversalClient, error) {
 		return nil, err
 	}
 	return client.UniversalClient, nil
+}
+
+// New constructs a Redis client from DefaultConfig plus the supplied options.
+// It applies opts to those defaults and then follows the same construction path
+// as Open, so a zero-argument New addresses 127.0.0.1:6379 with the plugin's
+// documented timeouts and pool bounds, and pings it during construction. A nil
+// Option is ignored.
+//
+// Use New when every setting is expressed in code; use Open when a Config
+// already exists.
+func New(opts ...Option) (goredis.UniversalClient, error) {
+	return Open(DefaultConfig(), opts...)
 }
 
 // newClient constructs the one primary value owned by a configured Redis

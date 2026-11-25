@@ -76,14 +76,27 @@ func Bundle() plugin.Bundle { return bundle }
 // configuration binder's field defaults: a directly constructed Config must
 // set port itself, where a plugin section would default it to 25, and verify
 // remains false unless set, where a plugin section defaults it to true. A zero
-// Config is rejected for its missing host. The returned sender delivers one
-// message per connection, exactly like a plugin-managed instance.
-func New(cfg Config) (Sender, error) {
-	client, err := newSender(cfg, plugin.DefaultInstance)
+// Config is rejected for its missing host. DefaultConfig supplies the binder's
+// field defaults, and NewFromOptions starts from it.
+//
+// Options customize a copy of cfg; they are applied in the order supplied, and
+// a nil Option is ignored. The returned sender delivers one message per
+// connection, exactly like a plugin-managed instance.
+func New(cfg Config, opts ...Option) (Sender, error) {
+	client, err := newSender(applyOptions(cfg, opts...), plugin.DefaultInstance)
 	if err != nil {
 		return nil, err
 	}
 	return client, nil
+}
+
+// NewFromOptions constructs a sender from DefaultConfig with opts applied, for
+// a host that wants the configuration binder's field defaults without building
+// a Config literal. Pass WithHost at minimum; without it construction fails
+// with the same host-required error. Options are applied in order, a nil
+// Option is ignored, and the caller releases the sender through Closer.
+func NewFromOptions(opts ...Option) (Sender, error) {
+	return New(DefaultConfig(), opts...)
 }
 
 // newSender is the construction path shared by New and the plugin: the plugin
