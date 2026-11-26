@@ -205,12 +205,14 @@ type goModRequire struct {
 func TestWebGoModsDoNotRequireAnHTTPEngine(t *testing.T) {
 	// engineBoundModules names the modules that exist to host or drive a
 	// specific engine, so requiring it is their purpose rather than a leak:
-	// ginmount mounts a gin subtree, and apptest runs the real plugin graph
-	// through the gin engine adapter. Each entry is a directory relative to
-	// transport/web; adding one needs the same justification.
+	// ginmount mounts a gin subtree, sessionx carries the session cookie on a
+	// gin context, and apptest runs the real plugin graph through the gin
+	// engine adapter. Each entry is a directory relative to transport/web;
+	// adding one needs the same justification.
 	engineBoundModules := map[string]bool{
-		"extensions/interop/ginmount": true,
-		"extensions/testing/apptest":  true,
+		"extensions/interop/ginmount":   true,
+		"extensions/interop/sessionx": true,
+		"extensions/testing/apptest":    true,
 	}
 
 	if _, err := exec.LookPath("go"); err != nil {

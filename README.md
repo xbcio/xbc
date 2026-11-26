@@ -77,7 +77,7 @@ xbc/
 │       ├── extensions/                  # All Web plugins, grouped by capability
 │       │   ├── authentication/{apikey,federation,jwt,oauth2,oidc,saml,session}/
 │       │   ├── authorization/{casbinx,rbac,tenant}/
-│       │   ├── interop/ginmount/
+│       │   ├── interop/{ginmount,sessionx}/
 │       │   ├── openapi/swagx/
 │       │   ├── observability/{accesslog,auditlog,metrics,pprof,requestid,tracing}/
 │       │   ├── response/{biz,gzip}/

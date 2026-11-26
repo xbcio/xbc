@@ -76,6 +76,7 @@ use (
 	./transport/web/extensions/authorization/casbinx
 	./transport/web/extensions/authorization/rbac
 	./transport/web/extensions/interop/ginmount
+	./transport/web/extensions/interop/sessionx
 	./transport/web/extensions/observability/metrics
 	./transport/web/extensions/observability/tracing
 	./transport/web/extensions/openapi/swagx

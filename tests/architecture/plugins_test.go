@@ -650,14 +650,27 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	require.Len(t, protocolNeutral, 27, "expected 27 protocol-neutral extension plugins plus the non-plugin contract and protocol client modules beneath extensions")
 	roots = append(roots, protocolNeutral...)
 
-	webAdapter := filepath.Join(webRoot, "extensions", "authorization", "rbac")
+	// A Web extension module that publishes an adapter rather than a plugin
+	// owns no Definition, Config, or Bundle, so it has nothing for the guards
+	// below to inspect and must stay out of these roots. The RBAC adapter is
+	// the transport half of the protocol-neutral RBAC plugin; sessionx binds
+	// the neutral session core to *gin.Context and is wired by its host
+	// directly. Deleting each discovered entry and requiring the map to be
+	// empty keeps a stale declaration from exempting nothing.
+	nonPluginWeb := map[string]bool{
+		filepath.Join(webRoot, "extensions", "authorization", "rbac"): true,
+		filepath.Join(webRoot, "extensions", "interop", "sessionx"): true,
+	}
 	var webPlugins []string
 	for _, moduleRoot := range archExtensionModuleRoots(t, filepath.Join(webRoot, "extensions")) {
-		if moduleRoot != webAdapter {
-			webPlugins = append(webPlugins, moduleRoot)
+		if nonPluginWeb[moduleRoot] {
+			delete(nonPluginWeb, moduleRoot)
+			continue
 		}
+		webPlugins = append(webPlugins, moduleRoot)
 	}
-	require.Len(t, webPlugins, 14, "expected 14 Web extension plugins plus the non-plugin RBAC adapter")
+	require.Empty(t, nonPluginWeb, "declared non-plugin Web extension modules were not discovered beneath transport/web/extensions")
+	require.Len(t, webPlugins, 14, "expected 14 Web extension plugins; the non-plugin RBAC and sessionx adapters are not plugin implementations")
 	roots = append(roots, webPlugins...)
 
 	// gRPC extensions follow the Web split: a light extractor stays a package
@@ -677,7 +690,7 @@ func archPluginImplementationRoots(t *testing.T) []string {
 	require.Len(t, grpcPlugins, 4, "expected 4 independently versioned gRPC extension plugins")
 	roots = append(roots, grpcPlugins...)
 
-	require.Len(t, roots, 63, "expected 14 Web package extensions, 27 protocol-neutral extension plugins, 14 independently versioned Web extension plugins, 3 gRPC package extensions, 1 gRPC-owned package extension, and 4 independently versioned gRPC extension plugins; the non-plugin contract and protocol client modules beneath extensions are not plugin implementations")
+	require.Len(t, roots, 63, "expected 14 Web package extensions, 27 protocol-neutral extension plugins, 14 independently versioned Web extension plugins, 3 gRPC package extensions, 1 gRPC-owned package extension, and 4 independently versioned gRPC extension plugins; the non-plugin contract and protocol client modules beneath extensions and the non-plugin RBAC and sessionx Web adapters are not plugin implementations")
 	sort.Strings(roots)
 	return roots
 }

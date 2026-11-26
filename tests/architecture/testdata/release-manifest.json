@@ -391,6 +391,16 @@
       ]
     },
     {
+      "path": "github.com/xbcio/xbc/transport/web/extensions/interop/sessionx",
+      "directory": "transport/web/extensions/interop/sessionx",
+      "tag_prefix": "transport/web/extensions/interop/sessionx/",
+      "wave": 2,
+      "release": true,
+      "imports": [
+        "github.com/xbcio/xbc/extensions/authentication/session"
+      ]
+    },
+    {
       "path": "github.com/xbcio/xbc/extensions/authorization/casbin-gorm",
       "directory": "extensions/authorization/casbin-gorm",
       "tag_prefix": "extensions/authorization/casbin-gorm/",

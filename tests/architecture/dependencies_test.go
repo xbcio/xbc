@@ -501,16 +501,35 @@ func archRepositoryRelative(t *testing.T, dir string) string {
 // answers the question for core; this one answers it for every module go.work
 // joins, from that module's own directory.
 //
-// A module is exempt only when it declares the Web dependency by importing the
-// Web module. `examples` and `scripts/plugin-snapshots` are exempt on that
-// basis and only on that basis: both are composition aggregates that select
-// Web Bundles deliberately, neither sits beneath transport/web, and a rule
-// built on directory position alone would either flag them or need a
-// hand-maintained exception list that go.work would immediately outdate.
+// A module that imports the Web module declares the Web dependency and is
+// exempt. `examples` and `scripts/plugin-snapshots` are exempt on that basis:
+// both are composition aggregates that select Web Bundles deliberately, and
+// neither sits beneath transport/web. A module listed in
+// archEngineBoundWebModules is exempt on the one positional basis the zone
+// guard below already recognizes: it sits inside the Web zone and exists to
+// bind an engine to a single Web concern, so the engine import is the module's
+// purpose rather than a stack leaking into a protocol-neutral capability.
 // Everything else -- every capability module, every contract module -- must
 // reach the Web stack through nothing at all.
+
+// archEngineBoundWebModules names the modules beneath transport/web that
+// compile an HTTP engine in without importing the Web transport. Membership is
+// a deliberate architecture decision, not a convenience: the zone guard below
+// treats transport/web as a Web zone, and an interop module that binds that
+// engine directly has no Web contract to import. This is the tests/architecture
+// counterpart of transport/web/arch_test.go's engineBoundModules. The list is
+// consumed by discovery below, so a renamed or removed entry fails instead of
+// silently exempting nothing.
+var archEngineBoundWebModules = []string{
+	"transport/web/extensions/interop/sessionx",
+}
+
 func TestArchModulesThatDoNotComposeWebDoNotCompileItIn(t *testing.T) {
 	dirs := archWorkspaceModuleDirs(t)
+	engineBound := make(map[string]bool, len(archEngineBoundWebModules))
+	for _, relative := range archEngineBoundWebModules {
+		engineBound[relative] = true
+	}
 
 	var (
 		composing     int
@@ -521,6 +540,11 @@ func TestArchModulesThatDoNotComposeWebDoNotCompileItIn(t *testing.T) {
 		relative := archRepositoryRelative(t, dir)
 		closure := archModuleClosure(t, dir)
 		if archModuleComposesWebStack(closure) {
+			composing++
+			continue
+		}
+		if engineBound[relative] {
+			delete(engineBound, relative)
 			composing++
 			continue
 		}
@@ -551,6 +575,8 @@ func TestArchModulesThatDoNotComposeWebDoNotCompileItIn(t *testing.T) {
 	// never exercise the exemption. The dependency count is the third leg: the
 	// rule above is an absence, so it is only evidence if real closures were
 	// read first.
+	require.Empty(t, engineBound,
+		"declared engine-bound Web modules were not discovered as workspace modules; a stale entry exempts nothing")
 	assert.GreaterOrEqual(t, len(dirs), 20,
 		"go.work should join every publishable module; a short list means the per-module closure guards cover less than they claim")
 	assert.NotZero(t, notComposing,
